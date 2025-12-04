@@ -52,7 +52,7 @@ that defines the initial state, the rewards and the termination condition.
  - Multidiscrete action space: movement X interaction
  - Movement has 5 options
  - Interaction is currently None or Attack
- - Can flatten / unflatten the action space to be compatible with OpenSpiel (no multidiscrete support)
+ - Can flatten / unflatten the action space to be compatible with other frameworks
 
 ### Collision Resolution
 Fixed-point iteration algorithm in `base_env.cc:ResolveCollisions()`:

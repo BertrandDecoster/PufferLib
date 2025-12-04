@@ -180,10 +180,8 @@ Architecture
 
 Unreal Engine is Windows based, other OS support is limited
 
-OpenSpiel is Unix based, other OS support is limited
-
 I am using InductorHtn as my C++ HTN engine, it can work on  any OS
-The game  logic is in standard C++ with  STL containers. It’s wrapped in an OpenSpiel wrapper and I train RL models on Linux, that I export as ONNX. Both the logic and the ONNX  are embedded in Unreal 
+The game  logic is in standard C++ with  STL containers. It’s wrapped in an PufferLib wrapper and I train RL models on Linux, that I export as ONNX. Both the logic and the ONNX  are embedded in Unreal 
 
 Unreal is just the graphics/audio part. the entirety of the game logic is in the pure C++ engine. So, no pathfinding (it’s a 2D grid, I can trivially bypass it), no physics (except for visuals, like ragdolling a killed agent)
 
