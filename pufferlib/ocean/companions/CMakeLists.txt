@@ -1,0 +1,180 @@
+cmake_minimum_required(VERSION 3.12)
+project(companions VERSION 0.2.0 LANGUAGES CXX)
+
+# C++17 required
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Compiler flags
+if(MSVC)
+  add_compile_options(/W4)
+else()
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+# Build type
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# =============================================================================
+# Source files
+# =============================================================================
+
+# Core module
+set(CORE_SOURCES
+  src/core/types.cc
+  src/core/cell.cc
+  src/core/grid.cc
+  src/core/object.cc
+  src/core/object_manager.cc
+  src/core/level_builder.cc
+  src/core/pathfinder.cc
+  src/core/agent_config.cc
+  src/core/effect_config.cc
+  src/core/game_logger.cc
+  src/core/map_generator.cc
+  src/core/d4_transform.cc
+  src/core/fsm/fsm_states.cc
+  src/core/fsm/enemies.cc
+)
+
+set(CORE_HEADERS
+  src/core/types.h
+  src/core/cell.h
+  src/core/grid.h
+  src/core/object.h
+  src/core/object_manager.h
+  src/core/level_builder.h
+  src/core/pathfinder.h
+  src/core/agent_config.h
+  src/core/effect_config.h
+  src/core/game_logger.h
+  src/core/map_generator.h
+  src/core/d4_transform.h
+  src/core/fsm/fsm_state.h
+  src/core/fsm/fsm_states.h
+  src/core/fsm/enemies.h
+)
+
+# Env module
+set(ENV_SOURCES
+  src/env/base_env.cc
+  src/env/effect_system.cc
+  src/env/synchro_env.cc
+  src/env/aggro_env.cc
+  src/env/dodge_env.cc
+)
+
+set(ENV_HEADERS
+  src/env/base_env.h
+  src/env/effect_system.h
+  src/env/synchro_env.h
+  src/env/aggro_env.h
+  src/env/dodge_env.h
+)
+
+# Viz module
+set(VIZ_SOURCES
+  src/viz/renderer.cc
+)
+
+set(VIZ_HEADERS
+  src/viz/renderer.h
+)
+
+# =============================================================================
+# Libraries
+# =============================================================================
+
+# Core library
+add_library(companions_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
+target_include_directories(companions_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+
+# Env library (depends on core)
+add_library(companions_env STATIC ${ENV_SOURCES} ${ENV_HEADERS})
+target_include_directories(companions_env PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/env)
+target_link_libraries(companions_env PUBLIC companions_core)
+
+# Viz library (depends on env and core)
+add_library(companions_viz STATIC ${VIZ_SOURCES} ${VIZ_HEADERS})
+target_include_directories(companions_viz PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/viz)
+target_link_libraries(companions_viz PUBLIC companions_env companions_core)
+
+# Combined library for convenience
+add_library(companions INTERFACE)
+target_link_libraries(companions INTERFACE companions_viz companions_env companions_core)
+
+# PufferLib wrapper (extern "C" interface for Python bindings)
+add_library(companions_wrapper STATIC synchro_wrapper.cc)
+target_include_directories(companions_wrapper PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(companions_wrapper PUBLIC companions_env companions_core)
+
+# =============================================================================
+# Test executables
+# =============================================================================
+add_executable(companions_test tests/test_core.cc)
+target_link_libraries(companions_test companions_viz companions_env companions_core)
+target_include_directories(companions_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(companions_fsm_test tests/test_fsm.cc)
+target_link_libraries(companions_fsm_test companions_viz companions_env companions_core)
+target_include_directories(companions_fsm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(companions_aggro_test tests/test_aggro_env.cc)
+target_link_libraries(companions_aggro_test companions_viz companions_env companions_core)
+target_include_directories(companions_aggro_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(companions_effects_test tests/test_effects.cc)
+target_link_libraries(companions_effects_test companions_viz companions_env companions_core)
+target_include_directories(companions_effects_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(companions_dodge_test tests/test_dodge_env.cc)
+target_link_libraries(companions_dodge_test companions_viz companions_env companions_core)
+target_include_directories(companions_dodge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(companions_map_generator_test tests/test_map_generator.cc)
+target_link_libraries(companions_map_generator_test companions_viz companions_env companions_core)
+target_include_directories(companions_map_generator_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(companions_d4_transform_test tests/test_d4_transform.cc)
+target_link_libraries(companions_d4_transform_test companions_viz companions_env companions_core)
+target_include_directories(companions_d4_transform_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# =============================================================================
+# Demo executable
+# =============================================================================
+add_executable(companions_demo src/demo/play_demo.cc)
+target_link_libraries(companions_demo companions_viz companions_env companions_core)
+target_include_directories(companions_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# =============================================================================
+# Benchmark executable
+# =============================================================================
+add_executable(companions_fsm_benchmark benchmarks/cpp/fsm_benchmark.cc)
+target_link_libraries(companions_fsm_benchmark companions_viz companions_env companions_core)
+target_include_directories(companions_fsm_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# =============================================================================
+# Testing
+# =============================================================================
+enable_testing()
+add_test(NAME companions_test COMMAND companions_test)
+add_test(NAME companions_fsm_test COMMAND companions_fsm_test)
+add_test(NAME companions_aggro_test COMMAND companions_aggro_test)
+add_test(NAME companions_effects_test COMMAND companions_effects_test)
+add_test(NAME companions_dodge_test COMMAND companions_dodge_test)
+add_test(NAME companions_map_generator_test COMMAND companions_map_generator_test)
+add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)
+
+# =============================================================================
+# Installation (optional)
+# =============================================================================
+install(TARGETS companions_core companions_env companions_viz
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+)
+install(FILES ${CORE_HEADERS} DESTINATION include/companions/core)
+install(FILES ${ENV_HEADERS} DESTINATION include/companions/env)
+install(FILES ${VIZ_HEADERS} DESTINATION include/companions/viz)

@@ -1,0 +1,12 @@
+name,telegraph,active,recovery,loop,area,filter,damage,push_dx,push_dy,push_dist,status,status_dur,visible
+zombie_attack,2,1,2,0,1,companion,1,0,0,0,,0,false
+goblin_attack,1,1,1,0,1,companion,1,0,0,0,,0,false
+slash,0,1,0,0,1,companion,1,0,0,0,,0,false
+dragon_breath,3,2,3,0,1;1;1;1;1;1;1;1;1,companion,2,0,0,0,,0,true
+fire_tower,2,1,4,-1,0;1;0;1;1;1;0;1;0,all,1,0,0,0,,0,true
+wind_lever,1,1,0,0,1,all,0,0,-1,2,,0,true
+brute_slam,2,1,3,0,1;1;1;1;1;1;1;1;1,companion,2,0,-1,1,,0,true
+stun_spell,0,1,0,0,1,enemy,0,0,0,0,stunned,3,false
+slow_trap,1,1,0,0,0;1;0;1;1;1;0;1;0,all,0,0,0,0,slowed,5,true
+heal_pulse,0,1,0,0,0;1;0;1;1;1;0;1;0,companion,-2,0,0,0,,0,false
+pull_hook,1,1,0,0,1,enemy,0,0,-1,-2,,0,true

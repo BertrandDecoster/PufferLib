@@ -196,7 +196,7 @@ if not NO_OCEAN:
             sources=[path],
             **extension_kwargs,
         )
-        for path in c_extension_paths if 'matsci' not in path
+        for path in c_extension_paths if 'matsci' not in path and 'companions' not in path
     ]
     c_extension_paths = [os.path.join(*path.split('/')[:-1]) for path in c_extension_paths]
 
@@ -212,6 +212,32 @@ if not NO_OCEAN:
         if 'matsci' in c_ext.name:
             c_ext.include_dirs.append('/usr/local/include')
             c_ext.extra_link_args.extend(['-L/usr/local/lib', '-llammps'])
+
+    # Add companions extension separately (C binding + prebuilt C++ wrapper library)
+    companions_dir = 'pufferlib/ocean/companions'
+    companions_build = f'{companions_dir}/build'
+    if os.path.exists(f'{companions_dir}/binding.c') and os.path.exists(f'{companions_build}/libcompanions_wrapper.a'):
+        print(f"Adding companions extension with C++ wrapper")
+        companions_ext = Extension(
+            'pufferlib.ocean.companions.binding',
+            sources=[
+                f'{companions_dir}/binding.c',
+            ],
+            include_dirs=INCLUDE + [
+                companions_dir,
+                f'{companions_dir}/src',
+            ],
+            extra_compile_args=extra_compile_args,
+            extra_link_args=extra_link_args + ['-lc++'],  # Link C++ stdlib
+            extra_objects=[
+                RAYLIB_A,
+                f'{companions_build}/libcompanions_wrapper.a',
+                f'{companions_build}/libcompanions_env.a',
+                f'{companions_build}/libcompanions_core.a',
+            ],
+        )
+        c_extensions.append(companions_ext)
+        c_extension_paths.append(companions_dir)
 
 # Define cmdclass outside of setup to add dynamic commands
 cmdclass = {

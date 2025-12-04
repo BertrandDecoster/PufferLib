@@ -1,0 +1,4 @@
+type_name,display_char,max_health,faction,cadence,flying,detection_range,lose_target_range,has_attack,attack_name,telegraph_ticks,attack_ticks,recovery_ticks,attack_damage,attack_width,attack_height,attack_filter
+zombie,Z,3,enemy,1;0,false,3,5,true,bite,1,1,2,1,1,1,companion
+goblin,G,2,enemy,,false,4,6,true,slash,1,0,0,1,1,1,companion
+dragon,D,10,enemy,,true,5,8,true,fire_breath,2,1,3,2,3,1,companion
