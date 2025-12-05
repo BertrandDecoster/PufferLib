@@ -157,6 +157,13 @@ target_link_libraries(companions_fsm_benchmark companions_viz companions_env com
 target_include_directories(companions_fsm_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # =============================================================================
+# Parity test generator (for Python wrapper validation)
+# =============================================================================
+add_executable(parity_generator tests/parity_generator.cc)
+target_link_libraries(parity_generator companions_env companions_core)
+target_include_directories(parity_generator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# =============================================================================
 # Testing
 # =============================================================================
 enable_testing()

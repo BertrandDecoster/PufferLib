@@ -52,6 +52,29 @@ void c_reset(Synchro* env) {
     env->episode_steps = 0;
 }
 
+void c_reset_seed(Synchro* env, unsigned int seed) {
+    auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
+    cpp_env->Reset(seed);
+
+    // Observation tensor size: 5 channels * rows * cols
+    int obs_size = 5 * env->rows * env->cols;
+
+    // Copy initial observations to buffer (5-plane tensor per agent)
+    for (int i = 0; i < env->num_agents; i++) {
+        std::vector<float> obs;
+        cpp_env->ObservationTensor(obs, i);
+        std::memcpy(env->observations + i * obs_size, obs.data(), obs_size * sizeof(float));
+    }
+
+    // Clear terminals and rewards
+    std::memset(env->terminals, 0, env->num_agents);
+    std::memset(env->rewards, 0, env->num_agents * sizeof(float));
+
+    // Reset episode tracking
+    env->cumulative_reward = 0.0f;
+    env->episode_steps = 0;
+}
+
 void c_step(Synchro* env) {
     auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
 

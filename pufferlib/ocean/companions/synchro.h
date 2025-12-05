@@ -44,6 +44,7 @@ void synchro_init(Synchro* env);
 
 // RL interface (required by env_binding.h)
 void c_reset(Synchro* env);
+void c_reset_seed(Synchro* env, unsigned int seed);  // Deterministic reset
 void c_step(Synchro* env);
 void c_render(Synchro* env);
 void c_close(Synchro* env);

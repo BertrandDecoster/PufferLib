@@ -11,14 +11,20 @@ except FileExistsError:
 # Silence noisy dependencies
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*Gym has been unmaintained.*")
 
-# Silence noisy packages
+# Silence torch distributed elastic warnings on macOS
+import logging
+logging.getLogger("torch.distributed.elastic.multiprocessing.redirects").setLevel(logging.ERROR)
+
+# Silence noisy packages (gym prints deprecation warning to stderr)
 import sys
 original_stdout = sys.stdout
 original_stderr = sys.stderr
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 try:
+    import gym
     import gymnasium
     import pygame
 except ImportError:

@@ -963,3 +963,66 @@ class G2048(nn.Module):
         logits = self.decoder(hidden)
         values = self.value(hidden)
         return logits, values
+
+
+class Synchro(nn.Module):
+    """CNN policy for Synchro with MultiDiscrete actions and flexible grid sizes."""
+
+    def __init__(self, env, hidden_size=64, **kwargs):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.is_continuous = False
+
+        # Get input channels from observation space
+        in_channels = env.single_observation_space.shape[0]  # 5 channels
+
+        # CNN encoder with adaptive pooling for variable grid sizes
+        self.conv = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)),
+            nn.ReLU(),
+        )
+
+        # Strided conv for learnable spatial reduction
+        self.downsample = pufferlib.pytorch.layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1))
+
+        # Adaptive pooling to handle variable input sizes (MPS compatible)
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            pufferlib.pytorch.layer_init(nn.Linear(64, hidden_size)),
+            nn.ReLU(),
+        )
+
+        # MultiDiscrete: independent head per action dimension
+        self.atn_nvec = env.single_action_space.nvec.tolist()  # [5, 2]
+        self.actor_heads = nn.ModuleList([
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, n), std=0.01)
+            for n in self.atn_nvec
+        ])
+        self.value_head = pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=1)
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations, state)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_eval(self, observations, state=None):
+        return self.forward(observations, state)
+
+    def encode_observations(self, observations, state=None):
+        x = observations.float()
+        x = self.conv(x)
+        x = torch.relu(self.downsample(x))
+        x = self.pool(x)
+        return self.fc(x)
+
+    def decode_actions(self, hidden):
+        # Independent head per action dimension -> tuple of logits
+        action = tuple(head(hidden) for head in self.actor_heads)
+        value = self.value_head(hidden)
+        return action, value

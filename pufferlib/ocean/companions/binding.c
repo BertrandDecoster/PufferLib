@@ -1,8 +1,41 @@
 // PufferLib binding for Companions SynchroEnv
 
+#include <Python.h>
 #include "synchro.h"
 
 #define Env Synchro
+
+// Custom method: seeded reset for deterministic parity testing
+static PyObject* env_reset_seed(PyObject* self, PyObject* args) {
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "env_reset_seed requires 2 arguments (env_handle, seed)");
+        return NULL;
+    }
+
+    PyObject* handle_obj = PyTuple_GetItem(args, 0);
+    if (!PyObject_TypeCheck(handle_obj, &PyLong_Type)) {
+        PyErr_SetString(PyExc_TypeError, "env_handle must be an integer");
+        return NULL;
+    }
+    Env* env = (Env*)PyLong_AsVoidPtr(handle_obj);
+    if (!env) {
+        PyErr_SetString(PyExc_ValueError, "Invalid env handle");
+        return NULL;
+    }
+
+    PyObject* seed_obj = PyTuple_GetItem(args, 1);
+    if (!PyObject_TypeCheck(seed_obj, &PyLong_Type)) {
+        PyErr_SetString(PyExc_TypeError, "seed must be an integer");
+        return NULL;
+    }
+    unsigned int seed = (unsigned int)PyLong_AsUnsignedLong(seed_obj);
+
+    c_reset_seed(env, seed);
+    Py_RETURN_NONE;
+}
+
+#define MY_METHODS {"env_reset_seed", env_reset_seed, METH_VARARGS, "Reset with specific seed for deterministic replay"}
+
 #include "../env_binding.h"
 
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {

@@ -17,6 +17,21 @@
 using namespace companions;
 using Clock = std::chrono::high_resolution_clock;
 
+/**
+ * 
+ * 
+cd pufferlib/ocean/companions
+./scripts/profile_benchmark.sh
+
+OR
+
+cd pufferlib/ocean/companions/build
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo  # rebuild with debug symbols if needed
+make companions_fsm_benchmark
+samply record ./companions_fsm_benchmark
+ * 
+ */
+
 // =============================================================================
 // Benchmark utilities
 // =============================================================================
@@ -29,9 +44,9 @@ struct BenchmarkResult {
 
 void PrintResult(const BenchmarkResult& result) {
   std::cout << std::setw(40) << std::left << result.name
-            << std::setw(10) << result.iterations << " iters"
+            << std::setw(10) << result.iterations << " iters.  "
             << std::setw(12) << std::fixed << std::setprecision(2)
-            << result.total_time_ms << " ms total"
+            << result.total_time_ms << " ms total.  "
             << std::setw(12) << std::fixed << std::setprecision(3)
             << result.avg_time_us << " us/iter"
             << "\n";
@@ -161,24 +176,41 @@ BenchmarkResult BenchmarkEnvStepBaseline(int iterations) {
   SynchroEnv env(16, 16, 3, 1, 42);
   env.Reset(42);
 
-  std::vector<Action> actions(env.NumAgents(), EncodeAction(MovementAction::Stay));
+  std::mt19937 rng(42);
+  std::vector<Action> actions(env.NumAgents());
 
   // Warm up
   for (int i = 0; i < 50; ++i) {
-    env.Step(actions);
+    for (auto& a : actions) {
+      auto mov = static_cast<MovementAction>(rng() % kNumMovementActions);
+      auto interact = static_cast<InteractAction>(rng() % kNumInteractActions);
+      a = EncodeAction(mov, interact);
+    }
+    StepResult step_result = env.Step(actions);
+    if (step_result.done){
+      env.Reset();
+    }
   }
 
   // Benchmark
   auto start = Clock::now();
   for (int i = 0; i < iterations; ++i) {
-    env.Step(actions);
+    for (auto& a : actions) {
+      auto mov = static_cast<MovementAction>(rng() % kNumMovementActions);
+      auto interact = static_cast<InteractAction>(rng() % kNumInteractActions);
+      a = EncodeAction(mov, interact);
+    }
+    StepResult step_result = env.Step(actions);
+    if (step_result.done){
+      env.Reset();
+    }
   }
   auto end = Clock::now();
 
   double total_ms = std::chrono::duration<double, std::milli>(end - start).count();
   double avg_us = (total_ms * 1000.0) / iterations;
 
-  return {"Full Step (no FSM enemies)", iterations, total_ms, avg_us};
+  return {"Full Step (random actions)", iterations, total_ms, avg_us};
 }
 
 // =============================================================================
@@ -260,55 +292,78 @@ BenchmarkResult BenchmarkPathfinding(int iterations) {
 // =============================================================================
 // Main
 // =============================================================================
+// int main() {
+//   std::cout << "=============================================================\n";
+//   std::cout << "FSM Performance Benchmarks\n";
+//   std::cout << "=============================================================\n\n";
+
+//   std::vector<BenchmarkResult> results;
+
+//   // FSM Update benchmarks
+//   std::cout << "--- FSM Update Benchmarks ---\n";
+//   results.push_back(BenchmarkSingleZombieFSMUpdate(100000));
+//   PrintResult(results.back());
+
+//   results.push_back(BenchmarkMultipleZombiesFSMUpdate(10, 10000));
+//   PrintResult(results.back());
+
+//   results.push_back(BenchmarkMultipleZombiesFSMUpdate(50, 2000));
+//   PrintResult(results.back());
+
+//   results.push_back(BenchmarkMultipleZombiesFSMUpdate(100, 1000));
+//   PrintResult(results.back());
+
+//   // Full environment step benchmarks
+//   std::cout << "\n--- Full Environment Step Benchmarks ---\n";
+//   results.push_back(BenchmarkEnvStepBaseline(10000));
+//   PrintResult(results.back());
+
+//   results.push_back(BenchmarkFullEnvStepWithFSM(10, 5000));
+//   PrintResult(results.back());
+
+//   results.push_back(BenchmarkFullEnvStepWithFSM(50, 2000));
+//   PrintResult(results.back());
+
+//   // Component benchmarks
+//   std::cout << "\n--- Component Benchmarks ---\n";
+//   results.push_back(BenchmarkStateTransition(50000));
+//   PrintResult(results.back());
+
+//   results.push_back(BenchmarkPathfinding(10000));
+//   PrintResult(results.back());
+
+//   // Summary
+//   std::cout << "\n=============================================================\n";
+//   std::cout << "Summary\n";
+//   std::cout << "=============================================================\n";
+//   std::cout << "Single FSM Update:     ~" << std::fixed << std::setprecision(1)
+//             << results[0].avg_time_us << " us\n";
+//   std::cout << "Pathfinding:           ~" << results[8].avg_time_us << " us\n";
+//   std::cout << "Full Step (random):    ~" << results[4].avg_time_us << " us\n";
+//   std::cout << "Full Step (10 enemies): ~" << results[5].avg_time_us << " us\n";
+
+//   return 0;
+// }
+
+
 int main() {
   std::cout << "=============================================================\n";
-  std::cout << "FSM Performance Benchmarks\n";
+  std::cout << "Benchmark rand moves in synchro\n";
   std::cout << "=============================================================\n\n";
 
   std::vector<BenchmarkResult> results;
 
-  // FSM Update benchmarks
-  std::cout << "--- FSM Update Benchmarks ---\n";
-  results.push_back(BenchmarkSingleZombieFSMUpdate(100000));
-  PrintResult(results.back());
-
-  results.push_back(BenchmarkMultipleZombiesFSMUpdate(10, 10000));
-  PrintResult(results.back());
-
-  results.push_back(BenchmarkMultipleZombiesFSMUpdate(50, 2000));
-  PrintResult(results.back());
-
-  results.push_back(BenchmarkMultipleZombiesFSMUpdate(100, 1000));
-  PrintResult(results.back());
-
   // Full environment step benchmarks
   std::cout << "\n--- Full Environment Step Benchmarks ---\n";
-  results.push_back(BenchmarkEnvStepBaseline(10000));
-  PrintResult(results.back());
-
-  results.push_back(BenchmarkFullEnvStepWithFSM(10, 5000));
-  PrintResult(results.back());
-
-  results.push_back(BenchmarkFullEnvStepWithFSM(50, 2000));
-  PrintResult(results.back());
-
-  // Component benchmarks
-  std::cout << "\n--- Component Benchmarks ---\n";
-  results.push_back(BenchmarkStateTransition(50000));
-  PrintResult(results.back());
-
-  results.push_back(BenchmarkPathfinding(10000));
+  results.push_back(BenchmarkEnvStepBaseline(100000));
   PrintResult(results.back());
 
   // Summary
   std::cout << "\n=============================================================\n";
   std::cout << "Summary\n";
   std::cout << "=============================================================\n";
-  std::cout << "Single FSM Update:     ~" << std::fixed << std::setprecision(1)
+  std::cout << "Random move Update:     ~" << std::fixed << std::setprecision(1)
             << results[0].avg_time_us << " us\n";
-  std::cout << "Pathfinding:           ~" << results[8].avg_time_us << " us\n";
-  std::cout << "Full Step (no FSM):    ~" << results[4].avg_time_us << " us\n";
-  std::cout << "Full Step (10 enemies): ~" << results[5].avg_time_us << " us\n";
 
   return 0;
 }

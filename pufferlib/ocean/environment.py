@@ -116,6 +116,10 @@ def make_multiagent(buf=None, **kwargs):
     env = pufferlib.MultiagentEpisodeStats(env)
     return pufferlib.emulation.PettingZooPufferEnv(env=env, buf=buf)
 
+def make_synchro(buf=None, **kwargs):
+    from pufferlib.ocean.companions.synchro import Synchro
+    return Synchro(buf=buf, **kwargs)
+
 MAKE_FUNCTIONS = {
     'battle': 'Battle',
     'breakout': 'Breakout',
@@ -162,6 +166,7 @@ MAKE_FUNCTIONS = {
     'spaces': make_spaces,
     'multiagent': make_multiagent,
     'slimevolley': 'SlimeVolley',
+    'synchro': make_synchro,
 }
 
 def env_creator(name='squared', *args, **kwargs):
