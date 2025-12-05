@@ -1207,7 +1207,7 @@ def load_policy(args, vecenv, env_name=''):
 
     load_path = args['load_model_path']
     if load_path == 'latest':
-        load_path = max(glob.glob(f"experiments/{env_name}*.pt"), key=os.path.getctime)
+        load_path = max(glob.glob(f"experiments/{env_name}*/*{env_name}*.pt"), key=os.path.getctime)
 
     if load_path is not None:
         state_dict = torch.load(load_path, map_location=device)
