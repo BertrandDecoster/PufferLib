@@ -45,7 +45,7 @@ make
 puffer train puffer_snake
 
 # Evaluate a trained model
-puffer eval puffer_snake --train.checkpoint <path>
+puffer eval puffer_synchro --render-mode ansi --train.device mps --load-model-path latest
 
 # Hyperparameter sweep
 puffer sweep puffer_snake
