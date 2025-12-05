@@ -232,6 +232,7 @@ if not NO_OCEAN:
             extra_objects=[
                 RAYLIB_A,
                 f'{companions_build}/libcompanions_wrapper.a',
+                f'{companions_build}/libcompanions_viz.a',
                 f'{companions_build}/libcompanions_env.a',
                 f'{companions_build}/libcompanions_core.a',
             ],

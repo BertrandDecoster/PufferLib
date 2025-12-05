@@ -4,9 +4,11 @@
 #include "synchro.h"
 #include "src/env/synchro_env.h"
 #include "src/core/types.h"
+#include "src/viz/renderer.h"
 
 #include <vector>
 #include <cstring>
+#include <cstdlib>
 
 extern "C" {
 
@@ -27,6 +29,13 @@ void synchro_init(Synchro* env) {
     env->cpp_env = static_cast<void*>(cpp_env);
     env->cumulative_reward = 0.0f;
     env->episode_steps = 0;
+
+    // Allocate render buffer (4KB should be enough for ASCII grid)
+    env->render_buffer_size = 4096;
+    env->render_buffer = static_cast<char*>(std::malloc(env->render_buffer_size));
+    if (env->render_buffer) {
+        env->render_buffer[0] = '\0';
+    }
 }
 
 void c_reset(Synchro* env) {
@@ -139,8 +148,18 @@ void c_step(Synchro* env) {
 }
 
 void c_render(Synchro* env) {
-    // Rendering not implemented yet
-    (void)env;
+    if (!env->cpp_env || !env->render_buffer) {
+        return;
+    }
+
+    auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
+    companions::Renderer renderer;
+    std::string ascii = renderer.RenderAscii(*cpp_env);
+
+    // Copy to buffer (truncate if too long)
+    size_t copy_len = std::min(ascii.size(), static_cast<size_t>(env->render_buffer_size - 1));
+    std::memcpy(env->render_buffer, ascii.c_str(), copy_len);
+    env->render_buffer[copy_len] = '\0';
 }
 
 void c_close(Synchro* env) {
@@ -148,6 +167,10 @@ void c_close(Synchro* env) {
         auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
         delete cpp_env;
         env->cpp_env = nullptr;
+    }
+    if (env->render_buffer) {
+        std::free(env->render_buffer);
+        env->render_buffer = nullptr;
     }
 }
 

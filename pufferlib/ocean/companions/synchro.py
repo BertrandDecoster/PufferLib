@@ -77,6 +77,7 @@ class Synchro(pufferlib.PufferEnv):
             )
             c_envs.append(env_id)
 
+        self._env_handles = c_envs  # Keep individual handles for rendering
         self.c_envs = binding.vectorize(*c_envs)
         self.tick = 0
 
@@ -107,7 +108,10 @@ class Synchro(pufferlib.PufferEnv):
         )
 
     def render(self):
-        binding.vec_render(self.c_envs, 0)
+        """Render the first environment and return ASCII string."""
+        if self._env_handles:
+            return binding.env_render_string(self._env_handles[0])
+        return ""
 
     def close(self):
         binding.vec_close(self.c_envs)

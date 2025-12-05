@@ -37,6 +37,10 @@ typedef struct {
     void* cpp_env;                 // Opaque pointer to companions::SynchroEnv
     float cumulative_reward;       // Track episode reward
     int episode_steps;             // Track episode length
+
+    // Rendering
+    char* render_buffer;           // Buffer for ASCII rendering output
+    int render_buffer_size;        // Size of the render buffer
 } Synchro;
 
 // Lifecycle functions

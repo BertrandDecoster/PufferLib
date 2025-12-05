@@ -997,6 +997,11 @@ def eval(env_name, args=None, vecenv=None, policy=None):
     if backend != 'PufferEnv':
         backend = 'Serial'
 
+    # Pass render_mode to the environment
+    render_mode = args.get('render_mode', 'auto')
+    if render_mode != 'auto' and render_mode != 'None':
+        args['env']['render_mode'] = render_mode
+
     args['vec'] = dict(backend=backend, num_envs=1)
     vecenv = vecenv or load_env(env_name, args)
 

@@ -5,6 +5,32 @@
 
 #define Env Synchro
 
+// Custom method: render environment and return ASCII string
+static PyObject* env_render_string(PyObject* self, PyObject* args) {
+    if (PyTuple_Size(args) != 1) {
+        PyErr_SetString(PyExc_TypeError, "env_render_string requires 1 argument (env_handle)");
+        return NULL;
+    }
+
+    PyObject* handle_obj = PyTuple_GetItem(args, 0);
+    if (!PyObject_TypeCheck(handle_obj, &PyLong_Type)) {
+        PyErr_SetString(PyExc_TypeError, "env_handle must be an integer");
+        return NULL;
+    }
+    Env* env = (Env*)PyLong_AsVoidPtr(handle_obj);
+    if (!env) {
+        PyErr_SetString(PyExc_ValueError, "Invalid env handle");
+        return NULL;
+    }
+
+    c_render(env);
+
+    if (env->render_buffer) {
+        return PyUnicode_FromString(env->render_buffer);
+    }
+    return PyUnicode_FromString("");
+}
+
 // Custom method: seeded reset for deterministic parity testing
 static PyObject* env_reset_seed(PyObject* self, PyObject* args) {
     if (PyTuple_Size(args) != 2) {
@@ -34,7 +60,9 @@ static PyObject* env_reset_seed(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
-#define MY_METHODS {"env_reset_seed", env_reset_seed, METH_VARARGS, "Reset with specific seed for deterministic replay"}
+#define MY_METHODS \
+    {"env_render_string", env_render_string, METH_VARARGS, "Render env and return ASCII string"}, \
+    {"env_reset_seed", env_reset_seed, METH_VARARGS, "Reset with specific seed for deterministic replay"}
 
 #include "../env_binding.h"
 
