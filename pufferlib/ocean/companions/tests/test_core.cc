@@ -2182,8 +2182,9 @@ TEST(TestSeed1337NoProgressReward) {
 
   auto result = env.Step(stay_actions);
 
-  // 0 agents on synchro: 0.1 * 0 - 0.3 = -0.3
-  double expected = -0.3;
+  // 0 agents on synchro: kProgressReward * 0 + time_penalty
+  // time_penalty = -num_agents * kProgressReward = -3 * kProgressReward
+  double expected = -3.0 * SynchroEnv::kProgressReward;
   ASSERT_EQ(result.rewards.size(), 3u);
   ASSERT_APPROX_EQ(result.rewards[0], expected);
   ASSERT_APPROX_EQ(result.rewards[1], expected);
@@ -2204,7 +2205,8 @@ TEST(TestSeed1337OneOnSynchroReward) {
     EncodeAction(MovementAction::Stay)   // Agent 2: stay at (3,3)
   };
   auto result1 = env.Step(step1);
-  ASSERT_APPROX_EQ(result1.rewards[0], -0.3);  // 0 on synchro
+  // 0 on synchro with 3 agents: -3 * kProgressReward
+  ASSERT_APPROX_EQ(result1.rewards[0], -3.0 * SynchroEnv::kProgressReward);
   ASSERT_EQ(env.NumAgentsOnSynchroCells(), 0);
 
   // Step 2: Agent 0 moves Right to (5,6) which is a synchro cell
@@ -2215,8 +2217,8 @@ TEST(TestSeed1337OneOnSynchroReward) {
   };
   auto result2 = env.Step(step2);
 
-  // 1 agent on synchro: 0.1 * 1 - 0.3 = -0.2
-  double expected = -0.2;
+  // 1 agent on synchro with 3 agents: (1 - 3) * kProgressReward = -2 * kProgressReward
+  double expected = -2.0 * SynchroEnv::kProgressReward;
   ASSERT_APPROX_EQ(result2.rewards[0], expected);
   ASSERT_APPROX_EQ(result2.rewards[1], expected);
   ASSERT_APPROX_EQ(result2.rewards[2], expected);
@@ -2245,8 +2247,8 @@ TEST(TestSeed1337TwoOnSynchroReward) {
 
   auto result = env.Step(stay);
 
-  // 2 agents on synchro: 0.1 * 2 - 0.3 = -0.1
-  double expected = -0.1;
+  // 2 agents on synchro with 3 agents: (2 - 3) * kProgressReward = -1 * kProgressReward
+  double expected = -1.0 * SynchroEnv::kProgressReward;
   ASSERT_APPROX_EQ(result.rewards[0], expected);
   ASSERT_APPROX_EQ(result.rewards[1], expected);
   ASSERT_APPROX_EQ(result.rewards[2], expected);
@@ -2274,8 +2276,8 @@ TEST(TestSeed1337WinReward) {
 
   auto result = env.Step(stay);
 
-  // 3 agents on synchro (WIN): 0.1 * 3 - 0.3 + 10.0 = 10.0
-  double expected = 10.0;
+  // 3 agents on synchro (WIN): (3 - 3) * kProgressReward + kWinReward = kWinReward
+  double expected = SynchroEnv::kWinReward;
   ASSERT_APPROX_EQ(result.rewards[0], expected);
   ASSERT_APPROX_EQ(result.rewards[1], expected);
   ASSERT_APPROX_EQ(result.rewards[2], expected);
@@ -2290,12 +2292,16 @@ TEST(TestSeed1337AgentWalkingOnAndOff) {
 
   // Move Agent 0 to synchro (5,6) via (5,5)
   // Step 1: Up (6,5) -> (5,5)
+  // With 3 agents: 0 on synchro = -3 * kProgressReward, 1 on synchro = -2 * kProgressReward
+  const double reward_0_on = -3.0 * SynchroEnv::kProgressReward;
+  const double reward_1_on = -2.0 * SynchroEnv::kProgressReward;
+
   auto r1 = env.Step({
     EncodeAction(MovementAction::Up),
     EncodeAction(MovementAction::Stay),
     EncodeAction(MovementAction::Stay)
   });
-  ASSERT_APPROX_EQ(r1.rewards[0], -0.3);  // 0 on synchro
+  ASSERT_APPROX_EQ(r1.rewards[0], reward_0_on);  // 0 on synchro
 
   // Step 2: Right (5,5) -> (5,6) - onto synchro
   auto r2 = env.Step({
@@ -2303,7 +2309,7 @@ TEST(TestSeed1337AgentWalkingOnAndOff) {
     EncodeAction(MovementAction::Stay),
     EncodeAction(MovementAction::Stay)
   });
-  ASSERT_APPROX_EQ(r2.rewards[0], -0.2);  // 1 on synchro
+  ASSERT_APPROX_EQ(r2.rewards[0], reward_1_on);  // 1 on synchro
   ASSERT_EQ(env.NumAgentsOnSynchroCells(), 1);
 
   // Step 3: Stay on synchro
@@ -2312,7 +2318,7 @@ TEST(TestSeed1337AgentWalkingOnAndOff) {
     EncodeAction(MovementAction::Stay),
     EncodeAction(MovementAction::Stay)
   });
-  ASSERT_APPROX_EQ(r3.rewards[0], -0.2);  // still 1 on synchro
+  ASSERT_APPROX_EQ(r3.rewards[0], reward_1_on);  // still 1 on synchro
 
   // Step 4: Left (5,6) -> (5,5) - off synchro
   auto r4 = env.Step({
@@ -2320,7 +2326,7 @@ TEST(TestSeed1337AgentWalkingOnAndOff) {
     EncodeAction(MovementAction::Stay),
     EncodeAction(MovementAction::Stay)
   });
-  ASSERT_APPROX_EQ(r4.rewards[0], -0.3);  // 0 on synchro
+  ASSERT_APPROX_EQ(r4.rewards[0], reward_0_on);  // 0 on synchro
   ASSERT_EQ(env.NumAgentsOnSynchroCells(), 0);
 
   // Step 5: Right (5,5) -> (5,6) - back onto synchro
@@ -2329,7 +2335,7 @@ TEST(TestSeed1337AgentWalkingOnAndOff) {
     EncodeAction(MovementAction::Stay),
     EncodeAction(MovementAction::Stay)
   });
-  ASSERT_APPROX_EQ(r5.rewards[0], -0.2);  // 1 on synchro again
+  ASSERT_APPROX_EQ(r5.rewards[0], reward_1_on);  // 1 on synchro again
   ASSERT_EQ(env.NumAgentsOnSynchroCells(), 1);
 
   ASSERT_FALSE(env.IsDone());
@@ -2346,6 +2352,13 @@ TEST(TestSeed1337FullSolutionPath) {
   //
   // Execute all moves simultaneously where possible
 
+  // With 3 agents: 0 on synchro = -3k, 1 on synchro = -2k, 2 on synchro = -1k, win = kWinReward
+  const double k = SynchroEnv::kProgressReward;
+  const double reward_0_on = -3.0 * k;
+  const double reward_1_on = -2.0 * k;
+  const double reward_2_on = -1.0 * k;
+  const double reward_win = SynchroEnv::kWinReward;
+
   std::vector<double> expected_rewards;
 
   // Step 1: Agent 0 Up, Agent 1 Down, Agent 2 Down
@@ -2354,7 +2367,7 @@ TEST(TestSeed1337FullSolutionPath) {
     EncodeAction(MovementAction::Down),  // 1: (1,3) -> (2,3)
     EncodeAction(MovementAction::Down)   // 2: (3,3) -> (4,3)
   });
-  ASSERT_APPROX_EQ(r1.rewards[0], -0.3);  // 0 on synchro
+  ASSERT_APPROX_EQ(r1.rewards[0], reward_0_on);  // 0 on synchro
   expected_rewards.push_back(r1.rewards[0]);
 
   // Step 2: Agent 0 Right (onto synchro!), Agent 1 Down, Agent 2 Right
@@ -2363,7 +2376,7 @@ TEST(TestSeed1337FullSolutionPath) {
     EncodeAction(MovementAction::Down),  // 1: (2,3) -> (3,3)
     EncodeAction(MovementAction::Right)  // 2: (4,3) -> (4,4)
   });
-  ASSERT_APPROX_EQ(r2.rewards[0], -0.2);  // 1 on synchro
+  ASSERT_APPROX_EQ(r2.rewards[0], reward_1_on);  // 1 on synchro
   ASSERT_EQ(env.NumAgentsOnSynchroCells(), 1);
   expected_rewards.push_back(r2.rewards[0]);
 
@@ -2373,7 +2386,7 @@ TEST(TestSeed1337FullSolutionPath) {
     EncodeAction(MovementAction::Down),  // 1: (3,3) -> (4,3)
     EncodeAction(MovementAction::Right)  // 2: (4,4) -> (4,5)
   });
-  ASSERT_APPROX_EQ(r3.rewards[0], -0.2);  // still 1 on synchro
+  ASSERT_APPROX_EQ(r3.rewards[0], reward_1_on);  // still 1 on synchro
   expected_rewards.push_back(r3.rewards[0]);
 
   // Step 4: Agent 0 Stay, Agent 1 Down, Agent 2 Right (onto synchro!)
@@ -2382,7 +2395,7 @@ TEST(TestSeed1337FullSolutionPath) {
     EncodeAction(MovementAction::Down),  // 1: (4,3) -> (5,3)
     EncodeAction(MovementAction::Right)  // 2: (4,5) -> (4,6) SYNCHRO!
   });
-  ASSERT_APPROX_EQ(r4.rewards[0], -0.1);  // 2 on synchro
+  ASSERT_APPROX_EQ(r4.rewards[0], reward_2_on);  // 2 on synchro
   ASSERT_EQ(env.NumAgentsOnSynchroCells(), 2);
   expected_rewards.push_back(r4.rewards[0]);
 
@@ -2392,7 +2405,7 @@ TEST(TestSeed1337FullSolutionPath) {
     EncodeAction(MovementAction::Right), // 1: (5,3) -> (5,4) SYNCHRO! WIN!
     EncodeAction(MovementAction::Stay)   // 2: stay at (4,6)
   });
-  ASSERT_APPROX_EQ(r5.rewards[0], 10.0);  // 3 on synchro = WIN
+  ASSERT_APPROX_EQ(r5.rewards[0], reward_win);  // 3 on synchro = WIN
   ASSERT_TRUE(r5.done);
   ASSERT_TRUE(env.IsDone());
   ASSERT_TRUE(env.IsSuccess());
@@ -2403,8 +2416,9 @@ TEST(TestSeed1337FullSolutionPath) {
   for (double r : expected_rewards) {
     total += r;
   }
-  // -0.3 + -0.2 + -0.2 + -0.1 + 10.0 = 9.2
-  ASSERT_APPROX_EQ(total, 9.2);
+  // reward_0_on + reward_1_on + reward_1_on + reward_2_on + reward_win
+  double expected_total = reward_0_on + reward_1_on + reward_1_on + reward_2_on + reward_win;
+  ASSERT_APPROX_EQ(total, expected_total);
 }
 
 // Test 8: Accumulated rewards before win
@@ -2423,8 +2437,9 @@ TEST(TestSeed1337AccumulatedRewardsBeforeWin) {
     total_reward += result.rewards[0];
   }
 
-  // Expected: 10 steps * -0.3 = -3.0
-  ASSERT_APPROX_EQ(total_reward, -3.0);
+  // Expected: 10 steps * (-3 * kProgressReward) with 3 agents and 0 on synchro
+  double expected = 10.0 * (-3.0 * SynchroEnv::kProgressReward);
+  ASSERT_APPROX_EQ(total_reward, expected);
   ASSERT_FALSE(env.IsDone());
 }
 
@@ -2454,9 +2469,10 @@ TEST(TestSeed1337TerminalStateProperties) {
   ASSERT_TRUE(result.done);
   ASSERT_TRUE(env.IsDone());
   ASSERT_TRUE(env.IsSuccess());
-  ASSERT_APPROX_EQ(result.rewards[0], 10.0);
-  ASSERT_APPROX_EQ(result.rewards[1], 10.0);
-  ASSERT_APPROX_EQ(result.rewards[2], 10.0);
+  // Win reward = kWinReward (progress terms cancel out when all agents on synchro)
+  ASSERT_APPROX_EQ(result.rewards[0], SynchroEnv::kWinReward);
+  ASSERT_APPROX_EQ(result.rewards[1], SynchroEnv::kWinReward);
+  ASSERT_APPROX_EQ(result.rewards[2], SynchroEnv::kWinReward);
 }
 
 // Test 10: Reward consistency across resets with same seed
