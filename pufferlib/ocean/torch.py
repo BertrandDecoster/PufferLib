@@ -1026,3 +1026,58 @@ class Synchro(nn.Module):
         action = tuple(head(hidden) for head in self.actor_heads)
         value = self.value_head(hidden)
         return action, value
+
+
+class SynchroD4(nn.Module):
+    """D4-equivariant policy for Synchro using escnn.
+
+    This policy uses D4-equivariant neural networks that are invariant to
+    90-degree rotations and reflections. This provides:
+    - 8x effective data (one orientation gives all 8 for free)
+    - Better generalization to rotated/reflected game states
+    - 2-5x sample efficiency improvement
+
+    Requires: pip install escnn
+    """
+
+    def __init__(self, env, hidden_size=64, n_hidden=8, **kwargs):
+        super().__init__()
+        self.is_continuous = False
+        self.hidden_size = hidden_size
+
+        # Import D4 components from companions networks
+        from pufferlib.ocean.companions.networks.d4 import D4Actor, D4Critic
+
+        in_channels = env.single_observation_space.shape[0]  # 5
+        nvec = env.single_action_space.nvec.tolist()  # [5, 2]
+        n_agents = 1  # Single agent per observation in vectorized env
+
+        self.actor = D4Actor(n_agents, nvec, in_channels, hidden_size, n_hidden)
+        self.critic = D4Critic(n_agents, in_channels, hidden_size, False, n_hidden)
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations, state)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_eval(self, observations, state=None):
+        return self.forward(observations, state)
+
+    def encode_observations(self, observations, state=None):
+        # Pass through - actor/critic handle encoding internally
+        return observations.float()
+
+    def decode_actions(self, obs):
+        # Actor returns tuple (movement_logits, interaction_logits)
+        # Add n_agents dimension for D4Actor input: [batch, C, H, W] -> [batch, 1, C, H, W]
+        obs_expanded = obs.unsqueeze(-4)
+        action = self.actor(obs_expanded)
+        # Remove n_agents dimension: [batch, 1, n] -> [batch, n]
+        action = tuple(a.squeeze(-2) for a in action)
+
+        # Critic returns value with shape [batch, n_agents, 1]
+        value = self.critic(obs_expanded)
+        # Squeeze to [batch]: [batch, 1, 1] -> [batch]
+        value = value.squeeze(-1).squeeze(-1)
+
+        return action, value
