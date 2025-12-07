@@ -30,6 +30,7 @@ class Synchro(pufferlib.PufferEnv):
         num_synchro: int = 3,
         map_complexity: int = 0,
         horizon: int = 100,
+        d4_transform: int = 0,  # D4 symmetry (0-7), CCW convention
         report_interval: int = 128,
         render_mode: str = None,
         buf=None,
@@ -74,6 +75,7 @@ class Synchro(pufferlib.PufferEnv):
                 num_synchro=num_synchro,
                 map_complexity=map_complexity,
                 horizon=horizon,
+                d4_transform=d4_transform,
             )
             c_envs.append(env_id)
 

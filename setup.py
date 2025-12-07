@@ -319,6 +319,7 @@ if not NO_TRAIN:
         'heavyball>=2.2.0', # contains relevant fixes compared to 1.7.2 and 2.1.1
         'neptune',
         'wandb',
+        'escnn',  # D4-equivariant neural networks for symmetry
     ]
 
 setup(

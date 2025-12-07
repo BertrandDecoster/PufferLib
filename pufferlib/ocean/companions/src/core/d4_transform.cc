@@ -60,16 +60,16 @@ Position TransformPosition(Position pos, int rows, int cols,
       return {r, c};
 
     case D4Transform::Rot90:
-      // (r, c) -> (c, rows-1-r)
-      return {c, rows - 1 - r};
+      // 90° CCW: (r, c) -> (cols-1-c, r)
+      return {cols - 1 - c, r};
 
     case D4Transform::Rot180:
-      // (r, c) -> (rows-1-r, cols-1-c)
+      // 180°: (r, c) -> (rows-1-r, cols-1-c)
       return {rows - 1 - r, cols - 1 - c};
 
     case D4Transform::Rot270:
-      // (r, c) -> (cols-1-c, r)
-      return {cols - 1 - c, r};
+      // 270° CCW (= 90° CW): (r, c) -> (c, rows-1-r)
+      return {c, rows - 1 - r};
 
     case D4Transform::FlipH:
       // Horizontal flip: (r, c) -> (r, cols-1-c)

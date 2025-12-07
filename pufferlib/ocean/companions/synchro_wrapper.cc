@@ -23,7 +23,7 @@ void synchro_init(Synchro* env) {
         env->num_synchro,
         env->map_complexity,
         0,                  // seed (will be set on reset)
-        0,                  // d4_transform
+        env->d4_transform,  // d4_transform (0-7), CCW convention
         env->horizon
     );
     env->cpp_env = static_cast<void*>(cpp_env);

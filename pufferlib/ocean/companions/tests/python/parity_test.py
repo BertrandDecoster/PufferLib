@@ -154,6 +154,7 @@ def test_parity(reference_path: Path, verbose: bool = False):
         num_synchro=header.num_synchro,
         map_complexity=header.map_complexity,
         horizon=header.horizon,
+        d4_transform=0,
     )
 
     # Initial reset with seed

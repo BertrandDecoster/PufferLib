@@ -126,9 +126,31 @@ Testing Synchro environment...
   action_space: MultiDiscrete([5 2])
   obs shape: (3, 5, 12, 12)
   Completed 1000 steps
-  Steps per second: ~150000+
+  Steps per second: ~125000+
 Success!
 ```
+
+### Parity Test
+
+Validates Python wrapper produces identical results to C++ implementation:
+
+```bash
+# Generate reference data (if needed)
+./build/parity_generator --env-seed 42 --action-seed 123 --steps 1000 \
+  --output tests/python/reference_data/synchro_parity_42.bin
+
+# Run parity test
+python tests/python/parity_test.py tests/python/reference_data/synchro_parity_42.bin -v
+```
+
+### Python Test Files
+
+| File | Description |
+|------|-------------|
+| `parity_test.py` | Validates Python/C++ parity |
+| `test_d4_networks.py` | D4-equivariant neural network tests |
+| `test_d4_symmetry.py` | D4 symmetry invariance evaluation |
+| `test_escnn_mps.py` | ESCNN layer MPS compatibility tests |
 
 ## Troubleshooting
 
@@ -161,6 +183,40 @@ cd pufferlib/ocean/companions
 
 1. Make C++ changes
 2. Rebuild: `cmake --build build -j4`
-3. Run tests: `cd build && ctest`
+3. Run C++ tests: `cd build && ctest --output-on-failure`
 4. Test demo: `./build/companions_demo`
-5. Rebuild Python extension if wrapper changed: `python setup.py build_companions --inplace --force`
+5. If wrapper changed:
+   - Rebuild Python extension: `python setup.py build_companions --inplace --force`
+   - Regenerate parity data: `./build/parity_generator --env-seed 42 --action-seed 123 --steps 1000 --output tests/python/reference_data/synchro_parity_42.bin`
+   - Run parity test: `python tests/python/parity_test.py tests/python/reference_data/synchro_parity_42.bin -v`
+   - Quick integration test: `python -m pufferlib.ocean.companions.synchro`
+
+## Full Build and Test
+
+Run the complete pipeline with clear error reporting:
+
+```bash
+./pufferlib/ocean/companions/scripts/build_and_test.sh
+```
+
+This builds C++, runs C++ tests, builds Python bindings, and runs Python integration tests. On failure, it reports the first error. On success, prints "Compilation and Tests all succeeded!"
+
+## VSCode
+
+### Launch Configurations
+
+| Config | Description |
+|--------|-------------|
+| `Companions: Build and Test` | Full build + test pipeline |
+| `Companions: Debug Test` | Debug C++ tests with LLDB |
+| `Companions: Play (Synchro/Aggro/Dodge)` | Interactive demos |
+
+### Tasks
+
+| Task | Description |
+|------|-------------|
+| `companions-build` | Build C++ (cmake --build) |
+| `companions-configure` | Configure CMake (Release) |
+| `companions-test` | Run all C++ tests (ctest) |
+| `companions-parity-test` | Full parity test pipeline |
+| `companions-clean` | Remove build directory |

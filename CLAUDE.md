@@ -10,9 +10,9 @@ PufferLib is a high-performance reinforcement learning library with C-based envi
 
 ### Full PufferLib Installation
 ```bash
-pip install -e .
+uv pip install -e .
 # Or with specific environment extras
-pip install -e ".[atari,procgen]"
+uv pip install -e ".[atari,procgen]"
 ```
 
 ### Build C Extensions Only
@@ -103,6 +103,10 @@ To integrate companions with PufferLib training:
 2. Add to `pufferlib/ocean/environment.py` MAKE_FUNCTIONS dict
 3. Create config at `pufferlib/config/ocean/companions.ini`
 
+The environments auto-reset, and change at each reset
+Python wrapper computes per-env seed: env_seed = i + seed * num_envs
+The C wrapper passes seed=0 at init, and vec_reset() calls c_reset() which does NOT re-seed - it just advances the existing RNG state. There's a c_reset_seed() function that properly seeds, but it's not used by the vectorized reset
+
 ### Configuration System
 
 Environment configs in `pufferlib/config/ocean/<env>.ini`:
@@ -133,3 +137,15 @@ Custom policies in `pufferlib/ocean/<env>/<env>.py` or `pufferlib/models.py`. Mu
 - `pufferlib/ocean/environment.py` - Environment registry
 - `pufferlib/vector.py` - Vectorized environment wrapper
 - `setup.py` - Build system with raylib/box2d downloads
+
+## Models
+cx9x30s2 : env synchro, old policy, size 5, companions 2, synchro 2, complexity 0
+7212qjtt : env synchro, old policy, size 10, companions 3, synchro 2, complexity 2
+
+5n85iosj : env synchro, d4 policy, size 10, companions 3, synchro 2, complexity 2
+
+The results of a run are saved at 3 places with the same ID (8 characters, like cx9x30s2)
+
+/wandb/run-DATE_TIME-ID
+/experiments/puffer_synchro_ID.pt
+/experiments/puffer_synchro_ID/

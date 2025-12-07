@@ -19,9 +19,9 @@ class Grid;
 // =============================================================================
 enum class D4Transform : int {
   Identity = 0,  // No change
-  Rot90 = 1,     // Rotate 90° clockwise
+  Rot90 = 1,     // Rotate 90° counter-clockwise
   Rot180 = 2,    // Rotate 180°
-  Rot270 = 3,    // Rotate 270° clockwise (= 90° counter-clockwise)
+  Rot270 = 3,    // Rotate 270° counter-clockwise (= 90° clockwise)
   FlipH = 4,     // Reflect horizontal (flip left-right)
   FlipV = 5,     // Reflect vertical (flip top-bottom)
   FlipD = 6,     // Reflect along main diagonal (transpose)

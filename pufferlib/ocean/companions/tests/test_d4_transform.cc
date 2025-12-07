@@ -113,28 +113,28 @@ TEST(TestD4TransformPosition_Identity) {
 }
 
 TEST(TestD4TransformPosition_Rot90_Square) {
-  // In a 5x5 grid (N=5), Rot90: (r, c) -> (c, N-1-r)
-  // (0, 0) -> (0, 4)
-  // (0, 4) -> (4, 4)
-  // (4, 4) -> (4, 0)
-  // (4, 0) -> (0, 0)
+  // In a 5x5 grid (N=5), Rot90 CCW: (r, c) -> (N-1-c, r)
+  // (0, 0) -> (4, 0)
+  // (0, 4) -> (0, 0)
+  // (4, 4) -> (0, 4)
+  // (4, 0) -> (4, 4)
   int N = 5;
 
   Position p00 = TransformPosition({0, 0}, N, N, D4Transform::Rot90);
-  ASSERT_EQ(p00.row, 0);
-  ASSERT_EQ(p00.col, 4);
+  ASSERT_EQ(p00.row, 4);
+  ASSERT_EQ(p00.col, 0);
 
   Position p04 = TransformPosition({0, 4}, N, N, D4Transform::Rot90);
-  ASSERT_EQ(p04.row, 4);
-  ASSERT_EQ(p04.col, 4);
+  ASSERT_EQ(p04.row, 0);
+  ASSERT_EQ(p04.col, 0);
 
   Position p44 = TransformPosition({4, 4}, N, N, D4Transform::Rot90);
-  ASSERT_EQ(p44.row, 4);
-  ASSERT_EQ(p44.col, 0);
+  ASSERT_EQ(p44.row, 0);
+  ASSERT_EQ(p44.col, 4);
 
   Position p40 = TransformPosition({4, 0}, N, N, D4Transform::Rot90);
-  ASSERT_EQ(p40.row, 0);
-  ASSERT_EQ(p40.col, 0);
+  ASSERT_EQ(p40.row, 4);
+  ASSERT_EQ(p40.col, 4);
 }
 
 TEST(TestD4TransformPosition_Rot180_Square) {
@@ -151,12 +151,12 @@ TEST(TestD4TransformPosition_Rot180_Square) {
 }
 
 TEST(TestD4TransformPosition_Rot270_Square) {
-  // Rot270: (r, c) -> (N-1-c, r)
+  // Rot270 CCW (= 90 CW): (r, c) -> (c, N-1-r)
   int N = 5;
 
   Position p00 = TransformPosition({0, 0}, N, N, D4Transform::Rot270);
-  ASSERT_EQ(p00.row, 4);
-  ASSERT_EQ(p00.col, 0);
+  ASSERT_EQ(p00.row, 0);
+  ASSERT_EQ(p00.col, 4);
 }
 
 TEST(TestD4TransformPosition_FlipH_Square) {
@@ -205,16 +205,16 @@ TEST(TestD4TransformPosition_FlipA_Square) {
 
 TEST(TestD4TransformPosition_Rectangular) {
   // 4 rows, 6 cols
-  // Rot90: (r, c) -> (c, rows-1-r)
-  // (0, 0) -> (0, 3)  (new grid is 6x4)
+  // Rot90 CCW: (r, c) -> (cols-1-c, r)
+  // (0, 0) -> (5, 0)  (new grid is 6x4)
   Position p00 = TransformPosition({0, 0}, 4, 6, D4Transform::Rot90);
-  ASSERT_EQ(p00.row, 0);
-  ASSERT_EQ(p00.col, 3);
+  ASSERT_EQ(p00.row, 5);
+  ASSERT_EQ(p00.col, 0);
 
-  // (3, 5) -> (5, 0)
+  // (3, 5) -> (0, 3)
   Position p35 = TransformPosition({3, 5}, 4, 6, D4Transform::Rot90);
-  ASSERT_EQ(p35.row, 5);
-  ASSERT_EQ(p35.col, 0);
+  ASSERT_EQ(p35.row, 0);
+  ASSERT_EQ(p35.col, 3);
 }
 
 // =============================================================================
@@ -241,11 +241,11 @@ TEST(TestD4TransformGrid_Rot90) {
 
   auto result = TransformGrid(grid, D4Transform::Rot90);
 
-  // Rot90: (r, c) -> (c, rows-1-r)
-  // (0, 0) -> (0, 4)
-  ASSERT_TRUE(result->GetCellKind({0, 4}) == CellKind::Wall);
-  // (1, 2) -> (2, 5-1-1) = (2, 3)
-  ASSERT_TRUE(result->GetCellKind({2, 3}) == CellKind::Synchro);
+  // Rot90 CCW: (r, c) -> (cols-1-c, r)
+  // (0, 0) -> (4, 0)
+  ASSERT_TRUE(result->GetCellKind({4, 0}) == CellKind::Wall);
+  // (1, 2) -> (5-1-2, 1) = (2, 1)
+  ASSERT_TRUE(result->GetCellKind({2, 1}) == CellKind::Synchro);
 }
 
 TEST(TestD4TransformGrid_Rectangular) {
@@ -259,8 +259,8 @@ TEST(TestD4TransformGrid_Rectangular) {
   ASSERT_EQ(result->GetRows(), 5);
   ASSERT_EQ(result->GetCols(), 3);
 
-  // (0, 4) -> (4, 2) ... Rot90: (r, c) -> (c, rows-1-r) = (4, 2)
-  ASSERT_TRUE(result->GetCellKind({4, 2}) == CellKind::Wall);
+  // (0, 4) -> (0, 0) ... Rot90 CCW: (r, c) -> (cols-1-c, r) = (5-1-4, 0) = (0, 0)
+  ASSERT_TRUE(result->GetCellKind({0, 0}) == CellKind::Wall);
 }
 
 TEST(TestD4TransformGrid_PreservesOrigin) {
@@ -400,6 +400,188 @@ TEST(TestD4Transform_ClonePreservesTransform) {
   ASSERT_EQ(cloned->GetD4Transform(), 3);
   ASSERT_EQ(cloned->GetRows(), 6);
   ASSERT_EQ(cloned->GetCols(), 6);
+}
+
+// =============================================================================
+// D4 Group Mathematical Property Tests
+// =============================================================================
+
+// Helper to get inverse transform
+D4Transform GetInverseTransform(D4Transform t) {
+  // D4 inverses:
+  // Identity^-1 = Identity
+  // Rot90^-1 = Rot270
+  // Rot180^-1 = Rot180 (self-inverse)
+  // Rot270^-1 = Rot90
+  // FlipH^-1 = FlipH (self-inverse)
+  // FlipV^-1 = FlipV (self-inverse)
+  // FlipD^-1 = FlipD (self-inverse)
+  // FlipA^-1 = FlipA (self-inverse)
+  switch (t) {
+    case D4Transform::Identity: return D4Transform::Identity;
+    case D4Transform::Rot90: return D4Transform::Rot270;
+    case D4Transform::Rot180: return D4Transform::Rot180;
+    case D4Transform::Rot270: return D4Transform::Rot90;
+    case D4Transform::FlipH: return D4Transform::FlipH;
+    case D4Transform::FlipV: return D4Transform::FlipV;
+    case D4Transform::FlipD: return D4Transform::FlipD;
+    case D4Transform::FlipA: return D4Transform::FlipA;
+  }
+  return D4Transform::Identity;
+}
+
+TEST(TestD4RotationCycle) {
+  // Applying Rot90 four times should return to the original position
+  int N = 7;
+  std::vector<Position> test_positions = {{0, 0}, {0, 6}, {6, 0}, {6, 6}, {3, 3}, {2, 5}};
+
+  for (const auto& start : test_positions) {
+    Position current = start;
+    for (int i = 0; i < 4; ++i) {
+      current = TransformPosition(current, N, N, D4Transform::Rot90);
+    }
+    ASSERT_EQ(current.row, start.row);
+    ASSERT_EQ(current.col, start.col);
+  }
+}
+
+TEST(TestD4InverseCorrectness) {
+  // For all 8 transforms: transform(inverse(transform(pos))) = pos
+  int N = 6;
+  std::vector<Position> test_positions = {{0, 0}, {0, 5}, {5, 0}, {5, 5}, {2, 3}, {4, 1}};
+
+  for (int t = 0; t < 8; ++t) {
+    D4Transform transform = ToD4Transform(t);
+    D4Transform inverse = GetInverseTransform(transform);
+
+    for (const auto& pos : test_positions) {
+      // Apply transform
+      Position transformed = TransformPosition(pos, N, N, transform);
+      // Get transformed dimensions
+      auto [tRows, tCols] = GetTransformedDimensions(N, N, transform);
+      // Apply inverse
+      Position restored = TransformPosition(transformed, tRows, tCols, inverse);
+
+      ASSERT_EQ(restored.row, pos.row);
+      ASSERT_EQ(restored.col, pos.col);
+    }
+  }
+}
+
+TEST(TestD4ReflectionsSelfInverse) {
+  // All 4 reflections are self-inverse: applying twice = identity
+  int N = 5;
+  std::vector<D4Transform> reflections = {
+    D4Transform::FlipH, D4Transform::FlipV,
+    D4Transform::FlipD, D4Transform::FlipA
+  };
+  std::vector<Position> test_positions = {{0, 0}, {1, 3}, {4, 2}};
+
+  for (auto flip : reflections) {
+    for (const auto& pos : test_positions) {
+      Position once = TransformPosition(pos, N, N, flip);
+      // For FlipD/FlipA, dimensions swap, so use swapped dims
+      auto [r1, c1] = GetTransformedDimensions(N, N, flip);
+      Position twice = TransformPosition(once, r1, c1, flip);
+
+      ASSERT_EQ(twice.row, pos.row);
+      ASSERT_EQ(twice.col, pos.col);
+    }
+  }
+}
+
+TEST(TestD4Rot180SelfInverse) {
+  // Rot180 applied twice = identity
+  int N = 5;
+  std::vector<Position> test_positions = {{0, 0}, {1, 3}, {2, 2}};
+
+  for (const auto& pos : test_positions) {
+    Position once = TransformPosition(pos, N, N, D4Transform::Rot180);
+    Position twice = TransformPosition(once, N, N, D4Transform::Rot180);
+
+    ASSERT_EQ(twice.row, pos.row);
+    ASSERT_EQ(twice.col, pos.col);
+  }
+}
+
+TEST(TestD4GroupComposition) {
+  // Test some key group compositions:
+  // Rot90 ∘ Rot90 = Rot180
+  // FlipH ∘ FlipV = Rot180
+  // FlipD ∘ Rot90 = FlipH (in the sense of equivalent positions)
+  int N = 5;
+  std::vector<Position> test_positions = {{0, 0}, {1, 2}, {3, 4}};
+
+  for (const auto& pos : test_positions) {
+    // Rot90 ∘ Rot90 = Rot180
+    Position via_two_rot90 = TransformPosition(
+        TransformPosition(pos, N, N, D4Transform::Rot90),
+        N, N, D4Transform::Rot90);
+    Position via_rot180 = TransformPosition(pos, N, N, D4Transform::Rot180);
+
+    ASSERT_EQ(via_two_rot90.row, via_rot180.row);
+    ASSERT_EQ(via_two_rot90.col, via_rot180.col);
+
+    // FlipH ∘ FlipV = Rot180
+    Position via_flips = TransformPosition(
+        TransformPosition(pos, N, N, D4Transform::FlipH),
+        N, N, D4Transform::FlipV);
+
+    ASSERT_EQ(via_flips.row, via_rot180.row);
+    ASSERT_EQ(via_flips.col, via_rot180.col);
+  }
+}
+
+TEST(TestD4GridTransformCycle) {
+  // Rotating a grid 4 times should restore original
+  Grid grid(5, 5);
+  grid.SetCell({0, 0}, CellKind::Wall);
+  grid.SetCell({1, 3}, CellKind::Synchro);
+  grid.SetCell({4, 2}, CellKind::Target);
+
+  std::unique_ptr<Grid> current = std::make_unique<Grid>(grid);
+  for (int i = 0; i < 4; ++i) {
+    current = TransformGrid(*current, D4Transform::Rot90);
+  }
+
+  // Check same dimensions
+  ASSERT_EQ(current->GetRows(), 5);
+  ASSERT_EQ(current->GetCols(), 5);
+
+  // Check cells restored
+  ASSERT_TRUE(current->GetCellKind({0, 0}) == CellKind::Wall);
+  ASSERT_TRUE(current->GetCellKind({1, 3}) == CellKind::Synchro);
+  ASSERT_TRUE(current->GetCellKind({4, 2}) == CellKind::Target);
+}
+
+TEST(TestD4AllTransformsPreserveGridContent) {
+  // All 8 transforms should preserve the total count of each cell type
+  Grid grid(6, 6);
+  grid.SetCell({0, 0}, CellKind::Wall);
+  grid.SetCell({0, 1}, CellKind::Wall);
+  grid.SetCell({2, 3}, CellKind::Synchro);
+  grid.SetCell({4, 5}, CellKind::Target);
+
+  for (int t = 0; t < 8; ++t) {
+    auto transformed = TransformGrid(grid, ToD4Transform(t));
+
+    // Count cell types
+    int walls = 0, synchros = 0, targets = 0;
+    auto [rows, cols] = GetTransformedDimensions(6, 6, ToD4Transform(t));
+
+    for (int r = 0; r < rows; ++r) {
+      for (int c = 0; c < cols; ++c) {
+        CellKind kind = transformed->GetCellKind({r, c});
+        if (kind == CellKind::Wall) walls++;
+        else if (kind == CellKind::Synchro) synchros++;
+        else if (kind == CellKind::Target) targets++;
+      }
+    }
+
+    ASSERT_EQ(walls, 2);
+    ASSERT_EQ(synchros, 1);
+    ASSERT_EQ(targets, 1);
+  }
 }
 
 // =============================================================================

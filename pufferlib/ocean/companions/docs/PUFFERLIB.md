@@ -335,3 +335,7 @@ log->score += radiant_victory;  // score = count of Radiant wins
 | `pufferlib/sweep.py` | Sweep algorithms (Protein, Random, etc.) |
 | `pufferlib/pufferl.py:1053-1127` | `sweep()` orchestration loop |
 | `pufferlib/config/default.ini` | Default sweep configuration |
+
+### Conflicting parameters
+`bptt_horizon` and `batch_size` are linked. Set one to a fixed value, set the other one to `auto`
+

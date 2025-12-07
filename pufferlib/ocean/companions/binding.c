@@ -73,6 +73,7 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->num_synchro = (int)unpack(kwargs, "num_synchro");
     env->map_complexity = (int)unpack(kwargs, "map_complexity");
     env->horizon = (int)unpack(kwargs, "horizon");
+    env->d4_transform = (int)unpack(kwargs, "d4_transform");
 
     synchro_init(env);
     return 0;

@@ -32,6 +32,7 @@ typedef struct {
     int num_synchro;
     int map_complexity;
     int horizon;
+    int d4_transform;              // D4 symmetry (0-7), CCW convention
 
     // Internal state
     void* cpp_env;                 // Opaque pointer to companions::SynchroEnv
