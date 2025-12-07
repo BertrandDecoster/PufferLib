@@ -747,6 +747,12 @@ class Protein:
         pruned_front = prune_pareto_front(pareto_front)
         pareto_observations = pruned_front if self.prune_pareto else pareto_front
 
+        # Fall back to random sampling if no Pareto points available
+        if not pruned_front:
+            zero_one = self.sobol.random(1)[0]
+            suggestion = 2*zero_one - 1
+            return self.hyperparameters.to_dict(suggestion, fill), info
+
         # Use the max cost from the pruned pareto to avoid inefficiently long runs
         if self.upper_cost_threshold < 0:
             self.upper_cost_threshold = pruned_front[-1]['cost']
