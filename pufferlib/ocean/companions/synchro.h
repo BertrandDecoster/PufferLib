@@ -33,6 +33,7 @@ typedef struct {
     int map_complexity;
     int horizon;
     int d4_transform;              // D4 symmetry (0-7), CCW convention
+    int vector_obs_size;           // Size of vector observation (appended to tensor)
 
     // Internal state
     void* cpp_env;                 // Opaque pointer to companions::SynchroEnv

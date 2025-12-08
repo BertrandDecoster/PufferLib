@@ -966,15 +966,22 @@ class G2048(nn.Module):
 
 
 class Synchro(nn.Module):
-    """CNN policy for Synchro with MultiDiscrete actions and flexible grid sizes."""
+    """CNN policy for Synchro with MultiDiscrete actions and flexible grid sizes.
+
+    Handles flattened observations: [tensor (5*rows*cols)] + [vector (9 features)]
+    """
 
     def __init__(self, env, hidden_size=64, **kwargs):
         super().__init__()
         self.hidden_size = hidden_size
         self.is_continuous = False
 
-        # Get input channels from observation space
-        in_channels = env.single_observation_space.shape[0]  # 5 channels
+        # Get dimensions from env
+        self.rows = env.rows
+        self.cols = env.cols
+        self.tensor_size = env.tensor_size  # 5 * rows * cols
+        self.vector_size = env.vector_size  # 9 features
+        in_channels = 5  # 5 observation planes
 
         # CNN encoder with adaptive pooling for variable grid sizes
         self.conv = nn.Sequential(
@@ -992,9 +999,15 @@ class Synchro(nn.Module):
         # Adaptive pooling to handle variable input sizes (MPS compatible)
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
+        # MLP for vector observation features
+        self.vector_mlp = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.vector_size, 32)),
+            nn.ReLU(),
+        )
+
+        # Final projection: CNN output (64) + vector MLP output (32) -> hidden_size
         self.fc = nn.Sequential(
-            nn.Flatten(),
-            pufferlib.pytorch.layer_init(nn.Linear(64, hidden_size)),
+            pufferlib.pytorch.layer_init(nn.Linear(64 + 32, hidden_size)),
             nn.ReLU(),
         )
 
@@ -1015,11 +1028,22 @@ class Synchro(nn.Module):
         return self.forward(observations, state)
 
     def encode_observations(self, observations, state=None):
-        x = observations.float()
-        x = self.conv(x)
+        # Split flattened observations into tensor and vector parts
+        obs = observations.float()
+        tensor_obs = obs[:, :self.tensor_size].view(-1, 5, self.rows, self.cols)
+        vector_obs = obs[:, self.tensor_size:]
+
+        # Process tensor through CNN
+        x = self.conv(tensor_obs)
         x = torch.relu(self.downsample(x))
-        x = self.pool(x)
-        return self.fc(x)
+        x = self.pool(x).flatten(1)
+
+        # Process vector through MLP
+        v = self.vector_mlp(vector_obs)
+
+        # Concatenate and project
+        combined = torch.cat([x, v], dim=1)
+        return self.fc(combined)
 
     def decode_actions(self, hidden):
         # Independent head per action dimension -> tuple of logits
@@ -1037,6 +1061,8 @@ class SynchroD4(nn.Module):
     - Better generalization to rotated/reflected game states
     - 2-5x sample efficiency improvement
 
+    Handles flattened observations: [tensor (5*rows*cols)] + [vector (9 features)]
+
     Requires: pip install escnn
     """
 
@@ -1048,12 +1074,20 @@ class SynchroD4(nn.Module):
         # Import D4 components from companions networks
         from pufferlib.ocean.companions.networks.d4 import D4Actor, D4Critic
 
-        in_channels = env.single_observation_space.shape[0]  # 5
+        # Get dimensions from env
+        self.rows = env.rows
+        self.cols = env.cols
+        self.tensor_size = env.tensor_size  # 5 * rows * cols
+        self.vector_size = env.vector_size  # 9 features
+
+        in_channels = 5  # 5 observation planes
         nvec = env.single_action_space.nvec.tolist()  # [5, 2]
         n_agents = 1  # Single agent per observation in vectorized env
 
-        self.actor = D4Actor(n_agents, nvec, in_channels, hidden_size, n_hidden)
-        self.critic = D4Critic(n_agents, in_channels, hidden_size, False, n_hidden)
+        self.actor = D4Actor(n_agents, nvec, in_channels, hidden_size, n_hidden,
+                             vector_size=self.vector_size)
+        self.critic = D4Critic(n_agents, in_channels, hidden_size, False, n_hidden,
+                               vector_size=self.vector_size)
 
     def forward(self, observations, state=None):
         hidden = self.encode_observations(observations, state)
@@ -1064,19 +1098,24 @@ class SynchroD4(nn.Module):
         return self.forward(observations, state)
 
     def encode_observations(self, observations, state=None):
-        # Pass through - actor/critic handle encoding internally
-        return observations.float()
+        # Split flattened observations into tensor and vector parts
+        obs = observations.float()
+        tensor_obs = obs[:, :self.tensor_size].view(-1, 5, self.rows, self.cols)
+        vector_obs = obs[:, self.tensor_size:] if self.vector_size > 0 else None
+        return (tensor_obs, vector_obs)
 
-    def decode_actions(self, obs):
+    def decode_actions(self, encoded):
+        tensor_obs, vector_obs = encoded
+
         # Actor returns tuple (movement_logits, interaction_logits)
         # Add n_agents dimension for D4Actor input: [batch, C, H, W] -> [batch, 1, C, H, W]
-        obs_expanded = obs.unsqueeze(-4)
-        action = self.actor(obs_expanded)
+        obs_expanded = tensor_obs.unsqueeze(-4)
+        action = self.actor(obs_expanded, vector=vector_obs)
         # Remove n_agents dimension: [batch, 1, n] -> [batch, n]
         action = tuple(a.squeeze(-2) for a in action)
 
         # Critic returns value with shape [batch, n_agents, 1]
-        value = self.critic(obs_expanded)
+        value = self.critic(obs_expanded, vector=vector_obs)
         # Squeeze to [batch]: [batch, 1, 1] -> [batch]
         value = value.squeeze(-1).squeeze(-1)
 

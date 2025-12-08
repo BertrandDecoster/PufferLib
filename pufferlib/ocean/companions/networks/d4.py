@@ -274,6 +274,7 @@ class D4Actor(nn.Module):
         in_channels: Number of input channels
         hidden_dim: Hidden layer dimension
         n_hidden: Number of hidden representations for encoder
+        vector_size: Size of vector observation (0 if not used)
     """
 
     def __init__(
@@ -283,6 +284,7 @@ class D4Actor(nn.Module):
         in_channels: int = 5,
         hidden_dim: int = 64,
         n_hidden: int = 8,
+        vector_size: int = 0,
     ):
         if not ESCNN_AVAILABLE:
             raise ImportError(
@@ -294,6 +296,7 @@ class D4Actor(nn.Module):
         self.nvec = nvec
         self.hidden_dim = hidden_dim
         self.n_hidden = n_hidden
+        self.vector_size = vector_size
 
         # D4 group for 2D space (convolutions)
         self.gspace = gspaces.flipRot2dOnR2(N=4)
@@ -357,19 +360,35 @@ class D4Actor(nn.Module):
 
         # Interaction head: invariant output via GroupPooling
         self.group_pool = enn.GroupPooling(self.hid_type)
-        # After GroupPooling: n_hidden channels
-        self.interaction_head = nn.Sequential(
-            nn.Flatten(),
-            pufferlib.pytorch.layer_init(nn.Linear(n_hidden, hidden_dim)),
-            nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_dim, nvec[1]), std=0.01),
-        )
 
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        # Vector MLP (for D4-invariant vector features like steps_left)
+        if vector_size > 0:
+            self.vector_mlp = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(vector_size, hidden_dim)),
+                nn.ReLU(),
+            )
+            # Interaction head: GroupPooled features (n_hidden) + vector MLP output (hidden_dim)
+            self.interaction_head = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(n_hidden + hidden_dim, hidden_dim)),
+                nn.ReLU(),
+                pufferlib.pytorch.layer_init(nn.Linear(hidden_dim, nvec[1]), std=0.01),
+            )
+        else:
+            self.vector_mlp = None
+            # Interaction head: only GroupPooled features (n_hidden channels)
+            self.interaction_head = nn.Sequential(
+                nn.Flatten(),
+                pufferlib.pytorch.layer_init(nn.Linear(n_hidden, hidden_dim)),
+                nn.ReLU(),
+                pufferlib.pytorch.layer_init(nn.Linear(hidden_dim, nvec[1]), std=0.01),
+            )
+
+    def forward(self, obs: torch.Tensor, vector: torch.Tensor = None) -> tuple[torch.Tensor, ...]:
         """Forward pass.
 
         Args:
             obs: Observation tensor of shape [..., n_agents, C, H, W]
+            vector: Optional vector observation of shape [..., vector_size]
 
         Returns:
             Tuple of (movement_logits, interaction_logits).
@@ -409,7 +428,17 @@ class D4Actor(nn.Module):
         # --- Interaction head (invariant) ---
         # Apply GroupPooling to make features invariant
         invariant_features = self.group_pool(features).tensor  # [B, n_hidden, 1, 1]
-        interaction_logits = self.interaction_head(invariant_features)  # [B, 2]
+        invariant_flat = invariant_features.flatten(1)  # [B, n_hidden]
+
+        # Concatenate with vector features if available
+        if self.vector_size > 0 and vector is not None:
+            vector_flat = vector.reshape(-1, self.vector_size)  # [B, vector_size]
+            vector_features = self.vector_mlp(vector_flat)  # [B, hidden_dim]
+            combined = torch.cat([invariant_flat, vector_features], dim=1)
+            interaction_logits = self.interaction_head(combined)  # [B, 2]
+        else:
+            interaction_logits = self.interaction_head(invariant_features)  # [B, 2]
+
         interaction_logits = interaction_logits.reshape(*orig_shape, 2)
 
         return (movement_logits, interaction_logits)
@@ -427,6 +456,7 @@ class D4Critic(nn.Module):
         hidden_dim: Hidden layer dimension
         centralised: If True, use centralized critic (MAPPO style)
         n_hidden: Number of hidden representations for encoder
+        vector_size: Size of vector observation (0 if not used)
     """
 
     def __init__(
@@ -436,6 +466,7 @@ class D4Critic(nn.Module):
         hidden_dim: int = 64,
         centralised: bool = False,
         n_hidden: int = 8,
+        vector_size: int = 0,
     ):
         if not ESCNN_AVAILABLE:
             raise ImportError(
@@ -445,22 +476,42 @@ class D4Critic(nn.Module):
         super().__init__()
         self.n_agents = n_agents
         self.centralised = centralised
+        self.vector_size = vector_size
+        self.hidden_dim = hidden_dim
 
         # Use D4-equivariant encoder (outputs invariant features)
         self.encoder = D4EquivariantEncoder(in_channels, hidden_dim, n_hidden)
 
-        if centralised:
-            self.head = pufferlib.pytorch.layer_init(
-                nn.Linear(hidden_dim * n_agents, 1), std=1.0
+        # Vector MLP (for D4-invariant vector features like steps_left)
+        if vector_size > 0:
+            self.vector_mlp = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(vector_size, hidden_dim)),
+                nn.ReLU(),
             )
+            # Value head: encoder output (hidden_dim) + vector MLP output (hidden_dim)
+            if centralised:
+                self.head = pufferlib.pytorch.layer_init(
+                    nn.Linear((hidden_dim + hidden_dim) * n_agents, 1), std=1.0
+                )
+            else:
+                self.head = pufferlib.pytorch.layer_init(
+                    nn.Linear(hidden_dim + hidden_dim, 1), std=1.0
+                )
         else:
-            self.head = pufferlib.pytorch.layer_init(nn.Linear(hidden_dim, 1), std=1.0)
+            self.vector_mlp = None
+            if centralised:
+                self.head = pufferlib.pytorch.layer_init(
+                    nn.Linear(hidden_dim * n_agents, 1), std=1.0
+                )
+            else:
+                self.head = pufferlib.pytorch.layer_init(nn.Linear(hidden_dim, 1), std=1.0)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+    def forward(self, obs: torch.Tensor, vector: torch.Tensor = None) -> torch.Tensor:
         """Forward pass.
 
         Args:
             obs: Observation tensor of shape [..., n_agents, C, H, W]
+            vector: Optional vector observation of shape [..., vector_size]
 
         Returns:
             State values of shape [..., n_agents, 1]
@@ -471,11 +522,25 @@ class D4Critic(nn.Module):
         if self.centralised:
             obs_flat = obs.reshape(-1, *obs.shape[-3:])
             features = self.encoder(obs_flat)
+
+            # Concatenate with vector features if available
+            if self.vector_size > 0 and vector is not None:
+                vector_flat = vector.reshape(-1, self.vector_size)
+                vector_features = self.vector_mlp(vector_flat)
+                features = torch.cat([features, vector_features], dim=1)
+
             features = features.reshape(*batch_shape, -1)
             value = self.head(features)
             return value.unsqueeze(-2).expand(*batch_shape, self.n_agents, 1)
         else:
             obs_flat = obs.reshape(-1, *obs.shape[-3:])
             features = self.encoder(obs_flat)
+
+            # Concatenate with vector features if available
+            if self.vector_size > 0 and vector is not None:
+                vector_flat = vector.reshape(-1, self.vector_size)
+                vector_features = self.vector_mlp(vector_flat)
+                features = torch.cat([features, vector_features], dim=1)
+
             values = self.head(features)
             return values.reshape(*batch_shape, n_agents_dim, 1)

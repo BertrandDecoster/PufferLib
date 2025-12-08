@@ -29,6 +29,7 @@ void synchro_init(Synchro* env) {
     env->cpp_env = static_cast<void*>(cpp_env);
     env->cumulative_reward = 0.0f;
     env->episode_steps = 0;
+    env->vector_obs_size = cpp_env->VectorObservationSize();
 
     // Allocate render buffer (4KB should be enough for ASCII grid)
     env->render_buffer_size = 4096;
@@ -42,14 +43,22 @@ void c_reset(Synchro* env) {
     auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
     cpp_env->Reset();
 
-    // Observation tensor size: 5 channels * rows * cols
-    int obs_size = 5 * env->rows * env->cols;
+    // Observation size: tensor (5 channels * rows * cols) + vector
+    int tensor_size = 5 * env->rows * env->cols;
+    int obs_size = tensor_size + env->vector_obs_size;
 
-    // Copy initial observations to buffer (5-plane tensor per agent)
+    // Copy initial observations to buffer (tensor + vector per agent)
     for (int i = 0; i < env->num_agents; i++) {
-        std::vector<float> obs;
-        cpp_env->ObservationTensor(obs, i);
-        std::memcpy(env->observations + i * obs_size, obs.data(), obs_size * sizeof(float));
+        // Copy tensor observation
+        std::vector<float> tensor_obs;
+        cpp_env->ObservationTensor(tensor_obs, i);
+        std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
+
+        // Copy vector observation (appended after tensor)
+        std::vector<float> vector_obs;
+        cpp_env->VectorObservation(vector_obs, i);
+        std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
+                    env->vector_obs_size * sizeof(float));
     }
 
     // Clear terminals and rewards
@@ -65,14 +74,22 @@ void c_reset_seed(Synchro* env, unsigned int seed) {
     auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
     cpp_env->Reset(seed);
 
-    // Observation tensor size: 5 channels * rows * cols
-    int obs_size = 5 * env->rows * env->cols;
+    // Observation size: tensor (5 channels * rows * cols) + vector
+    int tensor_size = 5 * env->rows * env->cols;
+    int obs_size = tensor_size + env->vector_obs_size;
 
-    // Copy initial observations to buffer (5-plane tensor per agent)
+    // Copy initial observations to buffer (tensor + vector per agent)
     for (int i = 0; i < env->num_agents; i++) {
-        std::vector<float> obs;
-        cpp_env->ObservationTensor(obs, i);
-        std::memcpy(env->observations + i * obs_size, obs.data(), obs_size * sizeof(float));
+        // Copy tensor observation
+        std::vector<float> tensor_obs;
+        cpp_env->ObservationTensor(tensor_obs, i);
+        std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
+
+        // Copy vector observation (appended after tensor)
+        std::vector<float> vector_obs;
+        cpp_env->VectorObservation(vector_obs, i);
+        std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
+                    env->vector_obs_size * sizeof(float));
     }
 
     // Clear terminals and rewards
@@ -111,14 +128,22 @@ void c_step(Synchro* env) {
     env->cumulative_reward += total_reward / env->num_agents;
     env->episode_steps++;
 
-    // Observation tensor size: 5 channels * rows * cols
-    int obs_size = 5 * env->rows * env->cols;
+    // Observation size: tensor (5 channels * rows * cols) + vector
+    int tensor_size = 5 * env->rows * env->cols;
+    int obs_size = tensor_size + env->vector_obs_size;
 
-    // Copy observations (5-plane tensor per agent)
+    // Copy observations (tensor + vector per agent)
     for (int i = 0; i < env->num_agents; i++) {
-        std::vector<float> obs;
-        cpp_env->ObservationTensor(obs, i);
-        std::memcpy(env->observations + i * obs_size, obs.data(), obs_size * sizeof(float));
+        // Copy tensor observation
+        std::vector<float> tensor_obs;
+        cpp_env->ObservationTensor(tensor_obs, i);
+        std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
+
+        // Copy vector observation (appended after tensor)
+        std::vector<float> vector_obs;
+        cpp_env->VectorObservation(vector_obs, i);
+        std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
+                    env->vector_obs_size * sizeof(float));
     }
 
     // Set terminals (all agents share same done state)
@@ -138,9 +163,16 @@ void c_step(Synchro* env) {
         // Auto-reset for next episode
         cpp_env->Reset();
         for (int i = 0; i < env->num_agents; i++) {
-            std::vector<float> obs;
-            cpp_env->ObservationTensor(obs, i);
-            std::memcpy(env->observations + i * obs_size, obs.data(), obs_size * sizeof(float));
+            // Copy tensor observation
+            std::vector<float> tensor_obs;
+            cpp_env->ObservationTensor(tensor_obs, i);
+            std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
+
+            // Copy vector observation (appended after tensor)
+            std::vector<float> vector_obs;
+            cpp_env->VectorObservation(vector_obs, i);
+            std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
+                        env->vector_obs_size * sizeof(float));
         }
         env->cumulative_reward = 0.0f;
         env->episode_steps = 0;

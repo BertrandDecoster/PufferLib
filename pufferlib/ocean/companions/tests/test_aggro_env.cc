@@ -404,8 +404,8 @@ TEST(TestResetWithNewSeed) {
 TEST(TestAggroEnvVectorObservationSize) {
   AggroEnv env(10, 1, EnemyType::Goblin, 42);
 
-  // AggroEnv adds 8 features to base (8): total = 16
-  ASSERT_EQ(env.VectorObservationSize(), 16);
+  // AggroEnv adds 8 features to base (9): total = 17
+  ASSERT_EQ(env.VectorObservationSize(), 17);
 }
 
 TEST(TestAggroEnvVectorObservationValues) {
@@ -422,15 +422,17 @@ TEST(TestAggroEnvVectorObservationValues) {
   }
 
   // Feature 8-9: Relative position to enemy
-  // Feature 10: Distance to enemy (normalized)
-  // Features 11-13: FSM state one-hot (should sum to 1)
-  float fsm_sum = obs[11] + obs[12] + obs[13];
+  // Feature 8: steps_left (base env)
+  // Feature 9-10: AggroEnv specific (enemy position normalized)
+  // Feature 11: Distance to enemy (normalized)
+  // Features 12-14: FSM state one-hot (should sum to 1)
+  float fsm_sum = obs[12] + obs[13] + obs[14];
   ASSERT_TRUE(fsm_sum > 0.99f && fsm_sum < 1.01f);  // One-hot should sum to 1
 
-  // Features 14-15: Relative position to target
+  // Features 15-16: Relative position to target
   // These should be valid relative positions
-  ASSERT_TRUE(obs[14] >= -1.0f && obs[14] <= 1.0f);
   ASSERT_TRUE(obs[15] >= -1.0f && obs[15] <= 1.0f);
+  ASSERT_TRUE(obs[16] >= -1.0f && obs[16] <= 1.0f);
 }
 
 TEST(TestAggroEnvVectorObservationFSMState) {
@@ -440,10 +442,10 @@ TEST(TestAggroEnvVectorObservationFSMState) {
   env.VectorObservation(obs, 0);
 
   // Initially enemy should be in patrol state
-  // Feature 11 = patrol, 12 = aggro, 13 = returning
-  ASSERT_EQ(obs[11], 1.0f);  // Patrol
-  ASSERT_EQ(obs[12], 0.0f);  // Not aggro
-  ASSERT_EQ(obs[13], 0.0f);  // Not returning
+  // Feature 12 = patrol, 13 = aggro, 14 = returning (shifted by 1 due to steps_left at index 8)
+  ASSERT_EQ(obs[12], 1.0f);  // Patrol
+  ASSERT_EQ(obs[13], 0.0f);  // Not aggro
+  ASSERT_EQ(obs[14], 0.0f);  // Not returning
 }
 
 // =============================================================================

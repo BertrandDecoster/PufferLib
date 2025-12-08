@@ -1625,8 +1625,8 @@ TEST(TestObservationTensorConsistencyAfterMovement) {
 TEST(TestVectorObservationSize) {
   SynchroEnv env(8, 8, 1, 1, 0, 42);
 
-  // Base vector observation size should be 8
-  ASSERT_EQ(env.VectorObservationSize(), 8);
+  // Base vector observation size should be 9 (8 base + 1 steps_left)
+  ASSERT_EQ(env.VectorObservationSize(), 9);
 }
 
 TEST(TestVectorObservationValues) {
@@ -1646,6 +1646,11 @@ TEST(TestVectorObservationValues) {
 
   // Fourth value is distance to goal (normalized)
   ASSERT_TRUE(obs[3] >= 0.0f && obs[3] <= 1.0f);
+
+  // Ninth value (index 8) is steps_left / 100
+  // At start of episode with default horizon 100, should be 100/100 = 1.0
+  // (or horizon/100 if horizon is different)
+  ASSERT_TRUE(obs[8] >= 0.0f);  // Should be positive at start
 }
 
 TEST(TestVectorObservationMultipleAgents) {
@@ -1684,6 +1689,30 @@ TEST(TestVectorObservationUpdatesAfterMove) {
   // Position should have changed (specifically col should increase)
   // Original col was obs_before[1], after moving right it should be higher
   ASSERT_TRUE(obs_after[1] > obs_before[1]);
+
+  // Steps left (index 8) should have decreased by 1/100 = 0.01
+  ASSERT_TRUE(obs_after[8] < obs_before[8]);
+}
+
+TEST(TestVectorObservationStepsLeft) {
+  // Test that steps_left decreases correctly over multiple steps
+  SynchroEnv env(8, 8, 1, 1, 0, 42, 0, 50);  // horizon = 50
+
+  std::vector<float> obs;
+  env.VectorObservation(obs, 0);
+
+  // At start: steps_left = 50, so obs[8] = 50/100 = 0.5
+  ASSERT_TRUE(std::abs(obs[8] - 0.5f) < 0.01f);
+
+  // Take 10 steps
+  std::vector<Action> actions = {EncodeAction(MovementAction::Stay)};
+  for (int i = 0; i < 10; ++i) {
+    env.Step(actions);
+  }
+
+  env.VectorObservation(obs, 0);
+  // After 10 steps: steps_left = 40, so obs[8] = 40/100 = 0.4
+  ASSERT_TRUE(std::abs(obs[8] - 0.4f) < 0.01f);
 }
 
 // =============================================================================

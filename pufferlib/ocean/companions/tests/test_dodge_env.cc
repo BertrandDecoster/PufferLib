@@ -201,8 +201,8 @@ TEST(TestDodgeEnvRewards) {
 TEST(TestDodgeEnvVectorObservationSize) {
   DodgeEnv env(7, 1, 3, 50, 42);
 
-  // DodgeEnv adds 10 features to base (8): total = 18
-  ASSERT_EQ(env.VectorObservationSize(), 18);
+  // DodgeEnv adds 10 features to base (9): total = 19
+  ASSERT_EQ(env.VectorObservationSize(), 19);
 }
 
 TEST(TestDodgeEnvVectorObservationValues) {
@@ -218,11 +218,12 @@ TEST(TestDodgeEnvVectorObservationValues) {
     ASSERT_TRUE(obs[i] >= 0.0f && obs[i] <= 1.0f);
   }
 
-  // Feature 8: Survival progress (should be close to 1.0 at start)
-  ASSERT_TRUE(obs[8] > 0.9f);  // 50/50 = 1.0 at tick 0
+  // Feature 8: steps_left (base env)
+  // Feature 9: Survival progress (should be close to 1.0 at start)
+  ASSERT_TRUE(obs[9] > 0.9f);  // 50/50 = 1.0 at tick 0
 
-  // Feature 9: Number of effects (should be 0 at start)
-  ASSERT_EQ(obs[9], 0.0f);
+  // Feature 10: Number of effects (should be 0 at start)
+  ASSERT_EQ(obs[10], 0.0f);
 }
 
 TEST(TestDodgeEnvVectorObservationDanger) {
