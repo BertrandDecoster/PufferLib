@@ -2,9 +2,11 @@
 // FSM Performance Benchmarks
 
 #include <chrono>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "../../src/core/fsm/enemies.h"
@@ -172,8 +174,8 @@ BenchmarkResult BenchmarkFullEnvStepWithFSM(int num_zombies, int iterations) {
 // =============================================================================
 // Benchmark: Environment Step without FSM (baseline)
 // =============================================================================
-BenchmarkResult BenchmarkEnvStepBaseline(int iterations) {
-  SynchroEnv env(16, 16, 3, 1, 42);
+BenchmarkResult BenchmarkEnvStepBaseline(int grid_size, int iterations) {
+  SynchroEnv env(grid_size, grid_size, 3, 1, 42);
   env.Reset(42);
 
   std::mt19937 rng(42);
@@ -210,7 +212,7 @@ BenchmarkResult BenchmarkEnvStepBaseline(int iterations) {
   double total_ms = std::chrono::duration<double, std::milli>(end - start).count();
   double avg_us = (total_ms * 1000.0) / iterations;
 
-  return {"Full Step (random actions)", iterations, total_ms, avg_us};
+  return {"Full Step " + std::to_string(grid_size) + "x" + std::to_string(grid_size) + " (random)", iterations, total_ms, avg_us};
 }
 
 // =============================================================================
@@ -315,7 +317,7 @@ BenchmarkResult BenchmarkPathfinding(int iterations) {
 
 //   // Full environment step benchmarks
 //   std::cout << "\n--- Full Environment Step Benchmarks ---\n";
-//   results.push_back(BenchmarkEnvStepBaseline(10000));
+//   results.push_back(BenchmarkEnvStepBaseline(16, 10000));
 //   PrintResult(results.back());
 
 //   results.push_back(BenchmarkFullEnvStepWithFSM(10, 5000));
@@ -346,16 +348,35 @@ BenchmarkResult BenchmarkPathfinding(int iterations) {
 // }
 
 
-int main() {
+int main(int argc, char* argv[]) {
+  int grid_size = 10;
+  int iterations = 100000;
+
+  // Parse command line args
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--grid-size" && i + 1 < argc) {
+      grid_size = std::stoi(argv[++i]);
+    } else if (arg == "--iterations" && i + 1 < argc) {
+      iterations = std::stoi(argv[++i]);
+    } else if (arg == "-h" || arg == "--help") {
+      std::cout << "Usage: " << argv[0] << " [options]\n"
+                << "Options:\n"
+                << "  --grid-size N    Grid size (default: 10)\n"
+                << "  --iterations N   Number of iterations (default: 100000)\n";
+      return 0;
+    }
+  }
+
   std::cout << "=============================================================\n";
-  std::cout << "Benchmark rand moves in synchro\n";
+  std::cout << "Benchmark rand moves in synchro (" << grid_size << "x" << grid_size << ")\n";
   std::cout << "=============================================================\n\n";
 
   std::vector<BenchmarkResult> results;
 
   // Full environment step benchmarks
   std::cout << "\n--- Full Environment Step Benchmarks ---\n";
-  results.push_back(BenchmarkEnvStepBaseline(100000));
+  results.push_back(BenchmarkEnvStepBaseline(grid_size, iterations));
   PrintResult(results.back());
 
   // Summary
