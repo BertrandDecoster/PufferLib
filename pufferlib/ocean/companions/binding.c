@@ -66,14 +66,22 @@ static PyObject* env_reset_seed(PyObject* self, PyObject* args) {
 
 #include "../env_binding.h"
 
+#define UNPACK_INT(dst, key) do { \
+    dst = (int)unpack(kwargs, key); \
+    if (PyErr_Occurred()) return -1; \
+} while(0)
+
+
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
-    env->rows = (int)unpack(kwargs, "rows");
-    env->cols = (int)unpack(kwargs, "cols");
-    env->num_agents = (int)unpack(kwargs, "num_agents");
-    env->num_synchro = (int)unpack(kwargs, "num_synchro");
-    env->map_complexity = (int)unpack(kwargs, "map_complexity");
-    env->horizon = (int)unpack(kwargs, "horizon");
-    env->d4_transform = (int)unpack(kwargs, "d4_transform");
+    UNPACK_INT(env->rows, "rows");
+    UNPACK_INT(env->cols, "cols");
+    UNPACK_INT(env->num_agents, "num_agents");
+    UNPACK_INT(env->num_synchro, "num_synchro");
+    UNPACK_INT(env->map_complexity, "map_complexity");
+    UNPACK_INT(env->horizon, "horizon");
+    UNPACK_INT(env->d4_transform, "d4_transform");
+    UNPACK_INT(env->overfit, "overfit");
+    UNPACK_INT(env->seed, "seed");
 
     synchro_init(env);
     return 0;
