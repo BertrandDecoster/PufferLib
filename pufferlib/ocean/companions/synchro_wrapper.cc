@@ -6,13 +6,29 @@
 #include "src/core/types.h"
 #include "src/viz/renderer.h"
 
-#include <vector>
-#include <cstring>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 
 extern "C" {
 
+// Helper function to write observations for all agents (eliminates code duplication)
+static void write_observations(Synchro* env) {
+    auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
+    int tensor_size = 5 * env->rows * env->cols;
+    int obs_size = tensor_size + env->vector_obs_size;
+
+    for (int i = 0; i < env->num_agents; i++) {
+        cpp_env->WriteObservationTensor(env->observations + i * obs_size, i);
+        cpp_env->WriteVectorObservation(env->observations + i * obs_size + tensor_size, i);
+    }
+}
+
 void synchro_init(Synchro* env) {
+    // Initialize log to zero (required since we use env_init, not vec_init)
+    std::memset(&env->log, 0, sizeof(Log));
+
     // Create C++ SynchroEnv with parameters from the C struct
     // Using constructor: SynchroEnv(rows, cols, num_companions, num_synchro,
     //                               map_complexity, seed, d4_transform, horizon)
@@ -31,8 +47,16 @@ void synchro_init(Synchro* env) {
     env->episode_steps = 0;
     env->vector_obs_size = cpp_env->VectorObservationSize();
 
-    // Allocate render buffer (4KB should be enough for ASCII grid)
-    env->render_buffer_size = 4096;
+    // Validate vector observation size matches Python's VECTOR_OBS_SIZE (9)
+    // If this fails, update VECTOR_OBS_SIZE in synchro.py
+    if (env->vector_obs_size != 9) {
+        std::fprintf(stderr, "ERROR: Vector obs size mismatch! C++=%d, expected=9. "
+                     "Update VECTOR_OBS_SIZE in synchro.py\n", env->vector_obs_size);
+    }
+
+    // Allocate render buffer dynamically based on grid size
+    // Estimate: ~3 chars per cell + newlines + ANSI codes + header
+    env->render_buffer_size = (env->rows * env->cols * 3) + (env->rows * 10) + 256;
     env->render_buffer = static_cast<char*>(std::malloc(env->render_buffer_size));
     if (env->render_buffer) {
         env->render_buffer[0] = '\0';
@@ -41,25 +65,12 @@ void synchro_init(Synchro* env) {
 
 void c_reset(Synchro* env) {
     auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
-    cpp_env->Reset();
 
-    // Observation size: tensor (5 channels * rows * cols) + vector
-    int tensor_size = 5 * env->rows * env->cols;
-    int obs_size = tensor_size + env->vector_obs_size;
+    // Use stored seed for deterministic behavior, then advance for next episode
+    cpp_env->Reset(env->seed++);
 
-    // Copy initial observations to buffer (tensor + vector per agent)
-    for (int i = 0; i < env->num_agents; i++) {
-        // Copy tensor observation
-        std::vector<float> tensor_obs;
-        cpp_env->ObservationTensor(tensor_obs, i);
-        std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
-
-        // Copy vector observation (appended after tensor)
-        std::vector<float> vector_obs;
-        cpp_env->VectorObservation(vector_obs, i);
-        std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
-                    env->vector_obs_size * sizeof(float));
-    }
+    // Write observations directly to buffer (zero-copy)
+    write_observations(env);
 
     // Clear terminals and rewards
     std::memset(env->terminals, 0, env->num_agents);
@@ -72,25 +83,11 @@ void c_reset(Synchro* env) {
 
 void c_reset_seed(Synchro* env, unsigned int seed) {
     auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
+    env->seed = seed + 1;  // Set seed for subsequent auto-resets
     cpp_env->Reset(seed);
 
-    // Observation size: tensor (5 channels * rows * cols) + vector
-    int tensor_size = 5 * env->rows * env->cols;
-    int obs_size = tensor_size + env->vector_obs_size;
-
-    // Copy initial observations to buffer (tensor + vector per agent)
-    for (int i = 0; i < env->num_agents; i++) {
-        // Copy tensor observation
-        std::vector<float> tensor_obs;
-        cpp_env->ObservationTensor(tensor_obs, i);
-        std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
-
-        // Copy vector observation (appended after tensor)
-        std::vector<float> vector_obs;
-        cpp_env->VectorObservation(vector_obs, i);
-        std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
-                    env->vector_obs_size * sizeof(float));
-    }
+    // Write observations directly to buffer (zero-copy)
+    write_observations(env);
 
     // Clear terminals and rewards
     std::memset(env->terminals, 0, env->num_agents);
@@ -128,23 +125,8 @@ void c_step(Synchro* env) {
     env->cumulative_reward += total_reward / env->num_agents;
     env->episode_steps++;
 
-    // Observation size: tensor (5 channels * rows * cols) + vector
-    int tensor_size = 5 * env->rows * env->cols;
-    int obs_size = tensor_size + env->vector_obs_size;
-
-    // Copy observations (tensor + vector per agent)
-    for (int i = 0; i < env->num_agents; i++) {
-        // Copy tensor observation
-        std::vector<float> tensor_obs;
-        cpp_env->ObservationTensor(tensor_obs, i);
-        std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
-
-        // Copy vector observation (appended after tensor)
-        std::vector<float> vector_obs;
-        cpp_env->VectorObservation(vector_obs, i);
-        std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
-                    env->vector_obs_size * sizeof(float));
-    }
+    // Write observations directly to buffer (zero-copy)
+    write_observations(env);
 
     // Set terminals (all agents share same done state)
     unsigned char done = result.done ? 1 : 0;
@@ -161,19 +143,13 @@ void c_step(Synchro* env) {
         env->log.n += 1.0f;
 
         // Auto-reset for next episode
-        cpp_env->Reset();
-        for (int i = 0; i < env->num_agents; i++) {
-            // Copy tensor observation
-            std::vector<float> tensor_obs;
-            cpp_env->ObservationTensor(tensor_obs, i);
-            std::memcpy(env->observations + i * obs_size, tensor_obs.data(), tensor_size * sizeof(float));
-
-            // Copy vector observation (appended after tensor)
-            std::vector<float> vector_obs;
-            cpp_env->VectorObservation(vector_obs, i);
-            std::memcpy(env->observations + i * obs_size + tensor_size, vector_obs.data(),
-                        env->vector_obs_size * sizeof(float));
+        // In overfit mode, always reset to same seed (for D4 equivariance testing)
+        if (env->overfit) {
+            cpp_env->Reset(env->seed);  // Don't increment - always same game
+        } else {
+            cpp_env->Reset(env->seed++);  // Normal behavior - different games
         }
+        write_observations(env);
         env->cumulative_reward = 0.0f;
         env->episode_steps = 0;
     }
