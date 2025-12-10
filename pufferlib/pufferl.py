@@ -136,6 +136,8 @@ class PuffeRL:
             raise pufferlib.APIUsageError(
                 f'minibatch_size {self.minibatch_size} must be divisible by bptt_horizon {horizon}'
             )
+        
+        print(f"{batch_size=}, {minibatch_size=}, {total_agents=}, {config['bptt_horizon']=}")
 
         # Torch compile
         self.uncompiled_policy = policy
@@ -287,7 +289,13 @@ class PuffeRL:
                 if config['cpu_offload']:
                     self.observations[batch_rows, l] = o
                 else:
-                    self.observations[batch_rows, l] = o_device
+                    try:
+                        self.observations[batch_rows, l] = o_device
+                    except RuntimeError as re:
+                        print(f"{self.observations.shape=}")
+                        print(f"{self.observations[batch_rows, l].shape=}")
+                        print(f"{o_device.shape=}")
+                        raise re
 
                 self.actions[batch_rows, l] = action
                 self.logprobs[batch_rows, l] = logprob
@@ -1132,22 +1140,28 @@ def sweep(args=None, env_name=None):
         args['train']['total_timesteps'] = total_timesteps
 
 def profile(args=None, env_name=None, vecenv=None, policy=None):
-    args = load_config()
+    # args = load_config()  #CHANGED FOR MAC SUPPORT
+    args = args or load_config(env_name)  #CHANGED FOR MAC SUPPORT
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv)
 
-    train_config = dict(**args['train'], env=args['env_name'], tag=args['tag'])
-    pufferl = PuffeRL(train_config, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
+    # train_config = dict(**args['train'], env=args['env_name'], tag=args['tag'])  #CHANGED FOR MAC SUPPORT
+    train_config = { **args['train'], 'env': env_name }  #CHANGED FOR MAC SUPPORT
+    # pufferl = PuffeRL(train_config, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])  #CHANGED FOR MAC SUPPORT
+    pufferl = PuffeRL(train_config, vecenv, policy)  #CHANGED FOR MAC SUPPORT
 
-    import torchvision.models as models
+    # import torchvision.models as models  #CHANGED FOR MAC SUPPORT
     from torch.profiler import profile, record_function, ProfilerActivity
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+    # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:  #CHANGED FOR MAC SUPPORT
+    with profile(activities=[ProfilerActivity.CPU], record_shapes=True, with_stack=True) as prof:  #CHANGED FOR MAC SUPPORT
         with record_function("model_inference"):
-            for _ in range(10):
+            # for _ in range(10):  #CHANGED FOR MAC SUPPORT
+            for _ in range(2):  #CHANGED FOR MAC SUPPORT
                 stats = pufferl.evaluate()
                 pufferl.train()
 
-    print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+    # print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))  #CHANGED FOR MAC SUPPORT
+    print(prof.key_averages().table(sort_by='cpu_time_total', row_limit=20))  #CHANGED FOR MAC SUPPORT
     prof.export_chrome_trace("trace.json")
 
 def export(args=None, env_name=None, vecenv=None, policy=None):
