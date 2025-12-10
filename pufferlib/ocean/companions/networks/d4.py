@@ -544,3 +544,301 @@ class D4Critic(nn.Module):
 
             values = self.head(features)
             return values.reshape(*batch_shape, n_agents_dim, 1)
+
+
+# =============================================================================
+# D4-Equivariant Networks V2: Matching SynchroMobaTemplate structure
+# =============================================================================
+
+
+class D4ActorV2(nn.Module):
+    """D4-equivariant actor matching SynchroMobaTemplate structure.
+
+    Key differences from D4Actor:
+    - n_hidden=16 by default (16 × 8 = 128 channels, matching SynchroMobaTemplate)
+    - stride=2 in first R2Conv (spatial downsampling like SynchroMobaTemplate)
+    - 2 R2Conv layers (matching SynchroMobaTemplate's 2 Conv2d layers)
+    - Equivariant movement head (actions transform with input rotation)
+
+    Args:
+        n_agents: Number of agents
+        nvec: List of action dimensions [n_movement, n_interaction] = [5, 2]
+        in_channels: Number of input channels
+        cnn_channels: Total CNN channels (must be divisible by 8 for D4 regular repr)
+        hidden_size: Hidden layer dimension for fusion/heads
+        vector_size: Size of vector observation (0 if not used)
+    """
+
+    def __init__(
+        self,
+        n_agents: int,
+        nvec: list[int],
+        in_channels: int = 5,
+        cnn_channels: int = 128,
+        hidden_size: int = 128,
+        vector_size: int = 0,
+    ):
+        if not ESCNN_AVAILABLE:
+            raise ImportError(
+                "escnn is required for D4ActorV2. Install with: pip install escnn"
+            )
+
+        super().__init__()
+        self.n_agents = n_agents
+        self.nvec = nvec
+        self.hidden_size = hidden_size
+        self.vector_size = vector_size
+
+        # n_hidden = number of regular representation fields
+        # Each field has 8 channels (one per D4 group element)
+        n_hidden = cnn_channels // 8
+        self.n_hidden = n_hidden
+
+        # D4 group for 2D space (convolutions)
+        self.gspace = gspaces.flipRot2dOnR2(N=4)
+        self.G = self.gspace.fibergroup
+
+        # Field types for CNN
+        self.in_type = enn.FieldType(
+            self.gspace, in_channels * [self.gspace.trivial_repr]
+        )
+        self.hid_type = enn.FieldType(
+            self.gspace, n_hidden * [self.gspace.regular_repr]
+        )
+
+        # Equivariant encoder - matching SynchroMobaTemplate structure
+        # Conv2d(5, 128, 3, stride=2) -> R2Conv(5 trivial, 16 regular, 3, stride=2)
+        # Conv2d(128, 128, 3, stride=1) -> R2Conv(16 regular, 16 regular, 3, stride=1)
+        self.encoder = enn.SequentialModule(
+            enn.R2Conv(self.in_type, self.hid_type, kernel_size=3, stride=2, padding=1),
+            enn.ReLU(self.hid_type, inplace=False),
+            enn.R2Conv(self.hid_type, self.hid_type, kernel_size=3, stride=1, padding=1),
+            enn.ReLU(self.hid_type, inplace=False),
+            enn.PointwiseAdaptiveAvgPool2D(self.hid_type, output_size=1),
+            # NO GroupPooling here - we keep equivariant features for movement head
+        )
+
+        # For MLP layers, use no_base_space GSpace
+        from escnn import group
+        self.mlp_gspace = gspaces.no_base_space(group.dihedral_group(4))
+
+        # Hidden type for MLP (must match encoder output structure)
+        self.mlp_hid_type = self.mlp_gspace.type(
+            *[self.mlp_gspace.regular_repr for _ in range(n_hidden)]
+        )
+
+        # Movement output type: 1 trivial (Stay) + 1 irrep_1,1 (2D direction)
+        irrep_2d = self.mlp_gspace.fibergroup.irrep(1, 1)
+        self.movement_out_type = self.mlp_gspace.type(
+            self.mlp_gspace.trivial_repr,  # Stay logit (invariant)
+            irrep_2d,  # 2D direction vector (equivariant)
+        )
+
+        # Equivariant linear for movement
+        self.movement_linear = enn.Linear(self.mlp_hid_type, self.movement_out_type)
+
+        # Direction vectors for projecting 2D equivariant output to 4 directional logits
+        self.register_buffer('direction_vectors', torch.tensor([
+            [1.0, 0.0],   # Up
+            [-1.0, 0.0],  # Down
+            [0.0, 1.0],   # Left
+            [0.0, -1.0],  # Right
+        ]))
+
+        # Interaction head: invariant output via GroupPooling
+        self.group_pool = enn.GroupPooling(self.hid_type)
+
+        # Vector MLP (for D4-invariant vector features)
+        if vector_size > 0:
+            self.vector_mlp = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(vector_size, hidden_size)),
+                nn.ReLU(),
+            )
+            # Interaction head: GroupPooled features (n_hidden) + vector MLP (hidden_size)
+            self.interaction_head = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(n_hidden + hidden_size, hidden_size)),
+                nn.ReLU(),
+                pufferlib.pytorch.layer_init(nn.Linear(hidden_size, nvec[1]), std=0.01),
+            )
+        else:
+            self.vector_mlp = None
+            self.interaction_head = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(n_hidden, hidden_size)),
+                nn.ReLU(),
+                pufferlib.pytorch.layer_init(nn.Linear(hidden_size, nvec[1]), std=0.01),
+            )
+
+    def forward(self, obs: torch.Tensor, vector: torch.Tensor = None) -> tuple[torch.Tensor, ...]:
+        """Forward pass.
+
+        Args:
+            obs: Observation tensor of shape [..., n_agents, C, H, W]
+            vector: Optional vector observation of shape [..., vector_size]
+
+        Returns:
+            Tuple of (movement_logits, interaction_logits).
+        """
+        orig_shape = obs.shape[:-3]
+        obs_flat = obs.reshape(-1, *obs.shape[-3:])
+        batch_size = obs_flat.shape[0]
+
+        # Equivariant encoding
+        geom_obs = enn.GeometricTensor(obs_flat, self.in_type)
+        features = self.encoder(geom_obs)  # GeometricTensor [B, n_hidden*8, 1, 1]
+
+        # --- Movement head (equivariant) ---
+        features_flat = features.tensor.squeeze(-1).squeeze(-1)  # [B, n_hidden*8]
+        mlp_features = enn.GeometricTensor(features_flat, self.mlp_hid_type)
+        movement_out = self.movement_linear(mlp_features).tensor  # [B, 3]
+
+        # Split: Stay (1D) + Direction (2D)
+        stay_logit = movement_out[:, :1]  # [B, 1]
+        direction_vec = movement_out[:, 1:]  # [B, 2]
+
+        # Project direction vector to 4 directional logits
+        direction_logits = torch.matmul(direction_vec, self.direction_vectors.T)  # [B, 4]
+
+        # Combine: [Stay, Up, Down, Left, Right]
+        movement_logits = torch.cat([stay_logit, direction_logits], dim=-1)  # [B, 5]
+        movement_logits = movement_logits.reshape(*orig_shape, 5)
+
+        # --- Interaction head (invariant) ---
+        invariant_features = self.group_pool(features).tensor  # [B, n_hidden, 1, 1]
+        invariant_flat = invariant_features.flatten(1)  # [B, n_hidden]
+
+        if self.vector_size > 0 and vector is not None:
+            vector_flat = vector.reshape(-1, self.vector_size)
+            vector_features = self.vector_mlp(vector_flat)
+            combined = torch.cat([invariant_flat, vector_features], dim=1)
+            interaction_logits = self.interaction_head(combined)
+        else:
+            interaction_logits = self.interaction_head(invariant_flat)
+
+        interaction_logits = interaction_logits.reshape(*orig_shape, 2)
+
+        return (movement_logits, interaction_logits)
+
+
+class D4CriticV2(nn.Module):
+    """D4-equivariant critic matching SynchroMobaTemplate structure.
+
+    Uses D4-equivariant encoder and outputs D4-invariant values.
+    The state value should be the same regardless of orientation.
+
+    Args:
+        n_agents: Number of agents
+        in_channels: Number of input channels
+        cnn_channels: Total CNN channels (must be divisible by 8)
+        hidden_size: Hidden layer dimension
+        centralised: If True, use centralized critic (MAPPO style)
+        vector_size: Size of vector observation (0 if not used)
+    """
+
+    def __init__(
+        self,
+        n_agents: int,
+        in_channels: int = 5,
+        cnn_channels: int = 128,
+        hidden_size: int = 128,
+        centralised: bool = False,
+        vector_size: int = 0,
+    ):
+        if not ESCNN_AVAILABLE:
+            raise ImportError(
+                "escnn is required for D4CriticV2. Install with: pip install escnn"
+            )
+
+        super().__init__()
+        self.n_agents = n_agents
+        self.centralised = centralised
+        self.vector_size = vector_size
+        self.hidden_size = hidden_size
+
+        n_hidden = cnn_channels // 8
+        self.n_hidden = n_hidden
+
+        # D4 group
+        self.gspace = gspaces.flipRot2dOnR2(N=4)
+
+        # Field types
+        self.in_type = enn.FieldType(
+            self.gspace, in_channels * [self.gspace.trivial_repr]
+        )
+        self.hid_type = enn.FieldType(
+            self.gspace, n_hidden * [self.gspace.regular_repr]
+        )
+
+        # Equivariant encoder with GroupPooling for invariant output
+        self.encoder = enn.SequentialModule(
+            enn.R2Conv(self.in_type, self.hid_type, kernel_size=3, stride=2, padding=1),
+            enn.ReLU(self.hid_type, inplace=False),
+            enn.R2Conv(self.hid_type, self.hid_type, kernel_size=3, stride=1, padding=1),
+            enn.ReLU(self.hid_type, inplace=False),
+            enn.PointwiseAdaptiveAvgPool2D(self.hid_type, output_size=1),
+            enn.GroupPooling(self.hid_type),  # D4-invariant output
+        )
+
+        # Vector MLP
+        if vector_size > 0:
+            self.vector_mlp = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(vector_size, hidden_size)),
+                nn.ReLU(),
+            )
+            # Value head: encoder output (n_hidden) + vector MLP (hidden_size)
+            feature_size = n_hidden + hidden_size
+            if centralised:
+                self.head = pufferlib.pytorch.layer_init(
+                    nn.Linear(feature_size * n_agents, 1), std=1.0
+                )
+            else:
+                self.head = nn.Sequential(
+                    pufferlib.pytorch.layer_init(nn.Linear(feature_size, hidden_size)),
+                    nn.ReLU(),
+                    pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=1.0),
+                )
+        else:
+            self.vector_mlp = None
+            if centralised:
+                self.head = pufferlib.pytorch.layer_init(
+                    nn.Linear(n_hidden * n_agents, 1), std=1.0
+                )
+            else:
+                self.head = nn.Sequential(
+                    pufferlib.pytorch.layer_init(nn.Linear(n_hidden, hidden_size)),
+                    nn.ReLU(),
+                    pufferlib.pytorch.layer_init(nn.Linear(hidden_size, 1), std=1.0),
+                )
+
+    def forward(self, obs: torch.Tensor, vector: torch.Tensor = None) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            obs: Observation tensor of shape [..., n_agents, C, H, W]
+            vector: Optional vector observation of shape [..., vector_size]
+
+        Returns:
+            State values of shape [..., n_agents, 1]
+        """
+        batch_shape = obs.shape[:-4]
+        n_agents_dim = obs.shape[-4]
+
+        obs_flat = obs.reshape(-1, *obs.shape[-3:])
+
+        # Equivariant encoding with GroupPooling → invariant
+        geom_obs = enn.GeometricTensor(obs_flat, self.in_type)
+        features = self.encoder(geom_obs).tensor  # [B, n_hidden, 1, 1]
+        features = features.flatten(1)  # [B, n_hidden]
+
+        # Concatenate with vector features if available
+        if self.vector_size > 0 and vector is not None:
+            vector_flat = vector.reshape(-1, self.vector_size)
+            vector_features = self.vector_mlp(vector_flat)
+            features = torch.cat([features, vector_features], dim=1)
+
+        if self.centralised:
+            features = features.reshape(*batch_shape, -1)
+            value = self.head(features)
+            return value.unsqueeze(-2).expand(*batch_shape, self.n_agents, 1)
+        else:
+            values = self.head(features)
+            return values.reshape(*batch_shape, n_agents_dim, 1)
