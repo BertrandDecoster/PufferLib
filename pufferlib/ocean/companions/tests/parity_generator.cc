@@ -16,9 +16,9 @@ using namespace companions;
 
 // Binary file format constants
 constexpr uint32_t PARITY_MAGIC = 0x50415249;  // "PARI"
-constexpr uint32_t PARITY_VERSION = 1;
+constexpr uint32_t PARITY_VERSION = 2;  // v2: includes vector observations
 
-// File header (48 bytes)
+// File header (52 bytes) - v2 adds vector_obs_size
 struct ParityHeader {
     uint32_t magic;
     uint32_t version;
@@ -32,6 +32,7 @@ struct ParityHeader {
     uint32_t map_complexity;
     uint32_t horizon;
     uint32_t num_episodes;
+    uint32_t vector_obs_size;  // v2: size of vector observation per agent
 };
 
 // Write a step record to binary file
@@ -130,8 +131,10 @@ int main(int argc, char** argv) {
     std::uniform_int_distribution<int> move_dist(0, 4);
     std::uniform_int_distribution<int> interact_dist(0, 1);
 
-    // Allocate buffers
-    int obs_size = 5 * rows * cols;
+    // Allocate buffers - tensor + vector observations
+    int tensor_size = 5 * rows * cols;
+    int vector_obs_size = env.VectorObservationSize();
+    int obs_size = tensor_size + vector_obs_size;  // Total per agent
     std::vector<int> actions(num_agents * 2);
     std::vector<float> observations(num_agents * obs_size);
     std::vector<float> rewards(num_agents);
@@ -157,19 +160,21 @@ int main(int argc, char** argv) {
         num_synchro,
         map_complexity,
         horizon,
-        0  // num_episodes - updated at end
+        0,  // num_episodes - updated at end
+        static_cast<uint32_t>(vector_obs_size)
     };
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
-    // Initial reset
-    env.Reset(env_seed);
+    // Initial reset - seed starts at env_seed and increments on each reset
+    uint32_t current_seed = env_seed;
+    env.Reset(current_seed++);
 
-    // Collect initial observations (step 0)
+    // Collect initial observations (step 0) - tensor + vector
     for (uint32_t agent = 0; agent < num_agents; agent++) {
-        std::vector<float> obs;
-        env.ObservationTensor(obs, agent);
-        std::memcpy(observations.data() + agent * obs_size,
-                    obs.data(), obs_size * sizeof(float));
+        // Write tensor observation
+        env.WriteObservationTensor(observations.data() + agent * obs_size, agent);
+        // Write vector observation (appended after tensor)
+        env.WriteVectorObservation(observations.data() + agent * obs_size + tensor_size, agent);
     }
     std::fill(actions.begin(), actions.end(), 0);
     std::fill(rewards.begin(), rewards.end(), 0.0f);
@@ -199,12 +204,12 @@ int main(int argc, char** argv) {
         // Step environment
         StepResult result = env.Step(cpp_actions);
 
-        // Collect observations
+        // Collect observations - tensor + vector
         for (uint32_t agent = 0; agent < num_agents; agent++) {
-            std::vector<float> obs;
-            env.ObservationTensor(obs, agent);
-            std::memcpy(observations.data() + agent * obs_size,
-                        obs.data(), obs_size * sizeof(float));
+            // Write tensor observation
+            env.WriteObservationTensor(observations.data() + agent * obs_size, agent);
+            // Write vector observation (appended after tensor)
+            env.WriteVectorObservation(observations.data() + agent * obs_size + tensor_size, agent);
             rewards[agent] = static_cast<float>(result.rewards[agent]);
             terminals[agent] = result.done ? 1 : 0;
         }
@@ -213,15 +218,15 @@ int main(int argc, char** argv) {
         uint32_t reset_seed = 0;
         if (result.done) {
             num_episodes++;
-            reset_seed = 1;  // Flag that reset occurred
-            env.Reset();     // Unseeded reset, matches synchro_wrapper.cc::c_step
+            reset_seed = current_seed;  // Store seed used for reset
+            env.Reset(current_seed++);  // Seeded reset, matches synchro_wrapper.cc::c_step
 
-            // Overwrite observations with post-reset state
+            // Overwrite observations with post-reset state - tensor + vector
             for (uint32_t agent = 0; agent < num_agents; agent++) {
-                std::vector<float> obs;
-                env.ObservationTensor(obs, agent);
-                std::memcpy(observations.data() + agent * obs_size,
-                            obs.data(), obs_size * sizeof(float));
+                // Write tensor observation
+                env.WriteObservationTensor(observations.data() + agent * obs_size, agent);
+                // Write vector observation (appended after tensor)
+                env.WriteVectorObservation(observations.data() + agent * obs_size + tensor_size, agent);
             }
         }
 

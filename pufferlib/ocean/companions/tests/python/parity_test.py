@@ -14,16 +14,35 @@ import numpy as np
 
 # Binary file format constants
 PARITY_MAGIC = 0x50415249  # "PARI"
-PARITY_VERSION = 1
-HEADER_FORMAT = '<IIIIIIIIIIII'  # 12 uint32s, little-endian
-HEADER_SIZE = 48
+PARITY_VERSION_V1 = 1  # tensor only
+PARITY_VERSION_V2 = 2  # tensor + vector
+HEADER_FORMAT_V1 = '<IIIIIIIIIIII'  # 12 uint32s, little-endian
+HEADER_FORMAT_V2 = '<IIIIIIIIIIIII'  # 13 uint32s, little-endian (adds vector_obs_size)
+HEADER_SIZE_V1 = 48
+HEADER_SIZE_V2 = 52
 
 
 class ParityHeader:
     """Binary file header."""
 
     def __init__(self, data: bytes):
-        fields = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
+        # Peek at version to determine format
+        magic, version = struct.unpack('<II', data[:8])
+
+        if magic != PARITY_MAGIC:
+            raise ValueError(f"Invalid magic: {hex(magic)}, expected {hex(PARITY_MAGIC)}")
+
+        if version == PARITY_VERSION_V1:
+            fields = struct.unpack(HEADER_FORMAT_V1, data[:HEADER_SIZE_V1])
+            self.vector_obs_size = 0  # v1 had tensor only
+            self.header_size = HEADER_SIZE_V1
+        elif version == PARITY_VERSION_V2:
+            fields = struct.unpack(HEADER_FORMAT_V2, data[:HEADER_SIZE_V2])
+            self.vector_obs_size = fields[12]
+            self.header_size = HEADER_SIZE_V2
+        else:
+            raise ValueError(f"Unsupported version: {version}")
+
         self.magic = fields[0]
         self.version = fields[1]
         self.env_seed = fields[2]
@@ -37,17 +56,17 @@ class ParityHeader:
         self.horizon = fields[10]
         self.num_episodes = fields[11]
 
-        if self.magic != PARITY_MAGIC:
-            raise ValueError(f"Invalid magic: {hex(self.magic)}, expected {hex(PARITY_MAGIC)}")
-        if self.version != PARITY_VERSION:
-            raise ValueError(f"Unsupported version: {self.version}")
+        # Compute observation sizes
+        self.tensor_size = 5 * self.rows * self.cols
+        self.obs_size = self.tensor_size + self.vector_obs_size
 
     def __repr__(self):
         return (
-            f"ParityHeader(env_seed={self.env_seed}, action_seed={self.action_seed}, "
+            f"ParityHeader(v{self.version}, env_seed={self.env_seed}, action_seed={self.action_seed}, "
             f"steps={self.num_steps}, agents={self.num_agents}, grid={self.rows}x{self.cols}, "
             f"synchro={self.num_synchro}, complexity={self.map_complexity}, "
-            f"horizon={self.horizon}, episodes={self.num_episodes})"
+            f"horizon={self.horizon}, episodes={self.num_episodes}, "
+            f"vector_obs={self.vector_obs_size})"
         )
 
 
@@ -59,19 +78,15 @@ def load_reference(path: Path):
         records: list of dicts with keys: actions, observations, rewards, terminals, reset_seed
     """
     with open(path, 'rb') as f:
-        header = ParityHeader(f.read(HEADER_SIZE))
+        # Read enough bytes for max header size
+        header_data = f.read(HEADER_SIZE_V2)
+        header = ParityHeader(header_data)
 
-        obs_size = header.num_agents * 5 * header.rows * header.cols
+        # Seek to correct position after header
+        f.seek(header.header_size)
+
+        obs_size = header.num_agents * header.obs_size  # tensor + vector per agent
         action_size = header.num_agents * 2
-
-        # Calculate record size
-        record_size = (
-            action_size * 4 +      # int32 actions
-            obs_size * 4 +         # float32 observations
-            header.num_agents * 4 + # float32 rewards
-            header.num_agents +     # uint8 terminals
-            4                       # uint32 reset_seed
-        )
 
         records = []
         # +1 for initial observation record
@@ -82,9 +97,10 @@ def load_reference(path: Path):
             terminals = np.frombuffer(f.read(header.num_agents), dtype=np.uint8).copy()
             reset_seed = struct.unpack('<I', f.read(4))[0]
 
+            # Reshape observations: [num_agents, obs_size] flattened
             records.append({
                 'actions': actions.reshape(header.num_agents, 2),
-                'observations': observations.reshape(header.num_agents, 5, header.rows, header.cols),
+                'observations': observations.reshape(header.num_agents, header.obs_size),
                 'rewards': rewards,
                 'terminals': terminals,
                 'reset_seed': reset_seed,
@@ -133,7 +149,8 @@ def test_parity(reference_path: Path, verbose: bool = False):
 
     # Create environment using low-level binding
     # Allocate numpy arrays for observations, actions, rewards, terminals
-    obs_shape = (header.num_agents, 5, header.rows, header.cols)
+    # v2 format: flattened tensor + vector per agent
+    obs_shape = (header.num_agents, header.obs_size)
     observations = np.zeros(obs_shape, dtype=np.float32)
     actions = np.zeros((header.num_agents, 2), dtype=np.int32)
     rewards = np.zeros(header.num_agents, dtype=np.float32)

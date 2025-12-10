@@ -55,5 +55,5 @@ fi
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Compilation and Tests all succeeded!${NC}"
+echo -e "${GREEN}Build and Tests all succeeded!${NC}"
 echo -e "${GREEN}========================================${NC}"
