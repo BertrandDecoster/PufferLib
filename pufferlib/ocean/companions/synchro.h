@@ -20,7 +20,8 @@ typedef struct {
 // C-compatible environment struct
 typedef struct {
     Log log;                       // Required first field
-    float* observations;           // [num_agents, 8] vector observations
+    float* observations;           // [num_agents, tensor_size + 9] flattened observations
+                                   // tensor: 5 * rows * cols, vector: 9 features
     int* actions;                  // [num_agents, 2] MultiDiscrete actions
     float* rewards;                // [num_agents]
     unsigned char* terminals;      // [num_agents]
@@ -33,12 +34,14 @@ typedef struct {
     int map_complexity;
     int horizon;
     int d4_transform;              // D4 symmetry (0-7), CCW convention
+    int overfit;                   // If true, always reset to same seed (for equivariance testing)
     int vector_obs_size;           // Size of vector observation (appended to tensor)
 
     // Internal state
     void* cpp_env;                 // Opaque pointer to companions::SynchroEnv
     float cumulative_reward;       // Track episode reward
     int episode_steps;             // Track episode length
+    unsigned int seed;             // Current seed for deterministic episode resets
 
     // Rendering
     char* render_buffer;           // Buffer for ASCII rendering output

@@ -39,6 +39,7 @@ class Synchro(pufferlib.PufferEnv):
         map_complexity: int = 0,
         horizon: int = 100,
         d4_transform: int = 0,  # D4 symmetry (0-7), CCW convention
+        overfit: bool = False,  # If True, always reset to same seed (for equivariance testing)
         report_interval: int = 128,
         render_mode: str = None,
         buf=None,
@@ -90,6 +91,7 @@ class Synchro(pufferlib.PufferEnv):
                 map_complexity=map_complexity,
                 horizon=horizon,
                 d4_transform=d4_transform,
+                overfit=int(overfit if isinstance(overfit, bool) else str(overfit).lower() in ('true', '1', 'yes')),
             )
             c_envs.append(env_id)
 
@@ -125,6 +127,8 @@ class Synchro(pufferlib.PufferEnv):
 
     def render(self):
         """Render the first environment and return ASCII string."""
+        if self.render_mode is None:
+            return None
         if self._env_handles:
             return binding.env_render_string(self._env_handles[0])
         return ""
