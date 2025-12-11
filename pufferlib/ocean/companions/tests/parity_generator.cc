@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/core/pcg32.h"
 #include "../src/core/types.h"
 #include "../src/env/synchro_env.h"
 
@@ -127,7 +128,7 @@ int main(int argc, char** argv) {
                    map_complexity, env_seed, 0, horizon);
 
     // Create action RNG
-    std::mt19937 action_rng(action_seed);
+    pcg32 action_rng(action_seed);
     std::uniform_int_distribution<int> move_dist(0, 4);
     std::uniform_int_distribution<int> interact_dist(0, 1);
 

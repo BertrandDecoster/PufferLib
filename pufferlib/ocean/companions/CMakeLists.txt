@@ -143,7 +143,7 @@ target_link_libraries(companions_d4_transform_test companions_viz companions_env
 target_include_directories(companions_d4_transform_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # =============================================================================
-# Demo executable
+# Demo executable (cross-platform)
 # =============================================================================
 add_executable(companions_demo src/demo/play_demo.cc)
 target_link_libraries(companions_demo companions_viz companions_env companions_core)

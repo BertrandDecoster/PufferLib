@@ -4,6 +4,7 @@
 #include "level_builder.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace companions {
 

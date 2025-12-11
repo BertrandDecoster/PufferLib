@@ -698,7 +698,7 @@ void BaseEnv::ExecuteValidatedMovements() {
 }
 
 std::vector<Position> BaseEnv::FindEmptyCells(
-    int count, std::mt19937& rng,
+    int count, pcg32& rng,
     std::optional<Rectangle> include,
     std::optional<Rectangle> exclude) {
   // Get all Floor cells

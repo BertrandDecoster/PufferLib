@@ -4,10 +4,10 @@
 #ifndef COMPANIONS_ENV_SYNCHRO_ENV_H_
 #define COMPANIONS_ENV_SYNCHRO_ENV_H_
 
-#include <random>
 #include <vector>
 
 #include "base_env.h"
+#include "../core/pcg32.h"
 
 namespace companions {
 
@@ -84,7 +84,7 @@ class SynchroEnv : public BaseEnv {
   int num_companions_;
   int num_synchro_;
   int map_complexity_ = 0;  // 0-5, curriculum learning parameter
-  std::mt19937 rng_;
+  pcg32 rng_;
   std::vector<Position> synchro_positions_;
   bool success_ = false;
 };

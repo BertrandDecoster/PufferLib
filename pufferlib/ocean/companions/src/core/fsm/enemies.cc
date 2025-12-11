@@ -29,7 +29,7 @@ MovementAction PositionToMovement(Position from, Position to) {
 
 // Helper to load FSM configuration from registry with fallback defaults
 void LoadFSMConfig(FSMContext& ctx, const std::string& type_name,
-                   const std::vector<Position>& patrol_path, std::mt19937& rng,
+                   const std::vector<Position>& patrol_path, pcg32& rng,
                    int default_detection, int default_lose_target) {
   ctx.patrol_path = patrol_path;
   ctx.patrol_index = 0;
@@ -191,7 +191,7 @@ void Dragon::MoveTo(Position target, const BaseEnv& env) {
 // =============================================================================
 Zombie* CreateZombie(ObjectManager& mgr, Position pos,
                      const std::vector<Position>& patrol_path,
-                     std::mt19937& rng) {
+                     pcg32& rng) {
   assert(ValidatePatrolPath(patrol_path) && "Patrol path must be orthogonal");
 
   auto* zombie = mgr.CreateActor<Zombie>(pos);
@@ -204,7 +204,7 @@ Zombie* CreateZombie(ObjectManager& mgr, Position pos,
 
 Goblin* CreateGoblin(ObjectManager& mgr, Position pos,
                      const std::vector<Position>& patrol_path,
-                     std::mt19937& rng) {
+                     pcg32& rng) {
   assert(ValidatePatrolPath(patrol_path) && "Patrol path must be orthogonal");
 
   auto* goblin = mgr.CreateActor<Goblin>(pos);
@@ -217,7 +217,7 @@ Goblin* CreateGoblin(ObjectManager& mgr, Position pos,
 
 Dragon* CreateDragon(ObjectManager& mgr, Position pos,
                      const std::vector<Position>& patrol_path,
-                     std::mt19937& rng) {
+                     pcg32& rng) {
   assert(ValidatePatrolPath(patrol_path) && "Patrol path must be orthogonal");
 
   auto* dragon = mgr.CreateActor<Dragon>(pos);

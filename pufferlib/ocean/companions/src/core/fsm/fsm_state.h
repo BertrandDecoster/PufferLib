@@ -4,11 +4,11 @@
 #ifndef COMPANIONS_CORE_FSM_FSM_STATE_H_
 #define COMPANIONS_CORE_FSM_FSM_STATE_H_
 
-#include <random>
 #include <string>
 #include <vector>
 
 #include "../agent_config.h"
+#include "../pcg32.h"
 #include "../types.h"
 
 namespace companions {
@@ -62,7 +62,7 @@ struct FSMContext {
   AttackIntent current_attack;  // Active attack being prepared/executed
 
   // RNG for deterministic tie-breaking
-  std::mt19937* rng = nullptr;
+  pcg32* rng = nullptr;
 };
 
 // =============================================================================

@@ -4,11 +4,11 @@
 #ifndef COMPANIONS_ENV_DODGE_ENV_H_
 #define COMPANIONS_ENV_DODGE_ENV_H_
 
-#include <random>
 #include <string>
 #include <vector>
 
 #include "base_env.h"
+#include "../core/pcg32.h"
 
 namespace companions {
 
@@ -96,7 +96,7 @@ class DodgeEnv : public BaseEnv {
   int num_companions_;
   int hazard_interval_;
   unsigned int seed_;
-  std::mt19937 rng_;
+  pcg32 rng_;
 
   bool success_ = false;
   bool any_dead_ = false;

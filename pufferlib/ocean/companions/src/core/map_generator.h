@@ -181,10 +181,10 @@
 
 #include <climits>
 #include <memory>
-#include <random>
 #include <vector>
 
 #include "grid.h"
+#include "pcg32.h"
 #include "types.h"
 
 namespace companions {
@@ -333,7 +333,7 @@ class MapGenerator {
 
   MapConfig config_;
   std::unique_ptr<Grid> grid_;
-  std::mt19937 rng_;
+  pcg32 rng_;
 };
 
 }  // namespace companions

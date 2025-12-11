@@ -4,11 +4,11 @@
 #ifndef COMPANIONS_CORE_FSM_ENEMIES_H_
 #define COMPANIONS_CORE_FSM_ENEMIES_H_
 
-#include <random>
 #include <vector>
 
 #include "../object.h"
 #include "../object_manager.h"
+#include "../pcg32.h"
 #include "fsm_state.h"
 
 namespace companions {
@@ -80,7 +80,7 @@ class Dragon : public AgentFSM {
 // - Lose target range: 5
 Zombie* CreateZombie(ObjectManager& mgr, Position pos,
                      const std::vector<Position>& patrol_path,
-                     std::mt19937& rng);
+                     pcg32& rng);
 
 // Create a Goblin with FSM configured
 // - Cadence: none (moves every turn)
@@ -88,7 +88,7 @@ Zombie* CreateZombie(ObjectManager& mgr, Position pos,
 // - Lose target range: 6
 Goblin* CreateGoblin(ObjectManager& mgr, Position pos,
                      const std::vector<Position>& patrol_path,
-                     std::mt19937& rng);
+                     pcg32& rng);
 
 // Create a Dragon with FSM configured
 // - Cadence: none (moves every turn)
@@ -96,7 +96,7 @@ Goblin* CreateGoblin(ObjectManager& mgr, Position pos,
 // - Lose target range: 8
 Dragon* CreateDragon(ObjectManager& mgr, Position pos,
                      const std::vector<Position>& patrol_path,
-                     std::mt19937& rng);
+                     pcg32& rng);
 
 // =============================================================================
 // Patrol Path Validation

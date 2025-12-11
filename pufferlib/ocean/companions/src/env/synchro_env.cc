@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <random>
 #include <stdexcept>
 
 #include "../core/cell.h"

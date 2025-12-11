@@ -6,11 +6,11 @@
 
 #include <memory>
 #include <optional>
-#include <random>
 #include <string>
 #include <vector>
 
 #include "../core/d4_transform.h"
+#include "../core/pcg32.h"
 #include "../core/effect_config.h"
 #include "../core/grid.h"
 #include "../core/object_manager.h"
@@ -114,7 +114,7 @@ class BaseEnv {
   // - exclude: if set, cells must NOT be inside this rectangle
   // Returns shuffled cells, throws if count > 0 and not enough available
   std::vector<Position> FindEmptyCells(
-      int count, std::mt19937& rng,
+      int count, pcg32& rng,
       std::optional<Rectangle> include = std::nullopt,
       std::optional<Rectangle> exclude = std::nullopt);
 

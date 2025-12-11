@@ -5,11 +5,11 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
-#include <random>
 #include <string>
 #include <vector>
 
 #include "../../src/core/fsm/enemies.h"
+#include "../../src/core/pcg32.h"
 #include "../../src/core/fsm/fsm_state.h"
 #include "../../src/core/fsm/fsm_states.h"
 #include "../../src/core/level_builder.h"
@@ -62,7 +62,7 @@ BenchmarkResult BenchmarkSingleZombieFSMUpdate(int iterations) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create a zombie
   std::vector<Position> patrol_path = {{2, 2}, {2, 8}, {8, 8}, {8, 2}};
@@ -94,7 +94,7 @@ BenchmarkResult BenchmarkMultipleZombiesFSMUpdate(int num_zombies, int iteration
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create multiple zombies with different patrol paths
   std::vector<Zombie*> zombies;
@@ -140,7 +140,7 @@ BenchmarkResult BenchmarkFullEnvStepWithFSM(int num_zombies, int iterations) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombies
   for (int i = 0; i < num_zombies; ++i) {
@@ -178,7 +178,7 @@ BenchmarkResult BenchmarkEnvStepBaseline(int grid_size, int iterations) {
   SynchroEnv env(grid_size, grid_size, 3, 1, 42);
   env.Reset(42);
 
-  std::mt19937 rng(42);
+  pcg32 rng(42);
   std::vector<Action> actions(env.NumAgents());
 
   // Warm up
@@ -226,7 +226,7 @@ BenchmarkResult BenchmarkStateTransition(int iterations) {
   Position comp_pos = companions[0]->GetPosition();
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create goblin that will constantly transition between states
   Position goblin_pos = {comp_pos.row, comp_pos.col + 3};  // Just at detection edge

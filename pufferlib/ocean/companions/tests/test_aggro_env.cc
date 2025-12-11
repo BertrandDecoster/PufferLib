@@ -1,9 +1,10 @@
 // Copyright 2024
 // Unit tests for AggroEnv
 
-#include <cstdlib>
 #include <iostream>
 #include <random>
+#include <sstream>
+#include <stdexcept>
 #include <vector>
 
 #include "../src/core/cell.h"
@@ -27,44 +28,50 @@ using namespace companions;
 
 #define ASSERT_TRUE(cond)                                                    \
   if (!(cond)) {                                                             \
-    std::cerr << "ASSERT_TRUE failed: " << #cond << " at " << __FILE__ << ":" \
-              << __LINE__ << "\n";                                           \
-    std::abort();                                                            \
+    std::ostringstream oss;                                                  \
+    oss << "ASSERT_TRUE failed: " << #cond << " at " << __FILE__ << ":"      \
+        << __LINE__;                                                         \
+    throw std::runtime_error(oss.str());                                     \
   }
 
 #define ASSERT_FALSE(cond)                                                    \
   if (cond) {                                                                 \
-    std::cerr << "ASSERT_FALSE failed: " << #cond << " at " << __FILE__ << ":" \
-              << __LINE__ << "\n";                                            \
-    std::abort();                                                             \
+    std::ostringstream oss;                                                  \
+    oss << "ASSERT_FALSE failed: " << #cond << " at " << __FILE__ << ":"     \
+        << __LINE__;                                                         \
+    throw std::runtime_error(oss.str());                                     \
   }
 
 #define ASSERT_EQ(a, b)                                                       \
   if ((a) != (b)) {                                                           \
-    std::cerr << "ASSERT_EQ failed: " << #a << " != " << #b << " at "         \
-              << __FILE__ << ":" << __LINE__ << "\n";                         \
-    std::abort();                                                             \
+    std::ostringstream oss;                                                  \
+    oss << "ASSERT_EQ failed: " << #a << " != " << #b << " at "              \
+        << __FILE__ << ":" << __LINE__;                                      \
+    throw std::runtime_error(oss.str());                                     \
   }
 
 #define ASSERT_GE(a, b)                                                       \
   if ((a) < (b)) {                                                            \
-    std::cerr << "ASSERT_GE failed: " << #a << " < " << #b << " at "          \
-              << __FILE__ << ":" << __LINE__ << "\n";                         \
-    std::abort();                                                             \
+    std::ostringstream oss;                                                  \
+    oss << "ASSERT_GE failed: " << #a << " < " << #b << " at "               \
+        << __FILE__ << ":" << __LINE__;                                      \
+    throw std::runtime_error(oss.str());                                     \
   }
 
 #define ASSERT_LE(a, b)                                                       \
   if ((a) > (b)) {                                                            \
-    std::cerr << "ASSERT_LE failed: " << #a << " > " << #b << " at "          \
-              << __FILE__ << ":" << __LINE__ << "\n";                         \
-    std::abort();                                                             \
+    std::ostringstream oss;                                                  \
+    oss << "ASSERT_LE failed: " << #a << " > " << #b << " at "               \
+        << __FILE__ << ":" << __LINE__;                                      \
+    throw std::runtime_error(oss.str());                                     \
   }
 
 #define ASSERT_GT(a, b)                                                       \
   if ((a) <= (b)) {                                                           \
-    std::cerr << "ASSERT_GT failed: " << #a << " <= " << #b << " at "         \
-              << __FILE__ << ":" << __LINE__ << "\n";                         \
-    std::abort();                                                             \
+    std::ostringstream oss;                                                  \
+    oss << "ASSERT_GT failed: " << #a << " <= " << #b << " at "              \
+        << __FILE__ << ":" << __LINE__;                                      \
+    throw std::runtime_error(oss.str());                                     \
   }
 
 struct TestEntry {
@@ -670,7 +677,17 @@ TEST(TestAggroEnvFullGameLoopWinScenario) {
 // =============================================================================
 // Main
 // =============================================================================
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 int main() {
+#ifdef _WIN32
+  // Disable Windows error dialogs (crash reports, assert dialogs)
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+
   std::cout << "Running " << tests.size() << " AggroEnv tests...\n\n";
 
   int passed = 0;

@@ -1,13 +1,14 @@
 // Copyright 2024
 // Unit tests for FSM enemy AI
 
-#include <cstdlib>
 #include <iostream>
-#include <random>
+#include <sstream>
+#include <stdexcept>
 #include <vector>
 
 #include "../src/core/effect_config.h"
 #include "../src/core/fsm/enemies.h"
+#include "../src/core/pcg32.h"
 #include "../src/core/fsm/fsm_state.h"
 #include "../src/core/fsm/fsm_states.h"
 #include "../src/core/grid.h"
@@ -31,26 +32,30 @@ using namespace companions;
 
 #define ASSERT_TRUE(cond) \
   if (!(cond)) { \
-    std::cerr << "ASSERT_TRUE failed: " << #cond << " at " << __FILE__ << ":" << __LINE__ << "\n"; \
-    std::abort(); \
+    std::ostringstream oss; \
+    oss << "ASSERT_TRUE failed: " << #cond << " at " << __FILE__ << ":" << __LINE__; \
+    throw std::runtime_error(oss.str()); \
   }
 
 #define ASSERT_FALSE(cond) \
   if (cond) { \
-    std::cerr << "ASSERT_FALSE failed: " << #cond << " at " << __FILE__ << ":" << __LINE__ << "\n"; \
-    std::abort(); \
+    std::ostringstream oss; \
+    oss << "ASSERT_FALSE failed: " << #cond << " at " << __FILE__ << ":" << __LINE__; \
+    throw std::runtime_error(oss.str()); \
   }
 
 #define ASSERT_EQ(a, b) \
   if ((a) != (b)) { \
-    std::cerr << "ASSERT_EQ failed: " << #a << " != " << #b << " at " << __FILE__ << ":" << __LINE__ << "\n"; \
-    std::abort(); \
+    std::ostringstream oss; \
+    oss << "ASSERT_EQ failed: " << #a << " != " << #b << " at " << __FILE__ << ":" << __LINE__; \
+    throw std::runtime_error(oss.str()); \
   }
 
 #define ASSERT_NE(a, b) \
   if ((a) == (b)) { \
-    std::cerr << "ASSERT_NE failed: " << #a << " == " << #b << " at " << __FILE__ << ":" << __LINE__ << "\n"; \
-    std::abort(); \
+    std::ostringstream oss; \
+    oss << "ASSERT_NE failed: " << #a << " == " << #b << " at " << __FILE__ << ":" << __LINE__; \
+    throw std::runtime_error(oss.str()); \
   }
 
 struct TestEntry {
@@ -96,7 +101,7 @@ TEST(TestZombieCadence) {
   builder.Fill(CellKind::Floor);
 
   ObjectManager mgr(8, 8);
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie at position (4, 4)
   std::vector<Position> patrol_path = {{4, 4}, {4, 6}};
@@ -123,7 +128,7 @@ TEST(TestZombieStaysOnOffTick) {
   env.Reset();
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie at position (2, 2)
   std::vector<Position> patrol_path = {{2, 2}, {2, 5}};
@@ -147,7 +152,7 @@ TEST(TestGoblinAlwaysMoves) {
   builder.Fill(CellKind::Floor);
 
   ObjectManager mgr(8, 8);
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   std::vector<Position> patrol_path = {{3, 3}, {3, 6}};
   Goblin* goblin = CreateGoblin(mgr, {3, 3}, patrol_path, rng);
@@ -164,7 +169,7 @@ TEST(TestGoblinAlwaysMoves) {
 // =============================================================================
 TEST(TestDragonIsFlying) {
   ObjectManager mgr(8, 8);
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   std::vector<Position> patrol_path = {{4, 4}};
   Dragon* dragon = CreateDragon(mgr, {4, 4}, patrol_path, rng);
@@ -184,7 +189,7 @@ TEST(TestDragonIgnoresWalls) {
   grid.SetCell({3, 5}, CellKind::Wall);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create dragon at (2, 4), target at (5, 4) - wall in between
   std::vector<Position> patrol_path = {{2, 4}};
@@ -206,7 +211,7 @@ TEST(TestPatrolStateMovesToWaypoint) {
   env.Reset();
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie at (2, 3) with patrol path ending at (2, 5)
   // Zombie starts in BETWEEN waypoints so it will move toward waypoint
@@ -233,7 +238,7 @@ TEST(TestPatrolStateDetectsCompanion) {
   Position comp_pos = companions[0]->GetPosition();
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie within detection range (3) - at distance 2
   Position zombie_pos = {comp_pos.row, comp_pos.col + 2};  // 2 cells away
@@ -256,7 +261,7 @@ TEST(TestPatrolStateNoDetection) {
   Position comp_pos = companions[0]->GetPosition();
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie far from companion (detection range is 3)
   Position zombie_pos = {comp_pos.row + 5, comp_pos.col + 5};
@@ -281,7 +286,7 @@ TEST(TestAggroStateFollowsTarget) {
   Position comp_pos = companions[0]->GetPosition();
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create goblin at distance 2 from companion
   Position goblin_pos = {comp_pos.row, comp_pos.col + 2};
@@ -301,7 +306,7 @@ TEST(TestAggroStateLosesTarget) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie with target_id set but target far away
   Position zombie_pos = {1, 1};
@@ -333,7 +338,7 @@ TEST(TestAggroTransitionsToTelegraphWhenMovingAdjacent) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   auto companions = mgr.GetAllCompanions();
   mgr.UpdatePosition(companions[0]->GetId(), {4, 4});
@@ -363,7 +368,13 @@ TEST(TestReturnToPatrolStateReturnsToPath) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
+
+  // Move companion far away to avoid detection (detection range is typically 3-5)
+  auto companions = mgr.GetAllCompanions();
+  if (!companions.empty()) {
+    mgr.UpdatePosition(companions[0]->GetId(), {11, 11});  // Corner, far from zombie
+  }
 
   // Create zombie OFF patrol path
   std::vector<Position> patrol_path = {{1, 1}, {1, 5}};
@@ -392,7 +403,7 @@ TEST(TestReturnToPatrolTransitionsToPatrol) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie at patrol waypoint
   std::vector<Position> patrol_path = {{3, 3}, {3, 6}};
@@ -417,7 +428,7 @@ TEST(TestReturnToPatrolReAggrosOnDetection) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Get companion
   auto companions = mgr.GetAllCompanions();
@@ -451,7 +462,7 @@ TEST(TestFullPatrolAggroReturnCycle) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(100);  // Use different seed for more control
+  pcg32 rng(100);  // Use different seed for more control
 
   // Create zombie on patrol path, far from companion initially
   std::vector<Position> patrol_path = {{1, 1}, {1, 5}};
@@ -495,7 +506,7 @@ TEST(TestZombieFullLoop) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create zombie far from companion with a patrol path
   std::vector<Position> patrol_path = {{1, 1}, {1, 5}};
@@ -514,7 +525,7 @@ TEST(TestMultipleEnemiesSameStates) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Create multiple zombies
   Zombie* z1 = CreateZombie(mgr, {1, 1}, {{1, 1}, {1, 3}}, rng);
@@ -534,7 +545,7 @@ TEST(TestDeterministicTieBreak) {
     env.Reset(seed);
 
     ObjectManager& mgr = env.GetMutableObjectManager();
-    std::mt19937 rng(seed);
+    pcg32 rng(seed);
 
     // Create zombie
     Zombie* zombie = CreateZombie(mgr, {6, 6}, {{6, 6}}, rng);
@@ -562,7 +573,7 @@ TEST(TestAggroTransitionsToTelegraph) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Get companion first and place it at known location
   auto companions = mgr.GetAllCompanions();
@@ -600,7 +611,7 @@ TEST(TestTelegraphToAttackToRecovery) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   auto companions = mgr.GetAllCompanions();
   mgr.UpdatePosition(companions[0]->GetId(), {6, 7});
@@ -652,7 +663,7 @@ TEST(TestAttackTargetPositionLockedIn) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   auto companions = mgr.GetAllCompanions();
   Player* companion = dynamic_cast<Player*>(companions[0]);
@@ -729,7 +740,7 @@ TEST(TestFactionSystem) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   auto companions = mgr.GetAllCompanions();
   Player* companion = dynamic_cast<Player*>(companions[0]);
@@ -766,7 +777,7 @@ TEST(TestAttackSequenceOneTick) {
   env.Reset(42);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   // Place companion at known position
   auto companions = mgr.GetAllCompanions();
@@ -825,7 +836,7 @@ TEST(TestDodgeAndReturnGetsDamaged) {
   EffectConfigRegistry::Instance().RegisterConfig(effect_cfg);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   auto companions = mgr.GetAllCompanions();
   ASSERT_EQ(companions.size(), 1);
@@ -900,7 +911,7 @@ TEST(TestFastGoblinDamageViaEffect) {
   EffectConfigRegistry::Instance().RegisterConfig(effect_cfg);
 
   ObjectManager& mgr = env.GetMutableObjectManager();
-  std::mt19937 rng(42);
+  pcg32 rng(42);
 
   auto companions = mgr.GetAllCompanions();
   Player* companion = dynamic_cast<Player*>(companions[0]);
@@ -976,7 +987,7 @@ TEST(TestPathfinderRandomizesDiagonalMovement) {
   int right_count = 0; // (2,3) - moving east
 
   for (int seed = 0; seed < 100; ++seed) {
-    std::mt19937 rng(seed);
+    pcg32 rng(seed);
     Pathfinder pathfinder(grid);
     pathfinder.SetRng(&rng);
     auto path = pathfinder.FindPath(enemy_pos, target_pos);
@@ -1014,7 +1025,7 @@ TEST(TestGoblinRandomizesDiagonalChase) {
     env.Reset(seed);
 
     ObjectManager& mgr = env.GetMutableObjectManager();
-    std::mt19937 rng(seed);
+    pcg32 rng(seed);
 
     // Create goblin
     Goblin* goblin = CreateGoblin(mgr, goblin_start, {goblin_start}, rng);
@@ -1041,7 +1052,17 @@ TEST(TestGoblinRandomizesDiagonalChase) {
 // =============================================================================
 // Main
 // =============================================================================
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 int main() {
+#ifdef _WIN32
+  // Disable Windows error dialogs (crash reports, assert dialogs)
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+
   std::cout << "Running " << tests.size() << " FSM tests...\n\n";
 
   int passed = 0;

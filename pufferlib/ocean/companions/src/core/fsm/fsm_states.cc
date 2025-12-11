@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <random>
 
 #include "../../env/base_env.h"
 #include "../effect_config.h"
@@ -23,7 +24,7 @@ namespace {
 // On ties: keeps existing target if still in range, otherwise uses RNG
 ObjectId FindClosestCompanion(const Position& agent_pos, int detection_range,
                               ObjectId current_target,
-                              const BaseEnv& env, std::mt19937* rng) {
+                              const BaseEnv& env, pcg32* rng) {
   const auto& mgr = env.GetObjectManager();
   int closest_dist = detection_range + 1;
   std::vector<ObjectId> tied_ids;

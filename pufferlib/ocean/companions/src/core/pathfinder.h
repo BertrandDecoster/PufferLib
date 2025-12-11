@@ -5,10 +5,10 @@
 #define COMPANIONS_CORE_PATHFINDER_H_
 
 #include <optional>
-#include <random>
 #include <vector>
 
 #include "grid.h"
+#include "pcg32.h"
 #include "types.h"
 
 namespace companions {
@@ -41,7 +41,7 @@ class Pathfinder {
   // Optional RNG for randomizing tie-breaking when multiple paths are equally
   // optimal (e.g., diagonal movement). When set, the direction exploration
   // order is shuffled, producing varied but still optimal paths.
-  void SetRng(std::mt19937* rng) { rng_ = rng; }
+  void SetRng(pcg32* rng) { rng_ = rng; }
 
   // Main API
   // Returns empty vector if no path exists
@@ -93,7 +93,7 @@ class Pathfinder {
       const std::vector<Position>& jump_points) const;
 
   const Grid& grid_;
-  std::mt19937* rng_ = nullptr;  // Optional RNG for direction randomization
+  pcg32* rng_ = nullptr;  // Optional RNG for direction randomization
 };
 
 }  // namespace companions

@@ -4,10 +4,10 @@
 #ifndef COMPANIONS_ENV_AGGRO_ENV_H_
 #define COMPANIONS_ENV_AGGRO_ENV_H_
 
-#include <random>
 #include <vector>
 
 #include "base_env.h"
+#include "../core/pcg32.h"
 
 namespace companions {
 
@@ -95,7 +95,7 @@ class AggroEnv : public BaseEnv {
   int num_companions_;
   EnemyType enemy_type_;
   unsigned int seed_;
-  std::mt19937 rng_;
+  pcg32 rng_;
 
   Position target_pos_;
   Position enemy_spawn_pos_;           // Enemy's starting position

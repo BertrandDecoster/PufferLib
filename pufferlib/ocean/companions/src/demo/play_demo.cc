@@ -10,10 +10,9 @@
 #include <optional>
 #include <random>
 #include <string>
-#include <termios.h>
-#include <unistd.h>
 #include <vector>
 
+// Include project headers BEFORE Windows headers to avoid macro conflicts
 #include "../core/agent_config.h"
 #include "../core/effect_config.h"
 #include "../core/game_logger.h"
@@ -22,18 +21,61 @@
 #include "../env/synchro_env.h"
 #include "../viz/renderer.h"
 
-namespace companions {
+// Platform-specific headers
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <conio.h>
+#include <windows.h>
+#else
+#include <termios.h>
+#include <unistd.h>
+#endif
 
-// Global flag for signal handling
+// Cross-platform sleep macro
+#ifdef _WIN32
+#define SLEEP_MS(ms) Sleep(ms)
+#else
+#define SLEEP_MS(ms) usleep((ms) * 1000)
+#endif
+
+// Global flag for signal handling (outside namespace for Windows callback)
 volatile sig_atomic_t g_should_exit = 0;
 
+// Windows-specific handlers (must be outside namespace for WINAPI callback)
+#ifdef _WIN32
+void EnableWindowsConsole() {
+  // Enable ANSI escape codes for colors and cursor control
+  HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+  DWORD mode = 0;
+  GetConsoleMode(hOut, &mode);
+  SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+  // Enable UTF-8 output for Unicode characters (■ □)
+  SetConsoleOutputCP(CP_UTF8);
+}
+
+BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
+  if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT) {
+    g_should_exit = 1;
+    return TRUE;
+  }
+  return FALSE;
+}
+#else
 void SignalHandler(int /*signal*/) {
   g_should_exit = 1;
 }
+#endif
 
-// Non-blocking keyboard input handler (Linux/Unix)
+namespace companions {
+
+// Cross-platform keyboard input handler
 class KeyboardInput {
  public:
+#ifdef _WIN32
+  KeyboardInput() {}   // Windows conio is always in raw mode
+  ~KeyboardInput() {}
+#else
   KeyboardInput() {
     // Save old terminal settings
     tcgetattr(STDIN_FILENO, &old_settings_);
@@ -51,6 +93,7 @@ class KeyboardInput {
     // Restore old terminal settings
     tcsetattr(STDIN_FILENO, TCSANOW, &old_settings_);
   }
+#endif
 
   // Returns MovementAction or nullopt if quit/reset requested
   // Returns nullopt with quit=true if 'p' pressed, reset=true if 'r' pressed
@@ -59,12 +102,29 @@ class KeyboardInput {
     quit = false;
     reset = false;
     seed_input = false;
-    char c = getchar();
 
-    // Handle escape sequences (arrow keys)
+#ifdef _WIN32
+    int c = _getch();
+
+    // Handle extended keys (arrow keys on Windows)
+    // Arrow keys return 0 or 224 followed by the actual key code
+    if (c == 0 || c == 224) {
+      int ext = _getch();
+      switch (ext) {
+        case 72: return MovementAction::Up;     // Up arrow
+        case 80: return MovementAction::Down;   // Down arrow
+        case 75: return MovementAction::Left;   // Left arrow
+        case 77: return MovementAction::Right;  // Right arrow
+      }
+      return std::nullopt;  // Unknown extended key
+    }
+#else
+    int c = getchar();
+
+    // Handle escape sequences (arrow keys on Unix)
     if (c == 27) {  // ESC
-      char seq1 = getchar();
-      char seq2 = getchar();
+      int seq1 = getchar();
+      int seq2 = getchar();
       if (seq1 == '[') {
         switch (seq2) {
           case 'A': return MovementAction::Up;
@@ -75,11 +135,12 @@ class KeyboardInput {
       }
       return std::nullopt;  // Unknown escape sequence
     }
+#endif
 
     // Handle digit keys - enter seed input mode
     if (c >= '0' && c <= '9') {
       seed_input = true;
-      seed = ReadSeed(c);
+      seed = ReadSeed(static_cast<char>(c));
       return std::nullopt;
     }
 
@@ -110,7 +171,11 @@ class KeyboardInput {
     std::cout << "\n\033[KEnter seed: " << seed_str << std::flush;
 
     while (true) {
-      char c = getchar();
+#ifdef _WIN32
+      int c = _getch();
+#else
+      int c = getchar();
+#endif
       if (c == '\n' || c == '\r') {
         // Enter pressed - done
         break;
@@ -126,8 +191,8 @@ class KeyboardInput {
         }
       } else if (c >= '0' && c <= '9' && seed_str.length() < 10) {
         // Add digit (max 10 digits for unsigned int)
-        seed_str += c;
-        std::cout << c << std::flush;
+        seed_str += static_cast<char>(c);
+        std::cout << static_cast<char>(c) << std::flush;
       }
       // Ignore other keys
     }
@@ -140,7 +205,9 @@ class KeyboardInput {
   }
 
  private:
+#ifndef _WIN32
   termios old_settings_;
+#endif
 };
 
 void PrintUsage(const char* prog_name) {
@@ -241,10 +308,15 @@ std::string RenderHealth(const Companion* comp) {
 int main(int argc, char* argv[]) {
   using namespace companions;
 
-  // Setup signal handlers for clean shutdown
+  // Setup signal/console handlers for clean shutdown
+#ifdef _WIN32
+  EnableWindowsConsole();
+  SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+#else
   std::signal(SIGTERM, SignalHandler);
   std::signal(SIGHUP, SignalHandler);
   std::signal(SIGINT, SignalHandler);
+#endif
 
   // Default parameters
   std::string env_name = "synchro";
@@ -579,7 +651,7 @@ int main(int argc, char* argv[]) {
       }
 
       // Brief pause to see the update
-      usleep(100000);  // 100ms
+      SLEEP_MS(100);  // 100ms
     }
 
     // Check for signal exit
@@ -625,7 +697,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Brief pause to see the result
-    usleep(1000000);  // 1 second
+    SLEEP_MS(1000);  // 1 second
 
     // Reset for next episode with new seed
     // Recreate environment with new seed (Reset changes map for complexity > 0)
