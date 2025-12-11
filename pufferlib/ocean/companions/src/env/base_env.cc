@@ -714,8 +714,8 @@ std::vector<Position> BaseEnv::FindEmptyCells(
     empty.push_back(pos);
   }
 
-  // Shuffle results
-  std::shuffle(empty.begin(), empty.end(), rng);
+  // Shuffle results (portable_shuffle for cross-platform determinism)
+  portable_shuffle(empty.begin(), empty.end(), rng);
 
   // Return all if count == -1
   if (count == -1) {

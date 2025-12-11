@@ -6,7 +6,9 @@
 #define COMPANIONS_PCG32_H_
 
 #include <cstdint>
+#include <iterator>
 #include <limits>
+#include <utility>
 
 namespace companions {
 
@@ -59,6 +61,22 @@ class pcg32 {
   uint64_t state_;
   uint64_t inc_;
 };
+
+// Portable Fisher-Yates shuffle - identical results on all platforms
+// Unlike std::shuffle, this implementation is guaranteed to produce the same
+// permutation given the same RNG state, regardless of C++ standard library.
+template<typename RandomIt, typename URBG>
+void portable_shuffle(RandomIt first, RandomIt last, URBG&& g) {
+    using diff_t = typename std::iterator_traits<RandomIt>::difference_type;
+    diff_t n = last - first;
+    for (diff_t i = n - 1; i > 0; --i) {
+        // Generate uniform random index in [0, i]
+        diff_t j = static_cast<diff_t>(g() % static_cast<uint32_t>(i + 1));
+        if (i != j) {
+            std::iter_swap(first + i, first + j);
+        }
+    }
+}
 
 }  // namespace companions
 

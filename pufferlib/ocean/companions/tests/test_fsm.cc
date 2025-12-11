@@ -308,6 +308,12 @@ TEST(TestAggroStateLosesTarget) {
   ObjectManager& mgr = env.GetMutableObjectManager();
   pcg32 rng(42);
 
+  // Move companion far away to avoid detection during test
+  auto companions = mgr.GetAllCompanions();
+  if (!companions.empty()) {
+    mgr.UpdatePosition(companions[0]->GetId(), {11, 11});
+  }
+
   // Create zombie with target_id set but target far away
   Position zombie_pos = {1, 1};
   std::vector<Position> patrol_path = {{1, 1}, {1, 3}};
@@ -404,6 +410,12 @@ TEST(TestReturnToPatrolTransitionsToPatrol) {
 
   ObjectManager& mgr = env.GetMutableObjectManager();
   pcg32 rng(42);
+
+  // Move companion far away to avoid detection during test
+  auto companions = mgr.GetAllCompanions();
+  if (!companions.empty()) {
+    mgr.UpdatePosition(companions[0]->GetId(), {11, 11});
+  }
 
   // Create zombie at patrol waypoint
   std::vector<Position> patrol_path = {{3, 3}, {3, 6}};
