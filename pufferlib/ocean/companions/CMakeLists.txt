@@ -176,6 +176,71 @@ add_test(NAME companions_map_generator_test COMMAND companions_map_generator_tes
 add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)
 
 # =============================================================================
+# UE5 DLL (Dynamic library for Unreal Engine 5)
+# =============================================================================
+option(BUILD_UE5_DLL "Build dynamic library for Unreal Engine 5" OFF)
+
+if(BUILD_UE5_DLL)
+  # UE5 API sources
+  set(UE_API_SOURCES
+    src/ue_api/companions_ue.cc
+  )
+
+  set(UE_API_HEADERS
+    src/ue_api/companions_ue.h
+  )
+
+  # Create shared library
+  add_library(companions_ue SHARED ${UE_API_SOURCES} ${UE_API_HEADERS})
+
+  # Link against static libraries (they get compiled into the DLL)
+  target_link_libraries(companions_ue PRIVATE companions_env companions_core)
+
+  # Include directories
+  target_include_directories(companions_ue
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/ue_api
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  # Define export macro
+  target_compile_definitions(companions_ue PRIVATE COMPANIONS_UE_EXPORTS)
+
+  # Windows-specific settings
+  if(WIN32)
+    # Generate import library (.lib) alongside DLL
+    set_target_properties(companions_ue PROPERTIES
+      WINDOWS_EXPORT_ALL_SYMBOLS OFF
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+      ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    )
+  endif()
+
+  # UE5 API test executable
+  add_executable(companions_ue_test tests/test_ue_api.cc)
+  target_link_libraries(companions_ue_test companions_ue)
+  target_include_directories(companions_ue_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/ue_api)
+  add_test(NAME companions_ue_test COMMAND companions_ue_test)
+
+  # UE5 API parity test (verifies UE API matches direct C++ API)
+  add_executable(companions_ue_parity_test tests/test_ue_api_parity.cc)
+  target_link_libraries(companions_ue_parity_test companions_ue companions_env companions_core)
+  target_include_directories(companions_ue_parity_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ue_api
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME companions_ue_parity_test COMMAND companions_ue_parity_test)
+
+  # Install DLL and headers
+  install(TARGETS companions_ue
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+  )
+  install(FILES ${UE_API_HEADERS} DESTINATION include/companions/ue_api)
+endif()
+
+# =============================================================================
 # Installation (optional)
 # =============================================================================
 install(TARGETS companions_core companions_env companions_viz

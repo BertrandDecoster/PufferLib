@@ -164,3 +164,4 @@ pufferlib/ocean/impulse_wars/benchmark/
 *.bin
 *.gz
 trace.json
+/pufferlib/ocean/companions/Testing/Temporary
