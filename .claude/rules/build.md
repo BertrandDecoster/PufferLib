@@ -4,62 +4,44 @@ paths: setup.py, pufferlib/ocean/companions/CMakeLists.txt, pufferlib/ocean/comp
 
 # Build Commands
 
-Three build levels for different workflows:
+## Unified Build Script
 
-| Level | What it builds | Time | When to use |
-|-------|---------------|------|-------------|
-| **Fast** | C++ static libs | ~1s | Iterating on C++ game code |
-| **Full** | C++ + Python bindings + tests | ~5s | After C++ changes need Python testing |
-| **Install** | Everything + all Ocean envs | ~30s | First setup, after `setup.py` changes, after git pull |
-
-## Prerequisites
-
-CMake must be configured once before any builds:
-```bash
-mkdir -p pufferlib/ocean/companions/build
-cd pufferlib/ocean/companions/build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-```
-
-## Fast Build (C++ only)
-
-Builds static libraries. Use when iterating on game logic.
+All builds use a single script with options:
 
 ```bash
-cmake --build pufferlib/ocean/companions/build -j4
+./pufferlib/ocean/companions/scripts/build.sh [OPTIONS]
+
+Options:
+  --release    Build Release config (default: Debug)
+  --clean      Force full rebuild (all libs get fresh timestamps)
+  --python     Also build and test Python bindings
+  --no-test    Skip running tests
 ```
 
-## Full Build (C++ + Python bindings)
-
-The recommended script for companions development:
+### Examples
 
 ```bash
-./pufferlib/ocean/companions/scripts/build_and_test.sh
+# Debug build + tests (fast iteration)
+./scripts/build.sh
+
+# Release build + tests
+./scripts/build.sh --release
+
+# Clean Release build (all libs rebuilt)
+./scripts/build.sh --release --clean
+
+# Full build with Python bindings
+./scripts/build.sh --release --python
 ```
 
-This does:
-1. CMake build (C++ static libs)
-2. C++ tests (ctest)
-3. Python bindings (`setup.py build_companions`)
-4. Python integration test
+## Build Levels
 
-## Full PufferLib Install
-
-Only run when needed (slow ~30s):
-
-```bash
-uv pip install -e .
-```
-
-**When needed:**
-- First time setup
-- After `setup.py` or `pyproject.toml` changes
-- After git pull with dependency changes
-- After changes to non-companions Ocean environments
-
-**NOT needed for:**
-- Day-to-day companions C++ iteration
-- Companions Python code changes
+| Level | Command | Time | When to use |
+|-------|---------|------|-------------|
+| **Fast** | `build.sh` | ~1s | Iterating on C++ game code |
+| **Full** | `build.sh --release --python` | ~5s | After C++ changes need Python testing |
+| **Clean** | `build.sh --release --clean` | ~10s | When libs need fresh timestamps |
+| **Install** | `uv pip install -e .` | ~30s | First setup, after `setup.py` changes |
 
 ## VS Code Tasks
 
@@ -67,18 +49,17 @@ Run via Command Palette → "Run Task":
 
 | Task | Description |
 |------|-------------|
-| `companions-build` | Fast build (C++ only, ~1s) |
-| `companions-build-full` | Full build + tests (~5s) |
-| `companions-test` | Run C++ tests |
-| `companions-test-python` | Run Python tests |
-| `companions-configure` | CMake configure (Release) |
-| `companions-configure-debug` | CMake configure (Debug symbols) |
-| `companions-clean` | Delete build directory |
-| `pufferlib-install` | Full install (~30s, rarely needed) |
+| `companions-build` | Debug build + tests |
+| `companions-build-clean` | Debug clean build + tests |
+| `companions-build-release` | Release build + tests |
+| `companions-build-release-clean` | Release clean build + tests |
+| `companions-build-full` | Release + Python bindings + all tests |
+| `companions-build-full-clean` | Clean full build |
 
 ### Recommended workflow
 
-1. **First time setup:** `companions-configure` → `pufferlib-install`
-2. **C++ iteration:** `companions-build` (fast)
+1. **First time setup:** Run `uv pip install -e .`
+2. **C++ iteration:** `companions-build` (fast Debug)
 3. **Testing Python integration:** `companions-build-full`
-4. **After git pull:** `pufferlib-install` (if setup.py changed), else `companions-build-full`
+4. **Copying libs to other project:** `companions-build-release-clean` (ensures all libs fresh)
+5. **After git pull:** `uv pip install -e .` (if setup.py changed), else `companions-build-full`

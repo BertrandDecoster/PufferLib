@@ -219,6 +219,14 @@ if(BUILD_UE5_DLL)
     )
   endif()
 
+  # Copy data files next to DLL
+  add_custom_command(TARGET companions_ue POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/data"
+          "$<TARGET_FILE_DIR:companions_ue>/data"
+      COMMENT "Copying data files to output directory"
+  )
+
   # UE5 API test executable
   add_executable(companions_ue_test tests/test_ue_api.cc)
   target_link_libraries(companions_ue_test companions_ue)
