@@ -165,3 +165,4 @@ pufferlib/ocean/impulse_wars/benchmark/
 *.gz
 trace.json
 /pufferlib/ocean/companions/Testing/Temporary
+.claude/settings.local.json
