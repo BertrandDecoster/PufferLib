@@ -3,6 +3,7 @@
 
 #include "effect_system.h"
 
+#include <iostream>
 #include <sstream>
 
 #include "../core/agent_config.h"
@@ -38,7 +39,8 @@ void EffectSystem::SpawnEffect(const std::string& effect_name,
   const EffectConfig* config =
       EffectConfigRegistry::Instance().GetConfig(effect_name);
   if (!config) {
-    return;  // Unknown effect, silently ignore
+    std::cerr << "WARNING: Unknown effect '" << effect_name << "' - effect not spawned\n";
+    return;
   }
 
   ActiveEffect effect;
