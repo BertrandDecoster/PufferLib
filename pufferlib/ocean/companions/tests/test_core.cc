@@ -537,6 +537,11 @@ class CollisionTestEnv : public BaseEnv {
     tick_ = 0;
   }
 
+  void Reset(unsigned int seed) override {
+    tick_ = 0;
+    // Seed not used in collision tests
+  }
+
   bool IsDone() const override {
     return false;
   }

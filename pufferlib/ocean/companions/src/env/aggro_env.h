@@ -46,7 +46,7 @@ class AggroEnv : public BaseEnv {
 
   // RL interface
   void Reset() override;
-  void Reset(unsigned int seed);
+  void Reset(unsigned int seed) override;
   bool IsDone() const override;
 
   // Success check

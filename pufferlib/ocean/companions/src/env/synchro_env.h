@@ -43,7 +43,7 @@ class SynchroEnv : public BaseEnv {
 
   // RL interface
   void Reset() override;
-  void Reset(unsigned int seed);  // Reset with specific seed
+  void Reset(unsigned int seed) override;  // Reset with specific seed
   bool IsDone() const override;
 
   // Success check

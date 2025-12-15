@@ -62,6 +62,7 @@ class BaseEnv {
 
   // RL interface
   virtual void Reset() = 0;
+  virtual void Reset(unsigned int seed) = 0;
   virtual StepResult Step(const std::vector<Action>& actions);
   virtual bool IsDone() const = 0;
   virtual bool IsSuccess() const { return false; }  // Override in subclasses
