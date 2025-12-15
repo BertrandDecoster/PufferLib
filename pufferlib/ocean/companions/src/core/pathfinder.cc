@@ -51,8 +51,9 @@ std::vector<Pathfinder::JumpDirection> Pathfinder::GetPrunedDirections(
   // When RNG is set, shuffle directions to randomize tie-breaking.
   // This produces varied but still optimal paths when multiple directions
   // have the same f-cost (e.g., diagonal movement to target).
+  // Uses portable_shuffle for cross-platform determinism.
   if (rng_) {
-    std::shuffle(dirs.begin(), dirs.end(), *rng_);
+    portable_shuffle(dirs.begin(), dirs.end(), *rng_);
   }
 
   return dirs;

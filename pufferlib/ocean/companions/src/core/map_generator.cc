@@ -982,8 +982,8 @@ void MapGenerator::ScatterObstacles(int density_percent) {
   // Calculate number of obstacles to place
   int num_obstacles = static_cast<int>(floor_cells.size()) * density_percent / 100;
 
-  // Shuffle and pick cells for obstacles
-  std::shuffle(floor_cells.begin(), floor_cells.end(), rng_);
+  // Shuffle and pick cells for obstacles (portable_shuffle for cross-platform determinism)
+  portable_shuffle(floor_cells.begin(), floor_cells.end(), rng_);
 
   int placed = 0;
   for (const Position& pos : floor_cells) {
