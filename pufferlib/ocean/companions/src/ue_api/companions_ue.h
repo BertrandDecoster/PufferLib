@@ -179,9 +179,10 @@ typedef struct {
   UE_StatusEffect statuses[UE_MAX_STATUSES];
   int32_t status_count;
 
-  // Last action taken
-  UE_Action last_action;
-  bool action_succeeded;  // Did movement succeed?
+  // Actions - intent (before collision resolution) vs actual (after)
+  UE_Action action_intent;   // What the agent wanted to do
+  UE_Action action_actual;   // What actually happened after validation
+  bool action_succeeded;     // Did movement succeed? (intent == actual)
 } UE_AgentState;
 
 // Cell state snapshot

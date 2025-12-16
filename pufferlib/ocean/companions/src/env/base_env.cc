@@ -77,6 +77,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Gather intentions from actions
   GatherIntentions(actions);
 
+  // Capture original intentions before collision resolution modifies them
+  CaptureOriginalIntentions();
+
   // Resolve collisions (iterative fixed-point)
   ResolveCollisions();
 
@@ -524,6 +527,12 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
         comp->SetDirection(*dir);
       }
     }
+  }
+}
+
+void BaseEnv::CaptureOriginalIntentions() {
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    agent->CaptureOriginalIntention();
   }
 }
 

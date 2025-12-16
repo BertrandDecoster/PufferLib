@@ -192,19 +192,21 @@ static void ExtractAgentState(const companions::Agent* agent,
     out->statuses[i].duration = statuses[i].duration;
   }
 
-  // Last action
-  auto intention = agent->GetIntention();
-  out->last_action.movement =
-      static_cast<UE_MovementAction>(intention.movement);
-  out->last_action.interact =
-      static_cast<UE_InteractAction>(intention.interact);
+  // Actions - intent (before collision resolution) vs actual (after)
+  auto intent = agent->GetOriginalIntention();
+  out->action_intent.movement =
+      static_cast<UE_MovementAction>(intent.movement);
+  out->action_intent.interact =
+      static_cast<UE_InteractAction>(intent.interact);
 
-  // Check if action succeeded (position changed as expected)
-  auto expected = companions::ApplyMovement(
-      prev_pos,
-      intention.movement);
-  out->action_succeeded = (agent->GetPosition() == expected) ||
-                          (intention.movement == companions::MovementAction::Stay);
+  auto actual = agent->GetIntention();
+  out->action_actual.movement =
+      static_cast<UE_MovementAction>(actual.movement);
+  out->action_actual.interact =
+      static_cast<UE_InteractAction>(actual.interact);
+
+  // Action succeeded if intent matches actual (movement wasn't blocked)
+  out->action_succeeded = (intent.movement == actual.movement);
 }
 
 // Extract full game state

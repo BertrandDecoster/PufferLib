@@ -142,6 +142,10 @@ class Agent : public Actor {
   DecodedAction GetIntention() const { return intention_; }
   void ClearIntention() { intention_ = {MovementAction::Stay}; }
 
+  // Original intention (captured before collision resolution)
+  void CaptureOriginalIntention() { original_intention_ = intention_; }
+  DecodedAction GetOriginalIntention() const { return original_intention_; }
+
   // Agent index for action array ordering
   void SetAgentIndex(int idx) { agent_index_ = idx; }
   int GetAgentIndex() const { return agent_index_; }
@@ -187,6 +191,7 @@ class Agent : public Actor {
 
  protected:
   DecodedAction intention_;
+  DecodedAction original_intention_;  // Captured before collision resolution
   int agent_index_ = -1;
   Faction faction_ = Faction::NEUTRAL;
   int health_ = 3;

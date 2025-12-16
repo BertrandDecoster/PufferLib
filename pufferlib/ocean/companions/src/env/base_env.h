@@ -156,6 +156,7 @@ class BaseEnv {
 
   // Collision resolution (the new system)
   void GatherIntentions(const std::vector<Action>& actions);
+  void CaptureOriginalIntentions();  // Save intentions before collision resolution
   void ResolveCollisions();
   Position PredictPosition(const Agent* agent) const;
   bool ValidateMovement(const Agent* agent, Position target) const;
