@@ -398,6 +398,76 @@ TEST(TestSpecialCells) {
 }
 
 // =============================================================================
+// Action Intent vs Actual Tests
+// =============================================================================
+TEST(TestActionIntentVsActual) {
+  // Small grid where we can predictably hit walls
+  // Grid is 5x5 with walls on perimeter, agent spawns in interior
+  UE_EnvConfig config = MakeConfig(5, 5, 1, 1, 42);
+  UE_CompanionsEnv* env = ue_companions_create(&config);
+  ue_companions_reset(env, 42);
+
+  // Get initial agent position
+  UE_AgentState agent = {};
+  ue_companions_get_agent_by_index(env, 0, &agent);
+
+  // Walk to the top wall (row 1 is adjacent to wall at row 0)
+  // Keep moving up until we hit the wall
+  UE_Action actions[1] = {{UE_Movement_Up, UE_Interact_None}};
+  UE_StepResult result = {};
+
+  // Move up repeatedly until blocked
+  bool found_blocked = false;
+  for (int i = 0; i < 5; i++) {
+    ue_companions_step(env, actions, 1, &result);
+
+    // Check if movement was blocked
+    if (!result.state.agents[0].action_succeeded) {
+      found_blocked = true;
+
+      // CRITICAL CHECKS:
+      // Intent should be Up (what we asked for)
+      ASSERT_EQ(result.state.agents[0].action_intent.movement, UE_Movement_Up);
+      // Actual should be Stay (blocked by wall)
+      ASSERT_EQ(result.state.agents[0].action_actual.movement, UE_Movement_Stay);
+      // action_succeeded should be false
+      ASSERT_FALSE(result.state.agents[0].action_succeeded);
+
+      break;
+    } else {
+      // When movement succeeds, intent should equal actual
+      ASSERT_EQ(result.state.agents[0].action_intent.movement,
+                result.state.agents[0].action_actual.movement);
+      ASSERT_TRUE(result.state.agents[0].action_succeeded);
+    }
+  }
+
+  // We should have hit the wall at some point
+  ASSERT_TRUE(found_blocked);
+
+  ue_companions_destroy(env);
+}
+
+TEST(TestActionIntentVsActualStay) {
+  // Test that Stay action has matching intent/actual
+  UE_EnvConfig config = MakeConfig(5, 5, 1, 1, 42);
+  UE_CompanionsEnv* env = ue_companions_create(&config);
+  ue_companions_reset(env, 42);
+
+  UE_Action actions[1] = {{UE_Movement_Stay, UE_Interact_None}};
+  UE_StepResult result = {};
+
+  ue_companions_step(env, actions, 1, &result);
+
+  // Stay should always succeed
+  ASSERT_EQ(result.state.agents[0].action_intent.movement, UE_Movement_Stay);
+  ASSERT_EQ(result.state.agents[0].action_actual.movement, UE_Movement_Stay);
+  ASSERT_TRUE(result.state.agents[0].action_succeeded);
+
+  ue_companions_destroy(env);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {
