@@ -9,7 +9,10 @@
 #include <stdexcept>
 
 #include "../core/cell.h"
+#include "../core/d4_transform.h"
 #include "../core/level_builder.h"
+#include "../core/level_config.h"
+#include "../core/level_generator.h"
 #include "../core/map_generator.h"
 #include "effect_system.h"
 
@@ -86,29 +89,35 @@ void SynchroEnv::ValidateConfig() {
 
 void SynchroEnv::Reset() {
   // Reset state
-  tick_ = 0;
   success_ = false;
-  object_manager_->Clear();
-  effect_system_->Clear();
+
+  // Create level config for synchro env
+  LevelConfig config = LevelConfig::ForSynchro(
+      rows_, cols_, num_companions_, num_synchro_,
+      map_complexity_, static_cast<unsigned int>(rng_()), d4_transform_, horizon_);
+
+  // Generate snapshot using LevelGenerator
+  Snapshot snapshot = LevelGenerator::Generate(config);
+
+  // Extract synchro positions from snapshot BEFORE loading (pre-transform order)
   synchro_positions_.clear();
+  int snap_cols = snapshot.cols;
+  for (size_t i = 0; i < snapshot.cells.size(); ++i) {
+    if (snapshot.cells[i].kind == CellKind::Synchro) {
+      int r = static_cast<int>(i) / snap_cols;
+      int c = static_cast<int>(i) % snap_cols;
+      synchro_positions_.push_back({r, c});
+    }
+  }
 
-  // Setup grid (floor + walls only)
-  SetupGrid();
+  // Load the snapshot (handles grid, agents, timing, D4 transform)
+  LoadSnapshot(snapshot);
 
-  // Place synchro cells randomly
-  PlaceSynchroCells();
-
-  // Spawn agents randomly
-  SpawnAgents();
-
-  // Apply D4 symmetry transformation (if d4_transform_ != 0)
+  // Transform synchro positions using same D4 transform that was applied
   if (d4_transform_ != 0) {
-    int old_rows = rows_;
-    int old_cols = cols_;
-    ApplyD4Transform();
-    // Transform cached synchro positions
     D4Transform transform = ToD4Transform(d4_transform_);
-    synchro_positions_ = TransformPositions(synchro_positions_, old_rows, old_cols, transform);
+    synchro_positions_ = TransformPositions(synchro_positions_,
+                                            snapshot.rows, snapshot.cols, transform);
   }
 }
 
@@ -223,6 +232,14 @@ double SynchroEnv::MaxUtility() const {
   return kWinReward;
 }
 
-
+void SynchroEnv::ValidateSnapshot(const Snapshot& snapshot) const {
+  // SynchroEnv requires synchro cells to function
+  int synchro_count = snapshot.CountCells(CellKind::Synchro);
+  if (synchro_count < num_synchro_) {
+    throw std::runtime_error(
+        "SynchroEnv requires at least " + std::to_string(num_synchro_) +
+        " synchro cells, but snapshot has " + std::to_string(synchro_count));
+  }
+}
 
 }  // namespace companions

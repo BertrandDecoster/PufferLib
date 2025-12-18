@@ -59,6 +59,11 @@ class Grid {
   // String representation
   std::string ToString() const;
 
+  // Snapshot support - get/set all cells in row-major order
+  // Returns vector of (CellKind, CellOrigin) pairs
+  std::vector<std::pair<CellKind, CellOrigin>> GetAllCellData() const;
+  void SetAllCellData(const std::vector<std::pair<CellKind, CellOrigin>>& data);
+
  private:
   int rows_;
   int cols_;

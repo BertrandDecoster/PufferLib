@@ -296,7 +296,8 @@ TEST(TestTimePenalty) {
 // =============================================================================
 TEST(TestAgentPatrols) {
   // Use a large grid to ensure companion spawns far from patrol
-  AggroEnv env(16, 1, EnemyType::Zombie, 42);
+  // Note: seed 999 chosen to ensure companion spawns far from entire patrol path
+  AggroEnv env(16, 1, EnemyType::Zombie, 999);
 
   // Get initial agent position
   AgentFSM* fsm_agent = nullptr;

@@ -72,6 +72,15 @@ class SynchroEnv : public BaseEnv {
   // Time penalty is computed as: -num_agents * kProgressReward
   // This ensures max progress per step is 0 when not winning
 
+  // Observation masking - Synchro cells are goals, Target cells hidden
+  CellKind GetMaskedCellKind(CellKind kind) const override {
+    if (kind == CellKind::Target) return CellKind::Floor;
+    return kind;  // Synchro cells remain visible
+  }
+
+  // Snapshot validation - SynchroEnv requires synchro cells
+  void ValidateSnapshot(const Snapshot& snapshot) const override;
+
  protected:
   void CalculateRewards(std::vector<double>& rewards) override;
 

@@ -8,10 +8,12 @@
 #include <random>
 #include <stdexcept>
 
-#include "../core/agent_config.h"
+#include "../core/agent_config.h"  // For TargetFilter
 #include "../core/cell.h"
 #include "../core/effect_config.h"
 #include "../core/level_builder.h"
+#include "../core/level_config.h"
+#include "../core/level_generator.h"
 #include "effect_system.h"
 
 namespace companions {
@@ -118,21 +120,22 @@ void DodgeEnv::RegisterDefaultEffects() {
 
 void DodgeEnv::Reset() {
   // Reset state
-  tick_ = 0;
   success_ = false;
   any_dead_ = false;
 
   // Clear effects
   ClearEffects();
 
-  // Setup grid
-  SetupGrid();
+  // Create level config for dodge env
+  LevelConfig config = LevelConfig::ForDodge(
+      rows_, num_companions_, static_cast<unsigned int>(rng_()),
+      d4_transform_, horizon_);
 
-  // Spawn companions
-  SpawnCompanions();
+  // Generate snapshot using LevelGenerator
+  Snapshot snapshot = LevelGenerator::Generate(config);
 
-  // Apply D4 symmetry transformation (if d4_transform_ != 0)
-  ApplyD4Transform();
+  // Load the snapshot (handles grid, companions, timing, D4 transform)
+  LoadSnapshot(snapshot);
 }
 
 void DodgeEnv::Reset(unsigned int seed) {
@@ -451,6 +454,17 @@ void DodgeEnv::VectorObservation(std::vector<float>& values, int player) const {
   values[idx++] = 1.0f - telegraph_down;
   values[idx++] = 1.0f - telegraph_left;
   values[idx++] = 1.0f - telegraph_right;
+}
+
+void DodgeEnv::ValidateSnapshot(const Snapshot& snapshot) const {
+  // DodgeEnv has minimal requirements - just needs floor cells for movement
+  int floor_count = snapshot.CountCells(CellKind::Floor);
+  if (floor_count < num_companions_) {
+    throw std::runtime_error(
+        "DodgeEnv requires at least " + std::to_string(num_companions_) +
+        " floor cells for companions, but snapshot has " +
+        std::to_string(floor_count));
+  }
 }
 
 }  // namespace companions

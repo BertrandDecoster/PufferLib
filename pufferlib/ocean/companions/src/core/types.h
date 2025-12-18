@@ -23,6 +23,7 @@ using ObjectId = int;
 // Constants
 // =============================================================================
 constexpr int kDefaultGridSize = 12;
+constexpr int kDefaultHorizon = 100;
 constexpr ObjectId kInvalidObjectId = -1;
 
 // =============================================================================

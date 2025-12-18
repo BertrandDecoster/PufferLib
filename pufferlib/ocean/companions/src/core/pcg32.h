@@ -49,6 +49,11 @@ class pcg32 {
     }
   }
 
+  // State access for snapshot save/restore
+  uint64_t GetState() const { return state_; }
+  uint64_t GetInc() const { return inc_; }
+  void SetState(uint64_t state, uint64_t inc) { state_ = state; inc_ = inc; }
+
  private:
   void seed_impl(uint64_t s) {
     state_ = 0;

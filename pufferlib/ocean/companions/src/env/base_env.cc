@@ -197,7 +197,7 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
   // 5-plane observation (matching OpenSpiel format):
   // Plane 0: Floor cells (walkable, non-goal)
   // Plane 1: Wall cells (obstacles)
-  // Plane 2: Synchro cells (goals)
+  // Plane 2: Goal cells (Synchro or Target depending on env)
   // Plane 3: Current player position
   // Plane 4: Other agents positions
   auto set_plane = [&](int plane, int row, int col, float value) {
@@ -214,7 +214,8 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
   for (int r = 0; r < rows_; ++r) {
     for (int c = 0; c < cols_; ++c) {
       Position pos{r, c};
-      CellKind kind = grid_->GetCellKind(pos);
+      CellKind raw_kind = grid_->GetCellKind(pos);
+      CellKind kind = GetMaskedCellKind(raw_kind);  // Apply env-specific masking
 
       // Plane 0: Floor (all walkable cells, including synchro)
       if (grid_->IsWalkable(pos)) {
@@ -226,8 +227,8 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
         set_plane(1, r, c, 1.0f);
       }
 
-      // Plane 2: Synchro cells (goals)
-      if (kind == CellKind::Synchro) {
+      // Plane 2: Goal cells (Synchro or Target depending on env)
+      if (kind == CellKind::Synchro || kind == CellKind::Target) {
         set_plane(2, r, c, 1.0f);
       }
 
@@ -341,7 +342,7 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
   // 5-plane observation (matching OpenSpiel format):
   // Plane 0: Floor cells (walkable, non-goal)
   // Plane 1: Wall cells (obstacles)
-  // Plane 2: Synchro cells (goals)
+  // Plane 2: Goal cells (Synchro or Target depending on env)
   // Plane 3: Current player position
   // Plane 4: Other agents positions
   auto set_plane = [&](int plane, int row, int col, float value) {
@@ -358,7 +359,8 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
   for (int r = 0; r < rows_; ++r) {
     for (int c = 0; c < cols_; ++c) {
       Position pos{r, c};
-      CellKind kind = grid_->GetCellKind(pos);
+      CellKind raw_kind = grid_->GetCellKind(pos);
+      CellKind kind = GetMaskedCellKind(raw_kind);  // Apply env-specific masking
 
       // Plane 0: Floor (all walkable cells, including synchro)
       if (grid_->IsWalkable(pos)) {
@@ -370,8 +372,8 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
         set_plane(1, r, c, 1.0f);
       }
 
-      // Plane 2: Synchro cells (goals)
-      if (kind == CellKind::Synchro) {
+      // Plane 2: Goal cells (Synchro or Target depending on env)
+      if (kind == CellKind::Synchro || kind == CellKind::Target) {
         set_plane(2, r, c, 1.0f);
       }
 
@@ -762,6 +764,222 @@ const std::vector<ActiveEffect>& BaseEnv::GetActiveEffects() const {
 
 void BaseEnv::ClearEffects() {
   effect_system_->Clear();
+}
+
+// =============================================================================
+// Snapshot Support
+// =============================================================================
+
+Snapshot BaseEnv::SaveSnapshot() const {
+  Snapshot snap;
+
+  // Grid dimensions
+  snap.rows = rows_;
+  snap.cols = cols_;
+
+  // Grid cells
+  auto cell_data = grid_->GetAllCellData();
+  snap.cells.reserve(cell_data.size());
+  for (const auto& [kind, origin] : cell_data) {
+    snap.cells.push_back({kind, origin});
+  }
+
+  // Agents
+  for (const Agent* agent : object_manager_->GetAllAgents()) {
+    AgentSnapshot as;
+    as.id = agent->GetId();
+    as.type = static_cast<int>(agent->GetType());
+    as.position = agent->GetPosition();
+    as.prev_position = agent->GetPosition();  // No prev tracking in base
+    as.health = agent->GetHealth();
+    as.max_health = agent->GetMaxHealth();
+    as.agent_index = agent->GetAgentIndex();
+    as.faction = static_cast<int>(agent->GetFaction());
+    as.alive = agent->IsAlive();
+
+    // Status effects
+    for (const auto& status : agent->GetStatuses()) {
+      if (status.IsActive()) {
+        as.statuses.push_back({static_cast<int>(status.type), status.duration});
+      }
+    }
+
+    // Direction for Companions
+    if (const Companion* comp = dynamic_cast<const Companion*>(agent)) {
+      as.direction = static_cast<int>(comp->GetDirection());
+      as.color = static_cast<int>(comp->GetColor());
+    }
+
+    // FSM data for AgentFSM
+    if (const AgentFSM* fsm_agent = dynamic_cast<const AgentFSM*>(agent)) {
+      if (fsm_agent->HasFSM()) {
+        as.has_fsm = true;
+        const FSMState* state = fsm_agent->GetCurrentState();
+        as.fsm.state_name = state ? state->GetName() : "";
+        const FSMContext& ctx = fsm_agent->GetFSMContext();
+        as.fsm.target_id = ctx.target_id;
+        as.fsm.patrol_path = ctx.patrol_path;
+        as.fsm.patrol_index = ctx.patrol_index;
+        as.fsm.patrol_forward = ctx.patrol_forward;
+        as.fsm.detection_range = ctx.detection_range;
+        as.fsm.lose_target_range = ctx.lose_target_range;
+        if (ctx.rng) {
+          as.fsm.rng_state = ctx.rng->GetState();
+          as.fsm.rng_inc = ctx.rng->GetInc();
+        }
+      }
+      as.cadence = fsm_agent->GetCadence();
+      as.tick = fsm_agent->GetTick();
+    }
+
+    snap.agents.push_back(std::move(as));
+  }
+
+  // Active effects
+  for (const auto& effect : effect_system_->GetActiveEffects()) {
+    EffectSnapshot es;
+    es.effect_name = effect.config ? effect.config->name : "";
+    es.target_type = static_cast<int>(effect.target.type);
+    es.target_cell = effect.target.cell;
+    es.target_actor_id = effect.target.actor_id;
+    for (ObjectId id : effect.target.actors) {
+      es.target_actors.push_back(id);
+    }
+    es.direction = static_cast<int>(effect.direction);
+    es.ticks_remaining = effect.ticks_remaining;
+    es.in_telegraph = effect.in_telegraph;
+    es.loops_remaining = effect.loops_remaining;
+    es.source_id = effect.source_id;
+    snap.effects.push_back(std::move(es));
+  }
+
+  // Timing
+  snap.tick = tick_;
+  snap.horizon = horizon_;
+  snap.d4_transform = d4_transform_;
+
+  return snap;
+}
+
+void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
+  // Validate dimensions
+  if (snapshot.rows != rows_ || snapshot.cols != cols_) {
+    throw std::runtime_error("Snapshot dimensions mismatch: expected " +
+                             std::to_string(rows_) + "x" + std::to_string(cols_) +
+                             ", got " + std::to_string(snapshot.rows) + "x" +
+                             std::to_string(snapshot.cols));
+  }
+
+  // Validate for this environment type
+  ValidateSnapshot(snapshot);
+
+  // Load grid cells
+  std::vector<std::pair<CellKind, CellOrigin>> cell_data;
+  cell_data.reserve(snapshot.cells.size());
+  for (const auto& cell : snapshot.cells) {
+    cell_data.emplace_back(cell.kind, cell.origin);
+  }
+  grid_->SetAllCellData(cell_data);
+
+  // Clear existing state
+  object_manager_->Clear();
+  effect_system_->Clear();
+
+  // Load agents
+  for (const auto& as : snapshot.agents) {
+    ObjectType type = static_cast<ObjectType>(as.type);
+    Agent* agent = nullptr;
+
+    // Create the right agent type
+    switch (type) {
+      case ObjectType::Player:
+        agent = object_manager_->CreateActor<Player>(as.position);
+        break;
+      case ObjectType::NPCCompanion:
+        agent = object_manager_->CreateActor<NPCCompanion>(as.position);
+        break;
+      case ObjectType::Companion:
+        agent = object_manager_->CreateActor<Companion>(as.position);
+        break;
+      case ObjectType::AgentFSM:
+        agent = object_manager_->CreateActor<AgentFSM>(as.position);
+        break;
+      case ObjectType::Agent:
+      default:
+        agent = object_manager_->CreateActor<Agent>(as.position);
+        break;
+    }
+
+    if (!agent) continue;
+
+    // Restore basic state
+    agent->SetMaxHealth(as.max_health);
+    if (as.health < as.max_health) {
+      agent->TakeDamage(as.max_health - as.health);
+    }
+    agent->SetFaction(static_cast<Faction>(as.faction));
+    agent->SetAlive(as.alive);
+
+    // Restore status effects
+    for (const auto& ss : as.statuses) {
+      agent->ApplyStatus(static_cast<StatusType>(ss.type), ss.duration);
+    }
+
+    // Restore Companion-specific state
+    if (Companion* comp = dynamic_cast<Companion*>(agent)) {
+      comp->SetDirection(static_cast<Direction>(as.direction));
+      comp->SetColor(static_cast<ActorColor>(as.color));
+    }
+
+    // Restore AgentFSM-specific state
+    if (AgentFSM* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
+      fsm_agent->SetCadence(as.cadence);
+      // Note: tick and FSM state restoration requires more complex handling
+      // For now, FSM agents will start fresh when loaded
+      // Full FSM restoration would require FSMState registry lookup
+    }
+  }
+
+  // Load effects
+  for (const auto& es : snapshot.effects) {
+    const EffectConfig* config = EffectConfigRegistry::Instance().GetConfig(es.effect_name);
+    if (!config) continue;
+
+    EffectTarget target;
+    target.type = static_cast<EffectTarget::Type>(es.target_type);
+    target.cell = es.target_cell;
+    target.actor_id = es.target_actor_id;
+    for (int id : es.target_actors) {
+      target.actors.push_back(id);
+    }
+
+    ActiveEffect effect;
+    effect.config = config;
+    effect.target = target;
+    effect.direction = static_cast<Direction>(es.direction);
+    effect.ticks_remaining = es.ticks_remaining;
+    effect.in_telegraph = es.in_telegraph;
+    effect.loops_remaining = es.loops_remaining;
+    effect.source_id = es.source_id;
+
+    effect_system_->AddEffect(std::move(effect));
+  }
+
+  // Restore timing
+  tick_ = snapshot.tick;
+  horizon_ = snapshot.horizon;
+  d4_transform_ = snapshot.d4_transform;
+
+  // Apply D4 symmetry transformation if specified
+  // (Snapshot contains pre-transform positions, so we apply transform after loading)
+  if (d4_transform_ != 0) {
+    ApplyD4Transform();
+  }
+}
+
+void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {
+  // Base implementation does no validation
+  // Subclasses override to check for required cell types
 }
 
 }  // namespace companions

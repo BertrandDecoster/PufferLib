@@ -52,6 +52,9 @@ class EffectSystem {
   }
   void Clear() { active_effects_.clear(); }
 
+  // Add a pre-constructed effect (for snapshot restoration)
+  void AddEffect(ActiveEffect effect) { active_effects_.push_back(std::move(effect)); }
+
  private:
   // Apply effect modifiers (damage, push, status) to targets in area
   void ApplyEffectModifiers(const ActiveEffect& effect);

@@ -39,6 +39,8 @@ set(CORE_SOURCES
   src/core/game_logger.cc
   src/core/map_generator.cc
   src/core/d4_transform.cc
+  src/core/snapshot.cc
+  src/core/level_generator.cc
   src/core/fsm/fsm_states.cc
   src/core/fsm/enemies.cc
 )
@@ -56,6 +58,9 @@ set(CORE_HEADERS
   src/core/game_logger.h
   src/core/map_generator.h
   src/core/d4_transform.h
+  src/core/snapshot.h
+  src/core/level_config.h
+  src/core/level_generator.h
   src/core/fsm/fsm_state.h
   src/core/fsm/fsm_states.h
   src/core/fsm/enemies.h
@@ -145,6 +150,10 @@ add_executable(companions_d4_transform_test tests/test_d4_transform.cc)
 target_link_libraries(companions_d4_transform_test companions_viz companions_env companions_core)
 target_include_directories(companions_d4_transform_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_snapshot_test tests/test_snapshot.cc)
+target_link_libraries(companions_snapshot_test companions_viz companions_env companions_core)
+target_include_directories(companions_snapshot_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # =============================================================================
 # Demo executable (cross-platform)
 # =============================================================================
@@ -177,6 +186,7 @@ add_test(NAME companions_effects_test COMMAND companions_effects_test)
 add_test(NAME companions_dodge_test COMMAND companions_dodge_test)
 add_test(NAME companions_map_generator_test COMMAND companions_map_generator_test)
 add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)
+add_test(NAME companions_snapshot_test COMMAND companions_snapshot_test)
 
 # =============================================================================
 # UE5 DLL (Dynamic library for Unreal Engine 5)

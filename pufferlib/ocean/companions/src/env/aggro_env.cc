@@ -10,9 +10,12 @@
 #include <stdexcept>
 
 #include "../core/cell.h"
+#include "../core/d4_transform.h"
 #include "../core/fsm/enemies.h"
 #include "../core/fsm/fsm_states.h"
 #include "../core/level_builder.h"
+#include "../core/level_config.h"
+#include "../core/level_generator.h"
 #include "effect_system.h"
 
 namespace companions {
@@ -71,46 +74,57 @@ void AggroEnv::ValidateConfig() {
 
 void AggroEnv::Reset() {
   // Reset state
-  tick_ = 0;
   success_ = false;
-  patrol_path_.clear();
 
-  // Setup grid with walls
-  SetupGrid();
+  // Create level config for aggro env WITHOUT enemies or companions
+  // AggroEnv has special spawn requirements:
+  // - Enemy type (Zombie/Goblin) determines behavior - can't use generic AgentFSM
+  // - Companions must spawn outside enemy's aggro range
+  // So we spawn both after loading the grid/cells
+  LevelConfig config = LevelConfig::ForAggro(
+      rows_, num_companions_, 3 /* patrol size */,
+      static_cast<unsigned int>(rng_()), d4_transform_, horizon_);
+  config.num_enemies = 0;     // Don't let LevelGenerator create enemies
+  config.num_companions = 0;  // Don't let LevelGenerator create companions
 
-  // Place 3x3 patrol square (generates patrol_path_)
-  PlacePatrolSquare();
+  // Generate snapshot using LevelGenerator
+  Snapshot snapshot = LevelGenerator::Generate(config);
 
-  // Place target cell first (in interior, not touching walls)
-  PlaceTargetCell();
+  // Extract positions from snapshot BEFORE loading (pre-transform order)
+  // These will be transformed after LoadSnapshot applies D4
+  int snap_cols = snapshot.cols;
 
-  // Spawn enemy on patrol cell (excluding target)
-  SpawnEnemy();
-
-  // Spawn companions outside aggro range
-  SpawnCompanions();
-
-  // Apply D4 symmetry transformation (if d4_transform_ != 0)
-  if (d4_transform_ != 0) {
-    int old_rows = rows_;
-    int old_cols = cols_;
-    ApplyD4Transform();
-
-    D4Transform transform = ToD4Transform(d4_transform_);
-
-    // Transform cached positions
-    target_pos_ = TransformPosition(target_pos_, old_rows, old_cols, transform);
-    enemy_spawn_pos_ = TransformPosition(enemy_spawn_pos_, old_rows, old_cols, transform);
-    patrol_path_ = TransformPositions(patrol_path_, old_rows, old_cols, transform);
-
-    // Transform FSMContext::patrol_path for each FSM agent
-    for (Agent* agent : object_manager_->GetAllAgents()) {
-      if (auto* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
-        FSMContext& ctx = fsm_agent->GetFSMContext();
-        ctx.patrol_path = TransformPositions(ctx.patrol_path, old_rows, old_cols, transform);
-      }
+  // Extract target cell position
+  target_pos_ = {0, 0};
+  for (size_t i = 0; i < snapshot.cells.size(); ++i) {
+    if (snapshot.cells[i].kind == CellKind::Target) {
+      int r = static_cast<int>(i) / snap_cols;
+      int c = static_cast<int>(i) % snap_cols;
+      target_pos_ = {r, c};
+      break;
     }
   }
+
+  // Extract patrol path from snapshot
+  patrol_path_ = snapshot.patrol_path;
+
+  // Load the snapshot (handles grid, timing, D4 transform)
+  // Note: no agents in snapshot since num_enemies=0 and num_companions=0
+  LoadSnapshot(snapshot);
+
+  // Apply D4 transform to extracted positions
+  if (d4_transform_ != 0) {
+    D4Transform transform = ToD4Transform(d4_transform_);
+    target_pos_ = TransformPosition(target_pos_, snapshot.rows, snapshot.cols, transform);
+    patrol_path_ = TransformPositions(patrol_path_, snapshot.rows, snapshot.cols, transform);
+  }
+
+  // Spawn the enemy using the correct type (Zombie/Goblin)
+  // Uses patrol_path_ which is now in the transformed coordinate system
+  SpawnEnemy();
+
+  // Now spawn companions outside the enemy's aggro range
+  SpawnCompanions();
 }
 
 void AggroEnv::Reset(unsigned int seed) {
@@ -268,6 +282,7 @@ void AggroEnv::SpawnCompanions() {
   }
 }
 
+
 bool AggroEnv::IsDone() const { return success_ || tick_ >= horizon_; }
 
 void AggroEnv::CalculateRewards(std::vector<double>& rewards) {
@@ -360,6 +375,20 @@ void AggroEnv::VectorObservation(std::vector<float>& values, int player) const {
   // Feature: Relative position to target cell (2)
   values[idx++] = static_cast<float>(target_pos_.row - my_pos.row) / max_dim;
   values[idx++] = static_cast<float>(target_pos_.col - my_pos.col) / max_dim;
+}
+
+void AggroEnv::ValidateSnapshot(const Snapshot& snapshot) const {
+  // AggroEnv requires a target cell
+  if (!snapshot.HasTargetCell()) {
+    throw std::runtime_error(
+        "AggroEnv requires a target cell, but snapshot has none");
+  }
+
+  // AggroEnv requires a patrol path
+  if (!snapshot.HasPatrolPath()) {
+    throw std::runtime_error(
+        "AggroEnv requires a patrol path, but snapshot has none");
+  }
 }
 
 }  // namespace companions

@@ -14,14 +14,13 @@
 #include "../core/effect_config.h"
 #include "../core/grid.h"
 #include "../core/object_manager.h"
+#include "../core/snapshot.h"
 #include "../core/types.h"
 
 namespace companions {
 
 // Forward declaration
 class EffectSystem;
-
-constexpr int kDefaultHorizon = 100;
 
 // =============================================================================
 // Rectangle - axis-aligned bounding box for spatial filtering
@@ -140,6 +139,27 @@ class BaseEnv {
   void SpawnEffect(const std::string& effect_name, EffectTarget target,
                    Direction direction = Direction::Up,
                    ObjectId source_id = kInvalidObjectId);
+
+  // ==========================================================================
+  // Snapshot Support - Save/Load complete world state
+  // ==========================================================================
+
+  // Save current state to a snapshot (grid, agents, effects, timing)
+  virtual Snapshot SaveSnapshot() const;
+
+  // Load state from a snapshot
+  // Throws std::runtime_error if snapshot is incompatible (e.g., wrong dimensions)
+  virtual void LoadSnapshot(const Snapshot& snapshot);
+
+  // Validate that snapshot has required cell types for this environment
+  // Override in subclasses to check for required cells (e.g., Synchro cells)
+  // Throws std::runtime_error if validation fails
+  virtual void ValidateSnapshot(const Snapshot& snapshot) const;
+
+  // Get observation mask - maps actual cell kinds to observed cell kinds
+  // Override in subclasses to filter out irrelevant cells for RL training
+  // Default: identity mapping (no filtering)
+  virtual CellKind GetMaskedCellKind(CellKind kind) const { return kind; }
 
  protected:
   // Subclass hooks for custom step logic

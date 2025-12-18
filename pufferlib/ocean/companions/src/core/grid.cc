@@ -146,4 +146,29 @@ std::string Grid::ToString() const {
   return ss.str();
 }
 
+std::vector<std::pair<CellKind, CellOrigin>> Grid::GetAllCellData() const {
+  std::vector<std::pair<CellKind, CellOrigin>> data;
+  data.reserve(rows_ * cols_);
+  for (int r = 0; r < rows_; ++r) {
+    for (int c = 0; c < cols_; ++c) {
+      data.emplace_back(cells_[r][c].GetKind(), cells_[r][c].GetOrigin());
+    }
+  }
+  return data;
+}
+
+void Grid::SetAllCellData(const std::vector<std::pair<CellKind, CellOrigin>>& data) {
+  if (static_cast<int>(data.size()) != rows_ * cols_) {
+    return;  // Size mismatch, do nothing
+  }
+  int idx = 0;
+  for (int r = 0; r < rows_; ++r) {
+    for (int c = 0; c < cols_; ++c) {
+      cells_[r][c].SetKind(data[idx].first);
+      cells_[r][c].SetOrigin(data[idx].second);
+      ++idx;
+    }
+  }
+}
+
 }  // namespace companions

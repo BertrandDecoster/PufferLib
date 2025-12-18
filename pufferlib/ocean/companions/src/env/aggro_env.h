@@ -14,6 +14,9 @@ namespace companions {
 // Enemy types for AggroEnv
 enum class EnemyType { Zombie, Goblin };
 
+// Forward declaration
+class AgentFSM;
+
 // =============================================================================
 // AggroEnv - companions must lure an FSM enemy away from the TargetCell
 //
@@ -80,6 +83,15 @@ class AggroEnv : public BaseEnv {
   // FSM parameters
   static constexpr int kAggroRange = 3;
   static constexpr int kLoseTargetRange = 5;
+
+  // Observation masking - Target cells are goals, Synchro cells hidden
+  CellKind GetMaskedCellKind(CellKind kind) const override {
+    if (kind == CellKind::Synchro) return CellKind::Floor;
+    return kind;  // Target cells remain visible
+  }
+
+  // Snapshot validation - AggroEnv requires target cell and patrol path
+  void ValidateSnapshot(const Snapshot& snapshot) const override;
 
  protected:
   void CalculateRewards(std::vector<double>& rewards) override;
