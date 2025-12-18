@@ -468,6 +468,242 @@ TEST(TestActionIntentVsActualStay) {
 }
 
 // =============================================================================
+// Snapshot Tests
+// =============================================================================
+
+TEST(TestSnapshotSizeReturnsPositive) {
+  UE_EnvConfig config = MakeConfig();
+  UE_CompanionsEnv* env = ue_companions_create(&config);
+  ASSERT_TRUE(env != nullptr);
+
+  int32_t size = ue_companions_get_snapshot_size(env);
+  ASSERT_TRUE(size > 0);
+
+  ue_companions_destroy(env);
+}
+
+TEST(TestSaveSnapshotRoundTrip) {
+  UE_EnvConfig config = MakeConfig();
+  UE_CompanionsEnv* env = ue_companions_create(&config);
+  ASSERT_TRUE(env != nullptr);
+
+  // Run a few steps to change state
+  UE_Action actions[3] = {
+      {UE_Movement_Right, UE_Interact_None},
+      {UE_Movement_Down, UE_Interact_None},
+      {UE_Movement_Stay, UE_Interact_None}};
+  UE_StepResult result;
+  ue_companions_step(env, actions, 3, &result);
+  ue_companions_step(env, actions, 3, &result);
+
+  // Record state before save
+  UE_GameState state_before;
+  ue_companions_get_state(env, &state_before);
+
+  // Save snapshot
+  int32_t size = ue_companions_get_snapshot_size(env);
+  ASSERT_TRUE(size > 0);
+
+  std::vector<uint8_t> buffer(size);
+  bool save_ok = ue_companions_save_snapshot(env, buffer.data(), size);
+  ASSERT_TRUE(save_ok);
+
+  // Reset env (changes state)
+  ue_companions_reset(env, 999);
+
+  // Verify state changed
+  UE_GameState state_after_reset;
+  ue_companions_get_state(env, &state_after_reset);
+  // Tick should be 0 after reset
+  ASSERT_EQ(state_after_reset.tick, 0);
+
+  // Load snapshot
+  bool load_ok = ue_companions_load_snapshot(env, buffer.data(), size);
+  ASSERT_TRUE(load_ok);
+
+  // Verify state restored
+  UE_GameState state_after_load;
+  ue_companions_get_state(env, &state_after_load);
+
+  ASSERT_EQ(state_after_load.tick, state_before.tick);
+  ASSERT_EQ(state_after_load.agent_count, state_before.agent_count);
+
+  // Check agent positions match
+  for (int i = 0; i < state_before.agent_count && i < UE_MAX_AGENTS; ++i) {
+    ASSERT_EQ(state_after_load.agents[i].position.row,
+              state_before.agents[i].position.row);
+    ASSERT_EQ(state_after_load.agents[i].position.col,
+              state_before.agents[i].position.col);
+  }
+
+  ue_companions_destroy(env);
+}
+
+TEST(TestSaveSnapshotBufferTooSmall) {
+  UE_EnvConfig config = MakeConfig();
+  UE_CompanionsEnv* env = ue_companions_create(&config);
+  ASSERT_TRUE(env != nullptr);
+
+  int32_t size = ue_companions_get_snapshot_size(env);
+  ASSERT_TRUE(size > 0);
+
+  // Try to save with buffer that's too small
+  std::vector<uint8_t> small_buffer(size / 2);
+  bool save_ok = ue_companions_save_snapshot(env, small_buffer.data(),
+                                              static_cast<int32_t>(small_buffer.size()));
+  ASSERT_FALSE(save_ok);
+
+  // Error should be set
+  const char* error = ue_companions_get_error();
+  ASSERT_TRUE(error != nullptr);
+  ASSERT_TRUE(std::strlen(error) > 0);
+
+  ue_companions_destroy(env);
+}
+
+TEST(TestLoadSnapshotInvalidData) {
+  UE_EnvConfig config = MakeConfig();
+  UE_CompanionsEnv* env = ue_companions_create(&config);
+  ASSERT_TRUE(env != nullptr);
+
+  // Try to load garbage data
+  uint8_t garbage[100] = {0x12, 0x34, 0x56, 0x78};  // Invalid magic
+  bool load_ok = ue_companions_load_snapshot(env, garbage, 100);
+  ASSERT_FALSE(load_ok);
+
+  // Error should be set
+  const char* error = ue_companions_get_error();
+  ASSERT_TRUE(error != nullptr);
+  ASSERT_TRUE(std::strlen(error) > 0);
+
+  ue_companions_destroy(env);
+}
+
+TEST(TestSnapshotNullArgs) {
+  // Test null env
+  ASSERT_EQ(ue_companions_get_snapshot_size(nullptr), 0);
+
+  UE_EnvConfig config = MakeConfig();
+  UE_CompanionsEnv* env = ue_companions_create(&config);
+  ASSERT_TRUE(env != nullptr);
+
+  // Get valid size first
+  int32_t size = ue_companions_get_snapshot_size(env);
+  ASSERT_TRUE(size > 0);
+
+  // Test null buffer
+  ASSERT_FALSE(ue_companions_save_snapshot(env, nullptr, size));
+
+  // Test null data for load
+  ASSERT_FALSE(ue_companions_load_snapshot(env, nullptr, 100));
+
+  // Test null env for load
+  uint8_t dummy[100] = {0};
+  ASSERT_FALSE(ue_companions_load_snapshot(nullptr, dummy, 100));
+
+  ue_companions_destroy(env);
+}
+
+// =============================================================================
+// Level Generation Tests
+// =============================================================================
+
+TEST(TestGenerateLevelBasic) {
+  UE_LevelConfig config = {};
+  config.rows = 10;
+  config.cols = 10;
+  config.map_complexity = 0;
+  config.seed = 12345;
+  config.num_companions = 2;
+  config.horizon = 100;
+
+  int32_t size = ue_companions_generate_level(&config);
+  ASSERT_TRUE(size > 0);
+
+  std::vector<uint8_t> buffer(size);
+  bool ok = ue_companions_get_generated_level(buffer.data(), size);
+  ASSERT_TRUE(ok);
+}
+
+TEST(TestGenerateLevelWithSynchro) {
+  UE_LevelConfig config = {};
+  config.rows = 12;
+  config.cols = 12;
+  config.map_complexity = 0;
+  config.seed = 42;
+  config.synchro_cell_count = 3;
+  config.num_companions = 3;
+  config.horizon = 100;
+
+  int32_t size = ue_companions_generate_level(&config);
+  ASSERT_TRUE(size > 0);
+
+  // Load into SynchroEnv to verify compatibility
+  std::vector<uint8_t> buffer(size);
+  ue_companions_get_generated_level(buffer.data(), size);
+
+  UE_EnvConfig env_config = MakeConfig(12, 12, 3, 3, 999);
+  UE_CompanionsEnv* env = ue_companions_create(&env_config);
+  ASSERT_TRUE(env != nullptr);
+
+  bool load_ok = ue_companions_load_snapshot(env, buffer.data(), size);
+  ASSERT_TRUE(load_ok);
+
+  ue_companions_destroy(env);
+}
+
+TEST(TestGenerateLevelWithPatrol) {
+  UE_LevelConfig config = {};
+  config.rows = 10;
+  config.cols = 10;
+  config.map_complexity = 0;
+  config.seed = 54321;
+  config.patrol_square_size = 3;
+  config.has_target_cell = true;
+  config.num_companions = 1;
+  config.num_enemies = 1;
+  config.horizon = 100;
+
+  int32_t size = ue_companions_generate_level(&config);
+  ASSERT_TRUE(size > 0);
+
+  std::vector<uint8_t> buffer(size);
+  bool ok = ue_companions_get_generated_level(buffer.data(), size);
+  ASSERT_TRUE(ok);
+}
+
+TEST(TestGenerateLevelNullConfig) {
+  int32_t size = ue_companions_generate_level(nullptr);
+  ASSERT_EQ(size, 0);
+
+  const char* error = ue_companions_get_error();
+  ASSERT_TRUE(error != nullptr);
+  ASSERT_TRUE(std::strlen(error) > 0);
+}
+
+TEST(TestGenerateLevelInvalidDimensions) {
+  UE_LevelConfig config = {};
+  config.rows = 0;  // Invalid
+  config.cols = 10;
+  config.seed = 42;
+
+  int32_t size = ue_companions_generate_level(&config);
+  ASSERT_EQ(size, 0);
+}
+
+TEST(TestGetGeneratedLevelWithoutGenerate) {
+  uint8_t buffer[100];
+  // Clear any previously generated level by generating with invalid config
+  UE_LevelConfig bad_config = {};
+  bad_config.rows = 0;
+  ue_companions_generate_level(&bad_config);
+
+  // Now try to get without valid generation
+  bool ok = ue_companions_get_generated_level(buffer, 100);
+  ASSERT_FALSE(ok);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {

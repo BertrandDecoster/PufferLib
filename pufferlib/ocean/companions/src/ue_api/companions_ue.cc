@@ -12,8 +12,11 @@
 #include "../core/fsm/fsm_state.h"
 #include "../core/fsm/fsm_states.h"
 #include "../core/grid.h"
+#include "../core/level_config.h"
+#include "../core/level_generator.h"
 #include "../core/object.h"
 #include "../core/object_manager.h"
+#include "../core/snapshot.h"
 #include "../core/types.h"
 #include "../env/effect_system.h"
 #include "../env/synchro_env.h"
@@ -34,6 +37,11 @@ static void SetError(const char* msg) {
 }
 
 // =============================================================================
+// Thread-local generated level cache
+// =============================================================================
+static thread_local std::vector<uint8_t> g_generated_level;
+
+// =============================================================================
 // Internal Environment Wrapper
 // =============================================================================
 struct UE_CompanionsEnv {
@@ -48,6 +56,9 @@ struct UE_CompanionsEnv {
 
   // Event buffer for current step
   std::vector<UE_Event> events;
+
+  // Cached snapshot for two-call save pattern
+  std::vector<uint8_t> cached_snapshot;
 };
 
 // =============================================================================
@@ -594,6 +605,153 @@ COMPANIONS_UE_API const char* ue_companions_version(void) {
 
 COMPANIONS_UE_API const char* ue_companions_get_error(void) {
   return g_error_buffer;
+}
+
+// =============================================================================
+// Snapshot Save/Load
+// =============================================================================
+
+COMPANIONS_UE_API int32_t
+ue_companions_get_snapshot_size(const UE_CompanionsEnv* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+
+  try {
+    // Save and cache snapshot
+    companions::Snapshot snap = env->env->SaveSnapshot();
+    const_cast<UE_CompanionsEnv*>(env)->cached_snapshot = snap.Serialize();
+    return static_cast<int32_t>(env->cached_snapshot.size());
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return 0;
+  }
+}
+
+COMPANIONS_UE_API bool ue_companions_save_snapshot(const UE_CompanionsEnv* env,
+                                                   uint8_t* out_buffer,
+                                                   int32_t buffer_size) {
+  if (!env || !out_buffer) {
+    SetError("Invalid arguments");
+    return false;
+  }
+
+  if (env->cached_snapshot.empty()) {
+    SetError("No cached snapshot - call get_snapshot_size first");
+    return false;
+  }
+
+  if (buffer_size < static_cast<int32_t>(env->cached_snapshot.size())) {
+    SetError("Buffer too small");
+    return false;
+  }
+
+  std::memcpy(out_buffer, env->cached_snapshot.data(),
+              env->cached_snapshot.size());
+  return true;
+}
+
+COMPANIONS_UE_API bool ue_companions_load_snapshot(UE_CompanionsEnv* env,
+                                                   const uint8_t* data,
+                                                   int32_t data_size) {
+  if (!env || !env->env || !data || data_size <= 0) {
+    SetError("Invalid arguments");
+    return false;
+  }
+
+  try {
+    std::vector<uint8_t> buffer(data, data + data_size);
+    companions::Snapshot snap = companions::Snapshot::Deserialize(buffer);
+    env->env->LoadSnapshot(snap);
+
+    // Update wrapper state
+    env->done = false;
+    env->success = false;
+
+    // Reset prev_positions for event tracking
+    auto agents = env->env->GetObjectManager().GetAllAgents();
+    env->prev_positions.clear();
+    for (const auto* agent : agents) {
+      env->prev_positions.push_back(agent->GetPosition());
+    }
+
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  }
+}
+
+// =============================================================================
+// Level Generation
+// =============================================================================
+
+COMPANIONS_UE_API int32_t ue_companions_generate_level(
+    const UE_LevelConfig* config) {
+  if (!config) {
+    SetError("Config is null");
+    return 0;
+  }
+
+  if (config->rows <= 0 || config->cols <= 0) {
+    SetError("Invalid grid dimensions");
+    return 0;
+  }
+
+  try {
+    // Convert UE_LevelConfig to companions::LevelConfig
+    companions::LevelConfig level_config;
+
+    // Base map
+    level_config.map = companions::MapGenerator::DefaultConfig(
+        config->rows, config->cols, config->map_complexity, config->seed);
+
+    // Level features
+    level_config.synchro_cell_count = config->synchro_cell_count;
+    level_config.patrol_square_size = config->patrol_square_size;
+    level_config.has_target_cell = config->has_target_cell;
+
+    // Agents
+    level_config.num_companions = config->num_companions;
+    level_config.num_enemies = config->num_enemies;
+
+    // Episode
+    level_config.horizon = config->horizon > 0 ? config->horizon : 100;
+    level_config.d4_transform = config->d4_transform;
+
+    // Generate level
+    companions::Snapshot snapshot = companions::LevelGenerator::Generate(level_config);
+
+    // Serialize and cache
+    g_generated_level = snapshot.Serialize();
+
+    return static_cast<int32_t>(g_generated_level.size());
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return 0;
+  }
+}
+
+COMPANIONS_UE_API bool ue_companions_get_generated_level(uint8_t* out_buffer,
+                                                          int32_t buffer_size) {
+  if (!out_buffer) {
+    SetError("Output buffer is null");
+    return false;
+  }
+
+  if (g_generated_level.empty()) {
+    SetError("No generated level - call generate_level first");
+    return false;
+  }
+
+  if (buffer_size < static_cast<int32_t>(g_generated_level.size())) {
+    SetError("Buffer too small");
+    return false;
+  }
+
+  std::memcpy(out_buffer, g_generated_level.data(), g_generated_level.size());
+  return true;
 }
 
 }  // extern "C"

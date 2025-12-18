@@ -14,6 +14,7 @@
 
 #include "companions_ue.h"
 #include "../src/core/pcg32.h"
+#include "../src/core/snapshot.h"
 #include "../src/core/types.h"
 #include "../src/env/synchro_env.h"
 
@@ -506,6 +507,136 @@ TEST(ParityTest_ConfigQueries) {
     ASSERT_EQ(agent_by_index.position.row, ue_state.agents[i].position.row);
     ASSERT_EQ(agent_by_index.position.col, ue_state.agents[i].position.col);
     ASSERT_EQ(agent_by_index.id, ue_state.agents[i].id);
+  }
+
+  ue_companions_destroy(ue_env);
+}
+
+// =============================================================================
+// Snapshot Parity Tests
+// =============================================================================
+
+// Test: DLL save → direct C++ load produces same state
+TEST(TestSnapshotParity_DLLSaveDirectLoad) {
+  const int rows = 10;
+  const int cols = 10;
+  const int agents = 2;
+  const int synchro = 2;
+  const uint32_t seed = 54321;
+
+  // Create UE env
+  UE_EnvConfig config = {};
+  config.rows = rows;
+  config.cols = cols;
+  config.num_companions = agents;
+  config.num_synchro = synchro;
+  config.map_complexity = 0;
+  config.horizon = 100;
+  config.seed = seed;
+
+  UE_CompanionsEnv* ue_env = ue_companions_create(&config);
+  ASSERT_TRUE(ue_env != nullptr);
+
+  // Run a few steps
+  UE_Action actions[2] = {
+      {UE_Movement_Right, UE_Interact_None},
+      {UE_Movement_Down, UE_Interact_None}};
+  UE_StepResult result;
+  ue_companions_step(ue_env, actions, 2, &result);
+
+  // Save via DLL API
+  int32_t size = ue_companions_get_snapshot_size(ue_env);
+  ASSERT_TRUE(size > 0);
+
+  std::vector<uint8_t> buffer(size);
+  bool save_ok = ue_companions_save_snapshot(ue_env, buffer.data(), size);
+  ASSERT_TRUE(save_ok);
+
+  // Get UE state before load
+  UE_GameState ue_state;
+  ue_companions_get_state(ue_env, &ue_state);
+
+  // Create direct C++ env and load the snapshot
+  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, 99999, 0, 100);
+
+  // Deserialize and load
+  Snapshot snap = Snapshot::Deserialize(buffer);
+  cpp_env.LoadSnapshot(snap);
+
+  // Verify parity: agent positions
+  auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
+  ASSERT_EQ(cpp_agents.size(), static_cast<size_t>(ue_state.agent_count));
+
+  for (size_t i = 0; i < cpp_agents.size(); ++i) {
+    ASSERT_EQ(cpp_agents[i]->GetPosition().row, ue_state.agents[i].position.row);
+    ASSERT_EQ(cpp_agents[i]->GetPosition().col, ue_state.agents[i].position.col);
+  }
+
+  // Verify tick
+  ASSERT_EQ(cpp_env.GetTick(), ue_state.tick);
+
+  ue_companions_destroy(ue_env);
+}
+
+// Test: Direct C++ save → DLL load produces same state
+TEST(TestSnapshotParity_DirectSaveDLLLoad) {
+  const int rows = 8;
+  const int cols = 8;
+  const int agents = 3;
+  const int synchro = 2;
+  const uint32_t seed = 11111;
+
+  // Create direct C++ env
+  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+
+  // Run a few steps
+  std::vector<Action> cpp_actions(agents);
+  cpp_actions[0] = EncodeAction(MovementAction::Down);
+  cpp_actions[1] = EncodeAction(MovementAction::Left);
+  cpp_actions[2] = EncodeAction(MovementAction::Right);
+  cpp_env.Step(cpp_actions);
+  cpp_env.Step(cpp_actions);
+
+  // Save via direct C++ API
+  Snapshot snap = cpp_env.SaveSnapshot();
+  std::vector<uint8_t> buffer = snap.Serialize();
+
+  // Record C++ state
+  auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
+  std::vector<Position> cpp_positions;
+  for (const auto* agent : cpp_agents) {
+    cpp_positions.push_back(agent->GetPosition());
+  }
+  int cpp_tick = cpp_env.GetTick();
+
+  // Create UE env and load via DLL
+  UE_EnvConfig config = {};
+  config.rows = rows;
+  config.cols = cols;
+  config.num_companions = agents;
+  config.num_synchro = synchro;
+  config.map_complexity = 0;
+  config.horizon = 100;
+  config.seed = 99999;  // Different seed - will be overwritten by snapshot
+
+  UE_CompanionsEnv* ue_env = ue_companions_create(&config);
+  ASSERT_TRUE(ue_env != nullptr);
+
+  // Load snapshot via DLL
+  bool load_ok = ue_companions_load_snapshot(ue_env, buffer.data(),
+                                              static_cast<int32_t>(buffer.size()));
+  ASSERT_TRUE(load_ok);
+
+  // Verify parity
+  UE_GameState ue_state;
+  ue_companions_get_state(ue_env, &ue_state);
+
+  ASSERT_EQ(ue_state.tick, cpp_tick);
+  ASSERT_EQ(ue_state.agent_count, static_cast<int32_t>(cpp_positions.size()));
+
+  for (size_t i = 0; i < cpp_positions.size(); ++i) {
+    ASSERT_EQ(ue_state.agents[i].position.row, cpp_positions[i].row);
+    ASSERT_EQ(ue_state.agents[i].position.col, cpp_positions[i].col);
   }
 
   ue_companions_destroy(ue_env);

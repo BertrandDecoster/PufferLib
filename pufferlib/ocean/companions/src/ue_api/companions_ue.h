@@ -397,6 +397,71 @@ COMPANIONS_UE_API const char* ue_companions_version(void);
 // Get last error message (thread-local)
 COMPANIONS_UE_API const char* ue_companions_get_error(void);
 
+// =============================================================================
+// Snapshot Save/Load
+// =============================================================================
+
+// Get the size of a serialized snapshot (call before save_snapshot)
+// Returns 0 on error
+COMPANIONS_UE_API int32_t ue_companions_get_snapshot_size(
+    const UE_CompanionsEnv* env);
+
+// Save current state to a binary buffer
+// Call get_snapshot_size first to determine buffer size
+// Returns false on error (check ue_companions_get_error)
+COMPANIONS_UE_API bool ue_companions_save_snapshot(
+    const UE_CompanionsEnv* env,
+    uint8_t* out_buffer,
+    int32_t buffer_size);
+
+// Load state from a binary buffer
+// Returns false on error (check ue_companions_get_error)
+COMPANIONS_UE_API bool ue_companions_load_snapshot(
+    UE_CompanionsEnv* env,
+    const uint8_t* data,
+    int32_t data_size);
+
+// =============================================================================
+// Level Generation
+// =============================================================================
+
+// Configuration for level generation
+// Set fields to 0/false to disable features
+typedef struct {
+  // Base map configuration
+  int32_t rows;            // Grid rows (e.g., 12)
+  int32_t cols;            // Grid cols (e.g., 12)
+  int32_t map_complexity;  // 0=empty, 1=obstacles, 2+=rooms
+  uint32_t seed;           // RNG seed for generation
+
+  // SynchroEnv features
+  int32_t synchro_cell_count;  // Number of synchro cells (0 = none)
+
+  // AggroEnv features
+  int32_t patrol_square_size;  // Patrol square size (0 = none, 3 = 3x3)
+  bool has_target_cell;        // Place a target cell
+
+  // Agents
+  int32_t num_companions;  // Number of companion agents
+  int32_t num_enemies;     // Number of FSM enemies (usually 0 or 1)
+
+  // Episode
+  int32_t horizon;      // Max steps (e.g., 100)
+  int32_t d4_transform;  // D4 symmetry (0-7)
+} UE_LevelConfig;
+
+// Generate a level from config (caches result, returns size)
+// Returns 0 on error
+COMPANIONS_UE_API int32_t ue_companions_generate_level(
+    const UE_LevelConfig* config);
+
+// Get the generated level snapshot
+// Call generate_level first to get size
+// Returns false on error (check ue_companions_get_error)
+COMPANIONS_UE_API bool ue_companions_get_generated_level(
+    uint8_t* out_buffer,
+    int32_t buffer_size);
+
 #ifdef __cplusplus
 }
 #endif
