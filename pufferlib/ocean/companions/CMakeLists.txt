@@ -18,6 +18,16 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# =============================================================================
+# Version tracking for downstream consumers
+# =============================================================================
+string(TIMESTAMP COMPANIONS_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/companions_version.hpp.in"
+  "${CMAKE_CURRENT_SOURCE_DIR}/companions_version.hpp"
+  @ONLY
+)
+
 # Put all executables in bin/ directory (ensures DLLs are found by tests)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
@@ -113,6 +123,34 @@ target_link_libraries(companions_viz PUBLIC companions_env companions_core)
 # Combined library for convenience
 add_library(companions INTERFACE)
 target_link_libraries(companions INTERFACE companions_viz companions_env companions_core)
+
+# =============================================================================
+# Distribution directory (for companions-loop sync)
+# =============================================================================
+set(COMPANIONS_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist" CACHE PATH
+    "Distribution directory for compiled libraries")
+
+# POST_BUILD: Sync libraries to dist directory
+foreach(lib companions_core companions_env companions_viz)
+  add_custom_command(TARGET ${lib} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${COMPANIONS_DIST_DIR}/$<CONFIG>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:${lib}>"
+      "${COMPANIONS_DIST_DIR}/$<CONFIG>/"
+    COMMENT "Syncing ${lib} to dist/$<CONFIG>/"
+  )
+endforeach()
+
+# Sync version header and data files
+add_custom_command(TARGET companions_core POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/companions_version.hpp"
+    "${COMPANIONS_DIST_DIR}/"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/data"
+    "${COMPANIONS_DIST_DIR}/data"
+  COMMENT "Syncing version header and data to dist/"
+)
 
 # PufferLib wrapper (extern "C" interface for Python bindings)
 add_library(companions_wrapper STATIC synchro_wrapper.cc)

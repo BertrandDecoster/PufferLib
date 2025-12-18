@@ -24,6 +24,26 @@ cmake --build . -j4
 | `-DCMAKE_BUILD_TYPE=Release` | Optimized build (default) |
 | `-DCMAKE_BUILD_TYPE=Debug` | Debug symbols enabled |
 
+
+### Distribution Directory (dist/)
+
+After building, libraries are automatically synced to `dist/` for downstream consumers (e.g., companions-loop):
+
+```
+dist/
+  companions_version.hpp      # Version + build timestamp
+  data/                       # Runtime assets (agents.csv, effects.csv)
+  Debug/
+    companions_core.lib, companions_env.lib, companions_viz.lib
+  Release/
+    companions_core.lib, companions_env.lib, companions_viz.lib
+```
+
+This happens via POST_BUILD commands - no manual step needed. The `companions_version.hpp` includes:
+- `COMPANIONS_LIB_VERSION` - from CMake project version (e.g., "0.2.0")
+- `COMPANIONS_LIB_BUILD_TIME` - timestamp of last build
+
+Downstream projects can use version info to detect stale libraries.
 ## Running Tests
 
 ```bash
