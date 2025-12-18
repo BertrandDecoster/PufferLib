@@ -48,6 +48,9 @@ set(CORE_SOURCES
   src/core/effect_config.cc
   src/core/game_logger.cc
   src/core/map_generator.cc
+  src/core/room_generator.cc
+  src/core/corridor_generator.cc
+  src/core/connectivity.cc
   src/core/d4_transform.cc
   src/core/snapshot.cc
   src/core/level_generator.cc
@@ -67,6 +70,10 @@ set(CORE_HEADERS
   src/core/effect_config.h
   src/core/game_logger.h
   src/core/map_generator.h
+  src/core/generation_context.h
+  src/core/room_generator.h
+  src/core/corridor_generator.h
+  src/core/connectivity.h
   src/core/d4_transform.h
   src/core/snapshot.h
   src/core/level_config.h

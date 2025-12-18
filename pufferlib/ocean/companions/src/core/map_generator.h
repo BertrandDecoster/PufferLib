@@ -246,33 +246,12 @@ struct Room {
 };
 
 // =============================================================================
-// Complexity 2: New room/corridor generation structures
+// MapGenerator - procedural map generation orchestrator
 // =============================================================================
-
-enum class SplitDirection { Horizontal, Vertical };
-
-// A door is a segment on room border where corridor connects
-struct Door {
-  std::vector<Position> in_cells;   // Inside room (floor cells)
-  std::vector<Position> out_cells;  // Outside room (wall cells -> corridor)
-  bool is_horizontal;               // Door orientation
-};
-
-// A corridor candidate connecting two doors
-struct CorridorCandidate {
-  std::vector<Position> cells;  // All corridor cells
-  Door door1, door2;
-  int Length() const { return static_cast<int>(cells.size()); }
-};
-
-// Room shape for complexity 2
-struct RoomShape {
-  std::vector<Position> cells;  // All floor cells in the room
-  int top, left, width, height; // Bounding box
-};
-
-// =============================================================================
-// MapGenerator - procedural map generation
+// Delegates to modular generators:
+// - RoomGenerator: room placement and carving
+// - CorridorGenerator: corridor generation and carving
+// - Connectivity functions: flood-fill, obstacle scattering
 // =============================================================================
 class MapGenerator {
  public:
@@ -291,39 +270,6 @@ class MapGenerator {
   void GenerateEmptyRectangle();
   void GenerateWithObstacles();
   void GenerateWithRooms();
-
-  // Room generation helpers (legacy, used for complexity >= 3 if re-enabled)
-  std::vector<Room> PlaceRooms(int num_rooms);
-  void CarveRoom(const Room& room);
-  void ConnectRooms(const std::vector<Room>& rooms);
-  void CarveCorridorH(int row, int col1, int col2, int width);
-  void CarveCorridorV(int col, int row1, int row2, int width);
-
-  // Complexity 2: Two rooms with dual corridors
-  struct Quadrant {
-    int top, left, height, width;  // Bounds (excluding separator and border)
-  };
-  std::pair<Quadrant, Quadrant> DivideIntoQuadrants(SplitDirection* out_dir);
-  RoomShape GenerateRoomInQuadrant(const Quadrant& quad, bool prefer_l_toward_other);
-  void CarveRoomShape(const RoomShape& shape);
-  std::vector<Door> GenerateDoorsForRoom(const RoomShape& shape,
-                                         SplitDirection split_dir,
-                                         bool is_first_room, int door_width);
-  std::vector<CorridorCandidate> GenerateCorridorCandidates(
-      const std::vector<Door>& doors1, const std::vector<Door>& doors2,
-      int corridor_width);
-  bool ValidateCorridor(const CorridorCandidate& corridor,
-                        const RoomShape& room1, const RoomShape& room2) const;
-  std::vector<CorridorCandidate> SelectCorridorPair(
-      const std::vector<CorridorCandidate>& candidates);
-  void CarveCorridor(const CorridorCandidate& corridor);
-
-  // Obstacle generation
-  void ScatterObstacles(int density_percent);
-
-  // Connectivity validation
-  bool IsConnected() const;
-  int FloodFill(Position start, std::vector<std::vector<bool>>& visited) const;
 
   // Derived parameters from complexity
   int GetNumRooms() const;
