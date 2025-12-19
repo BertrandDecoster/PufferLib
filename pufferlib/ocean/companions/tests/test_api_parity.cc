@@ -1,7 +1,7 @@
 // Copyright 2024
-// Parity test: Verify UE C API produces identical results to direct C++ API
+// Parity test: Verify C API produces identical results to direct C++ API
 //
-// This test ensures the UE API wrapper (companions_ue.h) doesn't introduce
+// This test ensures the API wrapper (companions_api.h) doesn't introduce
 // any behavioral differences compared to directly calling SynchroEnv methods.
 
 #include <cmath>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-#include "companions_ue.h"
+#include "companions_api.h"
 #include "../src/core/pcg32.h"
 #include "../src/core/snapshot.h"
 #include "../src/core/types.h"
@@ -21,7 +21,7 @@
 using namespace companions;
 
 // =============================================================================
-// Test macros (reused from test_ue_api.cc)
+// Test macros (reused from test_api.cc)
 // =============================================================================
 #define TEST(name) \
   void name(); \
@@ -74,10 +74,10 @@ std::vector<TestEntry> tests;
 // =============================================================================
 // Helper: Create matching configs for both APIs
 // =============================================================================
-static UE_EnvConfig MakeUEConfig(int rows = 12, int cols = 12, int companions = 3,
+static Companions_EnvConfig MakeConfig(int rows = 12, int cols = 12, int companions = 3,
                                   int synchro = 3, int complexity = 0,
                                   uint32_t seed = 42, int horizon = 100) {
-  UE_EnvConfig config = {};
+  Companions_EnvConfig config = {};
   config.rows = rows;
   config.cols = cols;
   config.num_companions = companions;
@@ -98,43 +98,43 @@ TEST(ParityTest_InitialState) {
   const int rows = 12, cols = 12, agents = 3, synchro = 3;
   const uint32_t seed = 42;
 
-  // Create UE API environment
-  UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, seed);
-  UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-  ASSERT_NOT_NULL(ue_env);
+  // Create C API environment
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
 
   // Create direct C++ environment
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both with same seed
-  ue_companions_reset(ue_env, seed);
+  companions_reset(api_env, seed);
   cpp_env.Reset(seed);
 
   // Get states
-  UE_GameState ue_state = {};
-  ue_companions_get_state(ue_env, &ue_state);
+  Companions_GameState api_state = {};
+  companions_get_state(api_env, &api_state);
   auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
 
   // Verify agent count matches
-  ASSERT_EQ(ue_state.agent_count, static_cast<int>(cpp_agents.size()));
-  ASSERT_EQ(ue_state.agent_count, agents);
+  ASSERT_EQ(api_state.agent_count, static_cast<int>(cpp_agents.size()));
+  ASSERT_EQ(api_state.agent_count, agents);
 
   // Verify each agent position matches
   for (int i = 0; i < agents; i++) {
-    ASSERT_EQ(ue_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
-    ASSERT_EQ(ue_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
-    ASSERT_EQ(ue_state.agents[i].health, cpp_agents[i]->GetHealth());
-    ASSERT_EQ(ue_state.agents[i].alive, cpp_agents[i]->IsAlive());
+    ASSERT_EQ(api_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
+    ASSERT_EQ(api_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
+    ASSERT_EQ(api_state.agents[i].health, cpp_agents[i]->GetHealth());
+    ASSERT_EQ(api_state.agents[i].alive, cpp_agents[i]->IsAlive());
   }
 
   // Verify grid dimensions
-  ASSERT_EQ(ue_state.rows, cpp_env.GetRows());
-  ASSERT_EQ(ue_state.cols, cpp_env.GetCols());
+  ASSERT_EQ(api_state.rows, cpp_env.GetRows());
+  ASSERT_EQ(api_state.cols, cpp_env.GetCols());
 
   // Verify tick
-  ASSERT_EQ(ue_state.tick, cpp_env.GetTick());
+  ASSERT_EQ(api_state.tick, cpp_env.GetTick());
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // Test 2: Single step produces same results
@@ -143,48 +143,48 @@ TEST(ParityTest_SingleStep) {
   const uint32_t seed = 42;
 
   // Create both environments
-  UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, seed);
-  UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-  ASSERT_NOT_NULL(ue_env);
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both
-  ue_companions_reset(ue_env, seed);
+  companions_reset(api_env, seed);
   cpp_env.Reset(seed);
 
   // All agents stay (simplest action)
-  std::vector<UE_Action> ue_actions(agents);
+  std::vector<Companions_Action> api_actions(agents);
   std::vector<Action> cpp_actions(agents);
   for (int i = 0; i < agents; i++) {
-    ue_actions[i] = {UE_Movement_Stay, UE_Interact_None};
+    api_actions[i] = {Companions_Movement_Stay, Companions_Interact_None};
     cpp_actions[i] = EncodeAction(MovementAction::Stay, InteractAction::None);
   }
 
   // Step both
-  UE_StepResult ue_result = {};
-  ue_companions_step(ue_env, ue_actions.data(), agents, &ue_result);
+  Companions_StepResult api_result = {};
+  companions_step(api_env, api_actions.data(), agents, &api_result);
   StepResult cpp_result = cpp_env.Step(cpp_actions);
 
   // Verify done flag matches
-  ASSERT_EQ(ue_result.state.done, cpp_result.done);
+  ASSERT_EQ(api_result.state.done, cpp_result.done);
 
   // Verify rewards match
   for (int i = 0; i < agents; i++) {
-    ASSERT_FLOAT_EQ(ue_result.state.rewards[i], static_cast<float>(cpp_result.rewards[i]));
+    ASSERT_FLOAT_EQ(api_result.state.rewards[i], static_cast<float>(cpp_result.rewards[i]));
   }
 
   // Verify tick advanced
-  ASSERT_EQ(ue_result.state.tick, 1);
+  ASSERT_EQ(api_result.state.tick, 1);
   ASSERT_EQ(cpp_env.GetTick(), 1);
 
   // Verify agent positions still match
   auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
   for (int i = 0; i < agents; i++) {
-    ASSERT_EQ(ue_result.state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
-    ASSERT_EQ(ue_result.state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
+    ASSERT_EQ(api_result.state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
+    ASSERT_EQ(api_result.state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
   }
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // Test 3: Multi-step with random actions maintains parity
@@ -195,13 +195,13 @@ TEST(ParityTest_MultiStep) {
   const int num_steps = 200;
 
   // Create both environments
-  UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, env_seed);
-  UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-  ASSERT_NOT_NULL(ue_env);
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, env_seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, env_seed, 0, 100);
 
   // Reset both
-  ue_companions_reset(ue_env, env_seed);
+  companions_reset(api_env, env_seed);
   cpp_env.Reset(env_seed);
 
   // Action RNG
@@ -212,46 +212,46 @@ TEST(ParityTest_MultiStep) {
 
   for (int step = 0; step < num_steps; step++) {
     // Generate identical actions for both APIs
-    std::vector<UE_Action> ue_actions(agents);
+    std::vector<Companions_Action> api_actions(agents);
     std::vector<Action> cpp_actions(agents);
     for (int a = 0; a < agents; a++) {
       int mov = action_rng() % 5;
       int interact = action_rng() % 2;
-      ue_actions[a] = {static_cast<UE_MovementAction>(mov),
-                       static_cast<UE_InteractAction>(interact)};
+      api_actions[a] = {static_cast<Companions_MovementAction>(mov),
+                       static_cast<Companions_InteractAction>(interact)};
       cpp_actions[a] = EncodeAction(static_cast<MovementAction>(mov),
                                     static_cast<InteractAction>(interact));
     }
 
     // Step both environments
-    UE_StepResult ue_result = {};
-    ue_companions_step(ue_env, ue_actions.data(), agents, &ue_result);
+    Companions_StepResult api_result = {};
+    companions_step(api_env, api_actions.data(), agents, &api_result);
     StepResult cpp_result = cpp_env.Step(cpp_actions);
 
     // Verify done flags match
-    ASSERT_EQ(ue_result.state.done, cpp_result.done);
+    ASSERT_EQ(api_result.state.done, cpp_result.done);
 
     // Verify rewards match
     for (int a = 0; a < agents; a++) {
-      ASSERT_FLOAT_EQ(ue_result.state.rewards[a], static_cast<float>(cpp_result.rewards[a]));
+      ASSERT_FLOAT_EQ(api_result.state.rewards[a], static_cast<float>(cpp_result.rewards[a]));
     }
 
     // Verify agent positions match
     auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
     for (int i = 0; i < agents; i++) {
-      ASSERT_EQ(ue_result.state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
-      ASSERT_EQ(ue_result.state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
+      ASSERT_EQ(api_result.state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
+      ASSERT_EQ(api_result.state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
     }
 
     // Handle episode reset - reset both with same seed
     if (cpp_result.done) {
-      ue_companions_reset(ue_env, current_seed);
+      companions_reset(api_env, current_seed);
       cpp_env.Reset(current_seed);
       current_seed++;
     }
   }
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
   std::cout << "  Completed " << num_steps << " steps with full parity" << std::endl;
 }
 
@@ -262,53 +262,53 @@ TEST(ParityTest_EpisodeReset) {
   const int horizon = 50;
 
   // Create both environments with short horizon
-  UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, seed, horizon);
-  UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-  ASSERT_NOT_NULL(ue_env);
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed, horizon);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, horizon);
 
   // Reset both
-  ue_companions_reset(ue_env, seed);
+  companions_reset(api_env, seed);
   cpp_env.Reset(seed);
 
   // Run until episode ends
-  std::vector<UE_Action> ue_actions(agents, {UE_Movement_Stay, UE_Interact_None});
+  std::vector<Companions_Action> api_actions(agents, {Companions_Movement_Stay, Companions_Interact_None});
   std::vector<Action> cpp_actions(agents, EncodeAction(MovementAction::Stay, InteractAction::None));
 
   bool episode_ended = false;
   for (int step = 0; step < horizon + 10 && !episode_ended; step++) {
-    UE_StepResult ue_result = {};
-    ue_companions_step(ue_env, ue_actions.data(), agents, &ue_result);
+    Companions_StepResult api_result = {};
+    companions_step(api_env, api_actions.data(), agents, &api_result);
     StepResult cpp_result = cpp_env.Step(cpp_actions);
 
-    ASSERT_EQ(ue_result.state.done, cpp_result.done);
+    ASSERT_EQ(api_result.state.done, cpp_result.done);
 
     if (cpp_result.done) {
       episode_ended = true;
 
       // Reset both with new seed
       uint32_t new_seed = seed + 100;
-      ue_companions_reset(ue_env, new_seed);
+      companions_reset(api_env, new_seed);
       cpp_env.Reset(new_seed);
 
       // Verify post-reset state matches
-      UE_GameState ue_state = {};
-      ue_companions_get_state(ue_env, &ue_state);
+      Companions_GameState api_state = {};
+      companions_get_state(api_env, &api_state);
       auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
 
-      ASSERT_EQ(ue_state.tick, 0);
+      ASSERT_EQ(api_state.tick, 0);
       ASSERT_EQ(cpp_env.GetTick(), 0);
-      ASSERT_FALSE(ue_state.done);
+      ASSERT_FALSE(api_state.done);
 
       for (int i = 0; i < agents; i++) {
-        ASSERT_EQ(ue_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
-        ASSERT_EQ(ue_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
+        ASSERT_EQ(api_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
+        ASSERT_EQ(api_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
       }
     }
   }
 
   ASSERT_TRUE(episode_ended);
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // Test 5: Grid state matches between APIs
@@ -317,50 +317,50 @@ TEST(ParityTest_GridState) {
   const uint32_t seed = 42;
 
   // Create both environments
-  UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, seed);
-  UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-  ASSERT_NOT_NULL(ue_env);
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both
-  ue_companions_reset(ue_env, seed);
+  companions_reset(api_env, seed);
   cpp_env.Reset(seed);
 
-  // Get full grid from UE API
-  std::vector<UE_CellKind> ue_grid(rows * cols);
-  ue_companions_get_grid(ue_env, ue_grid.data());
+  // Get full grid from C API
+  std::vector<Companions_CellKind> api_grid(rows * cols);
+  companions_get_grid(api_env, api_grid.data());
 
   // Compare with C++ grid
   const auto& cpp_grid = cpp_env.GetGrid();
   for (int r = 0; r < rows; r++) {
     for (int c = 0; c < cols; c++) {
-      UE_CellKind ue_kind = ue_grid[r * cols + c];
+      Companions_CellKind api_kind = api_grid[r * cols + c];
       CellKind cpp_kind = cpp_grid.GetCell(r, c).GetKind();
 
-      // Map C++ enum to expected UE enum value
-      UE_CellKind expected;
+      // Map C++ enum to expected C API enum value
+      Companions_CellKind expected;
       switch (cpp_kind) {
-        case CellKind::Floor: expected = UE_CellKind_Floor; break;
-        case CellKind::Wall: expected = UE_CellKind_Wall; break;
-        case CellKind::Hazard: expected = UE_CellKind_Hazard; break;
-        case CellKind::Synchro: expected = UE_CellKind_Synchro; break;
-        case CellKind::HealArea: expected = UE_CellKind_HealArea; break;
-        case CellKind::Target: expected = UE_CellKind_Target; break;
-        default: expected = UE_CellKind_Floor;
+        case CellKind::Floor: expected = Companions_CellKind_Floor; break;
+        case CellKind::Wall: expected = Companions_CellKind_Wall; break;
+        case CellKind::Hazard: expected = Companions_CellKind_Hazard; break;
+        case CellKind::Synchro: expected = Companions_CellKind_Synchro; break;
+        case CellKind::HealArea: expected = Companions_CellKind_HealArea; break;
+        case CellKind::Target: expected = Companions_CellKind_Target; break;
+        default: expected = Companions_CellKind_Floor;
       }
 
-      ASSERT_EQ(ue_kind, expected);
+      ASSERT_EQ(api_kind, expected);
     }
   }
 
   // Count synchro cells
-  int ue_synchro_count = 0;
-  for (auto kind : ue_grid) {
-    if (kind == UE_CellKind_Synchro) ue_synchro_count++;
+  int api_synchro_count = 0;
+  for (auto kind : api_grid) {
+    if (kind == Companions_CellKind_Synchro) api_synchro_count++;
   }
-  ASSERT_EQ(ue_synchro_count, synchro);
+  ASSERT_EQ(api_synchro_count, synchro);
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // Test 6: Verify movement produces same position changes
@@ -369,45 +369,45 @@ TEST(ParityTest_Movement) {
   const uint32_t seed = 42;
 
   // Create both environments
-  UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, seed);
-  UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-  ASSERT_NOT_NULL(ue_env);
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both
-  ue_companions_reset(ue_env, seed);
+  companions_reset(api_env, seed);
   cpp_env.Reset(seed);
 
   // Try each movement direction
-  UE_MovementAction moves[] = {UE_Movement_Up, UE_Movement_Down, UE_Movement_Left, UE_Movement_Right, UE_Movement_Stay};
+  Companions_MovementAction moves[] = {Companions_Movement_Up, Companions_Movement_Down, Companions_Movement_Left, Companions_Movement_Right, Companions_Movement_Stay};
   MovementAction cpp_moves[] = {MovementAction::Up, MovementAction::Down, MovementAction::Left, MovementAction::Right, MovementAction::Stay};
 
   for (int m = 0; m < 5; m++) {
     // Get positions before move
-    UE_GameState ue_state_before = {};
-    ue_companions_get_state(ue_env, &ue_state_before);
+    Companions_GameState api_state_before = {};
+    companions_get_state(api_env, &api_state_before);
     auto cpp_agents_before = cpp_env.GetObjectManager().GetAllAgents();
 
-    ASSERT_EQ(ue_state_before.agents[0].position.row, cpp_agents_before[0]->GetPosition().row);
-    ASSERT_EQ(ue_state_before.agents[0].position.col, cpp_agents_before[0]->GetPosition().col);
+    ASSERT_EQ(api_state_before.agents[0].position.row, cpp_agents_before[0]->GetPosition().row);
+    ASSERT_EQ(api_state_before.agents[0].position.col, cpp_agents_before[0]->GetPosition().col);
 
     // Execute move
-    UE_Action ue_action = {moves[m], UE_Interact_None};
+    Companions_Action api_action = {moves[m], Companions_Interact_None};
     Action cpp_action = EncodeAction(cpp_moves[m], InteractAction::None);
 
-    UE_StepResult ue_result = {};
-    ue_companions_step(ue_env, &ue_action, 1, &ue_result);
+    Companions_StepResult api_result = {};
+    companions_step(api_env, &api_action, 1, &api_result);
     cpp_env.Step({cpp_action});
 
     // Get positions after move
     auto cpp_agents_after = cpp_env.GetObjectManager().GetAllAgents();
 
     // Verify positions match
-    ASSERT_EQ(ue_result.state.agents[0].position.row, cpp_agents_after[0]->GetPosition().row);
-    ASSERT_EQ(ue_result.state.agents[0].position.col, cpp_agents_after[0]->GetPosition().col);
+    ASSERT_EQ(api_result.state.agents[0].position.row, cpp_agents_after[0]->GetPosition().row);
+    ASSERT_EQ(api_result.state.agents[0].position.col, cpp_agents_after[0]->GetPosition().col);
   }
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // Test 7: Different seeds produce different but matching states
@@ -416,26 +416,26 @@ TEST(ParityTest_DifferentSeeds) {
 
   for (uint32_t seed = 1; seed <= 5; seed++) {
     // Create both environments
-    UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, seed);
-    UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-    ASSERT_NOT_NULL(ue_env);
+    Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+    Companions_Env* api_env = companions_create(&api_config);
+    ASSERT_NOT_NULL(api_env);
     SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
     // Reset both
-    ue_companions_reset(ue_env, seed);
+    companions_reset(api_env, seed);
     cpp_env.Reset(seed);
 
     // Verify initial state matches
-    UE_GameState ue_state = {};
-    ue_companions_get_state(ue_env, &ue_state);
+    Companions_GameState api_state = {};
+    companions_get_state(api_env, &api_state);
     auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
 
     for (int i = 0; i < agents; i++) {
-      ASSERT_EQ(ue_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
-      ASSERT_EQ(ue_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
+      ASSERT_EQ(api_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
+      ASSERT_EQ(api_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
     }
 
-    ue_companions_destroy(ue_env);
+    companions_destroy(api_env);
   }
 }
 
@@ -446,70 +446,70 @@ TEST(ParityTest_ConfigQueries) {
   const int horizon = 100;
 
   // Create both environments
-  UE_EnvConfig ue_config = MakeUEConfig(rows, cols, agents, synchro, 0, seed, horizon);
-  UE_CompanionsEnv* ue_env = ue_companions_create(&ue_config);
-  ASSERT_NOT_NULL(ue_env);
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed, horizon);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, horizon);
 
   // Reset both
-  ue_companions_reset(ue_env, seed);
+  companions_reset(api_env, seed);
   cpp_env.Reset(seed);
 
   // Verify configuration queries match
-  ASSERT_EQ(ue_companions_get_rows(ue_env), cpp_env.GetRows());
-  ASSERT_EQ(ue_companions_get_cols(ue_env), cpp_env.GetCols());
-  ASSERT_EQ(ue_companions_get_agent_count(ue_env), cpp_env.NumAgents());
-  ASSERT_EQ(ue_companions_get_tick(ue_env), cpp_env.GetTick());
-  ASSERT_EQ(ue_companions_is_done(ue_env), false);
-  ASSERT_EQ(ue_companions_is_success(ue_env), cpp_env.IsSuccess());
+  ASSERT_EQ(companions_get_rows(api_env), cpp_env.GetRows());
+  ASSERT_EQ(companions_get_cols(api_env), cpp_env.GetCols());
+  ASSERT_EQ(companions_get_agent_count(api_env), cpp_env.NumAgents());
+  ASSERT_EQ(companions_get_tick(api_env), cpp_env.GetTick());
+  ASSERT_EQ(companions_is_done(api_env), false);
+  ASSERT_EQ(companions_is_success(api_env), cpp_env.IsSuccess());
 
   // Step a few times and verify tick advances identically
-  std::vector<UE_Action> ue_actions(agents, {UE_Movement_Stay, UE_Interact_None});
+  std::vector<Companions_Action> api_actions(agents, {Companions_Movement_Stay, Companions_Interact_None});
   std::vector<Action> cpp_actions(agents, EncodeAction(MovementAction::Stay, InteractAction::None));
 
   for (int step = 0; step < 5; step++) {
-    UE_StepResult ue_result = {};
-    ue_companions_step(ue_env, ue_actions.data(), agents, &ue_result);
+    Companions_StepResult api_result = {};
+    companions_step(api_env, api_actions.data(), agents, &api_result);
     cpp_env.Step(cpp_actions);
 
-    ASSERT_EQ(ue_companions_get_tick(ue_env), cpp_env.GetTick());
-    ASSERT_EQ(ue_companions_get_tick(ue_env), step + 1);
+    ASSERT_EQ(companions_get_tick(api_env), cpp_env.GetTick());
+    ASSERT_EQ(companions_get_tick(api_env), step + 1);
   }
 
   // Test get_cell matches for several positions
   for (int r = 0; r < rows; r++) {
     for (int c = 0; c < cols; c++) {
-      UE_CellKind ue_kind = ue_companions_get_cell(ue_env, r, c);
+      Companions_CellKind api_kind = companions_get_cell(api_env, r, c);
       CellKind cpp_kind = cpp_env.GetGrid().GetCell(r, c).GetKind();
 
-      // Map C++ enum to expected UE enum
-      UE_CellKind expected;
+      // Map C++ enum to expected C API enum
+      Companions_CellKind expected;
       switch (cpp_kind) {
-        case CellKind::Floor: expected = UE_CellKind_Floor; break;
-        case CellKind::Wall: expected = UE_CellKind_Wall; break;
-        case CellKind::Hazard: expected = UE_CellKind_Hazard; break;
-        case CellKind::Synchro: expected = UE_CellKind_Synchro; break;
-        case CellKind::HealArea: expected = UE_CellKind_HealArea; break;
-        case CellKind::Target: expected = UE_CellKind_Target; break;
-        default: expected = UE_CellKind_Floor;
+        case CellKind::Floor: expected = Companions_CellKind_Floor; break;
+        case CellKind::Wall: expected = Companions_CellKind_Wall; break;
+        case CellKind::Hazard: expected = Companions_CellKind_Hazard; break;
+        case CellKind::Synchro: expected = Companions_CellKind_Synchro; break;
+        case CellKind::HealArea: expected = Companions_CellKind_HealArea; break;
+        case CellKind::Target: expected = Companions_CellKind_Target; break;
+        default: expected = Companions_CellKind_Floor;
       }
-      ASSERT_EQ(ue_kind, expected);
+      ASSERT_EQ(api_kind, expected);
     }
   }
 
   // Test get_agent_by_index matches get_state
-  UE_GameState ue_state = {};
-  ue_companions_get_state(ue_env, &ue_state);
+  Companions_GameState api_state = {};
+  companions_get_state(api_env, &api_state);
   for (int i = 0; i < agents; i++) {
-    UE_AgentState agent_by_index = {};
-    bool found = ue_companions_get_agent_by_index(ue_env, i, &agent_by_index);
+    Companions_AgentState agent_by_index = {};
+    bool found = companions_get_agent_by_index(api_env, i, &agent_by_index);
     ASSERT_TRUE(found);
-    ASSERT_EQ(agent_by_index.position.row, ue_state.agents[i].position.row);
-    ASSERT_EQ(agent_by_index.position.col, ue_state.agents[i].position.col);
-    ASSERT_EQ(agent_by_index.id, ue_state.agents[i].id);
+    ASSERT_EQ(agent_by_index.position.row, api_state.agents[i].position.row);
+    ASSERT_EQ(agent_by_index.position.col, api_state.agents[i].position.col);
+    ASSERT_EQ(agent_by_index.id, api_state.agents[i].id);
   }
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // =============================================================================
@@ -524,8 +524,8 @@ TEST(TestSnapshotParity_DLLSaveDirectLoad) {
   const int synchro = 2;
   const uint32_t seed = 54321;
 
-  // Create UE env
-  UE_EnvConfig config = {};
+  // Create C API env
+  Companions_EnvConfig config = {};
   config.rows = rows;
   config.cols = cols;
   config.num_companions = agents;
@@ -534,27 +534,27 @@ TEST(TestSnapshotParity_DLLSaveDirectLoad) {
   config.horizon = 100;
   config.seed = seed;
 
-  UE_CompanionsEnv* ue_env = ue_companions_create(&config);
-  ASSERT_TRUE(ue_env != nullptr);
+  Companions_Env* api_env = companions_create(&config);
+  ASSERT_TRUE(api_env != nullptr);
 
   // Run a few steps
-  UE_Action actions[2] = {
-      {UE_Movement_Right, UE_Interact_None},
-      {UE_Movement_Down, UE_Interact_None}};
-  UE_StepResult result;
-  ue_companions_step(ue_env, actions, 2, &result);
+  Companions_Action actions[2] = {
+      {Companions_Movement_Right, Companions_Interact_None},
+      {Companions_Movement_Down, Companions_Interact_None}};
+  Companions_StepResult result;
+  companions_step(api_env, actions, 2, &result);
 
   // Save via DLL API
-  int32_t size = ue_companions_get_snapshot_size(ue_env);
+  int32_t size = companions_get_snapshot_size(api_env);
   ASSERT_TRUE(size > 0);
 
   std::vector<uint8_t> buffer(size);
-  bool save_ok = ue_companions_save_snapshot(ue_env, buffer.data(), size);
+  bool save_ok = companions_save_snapshot(api_env, buffer.data(), size);
   ASSERT_TRUE(save_ok);
 
-  // Get UE state before load
-  UE_GameState ue_state;
-  ue_companions_get_state(ue_env, &ue_state);
+  // Get C API state before load
+  Companions_GameState api_state;
+  companions_get_state(api_env, &api_state);
 
   // Create direct C++ env and load the snapshot
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, 99999, 0, 100);
@@ -565,17 +565,17 @@ TEST(TestSnapshotParity_DLLSaveDirectLoad) {
 
   // Verify parity: agent positions
   auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
-  ASSERT_EQ(cpp_agents.size(), static_cast<size_t>(ue_state.agent_count));
+  ASSERT_EQ(cpp_agents.size(), static_cast<size_t>(api_state.agent_count));
 
   for (size_t i = 0; i < cpp_agents.size(); ++i) {
-    ASSERT_EQ(cpp_agents[i]->GetPosition().row, ue_state.agents[i].position.row);
-    ASSERT_EQ(cpp_agents[i]->GetPosition().col, ue_state.agents[i].position.col);
+    ASSERT_EQ(cpp_agents[i]->GetPosition().row, api_state.agents[i].position.row);
+    ASSERT_EQ(cpp_agents[i]->GetPosition().col, api_state.agents[i].position.col);
   }
 
   // Verify tick
-  ASSERT_EQ(cpp_env.GetTick(), ue_state.tick);
+  ASSERT_EQ(cpp_env.GetTick(), api_state.tick);
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // Test: Direct C++ save → DLL load produces same state
@@ -609,8 +609,8 @@ TEST(TestSnapshotParity_DirectSaveDLLLoad) {
   }
   int cpp_tick = cpp_env.GetTick();
 
-  // Create UE env and load via DLL
-  UE_EnvConfig config = {};
+  // Create C API env and load via DLL
+  Companions_EnvConfig config = {};
   config.rows = rows;
   config.cols = cols;
   config.num_companions = agents;
@@ -619,35 +619,35 @@ TEST(TestSnapshotParity_DirectSaveDLLLoad) {
   config.horizon = 100;
   config.seed = 99999;  // Different seed - will be overwritten by snapshot
 
-  UE_CompanionsEnv* ue_env = ue_companions_create(&config);
-  ASSERT_TRUE(ue_env != nullptr);
+  Companions_Env* api_env = companions_create(&config);
+  ASSERT_TRUE(api_env != nullptr);
 
   // Load snapshot via DLL
-  bool load_ok = ue_companions_load_snapshot(ue_env, buffer.data(),
+  bool load_ok = companions_load_snapshot(api_env, buffer.data(),
                                               static_cast<int32_t>(buffer.size()));
   ASSERT_TRUE(load_ok);
 
   // Verify parity
-  UE_GameState ue_state;
-  ue_companions_get_state(ue_env, &ue_state);
+  Companions_GameState api_state;
+  companions_get_state(api_env, &api_state);
 
-  ASSERT_EQ(ue_state.tick, cpp_tick);
-  ASSERT_EQ(ue_state.agent_count, static_cast<int32_t>(cpp_positions.size()));
+  ASSERT_EQ(api_state.tick, cpp_tick);
+  ASSERT_EQ(api_state.agent_count, static_cast<int32_t>(cpp_positions.size()));
 
   for (size_t i = 0; i < cpp_positions.size(); ++i) {
-    ASSERT_EQ(ue_state.agents[i].position.row, cpp_positions[i].row);
-    ASSERT_EQ(ue_state.agents[i].position.col, cpp_positions[i].col);
+    ASSERT_EQ(api_state.agents[i].position.row, cpp_positions[i].row);
+    ASSERT_EQ(api_state.agents[i].position.col, cpp_positions[i].col);
   }
 
-  ue_companions_destroy(ue_env);
+  companions_destroy(api_env);
 }
 
 // =============================================================================
 // Main
 // =============================================================================
 int main() {
-  std::cout << "Running UE API Parity Tests...\n" << std::endl;
-  std::cout << "Verifying UE C API produces identical results to direct C++ API\n" << std::endl;
+  std::cout << "Running C API Parity Tests...\n" << std::endl;
+  std::cout << "Verifying C API produces identical results to direct C++ API\n" << std::endl;
 
   int passed = 0;
   int failed = 0;
@@ -671,7 +671,7 @@ int main() {
   std::cout << "Failed: " << failed << std::endl;
 
   if (failed == 0) {
-    std::cout << "\nPARITY VERIFIED: UE API matches direct C++ API" << std::endl;
+    std::cout << "\nPARITY VERIFIED: C API matches direct C++ API" << std::endl;
   }
 
   return failed > 0 ? 1 : 0;

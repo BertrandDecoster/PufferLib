@@ -18,7 +18,7 @@
 #
 # Output:
 #   The DLL and data/ folder are built to: build/bin/<Config>/
-#   - companions_ue.dll
+#   - companions_api.dll
 #   - data/agents.csv, data/effects.csv, ...
 
 set -o pipefail
@@ -69,7 +69,7 @@ REPO_ROOT="$SCRIPT_DIR/../../../../.."
 if [ ! -d "$BUILD_DIR" ]; then
     echo "=== Configuring CMake ==="
     mkdir -p "$BUILD_DIR"
-    if ! cmake -S "$SCRIPT_DIR/.." -B "$BUILD_DIR" -DBUILD_UE5_DLL=ON 2>&1; then
+    if ! cmake -S "$SCRIPT_DIR/.." -B "$BUILD_DIR" -DBUILD_DLL=ON 2>&1; then
         echo -e "\n${RED}CMAKE CONFIGURE FAILED${NC}"
         exit 1
     fi
@@ -122,7 +122,7 @@ fi
 
 # Verify DLL and data folder
 DLL_DIR="$(cd "$BUILD_DIR/bin/$CONFIG" 2>/dev/null && pwd)"
-DLL_PATH="$DLL_DIR/companions_ue.dll"
+DLL_PATH="$DLL_DIR/companions_api.dll"
 DATA_DIR="$DLL_DIR/data"
 
 echo ""

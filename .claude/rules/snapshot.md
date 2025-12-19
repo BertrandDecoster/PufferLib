@@ -22,26 +22,25 @@ and it is loaded in the env that matches the next task in the plan.
 
 ```c
 // Two-call pattern: get size, then save
-int32_t ue_companions_get_snapshot_size(const UE_CompanionsEnv* env);
-bool ue_companions_save_snapshot(const UE_CompanionsEnv* env, uint8_t* out_buffer, int32_t buffer_size);
+int32_t companions_get_snapshot_size(const Companions_Env* env);
+bool companions_save_snapshot(const Companions_Env* env, uint8_t* out_buffer, int32_t buffer_size);
 
 // Load from buffer
-bool ue_companions_load_snapshot(UE_CompanionsEnv* env, const uint8_t* data, int32_t data_size);
+bool companions_load_snapshot(Companions_Env* env, const uint8_t* data, int32_t data_size);
 ```
 
 **Usage:**
 ```cpp
 // Save
-int32_t size = ue_companions_get_snapshot_size(env);
-TArray<uint8> buffer;
-buffer.SetNum(size);
-ue_companions_save_snapshot(env, buffer.GetData(), size);
+int32_t size = companions_get_snapshot_size(env);
+std::vector<uint8_t> buffer(size);
+companions_save_snapshot(env, buffer.data(), size);
 
 // Load
-ue_companions_load_snapshot(env, buffer.GetData(), buffer.Num());
+companions_load_snapshot(env, buffer.data(), buffer.size());
 ```
 
 **Notes:**
-- Returns `false`/`0` on error, check `ue_companions_get_error()`
+- Returns `false`/`0` on error, check `companions_get_error()`
 - Contains: grid, agents, effects, tick, RNG state (~2-5 KB)
 - Binary format: magic `0x534E4150` ("SNAP"), version 1
