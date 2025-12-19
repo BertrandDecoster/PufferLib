@@ -360,6 +360,21 @@ COMPANIONS_API Companions_Env* companions_create(
   auto* wrapper = new Companions_Env();
   wrapper->config = *config;
 
+  // Minimum buffer size check: magic(4) + version(4) + rows(4) + cols(4) + cell_count(4) = 20 bytes
+  // Plus at least something for cells, agents, effects, timing
+  constexpr int32_t kMinSnapshotSize = 60;
+  if (data_size < kMinSnapshotSize) {
+    SetError("Snapshot buffer too small");
+    return false;
+  }
+
+  // Validate magic number before attempting full deserialization
+  uint32_t magic = *reinterpret_cast<const uint32_t*>(data);
+  if (magic != 0x534E4150) {  // "SNAP"
+    SetError("Invalid snapshot magic number");
+    return false;
+  }
+
   try {
     wrapper->env = std::make_unique<companions::SynchroEnv>(
         config->rows,
@@ -395,6 +410,21 @@ COMPANIONS_API Companions_Env* companions_create_aggro(
   }
 
   auto* wrapper = new Companions_Env();
+
+  // Minimum buffer size check: magic(4) + version(4) + rows(4) + cols(4) + cell_count(4) = 20 bytes
+  // Plus at least something for cells, agents, effects, timing
+  constexpr int32_t kMinSnapshotSize = 60;
+  if (data_size < kMinSnapshotSize) {
+    SetError("Snapshot buffer too small");
+    return false;
+  }
+
+  // Validate magic number before attempting full deserialization
+  uint32_t magic = *reinterpret_cast<const uint32_t*>(data);
+  if (magic != 0x534E4150) {  // "SNAP"
+    SetError("Invalid snapshot magic number");
+    return false;
+  }
 
   try {
     // Convert API enemy type to internal enum
@@ -701,6 +731,21 @@ companions_get_snapshot_size(const Companions_Env* env) {
     return 0;
   }
 
+  // Minimum buffer size check: magic(4) + version(4) + rows(4) + cols(4) + cell_count(4) = 20 bytes
+  // Plus at least something for cells, agents, effects, timing
+  constexpr int32_t kMinSnapshotSize = 60;
+  if (data_size < kMinSnapshotSize) {
+    SetError("Snapshot buffer too small");
+    return false;
+  }
+
+  // Validate magic number before attempting full deserialization
+  uint32_t magic = *reinterpret_cast<const uint32_t*>(data);
+  if (magic != 0x534E4150) {  // "SNAP"
+    SetError("Invalid snapshot magic number");
+    return false;
+  }
+
   try {
     // Save and cache snapshot
     companions::Snapshot snap = env->env->SaveSnapshot();
@@ -743,7 +788,8 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
     return false;
   }
 
-  // Minimum buffer size validation to avoid exceptions crossing DLL boundary
+  // Minimum buffer size check: magic(4) + version(4) + rows(4) + cols(4) + cell_count(4) = 20 bytes
+  // Plus at least something for cells, agents, effects, timing
   constexpr int32_t kMinSnapshotSize = 60;
   if (data_size < kMinSnapshotSize) {
     SetError("Snapshot buffer too small");
@@ -751,8 +797,7 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
   }
 
   // Validate magic number before attempting full deserialization
-  uint32_t magic;
-  std::memcpy(&magic, data, sizeof(magic));
+  uint32_t magic = *reinterpret_cast<const uint32_t*>(data);
   if (magic != 0x534E4150) {  // "SNAP"
     SetError("Invalid snapshot magic number");
     return false;
@@ -795,6 +840,21 @@ COMPANIONS_API int32_t companions_generate_level(
   if (config->rows <= 0 || config->cols <= 0) {
     SetError("Invalid grid dimensions");
     return 0;
+  }
+
+  // Minimum buffer size check: magic(4) + version(4) + rows(4) + cols(4) + cell_count(4) = 20 bytes
+  // Plus at least something for cells, agents, effects, timing
+  constexpr int32_t kMinSnapshotSize = 60;
+  if (data_size < kMinSnapshotSize) {
+    SetError("Snapshot buffer too small");
+    return false;
+  }
+
+  // Validate magic number before attempting full deserialization
+  uint32_t magic = *reinterpret_cast<const uint32_t*>(data);
+  if (magic != 0x534E4150) {  // "SNAP"
+    SetError("Invalid snapshot magic number");
+    return false;
   }
 
   try {

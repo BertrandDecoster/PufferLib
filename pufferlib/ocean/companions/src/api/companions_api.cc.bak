@@ -743,21 +743,6 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
     return false;
   }
 
-  // Minimum buffer size validation to avoid exceptions crossing DLL boundary
-  constexpr int32_t kMinSnapshotSize = 60;
-  if (data_size < kMinSnapshotSize) {
-    SetError("Snapshot buffer too small");
-    return false;
-  }
-
-  // Validate magic number before attempting full deserialization
-  uint32_t magic;
-  std::memcpy(&magic, data, sizeof(magic));
-  if (magic != 0x534E4150) {  // "SNAP"
-    SetError("Invalid snapshot magic number");
-    return false;
-  }
-
   try {
     std::vector<uint8_t> buffer(data, data + data_size);
     companions::Snapshot snap = companions::Snapshot::Deserialize(buffer);
