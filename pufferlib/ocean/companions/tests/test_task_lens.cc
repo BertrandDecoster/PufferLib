@@ -10,6 +10,7 @@
 #include "../src/env/task_lens.h"
 #include "../src/env/base_env.h"
 #include "../src/env/synchro_env.h"
+#include "../src/env/synchro_lens.h"
 
 using namespace companions;
 
@@ -176,6 +177,58 @@ TEST(TestBaseEnvSetTaskLens) {
   bad_lens->can_operate = false;
   result = env.SetTaskLens(std::move(bad_lens));
   ASSERT_FALSE(result);
+}
+
+// =============================================================================
+// SynchroLens Tests
+// =============================================================================
+
+TEST(TestSynchroLensCanOperateOn) {
+  SynchroEnv env(6, 6, 1, 1, 0, 42);
+  SynchroLens lens;
+  ASSERT_TRUE(lens.CanOperateOn(env));
+}
+
+TEST(TestSynchroLensMaskCell) {
+  SynchroLens lens;
+  // Target cells should be hidden (shown as Floor)
+  ASSERT_EQ(lens.MaskCell(CellKind::Target), CellKind::Floor);
+  // Synchro cells should remain visible (they are the goals)
+  ASSERT_EQ(lens.MaskCell(CellKind::Synchro), CellKind::Synchro);
+  // Other cells should pass through unchanged
+  ASSERT_EQ(lens.MaskCell(CellKind::Wall), CellKind::Wall);
+  ASSERT_EQ(lens.MaskCell(CellKind::Floor), CellKind::Floor);
+  ASSERT_EQ(lens.MaskCell(CellKind::Hazard), CellKind::Hazard);
+}
+
+TEST(TestSynchroLensIsDoneTimeout) {
+  // Create env with horizon=10
+  SynchroEnv env(6, 6, 1, 1, 0, 42, 0, 10);
+  SynchroLens lens;
+
+  // Initially not done
+  ASSERT_FALSE(lens.IsDone(env));
+
+  // Step until horizon (use Stay action = 0)
+  std::vector<Action> actions = {EncodeAction(MovementAction::Stay, InteractAction::None)};
+  for (int i = 0; i < 10; ++i) {
+    env.Step(actions);
+  }
+
+  // Should be done due to timeout
+  ASSERT_TRUE(lens.IsDone(env));
+}
+
+TEST(TestSynchroLensRewardStructure) {
+  // Create env with 2 agents and 2 synchro cells
+  SynchroEnv env(6, 6, 2, 2, 0, 42);
+  SynchroLens lens;
+
+  // Initial reward should be negative (time penalty, no agents on synchro)
+  float reward = lens.ComputeReward(env, 0);
+  // Time penalty = -num_agents * kProgressReward = -2 * 0.01 = -0.02
+  // Progress = 0 (no agents on synchro initially, most likely)
+  ASSERT_TRUE(reward <= 0.0f);
 }
 
 // =============================================================================
