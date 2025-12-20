@@ -11,6 +11,8 @@
 #include "../src/env/base_env.h"
 #include "../src/env/synchro_env.h"
 #include "../src/env/synchro_lens.h"
+#include "../src/env/aggro_env.h"
+#include "../src/env/aggro_lens.h"
 
 using namespace companions;
 
@@ -229,6 +231,82 @@ TEST(TestSynchroLensRewardStructure) {
   // Time penalty = -num_agents * kProgressReward = -2 * 0.01 = -0.02
   // Progress = 0 (no agents on synchro initially, most likely)
   ASSERT_TRUE(reward <= 0.0f);
+}
+
+// =============================================================================
+// AggroLens Tests
+// =============================================================================
+
+TEST(TestAggroLensCanOperateOn) {
+  AggroEnv env(10, 1, EnemyType::Zombie, 42);
+  AggroLens lens;
+  ASSERT_TRUE(lens.CanOperateOn(env));
+
+  // SynchroEnv has no target cell - should fail
+  SynchroEnv synchro_env(6, 6, 1, 1, 0, 42);
+  ASSERT_FALSE(lens.CanOperateOn(synchro_env));
+}
+
+TEST(TestAggroLensMaskCell) {
+  AggroLens lens;
+  // Synchro cells should be hidden (shown as Floor)
+  ASSERT_EQ(lens.MaskCell(CellKind::Synchro), CellKind::Floor);
+  // Target cells should remain visible (they are the goals)
+  ASSERT_EQ(lens.MaskCell(CellKind::Target), CellKind::Target);
+  // Other cells should pass through unchanged
+  ASSERT_EQ(lens.MaskCell(CellKind::Wall), CellKind::Wall);
+  ASSERT_EQ(lens.MaskCell(CellKind::Floor), CellKind::Floor);
+  ASSERT_EQ(lens.MaskCell(CellKind::Hazard), CellKind::Hazard);
+}
+
+TEST(TestAggroLensIsDoneTimeout) {
+  // Create env with horizon=10
+  AggroEnv env(10, 1, EnemyType::Zombie, 42, 0, 10);
+  AggroLens lens;
+
+  // Initially not done
+  ASSERT_FALSE(lens.IsDone(env));
+
+  // Step until horizon (use Stay action for each agent: 1 companion + 1 zombie = 2 agents)
+  int num_agents = env.NumAgents();
+  std::vector<Action> actions(num_agents, EncodeAction(MovementAction::Stay, InteractAction::None));
+  for (int i = 0; i < 10; ++i) {
+    env.Step(actions);
+  }
+
+  // Should be done due to timeout
+  ASSERT_TRUE(lens.IsDone(env));
+}
+
+TEST(TestAggroLensRewardStructure) {
+  // Create AggroEnv
+  AggroEnv env(10, 1, EnemyType::Zombie, 42);
+  AggroLens lens;
+
+  // Initial reward should be time penalty (not on target yet)
+  float reward = lens.ComputeReward(env, 0);
+  ASSERT_EQ(reward, AggroLens::kTimePenalty);
+}
+
+TEST(TestAggroLensAdditionalObsSize) {
+  AggroLens lens;
+  ASSERT_EQ(lens.AdditionalVectorObsSize(), 8);
+}
+
+TEST(TestAggroLensAppendVectorObs) {
+  AggroEnv env(10, 1, EnemyType::Zombie, 42);
+  AggroLens lens;
+
+  std::vector<float> obs;
+  lens.AppendVectorObs(env, 0, obs);
+
+  // Should have 8 features
+  ASSERT_EQ(static_cast<int>(obs.size()), 8);
+
+  // All values should be in reasonable range [-1, 1] for normalized positions
+  for (size_t i = 0; i < obs.size(); ++i) {
+    ASSERT_TRUE(obs[i] >= -1.0f && obs[i] <= 1.0f);
+  }
 }
 
 // =============================================================================
