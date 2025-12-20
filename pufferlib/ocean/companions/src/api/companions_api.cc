@@ -17,6 +17,7 @@
 #include "../core/object.h"
 #include "../core/object_manager.h"
 #include "../core/snapshot.h"
+#include "../core/snapshot_json.h"
 #include "../core/types.h"
 #include "../env/effect_system.h"
 #include "../env/aggro_env.h"
@@ -850,6 +851,112 @@ COMPANIONS_API bool companions_get_generated_level(uint8_t* out_buffer,
 
   std::memcpy(out_buffer, g_generated_level.data(), g_generated_level.size());
   return true;
+}
+
+// =============================================================================
+// JSON Snapshot Save/Load
+// =============================================================================
+
+COMPANIONS_API const char* companions_snapshot_to_json(
+    const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return nullptr;
+  }
+
+  try {
+    companions::Snapshot snap = env->env->SaveSnapshot();
+    std::string json = companions::SnapshotToJson(snap);
+
+    // Allocate new string (caller must free with companions_free_string)
+    char* result = new char[json.size() + 1];
+    std::memcpy(result, json.c_str(), json.size() + 1);
+    return result;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return nullptr;
+  }
+}
+
+COMPANIONS_API void companions_free_string(const char* str) {
+  delete[] str;
+}
+
+COMPANIONS_API bool companions_load_snapshot_json(
+    Companions_Env* env,
+    const char* json_str) {
+  if (!env || !env->env || !json_str) {
+    SetError("Invalid arguments");
+    return false;
+  }
+
+  try {
+    companions::Snapshot snap = companions::SnapshotFromJson(json_str);
+    env->env->LoadSnapshot(snap);
+
+    // Update wrapper state
+    env->done = false;
+    env->success = false;
+
+    // Reset prev_positions for event tracking
+    auto agents = env->env->GetObjectManager().GetAllAgents();
+    env->prev_positions.clear();
+    for (const auto* agent : agents) {
+      env->prev_positions.push_back(agent->GetPosition());
+    }
+
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  }
+}
+
+COMPANIONS_API bool companions_save_snapshot_json(
+    const Companions_Env* env,
+    const char* filepath) {
+  if (!env || !env->env || !filepath) {
+    SetError("Invalid arguments");
+    return false;
+  }
+
+  try {
+    companions::Snapshot snap = env->env->SaveSnapshot();
+    return companions::SaveSnapshotToJsonFile(snap, filepath);
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  }
+}
+
+COMPANIONS_API bool companions_load_snapshot_json_file(
+    Companions_Env* env,
+    const char* filepath) {
+  if (!env || !env->env || !filepath) {
+    SetError("Invalid arguments");
+    return false;
+  }
+
+  try {
+    companions::Snapshot snap = companions::LoadSnapshotFromJsonFile(filepath);
+    env->env->LoadSnapshot(snap);
+
+    // Update wrapper state
+    env->done = false;
+    env->success = false;
+
+    // Reset prev_positions for event tracking
+    auto agents = env->env->GetObjectManager().GetAllAgents();
+    env->prev_positions.clear();
+    for (const auto* agent : agents) {
+      env->prev_positions.push_back(agent->GetPosition());
+    }
+
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  }
 }
 
 }  // extern "C"

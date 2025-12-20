@@ -499,6 +499,37 @@ COMPANIONS_API bool companions_get_generated_level(
     uint8_t* out_buffer,
     int32_t buffer_size);
 
+// =============================================================================
+// JSON Snapshot Save/Load
+// =============================================================================
+
+// Get current state as JSON string (human-readable, pretty-printed)
+// Returns allocated string that must be freed with companions_free_string()
+// Returns NULL on error (check companions_get_error)
+COMPANIONS_API const char* companions_snapshot_to_json(
+    const Companions_Env* env);
+
+// Free a string allocated by companions_snapshot_to_json
+COMPANIONS_API void companions_free_string(const char* str);
+
+// Load state from JSON string
+// Returns false on error (check companions_get_error)
+COMPANIONS_API bool companions_load_snapshot_json(
+    Companions_Env* env,
+    const char* json_str);
+
+// Save current state to JSON file
+// Returns false on error (check companions_get_error)
+COMPANIONS_API bool companions_save_snapshot_json(
+    const Companions_Env* env,
+    const char* filepath);
+
+// Load state from JSON file
+// Returns false on error (check companions_get_error)
+COMPANIONS_API bool companions_load_snapshot_json_file(
+    Companions_Env* env,
+    const char* filepath);
+
 #ifdef __cplusplus
 }
 #endif

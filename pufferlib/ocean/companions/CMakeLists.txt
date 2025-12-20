@@ -53,6 +53,7 @@ set(CORE_SOURCES
   src/core/connectivity.cc
   src/core/d4_transform.cc
   src/core/snapshot.cc
+  src/core/snapshot_json.cc
   src/core/level_generator.cc
   src/core/fsm/fsm_states.cc
   src/core/fsm/enemies.cc
@@ -76,6 +77,7 @@ set(CORE_HEADERS
   src/core/connectivity.h
   src/core/d4_transform.h
   src/core/snapshot.h
+  src/core/snapshot_json.h
   src/core/level_config.h
   src/core/level_generator.h
   src/core/fsm/fsm_state.h
@@ -115,7 +117,10 @@ set(VIZ_HEADERS
 
 # Core library
 add_library(companions_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
-target_include_directories(companions_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+target_include_directories(companions_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
 
 # Env library (depends on core)
 add_library(companions_env STATIC ${ENV_SOURCES} ${ENV_HEADERS})
@@ -199,6 +204,10 @@ add_executable(companions_snapshot_test tests/test_snapshot.cc)
 target_link_libraries(companions_snapshot_test companions_viz companions_env companions_core)
 target_include_directories(companions_snapshot_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_snapshot_json_test tests/test_snapshot_json.cc)
+target_link_libraries(companions_snapshot_json_test companions_viz companions_env companions_core)
+target_include_directories(companions_snapshot_json_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # =============================================================================
 # Demo executable (cross-platform)
 # =============================================================================
@@ -232,6 +241,7 @@ add_test(NAME companions_dodge_test COMMAND companions_dodge_test)
 add_test(NAME companions_map_generator_test COMMAND companions_map_generator_test)
 add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)
 add_test(NAME companions_snapshot_test COMMAND companions_snapshot_test)
+add_test(NAME companions_snapshot_json_test COMMAND companions_snapshot_json_test)
 
 # =============================================================================
 # DLL (Dynamic library for external integration)
