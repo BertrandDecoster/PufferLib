@@ -377,6 +377,57 @@ TEST(TestDodgeLensIsSuccessRequiresSurvival) {
 }
 
 // =============================================================================
+// Runtime Task Switching Tests
+// =============================================================================
+
+TEST(TestRuntimeTaskSwitching) {
+  // Create env with synchro cells
+  SynchroEnv env(8, 8, 2, 2, 0, 42);
+
+  // Set SynchroLens
+  auto synchro_lens = std::make_unique<SynchroLens>();
+  ASSERT_TRUE(env.SetTaskLens(std::move(synchro_lens)));
+
+  // Verify SynchroLens is active
+  ASSERT_TRUE(env.GetTaskLens() != nullptr);
+  ASSERT_EQ(env.GetTaskLens()->MaskCell(CellKind::Target), CellKind::Floor);
+
+  // Take a step with SynchroLens
+  std::vector<Action> stay_actions = {
+    EncodeAction(MovementAction::Stay),
+    EncodeAction(MovementAction::Stay)
+  };
+  env.Step(stay_actions);
+
+  // Capture world state before lens swap
+  int tick_before = env.GetTick();
+  auto agents = env.GetObjectManager().GetAllAgents();
+  Position agent_pos_before = agents[0]->GetPosition();
+
+  // Swap to DodgeLens (accepts any env)
+  auto dodge_lens = std::make_unique<DodgeLens>();
+  ASSERT_TRUE(env.SetTaskLens(std::move(dodge_lens)));
+
+  // Verify world state is UNCHANGED after lens swap
+  ASSERT_EQ(env.GetTick(), tick_before);
+  agents = env.GetObjectManager().GetAllAgents();
+  ASSERT_EQ(agents[0]->GetPosition().row, agent_pos_before.row);
+  ASSERT_EQ(agents[0]->GetPosition().col, agent_pos_before.col);
+
+  // Verify new lens is active (DodgeLens masks both Synchro and Target)
+  ASSERT_EQ(env.GetTaskLens()->MaskCell(CellKind::Synchro), CellKind::Floor);
+
+  // Can still step with new lens
+  std::vector<Action> up_actions = {
+    EncodeAction(MovementAction::Up),
+    EncodeAction(MovementAction::Up)
+  };
+  auto result = env.Step(up_actions);
+  ASSERT_EQ(env.GetTick(), tick_before + 1);
+  ASSERT_EQ(result.rewards.size(), 2);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {
