@@ -94,6 +94,7 @@ set(ENV_SOURCES
   src/env/dodge_env.cc
   src/env/synchro_lens.cc
   src/env/aggro_lens.cc
+  src/env/dodge_lens.cc
 )
 
 set(ENV_HEADERS
@@ -105,6 +106,7 @@ set(ENV_HEADERS
   src/env/task_lens.h
   src/env/synchro_lens.h
   src/env/aggro_lens.h
+  src/env/dodge_lens.h
 )
 
 # Viz module

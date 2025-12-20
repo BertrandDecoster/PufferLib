@@ -13,6 +13,7 @@
 #include "../src/env/synchro_lens.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/aggro_lens.h"
+#include "../src/env/dodge_lens.h"
 
 using namespace companions;
 
@@ -307,6 +308,72 @@ TEST(TestAggroLensAppendVectorObs) {
   for (size_t i = 0; i < obs.size(); ++i) {
     ASSERT_TRUE(obs[i] >= -1.0f && obs[i] <= 1.0f);
   }
+}
+
+// =============================================================================
+// DodgeLens Tests
+// =============================================================================
+
+TEST(TestDodgeLensCanOperateOn) {
+  SynchroEnv env(6, 6, 1, 1, 0, 42);
+  DodgeLens lens;
+  ASSERT_TRUE(lens.CanOperateOn(env));  // Always works
+}
+
+TEST(TestDodgeLensMaskCell) {
+  DodgeLens lens;
+  ASSERT_EQ(lens.MaskCell(CellKind::Synchro), CellKind::Floor);
+  ASSERT_EQ(lens.MaskCell(CellKind::Target), CellKind::Floor);
+  ASSERT_EQ(lens.MaskCell(CellKind::Wall), CellKind::Wall);
+  ASSERT_EQ(lens.MaskCell(CellKind::Floor), CellKind::Floor);
+  ASSERT_EQ(lens.MaskCell(CellKind::Hazard), CellKind::Hazard);
+}
+
+TEST(TestDodgeLensReward) {
+  SynchroEnv env(6, 6, 1, 1, 0, 42);
+  DodgeLens lens;
+  // All companions alive = survival reward
+  float reward = lens.ComputeReward(env, 0);
+  ASSERT_TRUE(reward > 0);
+  ASSERT_EQ(reward, DodgeLens::kSurvivalReward);
+}
+
+TEST(TestDodgeLensIsDoneTimeout) {
+  // Create env with horizon=10
+  SynchroEnv env(6, 6, 1, 1, 0, 42, 0, 10);
+  DodgeLens lens;
+
+  // Initially not done
+  ASSERT_FALSE(lens.IsDone(env));
+
+  // Step until horizon (use Stay action = 0)
+  std::vector<Action> actions = {EncodeAction(MovementAction::Stay, InteractAction::None)};
+  for (int i = 0; i < 10; ++i) {
+    env.Step(actions);
+  }
+
+  // Should be done due to timeout
+  ASSERT_TRUE(lens.IsDone(env));
+  // And since no one died, it should be success
+  ASSERT_TRUE(lens.IsSuccess(env));
+}
+
+TEST(TestDodgeLensIsSuccessRequiresSurvival) {
+  SynchroEnv env(6, 6, 1, 1, 0, 42, 0, 10);
+  DodgeLens lens;
+
+  // Initially not done and not success (need to reach horizon)
+  ASSERT_FALSE(lens.IsDone(env));
+  ASSERT_FALSE(lens.IsSuccess(env));
+
+  // Step to horizon
+  std::vector<Action> actions = {EncodeAction(MovementAction::Stay, InteractAction::None)};
+  for (int i = 0; i < 10; ++i) {
+    env.Step(actions);
+  }
+
+  // Success only if survived to horizon
+  ASSERT_TRUE(lens.IsSuccess(env));
 }
 
 // =============================================================================
