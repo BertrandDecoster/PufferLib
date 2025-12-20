@@ -93,6 +93,9 @@ class AggroEnv : public BaseEnv {
   // Snapshot validation - AggroEnv requires target cell and patrol path
   void ValidateSnapshot(const Snapshot& snapshot) const override;
 
+  // Snapshot loading - extract AggroEnv-specific fields from loaded cells
+  void LoadSnapshot(const Snapshot& snapshot) override;
+
  protected:
   void CalculateRewards(std::vector<double>& rewards) override;
 

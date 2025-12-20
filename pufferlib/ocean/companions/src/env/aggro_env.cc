@@ -391,4 +391,26 @@ void AggroEnv::ValidateSnapshot(const Snapshot& snapshot) const {
   }
 }
 
+void AggroEnv::LoadSnapshot(const Snapshot& snapshot) {
+  // Call base implementation first
+  BaseEnv::LoadSnapshot(snapshot);
+
+  // Extract target_pos_ from loaded cells
+  target_pos_ = {0, 0};
+  for (size_t i = 0; i < snapshot.cells.size(); ++i) {
+    if (snapshot.cells[i].kind == CellKind::Target) {
+      int r = static_cast<int>(i) / cols_;
+      int c = static_cast<int>(i) % cols_;
+      target_pos_ = {r, c};
+      break;
+    }
+  }
+
+  // Extract patrol_path_ from snapshot
+  patrol_path_ = snapshot.patrol_path;
+
+  // Reset success flag
+  success_ = false;
+}
+
 }  // namespace companions
