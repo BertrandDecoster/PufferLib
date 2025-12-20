@@ -100,6 +100,7 @@ set(ENV_HEADERS
   src/env/synchro_env.h
   src/env/aggro_env.h
   src/env/dodge_env.h
+  src/env/task_lens.h
 )
 
 # Viz module
@@ -212,6 +213,10 @@ add_executable(companions_fsm_timing_test tests/test_fsm_timing.cc)
 target_link_libraries(companions_fsm_timing_test companions_viz companions_env companions_core)
 target_include_directories(companions_fsm_timing_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_task_lens_test tests/test_task_lens.cc)
+target_link_libraries(companions_task_lens_test companions_viz companions_env companions_core)
+target_include_directories(companions_task_lens_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # =============================================================================
 # Demo executable (cross-platform)
 # =============================================================================
@@ -247,6 +252,7 @@ add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)
 add_test(NAME companions_snapshot_test COMMAND companions_snapshot_test)
 add_test(NAME companions_snapshot_json_test COMMAND companions_snapshot_json_test)
 add_test(NAME companions_fsm_timing_test COMMAND companions_fsm_timing_test)
+add_test(NAME companions_task_lens_test COMMAND companions_task_lens_test)
 
 # =============================================================================
 # DLL (Dynamic library for external integration)
