@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "cell.h"
+#include "fsm/fsm_state.h"
 #include "types.h"
 
 namespace companions {
@@ -38,8 +39,8 @@ struct StatusSnapshot {
 // FSMSnapshot - Serialized FSM context (for AgentFSM)
 // =============================================================================
 struct FSMSnapshot {
-  std::string state_name;            // Current FSM state name
-  int target_id = -1;                // kInvalidObjectId if none
+  FSMStateType state_type = FSMStateType::None;  // Current FSM state
+  int target_id = -1;                            // kInvalidObjectId if none
   std::vector<Position> patrol_path;
   int patrol_index = 0;
   bool patrol_forward = true;
@@ -49,6 +50,14 @@ struct FSMSnapshot {
   // RNG state for FSM decisions
   uint64_t rng_state = 0;
   uint64_t rng_inc = 0;
+
+  // Attack runtime state (for mid-attack persistence)
+  int attack_tick_counter = 0;
+  Position attack_target_position;
+  int attack_area_width = 1;
+  int attack_area_height = 1;
+  int attack_damage = 1;
+  TargetFilter attack_filter = TargetFilter::Companion;
 };
 
 // =============================================================================

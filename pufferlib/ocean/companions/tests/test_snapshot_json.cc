@@ -113,7 +113,8 @@ void AssertSnapshotsEqual(const Snapshot& a, const Snapshot& b) {
 
     // Compare FSM if present
     if (a.agents[i].has_fsm) {
-      ASSERT_EQ(a.agents[i].fsm.state_name, b.agents[i].fsm.state_name);
+      ASSERT_EQ(static_cast<int>(a.agents[i].fsm.state_type),
+                static_cast<int>(b.agents[i].fsm.state_type));
       ASSERT_EQ(a.agents[i].fsm.target_id, b.agents[i].fsm.target_id);
       ASSERT_EQ(a.agents[i].fsm.detection_range, b.agents[i].fsm.detection_range);
     }
@@ -227,7 +228,7 @@ TEST(TestFSMAgentSerialization) {
   agent.faction = static_cast<int>(Faction::ENEMY);
   agent.alive = true;
   agent.has_fsm = true;
-  agent.fsm.state_name = "Patrol";
+  agent.fsm.state_type = FSMStateType::Patrol;
   agent.fsm.target_id = -1;
   agent.fsm.detection_range = 4;
   agent.fsm.lose_target_range = 6;
@@ -240,7 +241,7 @@ TEST(TestFSMAgentSerialization) {
   std::string json = SnapshotToJson(original);
 
   // Verify FSM data in JSON
-  ASSERT_TRUE(json.find("\"state_name\": \"Patrol\"") != std::string::npos);
+  ASSERT_TRUE(json.find("\"state_type\": \"Patrol\"") != std::string::npos);
   ASSERT_TRUE(json.find("\"detection_range\": 4") != std::string::npos);
 
   Snapshot restored = SnapshotFromJson(json);

@@ -125,17 +125,46 @@ StatusSnapshot JsonToStatusSnapshot(const json& j) {
   return status;
 }
 
+// FSMStateType to/from string
+std::string FSMStateTypeToString(FSMStateType type) {
+  switch (type) {
+    case FSMStateType::Patrol: return "Patrol";
+    case FSMStateType::Aggro: return "Aggro";
+    case FSMStateType::ReturnToPatrol: return "ReturnToPatrol";
+    case FSMStateType::Telegraph: return "Telegraph";
+    case FSMStateType::Attack: return "Attack";
+    case FSMStateType::Recovery: return "Recovery";
+    default: return "None";
+  }
+}
+
+FSMStateType StringToFSMStateType(const std::string& s) {
+  if (s == "Patrol") return FSMStateType::Patrol;
+  if (s == "Aggro") return FSMStateType::Aggro;
+  if (s == "ReturnToPatrol") return FSMStateType::ReturnToPatrol;
+  if (s == "Telegraph") return FSMStateType::Telegraph;
+  if (s == "Attack") return FSMStateType::Attack;
+  if (s == "Recovery") return FSMStateType::Recovery;
+  return FSMStateType::None;
+}
+
 // FSMSnapshot serialization
 json FSMSnapshotToJson(const FSMSnapshot& fsm) {
   json j{
-    {"state_name", fsm.state_name},
+    {"state_type", FSMStateTypeToString(fsm.state_type)},
     {"target_id", fsm.target_id},
     {"patrol_index", fsm.patrol_index},
     {"patrol_forward", fsm.patrol_forward},
     {"detection_range", fsm.detection_range},
     {"lose_target_range", fsm.lose_target_range},
     {"rng_state", fsm.rng_state},
-    {"rng_inc", fsm.rng_inc}
+    {"rng_inc", fsm.rng_inc},
+    {"attack_tick_counter", fsm.attack_tick_counter},
+    {"attack_target_position", PositionToJson(fsm.attack_target_position)},
+    {"attack_area_width", fsm.attack_area_width},
+    {"attack_area_height", fsm.attack_area_height},
+    {"attack_damage", fsm.attack_damage},
+    {"attack_filter", static_cast<int>(fsm.attack_filter)}
   };
 
   json patrol = json::array();
@@ -149,7 +178,7 @@ json FSMSnapshotToJson(const FSMSnapshot& fsm) {
 
 FSMSnapshot JsonToFSMSnapshot(const json& j) {
   FSMSnapshot fsm;
-  fsm.state_name = j.at("state_name").get<std::string>();
+  fsm.state_type = StringToFSMStateType(j.at("state_type").get<std::string>());
   fsm.target_id = j.at("target_id").get<int>();
   fsm.patrol_index = j.at("patrol_index").get<int>();
   fsm.patrol_forward = j.at("patrol_forward").get<bool>();
@@ -160,6 +189,26 @@ FSMSnapshot JsonToFSMSnapshot(const json& j) {
 
   for (const auto& pos_json : j.at("patrol_path")) {
     fsm.patrol_path.push_back(JsonToPosition(pos_json));
+  }
+
+  // Attack runtime state
+  if (j.contains("attack_tick_counter")) {
+    fsm.attack_tick_counter = j.at("attack_tick_counter").get<int>();
+  }
+  if (j.contains("attack_target_position")) {
+    fsm.attack_target_position = JsonToPosition(j.at("attack_target_position"));
+  }
+  if (j.contains("attack_area_width")) {
+    fsm.attack_area_width = j.at("attack_area_width").get<int>();
+  }
+  if (j.contains("attack_area_height")) {
+    fsm.attack_area_height = j.at("attack_area_height").get<int>();
+  }
+  if (j.contains("attack_damage")) {
+    fsm.attack_damage = j.at("attack_damage").get<int>();
+  }
+  if (j.contains("attack_filter")) {
+    fsm.attack_filter = static_cast<TargetFilter>(j.at("attack_filter").get<int>());
   }
 
   return fsm;

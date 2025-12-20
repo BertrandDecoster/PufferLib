@@ -195,7 +195,7 @@ std::vector<uint8_t> Snapshot::Serialize() const {
     // FSM
     WriteValue(buffer, agent.has_fsm);
     if (agent.has_fsm) {
-      WriteString(buffer, agent.fsm.state_name);
+      WriteValue(buffer, static_cast<uint8_t>(agent.fsm.state_type));
       WriteValue(buffer, agent.fsm.target_id);
       WritePositionVector(buffer, agent.fsm.patrol_path);
       WriteValue(buffer, agent.fsm.patrol_index);
@@ -204,6 +204,13 @@ std::vector<uint8_t> Snapshot::Serialize() const {
       WriteValue(buffer, agent.fsm.lose_target_range);
       WriteValue(buffer, agent.fsm.rng_state);
       WriteValue(buffer, agent.fsm.rng_inc);
+      // Attack runtime state
+      WriteValue(buffer, agent.fsm.attack_tick_counter);
+      WritePosition(buffer, agent.fsm.attack_target_position);
+      WriteValue(buffer, agent.fsm.attack_area_width);
+      WriteValue(buffer, agent.fsm.attack_area_height);
+      WriteValue(buffer, agent.fsm.attack_damage);
+      WriteValue(buffer, static_cast<int>(agent.fsm.attack_filter));
     }
 
     // Cadence
@@ -308,7 +315,7 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     // FSM
     agent.has_fsm = ReadValue<bool>(ptr, end);
     if (agent.has_fsm) {
-      agent.fsm.state_name = ReadString(ptr, end);
+      agent.fsm.state_type = static_cast<FSMStateType>(ReadValue<uint8_t>(ptr, end));
       agent.fsm.target_id = ReadValue<int>(ptr, end);
       agent.fsm.patrol_path = ReadPositionVector(ptr, end);
       agent.fsm.patrol_index = ReadValue<int>(ptr, end);
@@ -317,6 +324,13 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
       agent.fsm.lose_target_range = ReadValue<int>(ptr, end);
       agent.fsm.rng_state = ReadValue<uint64_t>(ptr, end);
       agent.fsm.rng_inc = ReadValue<uint64_t>(ptr, end);
+      // Attack runtime state
+      agent.fsm.attack_tick_counter = ReadValue<int>(ptr, end);
+      agent.fsm.attack_target_position = ReadPosition(ptr, end);
+      agent.fsm.attack_area_width = ReadValue<int>(ptr, end);
+      agent.fsm.attack_area_height = ReadValue<int>(ptr, end);
+      agent.fsm.attack_damage = ReadValue<int>(ptr, end);
+      agent.fsm.attack_filter = static_cast<TargetFilter>(ReadValue<int>(ptr, end));
     }
 
     // Cadence

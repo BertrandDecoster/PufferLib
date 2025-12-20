@@ -18,6 +18,19 @@ class BaseEnv;
 class AgentFSM;
 
 // =============================================================================
+// FSMStateType - Enum for FSM state serialization
+// =============================================================================
+enum class FSMStateType : uint8_t {
+  None = 0,
+  Patrol,
+  Aggro,
+  ReturnToPatrol,
+  Telegraph,
+  Attack,
+  Recovery
+};
+
+// =============================================================================
 // AttackIntent - Stored when an attack is being prepared/executed
 // =============================================================================
 struct AttackIntent {
@@ -89,6 +102,9 @@ class FSMState {
 
   // State name for debugging
   virtual std::string GetName() const = 0;
+
+  // State type for serialization
+  virtual FSMStateType GetType() const = 0;
 };
 
 }  // namespace companions

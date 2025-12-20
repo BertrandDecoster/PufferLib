@@ -252,7 +252,7 @@ TEST(TestSnapshotSerializeDeserializeWithAgents) {
   fsm_agent.max_health = 5;
   fsm_agent.alive = true;
   fsm_agent.has_fsm = true;
-  fsm_agent.fsm.state_name = "PatrolState";
+  fsm_agent.fsm.state_type = FSMStateType::Patrol;
   fsm_agent.fsm.patrol_path = {{1, 1}, {1, 2}, {2, 2}, {2, 1}};
   fsm_agent.fsm.patrol_index = 2;
   fsm_agent.fsm.patrol_forward = true;
@@ -278,7 +278,8 @@ TEST(TestSnapshotSerializeDeserializeWithAgents) {
   ASSERT_EQ(restored.agents[1].position.row, 3);
   ASSERT_EQ(restored.agents[1].position.col, 3);
   ASSERT_TRUE(restored.agents[1].has_fsm);
-  ASSERT_EQ(restored.agents[1].fsm.state_name, "PatrolState");
+  ASSERT_EQ(static_cast<int>(restored.agents[1].fsm.state_type),
+            static_cast<int>(FSMStateType::Patrol));
   ASSERT_EQ(restored.agents[1].fsm.patrol_path.size(), 4u);
   ASSERT_EQ(restored.agents[1].fsm.patrol_index, 2);
   ASSERT_EQ(restored.agents[1].fsm.detection_range, 4);

@@ -234,6 +234,7 @@ class AgentFSM : public Agent {
 
   // FSM accessors
   const FSMState* GetCurrentState() const { return current_state_; }
+  void SetCurrentState(const FSMState* state) { current_state_ = state; }
   FSMContext& GetFSMContext();
   const FSMContext& GetFSMContext() const;
 
@@ -256,6 +257,7 @@ class AgentFSM : public Agent {
   // Advance internal tick counter
   void AdvanceTick() { tick_++; }
   int GetTick() const { return tick_; }
+  void SetTick(int t) { tick_ = t; }
 
   // Check if this agent can act this tick based on cadence
   bool CanAct() const {

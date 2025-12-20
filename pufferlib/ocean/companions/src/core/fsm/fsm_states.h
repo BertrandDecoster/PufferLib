@@ -20,6 +20,7 @@ class PatrolState : public FSMState {
   const FSMState* Update(FSMContext& ctx, AgentFSM& agent,
                          const BaseEnv& env) const override;
   std::string GetName() const override { return "Patrol"; }
+  FSMStateType GetType() const override { return FSMStateType::Patrol; }
 
  private:
   PatrolState() = default;
@@ -39,6 +40,7 @@ class AggroState : public FSMState {
   const FSMState* Update(FSMContext& ctx, AgentFSM& agent,
                          const BaseEnv& env) const override;
   std::string GetName() const override { return "Aggro"; }
+  FSMStateType GetType() const override { return FSMStateType::Aggro; }
 
  private:
   AggroState() = default;
@@ -58,6 +60,7 @@ class ReturnToPatrolState : public FSMState {
   const FSMState* Update(FSMContext& ctx, AgentFSM& agent,
                          const BaseEnv& env) const override;
   std::string GetName() const override { return "ReturnToPatrol"; }
+  FSMStateType GetType() const override { return FSMStateType::ReturnToPatrol; }
 
  private:
   ReturnToPatrolState() = default;
@@ -78,6 +81,7 @@ class TelegraphState : public FSMState {
   const FSMState* Update(FSMContext& ctx, AgentFSM& agent,
                          const BaseEnv& env) const override;
   std::string GetName() const override { return "Telegraph"; }
+  FSMStateType GetType() const override { return FSMStateType::Telegraph; }
 
  private:
   TelegraphState() = default;
@@ -98,6 +102,7 @@ class AttackState : public FSMState {
   const FSMState* Update(FSMContext& ctx, AgentFSM& agent,
                          const BaseEnv& env) const override;
   std::string GetName() const override { return "Attack"; }
+  FSMStateType GetType() const override { return FSMStateType::Attack; }
 
  private:
   AttackState() = default;
@@ -119,10 +124,33 @@ class RecoveryState : public FSMState {
   const FSMState* Update(FSMContext& ctx, AgentFSM& agent,
                          const BaseEnv& env) const override;
   std::string GetName() const override { return "Recovery"; }
+  FSMStateType GetType() const override { return FSMStateType::Recovery; }
 
  private:
   RecoveryState() = default;
 };
+
+// =============================================================================
+// GetFSMStateByType - Registry for FSM state lookup by type
+// =============================================================================
+inline const FSMState* GetFSMStateByType(FSMStateType type) {
+  switch (type) {
+    case FSMStateType::Patrol:
+      return &PatrolState::Instance();
+    case FSMStateType::Aggro:
+      return &AggroState::Instance();
+    case FSMStateType::ReturnToPatrol:
+      return &ReturnToPatrolState::Instance();
+    case FSMStateType::Telegraph:
+      return &TelegraphState::Instance();
+    case FSMStateType::Attack:
+      return &AttackState::Instance();
+    case FSMStateType::Recovery:
+      return &RecoveryState::Instance();
+    default:
+      return nullptr;
+  }
+}
 
 }  // namespace companions
 

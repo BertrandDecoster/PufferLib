@@ -815,7 +815,7 @@ Snapshot BaseEnv::SaveSnapshot() const {
       if (fsm_agent->HasFSM()) {
         as.has_fsm = true;
         const FSMState* state = fsm_agent->GetCurrentState();
-        as.fsm.state_name = state ? state->GetName() : "";
+        as.fsm.state_type = state ? state->GetType() : FSMStateType::None;
         const FSMContext& ctx = fsm_agent->GetFSMContext();
         as.fsm.target_id = ctx.target_id;
         as.fsm.patrol_path = ctx.patrol_path;
@@ -827,6 +827,13 @@ Snapshot BaseEnv::SaveSnapshot() const {
           as.fsm.rng_state = ctx.rng->GetState();
           as.fsm.rng_inc = ctx.rng->GetInc();
         }
+        // Attack runtime state
+        as.fsm.attack_tick_counter = ctx.attack_tick_counter;
+        as.fsm.attack_target_position = ctx.current_attack.target_position;
+        as.fsm.attack_area_width = ctx.current_attack.area_width;
+        as.fsm.attack_area_height = ctx.current_attack.area_height;
+        as.fsm.attack_damage = ctx.current_attack.damage;
+        as.fsm.attack_filter = ctx.current_attack.filter;
       }
       as.cadence = fsm_agent->GetCadence();
       as.tick = fsm_agent->GetTick();
@@ -934,9 +941,37 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     // Restore AgentFSM-specific state
     if (AgentFSM* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
       fsm_agent->SetCadence(as.cadence);
-      // Note: tick and FSM state restoration requires more complex handling
-      // For now, FSM agents will start fresh when loaded
-      // Full FSM restoration would require FSMState registry lookup
+      fsm_agent->SetTick(as.tick);
+
+      if (as.has_fsm) {
+        // Restore FSM state pointer via registry lookup
+        const FSMState* state = GetFSMStateByType(as.fsm.state_type);
+        if (state) {
+          fsm_agent->SetCurrentState(state);
+        }
+
+        // Restore FSM context
+        FSMContext& ctx = fsm_agent->GetFSMContext();
+        ctx.target_id = as.fsm.target_id;
+        ctx.patrol_path = as.fsm.patrol_path;
+        ctx.patrol_index = as.fsm.patrol_index;
+        ctx.patrol_forward = as.fsm.patrol_forward;
+        ctx.detection_range = as.fsm.detection_range;
+        ctx.lose_target_range = as.fsm.lose_target_range;
+
+        // Restore attack runtime state
+        ctx.attack_tick_counter = as.fsm.attack_tick_counter;
+        ctx.current_attack.target_position = as.fsm.attack_target_position;
+        ctx.current_attack.area_width = as.fsm.attack_area_width;
+        ctx.current_attack.area_height = as.fsm.attack_area_height;
+        ctx.current_attack.damage = as.fsm.attack_damage;
+        ctx.current_attack.filter = as.fsm.attack_filter;
+
+        // Restore RNG state
+        if (ctx.rng) {
+          ctx.rng->SetState(as.fsm.rng_state, as.fsm.rng_inc);
+        }
+      }
     }
   }
 

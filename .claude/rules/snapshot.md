@@ -44,3 +44,37 @@ companions_load_snapshot(env, buffer.data(), buffer.size());
 - Returns `false`/`0` on error, check `companions_get_error()`
 - Contains: grid, agents, effects, tick, RNG state (~2-5 KB)
 - Binary format: magic `0x534E4150` ("SNAP"), version 1
+
+## JSON API
+
+Human-readable JSON serialization for external tools (Claude Code game playing, editors).
+
+```c
+// String-based (caller frees with companions_free_string)
+const char* companions_snapshot_to_json(const Companions_Env* env);
+void companions_free_string(const char* str);
+bool companions_load_snapshot_json(Companions_Env* env, const char* json_str);
+
+// File-based
+bool companions_save_snapshot_json(const Companions_Env* env, const char* filepath);
+bool companions_load_snapshot_json_file(Companions_Env* env, const char* filepath);
+```
+
+**JSON Structure:**
+```json
+{
+  "grid": {"rows": 10, "cols": 10, "cells": [...]},
+  "agents": [{"id": 1, "agent_type": "Companion", "position": {"row": 3, "col": 5}, ...}],
+  "effects": [...],
+  "tick": 42,
+  "horizon": 100,
+  "rng_state": {"state": 12345, "inc": 67890},
+  "d4_value": 0,
+  "patrol_path": [...]
+}
+```
+
+**Notes:**
+- Enums serialize as strings (e.g., `"Floor"`, `"COMPANION"`, `"Patrol"`)
+- Pretty-printed with 2-space indent
+- Full round-trip fidelity with binary format
