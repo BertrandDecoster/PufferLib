@@ -16,6 +16,7 @@
 #include "../core/object_manager.h"
 #include "../core/snapshot.h"
 #include "../core/types.h"
+#include "task_lens.h"
 
 namespace companions {
 
@@ -65,6 +66,10 @@ class BaseEnv {
   virtual StepResult Step(const std::vector<Action>& actions);
   virtual bool IsDone() const = 0;
   virtual bool IsSuccess() const { return false; }  // Override in subclasses
+
+  // Task lens management
+  bool SetTaskLens(std::unique_ptr<TaskLens> lens);
+  TaskLens* GetTaskLens() const { return task_lens_.get(); }
 
   // Clone this environment (virtual for polymorphic copy in OpenSpiel)
   virtual std::unique_ptr<BaseEnv> Clone() const = 0;
@@ -196,6 +201,7 @@ class BaseEnv {
   int tick_ = 0;
   int horizon_ = kDefaultHorizon;
   int d4_transform_ = 0;  // D4 symmetry transformation (0-7)
+  std::unique_ptr<TaskLens> task_lens_;
 };
 
 }  // namespace companions

@@ -9,6 +9,7 @@
 
 #include "../src/env/task_lens.h"
 #include "../src/env/base_env.h"
+#include "../src/env/synchro_env.h"
 
 using namespace companions;
 
@@ -147,6 +148,34 @@ TEST(TestTaskLensOptionalMethods) {
   // AppendVectorObs should not modify the vector (no-op default)
   std::vector<float> obs = {1.0f, 2.0f, 3.0f};
   // We can't call AppendVectorObs without a valid env, but the default is empty
+}
+
+TEST(TestBaseEnvSetTaskLens) {
+  // Create a minimal concrete env for testing
+  SynchroEnv env(6, 6, 1, 1, 0, 42);
+
+  class MockLens : public TaskLens {
+   public:
+    bool can_operate = true;
+    bool CanOperateOn(const BaseEnv& env) const override { (void)env; return can_operate; }
+    bool IsDone(const BaseEnv& env) const override { (void)env; return false; }
+    bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
+    float ComputeReward(const BaseEnv& env, int agent_id) const override {
+      (void)env; (void)agent_id; return 0.5f;
+    }
+    CellKind MaskCell(CellKind kind) const override { return kind; }
+  };
+
+  auto lens = std::make_unique<MockLens>();
+  bool result = env.SetTaskLens(std::move(lens));
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(env.GetTaskLens() != nullptr);
+
+  // Test rejection when CanOperateOn returns false
+  auto bad_lens = std::make_unique<MockLens>();
+  bad_lens->can_operate = false;
+  result = env.SetTaskLens(std::move(bad_lens));
+  ASSERT_FALSE(result);
 }
 
 // =============================================================================

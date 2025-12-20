@@ -1019,4 +1019,12 @@ void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {
   // Subclasses override to check for required cell types
 }
 
+bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
+  if (lens && !lens->CanOperateOn(*this)) {
+    return false;
+  }
+  task_lens_ = std::move(lens);
+  return true;
+}
+
 }  // namespace companions
