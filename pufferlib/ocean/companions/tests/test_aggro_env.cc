@@ -481,6 +481,10 @@ TEST(TestAggroEnvWinCondition) {
   // Place enemy on target cell
   obj_mgr.UpdatePosition(enemy->GetId(), target);
 
+  // Disable FSM so enemy stays on target during Step
+  // (FSM now runs in PreStep before win check, so we need to prevent movement)
+  enemy->SetCurrentState(nullptr);
+
   // Verify enemy is on target
   ASSERT_EQ(enemy->GetPosition(), target);
 
@@ -662,6 +666,10 @@ TEST(TestAggroEnvFullGameLoopWinScenario) {
 
   // Manually move enemy to target for clean test
   obj_mgr.UpdatePosition(enemy->GetId(), target);
+
+  // Disable FSM so enemy stays on target during Step
+  // (FSM now runs in PreStep before win check, so we need to prevent movement)
+  enemy->SetCurrentState(nullptr);
 
   // Step - should win
   std::vector<Action> actions(env.NumAgents(), EncodeAction(MovementAction::Stay));

@@ -78,3 +78,28 @@ bool companions_load_snapshot_json_file(Companions_Env* env, const char* filepat
 - Enums serialize as strings (e.g., `"Floor"`, `"COMPANION"`, `"Patrol"`)
 - Pretty-printed with 2-space indent
 - Full round-trip fidelity with binary format
+
+## FSM State Persistence
+
+Enemy FSM state is fully preserved across snapshots, enabling CLI stepping and mid-combat save/load.
+
+**What's saved (FSMSnapshot struct in `snapshot.h`):**
+- `state_type` - Current FSM state as `FSMStateType` enum (Patrol, Aggro, Telegraph, Attack, Recovery, ReturnToPatrol)
+- `target_id` - Currently targeted companion
+- `patrol_path`, `patrol_index`, `patrol_forward` - Patrol waypoints and position
+- `detection_range`, `lose_target_range` - Aggro configuration
+- `rng_state`, `rng_inc` - RNG state for deterministic pathfinding tie-breaking
+- `attack_tick_counter` - Progress through attack phases
+- `attack_target_position`, `attack_area_*`, `attack_damage`, `attack_filter` - Locked attack intent
+
+**How restoration works (`base_env.cc` LoadSnapshot):**
+1. State pointer restored via `GetFSMStateByType()` registry lookup
+2. FSMContext fields restored (target, patrol, ranges)
+3. Attack runtime state restored (preserves mid-attack position)
+4. RNG state restored via `pcg32::SetState()`
+
+**Key files:**
+- `fsm_state.h` - `FSMStateType` enum, `FSMState::GetType()` virtual
+- `fsm_states.h` - `GetFSMStateByType()` registry function
+- `object.h` - `AgentFSM::SetCurrentState()`, `SetTick()` methods
+- `snapshot.h` - `FSMSnapshot` struct with all persisted fields

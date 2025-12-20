@@ -119,10 +119,7 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
 }
 
 void BaseEnv::PreStep() {
-  // FSM updates are now done after movements in Step()
-}
-
-void BaseEnv::UpdateAgentFSM() {
+  // Run FSM updates BEFORE movement resolution so FSM agents set their intentions
   for (Agent* agent : object_manager_->GetAllAgents()) {
     if (AgentFSM* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
       if (fsm_agent->HasFSM() && fsm_agent->IsAlive()) {
@@ -130,6 +127,11 @@ void BaseEnv::UpdateAgentFSM() {
       }
     }
   }
+}
+
+void BaseEnv::UpdateAgentFSM() {
+  // FSM updates now happen in PreStep() before movement resolution.
+  // This function is kept for potential post-movement FSM hooks.
 }
 
 void BaseEnv::ApplyD4Transform() {
@@ -507,7 +509,7 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
       continue;
     }
 
-    // Skip agents with FSM - they set their own intentions in PreStep
+    // Skip agents with FSM - they set their own intentions in PreStep via UpdateFSM
     if (AgentFSM* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
       if (fsm_agent->HasFSM()) {
         continue;
