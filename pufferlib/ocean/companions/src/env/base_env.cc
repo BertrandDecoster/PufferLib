@@ -1019,6 +1019,11 @@ void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {
   // Subclasses override to check for required cell types
 }
 
+const std::vector<Position>& BaseEnv::GetPatrolPath() const {
+  static const std::vector<Position> empty;
+  return empty;
+}
+
 bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
   if (lens && !lens->CanOperateOn(*this)) {
     return false;

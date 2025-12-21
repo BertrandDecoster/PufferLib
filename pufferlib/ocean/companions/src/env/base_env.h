@@ -133,6 +133,9 @@ class BaseEnv {
   int GetCols() const { return cols_; }
   int GetD4Transform() const { return d4_transform_; }
 
+  // Patrol path accessor (override in AggroEnv)
+  virtual const std::vector<Position>& GetPatrolPath() const;
+
   // Effect system access (delegates to EffectSystem)
   const std::vector<ActiveEffect>& GetActiveEffects() const;
   void ClearEffects();

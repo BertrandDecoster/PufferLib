@@ -58,7 +58,7 @@ class AggroEnv : public BaseEnv {
   // Accessors
   Position GetTargetPosition() const { return target_pos_; }
   Position GetEnemySpawnPosition() const { return enemy_spawn_pos_; }
-  const std::vector<Position>& GetPatrolPath() const { return patrol_path_; }
+  const std::vector<Position>& GetPatrolPath() const override { return patrol_path_; }
   int GetNumCompanions() const { return num_companions_; }
   EnemyType GetEnemyType() const { return enemy_type_; }
 
