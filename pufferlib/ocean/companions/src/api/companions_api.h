@@ -355,6 +355,23 @@ COMPANIONS_API Companions_Env* companions_create(
 COMPANIONS_API Companions_Env* companions_create_aggro(
     const Companions_AggroEnvConfig* config);
 
+// =============================================================================
+// Task Lens API (runtime task switching)
+// =============================================================================
+
+// Task lens types
+typedef enum {
+    Companions_Lens_Synchro = 0,
+    Companions_Lens_Aggro = 1,
+    Companions_Lens_Dodge = 2
+} Companions_LensType;
+
+// Set task lens on environment (swaps interpretation layer)
+COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_LensType lens);
+
+// Get current lens type
+COMPANIONS_API Companions_LensType companions_get_task_lens(Companions_Env* env);
+
 // Destroy environment and free resources
 COMPANIONS_API void companions_destroy(Companions_Env* env);
 

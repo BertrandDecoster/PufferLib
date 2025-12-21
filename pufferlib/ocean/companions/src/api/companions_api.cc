@@ -22,6 +22,10 @@
 #include "../env/effect_system.h"
 #include "../env/aggro_env.h"
 #include "../env/synchro_env.h"
+#include "../env/task_lens.h"
+#include "../env/synchro_lens.h"
+#include "../env/aggro_lens.h"
+#include "../env/dodge_lens.h"
 #include "../viz/renderer.h"
 
 // =============================================================================
@@ -434,6 +438,55 @@ COMPANIONS_API Companions_Env* companions_create_aggro(
   }
 
   return wrapper;
+}
+
+// =============================================================================
+// Task Lens API
+// =============================================================================
+
+COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_LensType lens) {
+  if (!env || !env->env) {
+    SetError("companions_set_task_lens: null env");
+    return false;
+  }
+  try {
+    std::unique_ptr<companions::TaskLens> new_lens;
+    switch (lens) {
+      case Companions_Lens_Synchro:
+        new_lens = std::make_unique<companions::SynchroLens>();
+        break;
+      case Companions_Lens_Aggro:
+        new_lens = std::make_unique<companions::AggroLens>();
+        break;
+      case Companions_Lens_Dodge:
+        new_lens = std::make_unique<companions::DodgeLens>();
+        break;
+      default:
+        SetError("companions_set_task_lens: invalid lens type");
+        return false;
+    }
+    if (!env->env->SetTaskLens(std::move(new_lens))) {
+      SetError("Lens incompatible with current environment state");
+      return false;
+    }
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  }
+}
+
+COMPANIONS_API Companions_LensType companions_get_task_lens(Companions_Env* env) {
+  if (!env || !env->env) {
+    return Companions_Lens_Synchro;  // Default
+  }
+  auto* lens = env->env->GetTaskLens();
+  if (!lens) return Companions_Lens_Synchro;
+
+  if (dynamic_cast<companions::SynchroLens*>(lens)) return Companions_Lens_Synchro;
+  if (dynamic_cast<companions::AggroLens*>(lens)) return Companions_Lens_Aggro;
+  if (dynamic_cast<companions::DodgeLens*>(lens)) return Companions_Lens_Dodge;
+  return Companions_Lens_Synchro;
 }
 
 COMPANIONS_API void companions_reset(Companions_Env* env,

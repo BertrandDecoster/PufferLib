@@ -18,23 +18,25 @@ companions/                    # Standalone pure C++ implementation
 │   ├── core/                  # Types, Grid, Cells, Objects, Pathfinder
 │   │   └── fsm/               # Enemy FSM AI (fsm_state.h, fsm_states.cc, enemies.cc)
 │   ├── demo/                  # Interactive play
-│   ├── env/                   # BaseEnv, SynchroEnv, AggroEnv
+│   ├── env/                   # BaseEnv, Envs, TaskLens
+│   │   ├── task_lens.h        # Abstract TaskLens interface
+│   │   ├── synchro_lens.h/cc  # SynchroLens implementation
+│   │   ├── aggro_lens.h/cc    # AggroLens implementation
+│   │   └── dodge_lens.h/cc    # DodgeLens implementation
 │   └── viz/                   # ASCII/ANSI renderer
 ├── tests
 └── benchmarks/
     ├── cpp/fsm_benchmark.cc   # C++ FSM performance benchmark
     └── python/                # RL algorithm comparison scripts
-
-
 ```
 
 ## Game design
 **DOCUMENTATION** look at `docs/GDD.md` to know more
 Only read it if you need to develop new environments so you can follow
 the spirit of the game.
-The companions is a multi agent cooperative env played on a 2D grid. 
-All the dynamics are defined in BaseEnv, and each of its subclass defines a "puzzle"
-that defines the initial state, the rewards and the termination condition.
+The companions is a multi agent cooperative env played on a 2D grid.
+All the dynamics are defined in BaseEnv. Task-specific behavior (rewards, termination,
+observation masking) is handled by **TaskLens** objects that can be swapped at runtime.
 
 
 
@@ -84,16 +86,28 @@ Location: `companions/src/core/fsm/`
 
 **Integration**: `BaseEnv::PreStep()` calls `UpdateEnemyFSM()` before gathering intentions
 
-### Environments
+### Environments & TaskLens
 
-**SynchroEnv**: Companions must stand on every Synchro cells simultaneously to win.
+Each environment uses a **TaskLens** to define task-specific behavior:
 
-**AggroEnv**: Companions must lure FSM enemy away from TargetCell to step on it.
+| Env | Lens | Goal | Masks |
+|-----|------|------|-------|
+| SynchroEnv | SynchroLens | All companions on synchro cells | Target→Floor |
+| AggroEnv | AggroLens | Lure enemy to target cell | Synchro→Floor |
+| DodgeEnv | DodgeLens | Survive until horizon | Both→Floor |
+
+**Runtime task switching** (no snapshot needed):
+```cpp
+env.SetTaskLens(std::make_unique<SynchroLens>());
+// ... complete task ...
+env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
+```
+
+**AggroEnv details:**
 - 1-3 companions, 1 Goblin enemy with FSM
 - 3x3 patrol square (8 cells perimeter, clockwise)
 - Aggro range: 3, Return range: 5
 - Smart spawning: companions and target outside aggro range
-- Target not in corners (2+ walkable adjacent cells)
 
 ## Exporting the game
 We want to integrate the pure C++ game in `companions/` into PufferLib

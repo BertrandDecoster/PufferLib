@@ -79,6 +79,46 @@ The environment supports D4 group transforms (rotations + reflections) for data 
 
 Used by D4-equivariant networks in `networks/d4.py`.
 
+## TaskLens Architecture
+
+Task-specific behavior is separated from world state via composition:
+
+```
+BaseEnv (physical reality)     TaskLens (mental construct)
+├── grid_                      ├── CanOperateOn()
+├── objects_                   ├── IsDone()
+├── effects_                   ├── IsSuccess()
+├── tick_                      ├── ComputeReward()
+└── task_lens_ ────────────────└── MaskCell()
+```
+
+**Key files:**
+| File | Purpose |
+|------|---------|
+| `src/env/task_lens.h` | Abstract TaskLens interface |
+| `src/env/synchro_lens.h/.cc` | SynchroLens - all on synchro cells |
+| `src/env/aggro_lens.h/.cc` | AggroLens - lure enemy to target |
+| `src/env/dodge_lens.h/.cc` | DodgeLens - survival task |
+
+**Runtime task switching:**
+```cpp
+// No snapshot needed - just swap the lens!
+env.SetTaskLens(std::make_unique<SynchroLens>());
+// ... complete synchro task ...
+env.SetTaskLens(std::make_unique<DodgeLens>());
+// World state preserved, only interpretation changes
+```
+
+**Validation:** Each lens validates via `CanOperateOn()`:
+- `SynchroLens`: requires synchro cells in grid
+- `AggroLens`: requires target cell + patrol path
+- `DodgeLens`: accepts any env
+
+**Observation masking:** Each lens hides irrelevant cells:
+- `SynchroLens`: hides Target → Floor
+- `AggroLens`: hides Synchro → Floor
+- `DodgeLens`: hides both → Floor
+
 ## Architecture Layers
 
 ### 1. C++ Game (`src/env/synchro_env.cc`)
@@ -88,6 +128,7 @@ Pure game logic. **No auto-reset.**
 - `Reset(seed)` - Creates new procedural map
 - `Step(actions)` - Returns `StepResult{rewards, done}`
 - `IsSuccess()`, `NumAgentsOnSynchroCells()` - Query state
+- `SetTaskLens()` - Swap task interpretation at runtime
 
 ### 2. C Wrapper (`synchro_wrapper.cc`)
 

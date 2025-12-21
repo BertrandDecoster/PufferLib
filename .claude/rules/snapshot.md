@@ -4,19 +4,55 @@
 
 Each env is self contained and can be reset with new layout and actor positions. This is the default mode in RL.
 
-But this repo also handles video game logic: the player is presented a level, and a plan decomposes it into simple tasks ("companions go to these spots", "aggro this mob"). Each task has a trained RL model. The game loads the relevant model/env, and snapshots transfer state between tasks as players progress through the plan.
+But this repo also handles video game logic: the player is presented a level, and a plan decomposes it into simple tasks ("companions go to these spots", "aggro this mob"). Each task has a trained RL model.
+
 
 In detail:
 Each env is self contained and can be reseted with new layout and actor positions. This is the default mode in RL and this repo supports it
 But another aspect of this repo is that it's supposed to handle the logic of a video game. Here is a high level overview
-The player is presented a level, which can be fully described in BaseEnv. The player has to solve a problem. A plan is generated to decompose
+The player is presented a level, which can be fully described, and  "stepped in" by BaseEnv. The player has to solve a problem to finish the level. 
+A plan is generated to decompose
 the level in a list of easy tasks, such as "companions go to these spots at the same time" or "aggro this mob and bring it there"
 There are single Envs for each of these tasks, and the associated trained RL models.
 This means that BaseEnv contains the entire game logic, the RL envs are here to provide observations (only observe what is necessary
-for the current task), rewards for RL, termination, and initial setup if it doesn't come from a snapshot
-So, ingame, the relevant model is loaded, and the relevant env loads the snapshot of thee game. As the player and the RL agents that 
-control the companions succeed in that simple task, we continue to the next task in the plan. A snapshot of the end of the env is taken,
-and it is loaded in the env that matches the next task in the plan.
+for the current task), rewards for RL, termination, and initial setup if the init has to be done (it doesn't come from a snapshot)
+So, ingame, the relevant model is loaded, and the relevant env loads the snapshot of the game. As the player and the
+RL agents that control the companions succeed in that simple task, we continue to the next task in the plan. A snapshot of the end of
+the env is taken, and it is loaded in the env that matches the next task in the plan.
+
+### TaskLens vs Snapshots
+
+**Task switching now uses TaskLens, not snapshots:**
+```cpp
+// OLD: Serialize snapshot, create new env, deserialize (slow)
+// NEW: Just swap the lens pointer (fast)
+env.SetTaskLens(std::make_unique<SynchroLens>());
+// ... complete task ...
+env.SetTaskLens(std::make_unique<AggroLens>());
+```
+
+**Snapshots are still used for:**
+- Save/load game state
+- Loading premade levels from editors
+- Transferring state between processes (DLL boundary)
+
+**TaskLens handles:**
+- Runtime task switching within same BaseEnv
+- Task-specific rewards, termination, observation masking
+- No serialization overhead
+
+### Architecture
+
+```
+BaseEnv (physical world)        TaskLens (task interpretation)
+├── grid, agents, effects       ├── IsDone(), IsSuccess()
+├── SaveSnapshot()              ├── ComputeReward()
+├── LoadSnapshot()              └── MaskCell()
+└── SetTaskLens() ──────────────┘
+```
+
+Snapshots capture physical state only (grid, agents, effects, tick, RNG).
+TaskLens is stateless - computed on-demand from BaseEnv state.
 
 ## DLL API
 

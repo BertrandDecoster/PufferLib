@@ -427,6 +427,24 @@ TEST(TestRuntimeTaskSwitching) {
   ASSERT_EQ(result.rewards.size(), 2);
 }
 
+TEST(TestSetTaskLensFailsForIncompatibleLens) {
+  // A level generated with no aggro config should NOT be compatible with AggroLens
+  SynchroEnv env(6, 6, 1, 1, 0, 42);  // Basic synchro level - no Target cells, no patrol path
+
+  // Set initial SynchroLens
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<SynchroLens>()));
+  TaskLens* original_lens = env.GetTaskLens();
+
+  // Try to switch to AggroLens - should fail because:
+  // 1. No Target cell in grid
+  // 2. No patrol path defined
+  auto aggro_lens = std::make_unique<AggroLens>();
+  ASSERT_FALSE(env.SetTaskLens(std::move(aggro_lens)));
+
+  // Lens should remain unchanged after failed switch
+  ASSERT_EQ(env.GetTaskLens(), original_lens);
+}
+
 // =============================================================================
 // Full Task Switching Workflow Integration Test
 // =============================================================================
