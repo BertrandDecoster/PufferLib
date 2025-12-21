@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "../core/cell.h"
+#include "synchro_lens.h"
 #include "../core/d4_transform.h"
 #include "../core/level_builder.h"
 #include "../core/level_config.h"
@@ -39,6 +40,7 @@ SynchroEnv::SynchroEnv(int rows, int cols, int num_companions, int num_synchro,
   horizon_ = horizon;
   ValidateConfig();
   Reset();
+  SetTaskLens(std::make_unique<SynchroLens>());
 }
 
 SynchroEnv::SynchroEnv(const SynchroEnv& other)
@@ -48,7 +50,11 @@ SynchroEnv::SynchroEnv(const SynchroEnv& other)
       map_complexity_(other.map_complexity_),
       rng_(other.rng_),
       synchro_positions_(other.synchro_positions_),
-      success_(other.success_) {}
+      success_(other.success_) {
+  if (other.GetTaskLens()) {
+    SetTaskLens(std::make_unique<SynchroLens>());
+  }
+}
 
 SynchroEnv& SynchroEnv::operator=(const SynchroEnv& other) {
   if (this != &other) {
