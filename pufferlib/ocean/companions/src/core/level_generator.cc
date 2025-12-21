@@ -209,13 +209,20 @@ void LevelGenerator::SpawnCompanions() {
 
   portable_shuffle(valid_cells.begin(), valid_cells.end(), rng_);
 
+  // Colors for companions (cycle through available colors)
+  const ActorColor colors[] = {ActorColor::Red, ActorColor::Green, ActorColor::Blue};
+  const int num_colors = sizeof(colors) / sizeof(colors[0]);
+
   // First companion is the player, rest are NPCs
   for (int i = 0; i < config_.num_companions; ++i) {
     Position pos = valid_cells[i];
+    ActorColor color = colors[i % num_colors];
     if (i == 0) {
-      object_manager_->CreateActor<Player>(pos);
+      auto* player = object_manager_->CreateActor<Player>(pos);
+      player->SetColor(color);
     } else {
-      object_manager_->CreateActor<NPCCompanion>(pos);
+      auto* npc = object_manager_->CreateActor<NPCCompanion>(pos);
+      npc->SetColor(color);
     }
   }
 }
