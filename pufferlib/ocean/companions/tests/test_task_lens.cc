@@ -428,6 +428,57 @@ TEST(TestRuntimeTaskSwitching) {
 }
 
 // =============================================================================
+// Full Task Switching Workflow Integration Test
+// =============================================================================
+
+TEST(TestFullTaskSwitchingWorkflow) {
+  // Simulate game workflow: load level, switch tasks as plan progresses
+
+  // Create an env with synchro cells
+  SynchroEnv env(10, 10, 2, 2, 0, 42);
+
+  // Manually add a target cell to simulate a rich game level
+  env.GetMutableGrid().SetCell({5, 5}, CellKind::Target);
+
+  // Start with SynchroLens
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<SynchroLens>()));
+
+  // Run a few steps under SynchroLens
+  std::vector<Action> step_actions = {
+    EncodeAction(MovementAction::Right),
+    EncodeAction(MovementAction::Left)
+  };
+  for (int i = 0; i < 5; ++i) {
+    env.Step(step_actions);
+  }
+
+  // Attempt to switch to AggroLens (will fail - no patrol path)
+  auto aggro_lens = std::make_unique<AggroLens>();
+  bool can_switch = env.SetTaskLens(std::move(aggro_lens));
+  // AggroLens correctly rejects - no patrol path
+  ASSERT_FALSE(can_switch);
+
+  // Switch to DodgeLens (accepts any env)
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
+
+  // Verify world state preserved after multiple lens swaps
+  ASSERT_EQ(env.GetTick(), 5);
+
+  // Switch back to SynchroLens
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<SynchroLens>()));
+
+  // Continue stepping - no crash, world state preserved
+  std::vector<Action> up_actions = {
+    EncodeAction(MovementAction::Up),
+    EncodeAction(MovementAction::Up)
+  };
+  auto result = env.Step(up_actions);
+
+  ASSERT_EQ(result.rewards.size(), 2);
+  ASSERT_EQ(env.GetTick(), 6);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {
