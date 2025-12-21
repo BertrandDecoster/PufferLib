@@ -16,6 +16,7 @@
 #include "../core/level_builder.h"
 #include "../core/level_config.h"
 #include "../core/level_generator.h"
+#include "aggro_lens.h"
 #include "effect_system.h"
 
 namespace companions {
@@ -30,6 +31,7 @@ AggroEnv::AggroEnv(int grid_size, int num_companions, EnemyType enemy_type,
   horizon_ = horizon;
   ValidateConfig();
   Reset();
+  SetTaskLens(std::make_unique<AggroLens>());
 }
 
 AggroEnv::AggroEnv(const AggroEnv& other)
@@ -41,7 +43,11 @@ AggroEnv::AggroEnv(const AggroEnv& other)
       target_pos_(other.target_pos_),
       enemy_spawn_pos_(other.enemy_spawn_pos_),
       patrol_path_(other.patrol_path_),
-      success_(other.success_) {}
+      success_(other.success_) {
+  if (other.GetTaskLens()) {
+    SetTaskLens(std::make_unique<AggroLens>());
+  }
+}
 
 AggroEnv& AggroEnv::operator=(const AggroEnv& other) {
   if (this != &other) {
