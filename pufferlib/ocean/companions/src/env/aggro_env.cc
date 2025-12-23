@@ -289,7 +289,21 @@ void AggroEnv::SpawnCompanions() {
 }
 
 
-bool AggroEnv::IsDone() const { return success_ || tick_ >= horizon_; }
+bool AggroEnv::IsDone() const {
+  // Delegate to TaskLens if set
+  if (TaskLens* lens = GetTaskLens()) {
+    return lens->IsDone(*this);
+  }
+  return success_ || tick_ >= horizon_;
+}
+
+bool AggroEnv::IsSuccess() const {
+  // Delegate to TaskLens if set
+  if (TaskLens* lens = GetTaskLens()) {
+    return lens->IsSuccess(*this);
+  }
+  return success_;
+}
 
 void AggroEnv::CalculateRewards(std::vector<double>& rewards) {
   // Check if FSM agent is on target cell (lured successfully)

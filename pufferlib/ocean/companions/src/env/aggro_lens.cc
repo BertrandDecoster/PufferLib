@@ -26,18 +26,19 @@ bool AggroLens::IsDone(const BaseEnv& env) const {
 
 bool AggroLens::IsSuccess(const BaseEnv& env) const {
   // Success when any AgentFSM (enemy) is standing on the target cell
+  // (the goal is to lure the enemy to the target)
   Position target = FindTargetCell(env);
   if (target.row < 0 || target.col < 0) {
     return false;
   }
 
-  // Actually, for AggroEnv, success is when a COMPANION steps on the target
-  // (the goal is to lure the enemy away so you can reach the target)
   const ObjectManager& om = env.GetObjectManager();
-  for (const Companion* companion : om.GetAllCompanions()) {
-    if (!companion->IsAlive()) continue;
-    if (companion->GetPosition() == target) {
-      return true;
+  for (const Actor* actor : om.GetAllActors()) {
+    const AgentFSM* fsm_agent = dynamic_cast<const AgentFSM*>(actor);
+    if (fsm_agent && fsm_agent->IsAlive()) {
+      if (fsm_agent->GetPosition() == target) {
+        return true;
+      }
     }
   }
   return false;

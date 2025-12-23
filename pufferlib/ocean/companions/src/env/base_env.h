@@ -66,6 +66,7 @@ class BaseEnv {
   virtual StepResult Step(const std::vector<Action>& actions);
   virtual bool IsDone() const = 0;
   virtual bool IsSuccess() const { return false; }  // Override in subclasses
+  virtual void ResetSuccess() {}  // Reset success flag when lens changes
 
   // Task lens management
   bool SetTaskLens(std::unique_ptr<TaskLens> lens);

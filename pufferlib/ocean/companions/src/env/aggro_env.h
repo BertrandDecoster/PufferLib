@@ -53,7 +53,8 @@ class AggroEnv : public BaseEnv {
   bool IsDone() const override;
 
   // Success check
-  bool IsSuccess() const override { return success_; }
+  bool IsSuccess() const override;
+  void ResetSuccess() override { success_ = false; }
 
   // Accessors
   Position GetTargetPosition() const { return target_pos_; }

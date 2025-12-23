@@ -469,6 +469,10 @@ COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_Len
       SetError("Lens incompatible with current environment state");
       return false;
     }
+    // Refresh cached done/success with new lens's evaluation
+    // (Player may already be on goal cell for the new lens)
+    env->done = env->env->IsDone();
+    env->success = env->env->IsSuccess();
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());

@@ -51,6 +51,7 @@ class DodgeEnv : public BaseEnv {
   void Reset(unsigned int seed) override;
   bool IsDone() const override;
   bool IsSuccess() const override { return success_; }
+  void ResetSuccess() override { success_ = false; }
 
   // Observation with hazard zones
   void ObservationTensor(std::vector<float>& values, int player = 0) const override;

@@ -1029,6 +1029,8 @@ bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
     return false;
   }
   task_lens_ = std::move(lens);
+  // Reset success flag so new lens can evaluate victory from scratch
+  ResetSuccess();
   return true;
 }
 

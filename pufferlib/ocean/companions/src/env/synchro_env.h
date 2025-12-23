@@ -48,6 +48,7 @@ class SynchroEnv : public BaseEnv {
 
   // Success check
   bool IsSuccess() const override;
+  void ResetSuccess() override { success_ = false; }
 
   // Get synchro cell positions
   const std::vector<Position>& GetSynchroPositions() const {
