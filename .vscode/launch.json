@@ -1,0 +1,84 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Synchro: Train",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pufferlib.pufferl",
+      "args": ["train", "puffer_synchro"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Synchro: Eval",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pufferlib.pufferl",
+      "args": ["eval", "puffer_synchro", "--render-mode", "ansi", "--load-model-path", "${input:modelPath}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Companions: Debug Test",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/companions_test",
+      "args": [],
+      "cwd": "${workspaceFolder}/pufferlib/ocean/companions",
+      "preLaunchTask": "companions-build",
+      "env": {}
+    },
+    {
+      "name": "Companions: Play (Synchro)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \"",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "companions-build"
+    },
+    {
+      "name": "Companions: Play (Aggro)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env aggro --size 10\"",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "companions-build"
+    },
+    {
+      "name": "Companions: Play (Dodge)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env dodge --size 7\"",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "companions-build"
+    },
+    {
+      "name": "Companions: Benchmark",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/companions_fsm_benchmark",
+      "args": [],
+      "cwd": "${workspaceFolder}/pufferlib/ocean/companions",
+      "preLaunchTask": "companions-build",
+      "env": {}
+    },
+    {
+      "name": "Companions: Profile Benchmark (samply)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "${workspaceFolder}/pufferlib/ocean/companions/scripts/profile_benchmark.sh",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "companions-build"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "modelPath",
+      "type": "promptString",
+      "description": "Path to model checkpoint (e.g., ./checkpoints/model.pt)"
+    }
+  ]
+}

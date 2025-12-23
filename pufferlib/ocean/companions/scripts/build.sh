@@ -17,9 +17,8 @@
 #   build.sh --release --python # Release + Python bindings + all tests
 #
 # Output:
-#   The DLL and data/ folder are built to: build/bin/<Config>/
-#   - companions_api.dll
-#   - data/agents.csv, data/effects.csv, ...
+#   macOS/Linux: build/bin/libcompanions_api.{dylib,so} + build/bin/data/
+#   Windows:     build/bin/<Config>/companions_api.dll + build/bin/<Config>/data/
 
 set -o pipefail
 
@@ -63,18 +62,18 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/../build"
-REPO_ROOT="$SCRIPT_DIR/../../../../.."
+REPO_ROOT="$SCRIPT_DIR/../../../.."
 
-# Configure CMake if build directory doesn't exist
+# Configure CMake (always pass BUILD_DLL=ON to ensure it's set)
 if [ ! -d "$BUILD_DIR" ]; then
     echo "=== Configuring CMake ==="
     mkdir -p "$BUILD_DIR"
-    if ! cmake -S "$SCRIPT_DIR/.." -B "$BUILD_DIR" -DBUILD_DLL=ON 2>&1; then
-        echo -e "\n${RED}CMAKE CONFIGURE FAILED${NC}"
-        exit 1
-    fi
-    echo ""
 fi
+if ! cmake -S "$SCRIPT_DIR/.." -B "$BUILD_DIR" -DBUILD_DLL=ON 2>&1; then
+    echo -e "\n${RED}CMAKE CONFIGURE FAILED${NC}"
+    exit 1
+fi
+echo ""
 
 # Build C++
 BUILD_ARGS="--config $CONFIG -j4"
@@ -120,27 +119,40 @@ if [ "$BUILD_PYTHON" = true ]; then
     fi
 fi
 
-# Verify DLL and data folder
-DLL_DIR="$(cd "$BUILD_DIR/bin/$CONFIG" 2>/dev/null && pwd)"
-DLL_PATH="$DLL_DIR/companions_api.dll"
-DATA_DIR="$DLL_DIR/data"
+# Verify shared library and data folder (OS-aware)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS: single-config generator, output to bin/
+    LIB_NAME="libcompanions_api.dylib"
+    LIB_DIR="$BUILD_DIR/bin"
+elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [[ "$OSTYPE" == "win32"* ]]; then
+    # Windows: multi-config generator, output to bin/$CONFIG/
+    LIB_NAME="companions_api.dll"
+    LIB_DIR="$BUILD_DIR/bin/$CONFIG"
+else
+    # Linux: single-config generator, output to bin/
+    LIB_NAME="libcompanions_api.so"
+    LIB_DIR="$BUILD_DIR/bin"
+fi
+
+LIB_PATH="$LIB_DIR/$LIB_NAME"
+DATA_DIR="$LIB_DIR/data"
 
 echo ""
-if [ -f "$DLL_PATH" ] && [ -d "$DATA_DIR" ]; then
+if [ -f "$LIB_PATH" ] && [ -d "$DATA_DIR" ]; then
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}Build succeeded! ($CONFIG)${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo "Output:"
-    echo "  DLL:  $DLL_PATH"
-    echo "  Data: $DATA_DIR/"
-    ls "$DATA_DIR" | sed 's/^/        /'
+    echo "  Library: $LIB_PATH"
+    echo "  Data:    $DATA_DIR/"
+    ls "$DATA_DIR" | sed 's/^/           /'
 else
     echo -e "${YELLOW}========================================${NC}"
-    echo -e "${YELLOW}Build succeeded, but DLL/data not found${NC}"
+    echo -e "${YELLOW}Build succeeded, but library/data not found${NC}"
     echo -e "${YELLOW}========================================${NC}"
-    if [ ! -f "$DLL_PATH" ]; then
-        echo -e "${YELLOW}  Missing: $DLL_PATH${NC}"
+    if [ ! -f "$LIB_PATH" ]; then
+        echo -e "${YELLOW}  Missing: $LIB_PATH${NC}"
     fi
     if [ ! -d "$DATA_DIR" ]; then
         echo -e "${YELLOW}  Missing: $DATA_DIR${NC}"

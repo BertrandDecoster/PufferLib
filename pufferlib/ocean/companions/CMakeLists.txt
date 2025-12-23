@@ -290,14 +290,17 @@ if(BUILD_DLL)
   # Define export macro
   target_compile_definitions(companions_api PRIVATE COMPANIONS_EXPORTS)
 
+  # Output directories (all platforms)
+  set_target_properties(companions_api PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+  )
+
   # Windows-specific settings
   if(WIN32)
-    # Generate import library (.lib) alongside DLL
     set_target_properties(companions_api PROPERTIES
       WINDOWS_EXPORT_ALL_SYMBOLS OFF
-      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
-      ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
     )
   endif()
 

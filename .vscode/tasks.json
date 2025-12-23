@@ -15,10 +15,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -33,10 +35,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -51,10 +55,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -69,10 +75,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -87,10 +95,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -105,10 +115,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         }
