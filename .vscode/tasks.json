@@ -1,0 +1,116 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "companions-build",
+            "type": "shell",
+            "command": "./pufferlib/ocean/companions/scripts/build.sh",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
+                }
+            }
+        },
+        {
+            "label": "companions-build-clean",
+            "type": "shell",
+            "command": "./pufferlib/ocean/companions/scripts/build.sh --clean",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
+                }
+            }
+        },
+        {
+            "label": "companions-build-release",
+            "type": "shell",
+            "command": "./pufferlib/ocean/companions/scripts/build.sh --release",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
+                }
+            }
+        },
+        {
+            "label": "companions-build-release-clean",
+            "type": "shell",
+            "command": "./pufferlib/ocean/companions/scripts/build.sh --release --clean",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
+                }
+            }
+        },
+        {
+            "label": "companions-build-full",
+            "type": "shell",
+            "command": "./pufferlib/ocean/companions/scripts/build.sh --release --python",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
+                }
+            }
+        },
+        {
+            "label": "companions-build-full-clean",
+            "type": "shell",
+            "command": "./pufferlib/ocean/companions/scripts/build.sh --release --python --clean",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
+                }
+            }
+        }
+    ]
+}
