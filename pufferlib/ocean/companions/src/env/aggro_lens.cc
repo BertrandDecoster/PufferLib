@@ -54,13 +54,10 @@ float AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   return kTimePenalty;
 }
 
-CellKind AggroLens::MaskCell(CellKind kind) const {
-  // Hide Synchro cells (used by SynchroEnv) - show as Floor
-  if (kind == CellKind::Synchro) {
-    return CellKind::Floor;
-  }
-  // Keep Target cells visible - they are the goals for this task
-  return kind;
+bool AggroLens::IsGoalCell(const BaseEnv& env, Position pos) const {
+  return env.GetAnnotations().HasTag(
+      AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+      SemanticTag::AggroTarget);
 }
 
 Position AggroLens::FindTargetCell(const BaseEnv& env) const {

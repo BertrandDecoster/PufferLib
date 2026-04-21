@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/core/annotations.h"
 #include "../src/env/task_lens.h"
 #include "../src/env/base_env.h"
 #include "../src/env/synchro_env.h"
@@ -82,24 +83,11 @@ TEST(TestTaskLensInterface) {
       (void)agent_id;
       return 0.0f;
     }
-    CellKind MaskCell(CellKind kind) const override {
-      return kind;
-    }
   };
 
   MockLens lens;
 
-  // Verify the interface methods are callable
-  // We can't actually call CanOperateOn/IsDone/IsSuccess without a real env,
-  // but we can test MaskCell which doesn't need env
-  ASSERT_EQ(lens.MaskCell(CellKind::Floor), CellKind::Floor);
-  ASSERT_EQ(lens.MaskCell(CellKind::Wall), CellKind::Wall);
-  ASSERT_EQ(lens.MaskCell(CellKind::Synchro), CellKind::Synchro);
-  ASSERT_EQ(lens.MaskCell(CellKind::Target), CellKind::Target);
-
   // Verify optional methods have defaults
-  std::vector<float> obs;
-  // AppendVectorObs is a no-op by default (can't call without env, but test signature exists)
   ASSERT_EQ(lens.AdditionalVectorObsSize(), 0);
 
   ASSERT_TRUE(true);  // Compiles = passes
@@ -119,7 +107,6 @@ TEST(TestTaskLensVirtualDestructor) {
     float ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
     }
-    CellKind MaskCell(CellKind kind) const override { return kind; }
   };
 
   bool destroyed = false;
@@ -140,7 +127,6 @@ TEST(TestTaskLensOptionalMethods) {
     float ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
     }
-    CellKind MaskCell(CellKind kind) const override { return kind; }
     // Note: NOT overriding AppendVectorObs or AdditionalVectorObsSize
   };
 
@@ -167,7 +153,6 @@ TEST(TestBaseEnvSetTaskLens) {
     float ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.5f;
     }
-    CellKind MaskCell(CellKind kind) const override { return kind; }
   };
 
   auto lens = std::make_unique<MockLens>();
@@ -190,18 +175,6 @@ TEST(TestSynchroLensCanOperateOn) {
   SynchroEnv env(6, 6, 1, 1, 0, 42);
   SynchroLens lens;
   ASSERT_TRUE(lens.CanOperateOn(env));
-}
-
-TEST(TestSynchroLensMaskCell) {
-  SynchroLens lens;
-  // Target cells should be hidden (shown as Floor)
-  ASSERT_EQ(lens.MaskCell(CellKind::Target), CellKind::Floor);
-  // Synchro cells should remain visible (they are the goals)
-  ASSERT_EQ(lens.MaskCell(CellKind::Synchro), CellKind::Synchro);
-  // Other cells should pass through unchanged
-  ASSERT_EQ(lens.MaskCell(CellKind::Wall), CellKind::Wall);
-  ASSERT_EQ(lens.MaskCell(CellKind::Floor), CellKind::Floor);
-  ASSERT_EQ(lens.MaskCell(CellKind::Hazard), CellKind::Hazard);
 }
 
 TEST(TestSynchroLensIsDoneTimeout) {
@@ -246,18 +219,6 @@ TEST(TestAggroLensCanOperateOn) {
   // SynchroEnv has no target cell - should fail
   SynchroEnv synchro_env(6, 6, 1, 1, 0, 42);
   ASSERT_FALSE(lens.CanOperateOn(synchro_env));
-}
-
-TEST(TestAggroLensMaskCell) {
-  AggroLens lens;
-  // Synchro cells should be hidden (shown as Floor)
-  ASSERT_EQ(lens.MaskCell(CellKind::Synchro), CellKind::Floor);
-  // Target cells should remain visible (they are the goals)
-  ASSERT_EQ(lens.MaskCell(CellKind::Target), CellKind::Target);
-  // Other cells should pass through unchanged
-  ASSERT_EQ(lens.MaskCell(CellKind::Wall), CellKind::Wall);
-  ASSERT_EQ(lens.MaskCell(CellKind::Floor), CellKind::Floor);
-  ASSERT_EQ(lens.MaskCell(CellKind::Hazard), CellKind::Hazard);
 }
 
 TEST(TestAggroLensIsDoneTimeout) {
@@ -318,15 +279,6 @@ TEST(TestDodgeLensCanOperateOn) {
   SynchroEnv env(6, 6, 1, 1, 0, 42);
   DodgeLens lens;
   ASSERT_TRUE(lens.CanOperateOn(env));  // Always works
-}
-
-TEST(TestDodgeLensMaskCell) {
-  DodgeLens lens;
-  ASSERT_EQ(lens.MaskCell(CellKind::Synchro), CellKind::Floor);
-  ASSERT_EQ(lens.MaskCell(CellKind::Target), CellKind::Floor);
-  ASSERT_EQ(lens.MaskCell(CellKind::Wall), CellKind::Wall);
-  ASSERT_EQ(lens.MaskCell(CellKind::Floor), CellKind::Floor);
-  ASSERT_EQ(lens.MaskCell(CellKind::Hazard), CellKind::Hazard);
 }
 
 TEST(TestDodgeLensReward) {
@@ -390,7 +342,6 @@ TEST(TestRuntimeTaskSwitching) {
 
   // Verify SynchroLens is active
   ASSERT_TRUE(env.GetTaskLens() != nullptr);
-  ASSERT_EQ(env.GetTaskLens()->MaskCell(CellKind::Target), CellKind::Floor);
 
   // Take a step with SynchroLens
   std::vector<Action> stay_actions = {
@@ -414,8 +365,8 @@ TEST(TestRuntimeTaskSwitching) {
   ASSERT_EQ(agents[0]->GetPosition().row, agent_pos_before.row);
   ASSERT_EQ(agents[0]->GetPosition().col, agent_pos_before.col);
 
-  // Verify new lens is active (DodgeLens masks both Synchro and Target)
-  ASSERT_EQ(env.GetTaskLens()->MaskCell(CellKind::Synchro), CellKind::Floor);
+  // Verify new lens is active (DodgeLens is stateless - just confirm it's set)
+  ASSERT_TRUE(dynamic_cast<DodgeLens*>(env.GetTaskLens()) != nullptr);
 
   // Can still step with new lens
   std::vector<Action> up_actions = {
@@ -455,8 +406,10 @@ TEST(TestFullTaskSwitchingWorkflow) {
   // Create an env with synchro cells
   SynchroEnv env(10, 10, 2, 2, 0, 42);
 
-  // Manually add a target cell to simulate a rich game level
-  env.GetMutableGrid().SetCell({5, 5}, CellKind::Target);
+  // Manually add an AggroTarget annotation to simulate a rich game level.
+  env.GetMutableAnnotations().Add(
+      AnnotationKey{AnnotationTarget::Cell, Position{5, 5}, kInvalidObjectId},
+      Annotation{SemanticTag::AggroTarget, {}, -1});
 
   // Start with SynchroLens
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<SynchroLens>()));

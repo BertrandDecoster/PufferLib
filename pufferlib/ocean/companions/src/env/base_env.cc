@@ -218,8 +218,7 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
   for (int r = 0; r < rows_; ++r) {
     for (int c = 0; c < cols_; ++c) {
       Position pos{r, c};
-      CellKind raw_kind = grid_->GetCellKind(pos);
-      CellKind kind = GetMaskedCellKind(raw_kind);  // Apply env-specific masking
+      CellKind kind = grid_->GetCellKind(pos);
 
       // Plane 0: Floor (all walkable cells, including synchro)
       if (grid_->IsWalkable(pos)) {
@@ -231,8 +230,8 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
         set_plane(1, r, c, 1.0f);
       }
 
-      // Plane 2: Goal cells (Synchro or Target depending on env)
-      if (kind == CellKind::Synchro || kind == CellKind::Target) {
+      // Plane 2: Goal cells (lens decides via annotations)
+      if (task_lens_ && task_lens_->IsGoalCell(*this, pos)) {
         set_plane(2, r, c, 1.0f);
       }
 
@@ -296,8 +295,9 @@ void BaseEnv::VectorObservation(std::vector<float>& values, int player) const {
   int max_hp = current_agent->GetMaxHealth();
   values[idx++] = max_hp > 0 ? static_cast<float>(current_agent->GetHealth()) / max_hp : 1.0f;
 
-  // Feature 3: Distance to nearest goal cell (Synchro cell)
-  std::vector<Position> goals = grid_->FindCellsOfKind(CellKind::Synchro);
+  // Feature 3: Distance to nearest goal cell (sourced from annotation layer)
+  std::vector<Position> goals =
+      annotations_.FindCellsWithTag(SemanticTag::SynchroGoal);
   float min_dist = max_dim * 2.0f;  // Max possible Manhattan distance
   for (const auto& goal : goals) {
     float dist = static_cast<float>(std::abs(my_pos.row - goal.row) +
@@ -363,8 +363,7 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
   for (int r = 0; r < rows_; ++r) {
     for (int c = 0; c < cols_; ++c) {
       Position pos{r, c};
-      CellKind raw_kind = grid_->GetCellKind(pos);
-      CellKind kind = GetMaskedCellKind(raw_kind);  // Apply env-specific masking
+      CellKind kind = grid_->GetCellKind(pos);
 
       // Plane 0: Floor (all walkable cells, including synchro)
       if (grid_->IsWalkable(pos)) {
@@ -376,8 +375,8 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
         set_plane(1, r, c, 1.0f);
       }
 
-      // Plane 2: Goal cells (Synchro or Target depending on env)
-      if (kind == CellKind::Synchro || kind == CellKind::Target) {
+      // Plane 2: Goal cells (lens decides via annotations)
+      if (task_lens_ && task_lens_->IsGoalCell(*this, pos)) {
         set_plane(2, r, c, 1.0f);
       }
 
@@ -422,8 +421,9 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   int max_hp = current_agent->GetMaxHealth();
   buffer[idx++] = max_hp > 0 ? static_cast<float>(current_agent->GetHealth()) / max_hp : 1.0f;
 
-  // Feature 3: Distance to nearest goal cell (Synchro cell)
-  std::vector<Position> goals = grid_->FindCellsOfKind(CellKind::Synchro);
+  // Feature 3: Distance to nearest goal cell (sourced from annotation layer)
+  std::vector<Position> goals =
+      annotations_.FindCellsWithTag(SemanticTag::SynchroGoal);
   float min_dist = max_dim * 2.0f;  // Max possible Manhattan distance
   for (const auto& goal : goals) {
     float dist = static_cast<float>(std::abs(my_pos.row - goal.row) +

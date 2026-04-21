@@ -77,7 +77,7 @@ void LevelGenerator::PlaceSynchroCells() {
 
   for (int i = 0; i < config_.synchro_cell_count; ++i) {
     Position pos = empty_cells[i];
-    grid_->SetCell(pos, CellKind::Synchro);
+    // Cell stays Floor; SynchroGoal annotation emitted in CreateSnapshot().
     synchro_positions_.push_back(pos);
   }
 }
@@ -175,7 +175,7 @@ void LevelGenerator::PlaceTargetCell() {
 
   portable_shuffle(valid_cells.begin(), valid_cells.end(), rng_);
   target_position_ = valid_cells[0];
-  grid_->SetCell(target_position_, CellKind::Target);
+  // Cell stays Floor; AggroTarget annotation emitted in CreateSnapshot().
 }
 
 void LevelGenerator::SpawnCompanions() {
@@ -243,11 +243,29 @@ void LevelGenerator::SpawnEnemies() {
 std::vector<Position> LevelGenerator::FindEmptyFloorCells() {
   std::vector<Position> result;
 
+  // Build a set of positions reserved for task-semantic goal cells so agents
+  // don't spawn on them. Preserves the prior behavior where CellKind::Synchro
+  // / CellKind::Target excluded those cells from FindCellsOfKind(Floor).
+  std::vector<Position> reserved;
+  reserved.insert(reserved.end(), synchro_positions_.begin(),
+                  synchro_positions_.end());
+  if (config_.has_target_cell) {
+    reserved.push_back(target_position_);
+  }
+
+  auto is_reserved = [&](Position p) {
+    for (const Position& r : reserved) {
+      if (r == p) return true;
+    }
+    return false;
+  };
+
   for (int r = 1; r < config_.map.rows - 1; ++r) {
     for (int c = 1; c < config_.map.cols - 1; ++c) {
       Position pos{r, c};
       if (grid_->GetCellKind(pos) == CellKind::Floor &&
-          !object_manager_->IsOccupied(pos)) {
+          !object_manager_->IsOccupied(pos) &&
+          !is_reserved(pos)) {
         result.push_back(pos);
       }
     }
@@ -270,11 +288,29 @@ Snapshot LevelGenerator::CreateSnapshot() const {
   snap.rows = config_.map.rows;
   snap.cols = config_.map.cols;
 
-  // Grid cells
+  // Grid cells (physical data only; task-semantic tags live in annotations).
   auto cell_data = grid_->GetAllCellData();
   snap.cells.reserve(cell_data.size());
   for (const auto& [kind, origin] : cell_data) {
     snap.cells.push_back({kind, origin});
+  }
+
+  // Emit semantic annotations for the special cells that the level defines.
+  for (const Position& pos : synchro_positions_) {
+    AnnotationSnapshot a;
+    a.target_type = 0;  // Cell
+    a.pos = pos;
+    a.tag = SemanticTag::SynchroGoal;
+    a.owner_lens_id = -1;
+    snap.annotations.push_back(std::move(a));
+  }
+  if (config_.has_target_cell) {
+    AnnotationSnapshot a;
+    a.target_type = 0;
+    a.pos = target_position_;
+    a.tag = SemanticTag::AggroTarget;
+    a.owner_lens_id = -1;
+    snap.annotations.push_back(std::move(a));
   }
 
   // Agents

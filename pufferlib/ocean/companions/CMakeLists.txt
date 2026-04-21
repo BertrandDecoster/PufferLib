@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.12)
-project(companions VERSION 0.2.0 LANGUAGES CXX)
+project(companions VERSION 0.3.0 LANGUAGES CXX)
 
 # C++17 required
 set(CMAKE_CXX_STANDARD 17)
@@ -229,6 +229,16 @@ add_executable(companions_annotations_test tests/test_annotations.cc)
 target_link_libraries(companions_annotations_test companions_viz companions_env companions_core)
 target_include_directories(companions_annotations_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_viz_test tests/test_viz.cc)
+target_link_libraries(companions_viz_test companions_viz companions_env companions_core)
+target_include_directories(companions_viz_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(companions_viz_test PRIVATE
+  TESTS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+
+add_executable(companions_npc_panel_test tests/test_npc_panel.cc)
+target_link_libraries(companions_npc_panel_test companions_viz companions_env companions_core)
+target_include_directories(companions_npc_panel_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # =============================================================================
 # Demo executable (cross-platform)
 # =============================================================================
@@ -266,6 +276,8 @@ add_test(NAME companions_snapshot_json_test COMMAND companions_snapshot_json_tes
 add_test(NAME companions_fsm_timing_test COMMAND companions_fsm_timing_test)
 add_test(NAME companions_task_lens_test COMMAND companions_task_lens_test)
 add_test(NAME companions_annotations_test COMMAND companions_annotations_test)
+add_test(NAME companions_viz_test COMMAND companions_viz_test)
+add_test(NAME companions_npc_panel_test COMMAND companions_npc_panel_test)
 
 # =============================================================================
 # DLL (Dynamic library for external integration)

@@ -180,11 +180,6 @@ class BaseEnv {
   // Throws std::runtime_error if validation fails
   virtual void ValidateSnapshot(const Snapshot& snapshot) const;
 
-  // Get observation mask - maps actual cell kinds to observed cell kinds
-  // Override in subclasses to filter out irrelevant cells for RL training
-  // Default: identity mapping (no filtering)
-  virtual CellKind GetMaskedCellKind(CellKind kind) const { return kind; }
-
  protected:
   // Subclass hooks for custom step logic
   virtual void PreStep();

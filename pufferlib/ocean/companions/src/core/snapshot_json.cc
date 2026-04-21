@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "../../third_party/nlohmann/json.hpp"
+#include "annotations.h"
 #include "cell.h"
 #include "object.h"
 #include "types.h"
@@ -41,9 +42,9 @@ ActorColor StringToActorColor(const std::string& str) {
 CellKind StringToCellKind(const std::string& str) {
   if (str == "Wall") return CellKind::Wall;
   if (str == "Hazard") return CellKind::Hazard;
-  if (str == "Synchro") return CellKind::Synchro;
   if (str == "HealArea") return CellKind::HealArea;
-  if (str == "Target") return CellKind::Target;
+  // Legacy v1 JSON: Synchro/Target cells now flatten to Floor; their
+  // task-semantic role lives in the annotations array.
   return CellKind::Floor;
 }
 
@@ -82,6 +83,20 @@ StatusType StringToStatusType(const std::string& str) {
   if (str == "Slowed") return StatusType::Slowed;
   if (str == "Marked") return StatusType::Marked;
   return StatusType::None;
+}
+
+// SemanticTag string conversion (symmetric with Python SEMANTIC_TAG_NAMES).
+SemanticTag StringToSemanticTag(const std::string& str) {
+  if (str == "SynchroGoal") return SemanticTag::SynchroGoal;
+  if (str == "AggroTarget") return SemanticTag::AggroTarget;
+  if (str == "QuestPickup") return SemanticTag::QuestPickup;
+  if (str == "SafeZone")    return SemanticTag::SafeZone;
+  if (str == "TargetMob")   return SemanticTag::TargetMob;
+  if (str == "SkillGiver")  return SemanticTag::SkillGiver;
+  if (str == "Escort")      return SemanticTag::Escort;
+  if (str == "HtnName")     return SemanticTag::HtnName;
+  if (str == "Room")        return SemanticTag::Room;
+  return SemanticTag::SynchroGoal;  // Fallback
 }
 
 // Position serialization
@@ -317,6 +332,45 @@ EffectSnapshot JsonToEffectSnapshot(const json& j) {
   return effect;
 }
 
+json AnnotationSnapshotToJson(const AnnotationSnapshot& a) {
+  json params = json::object();
+  for (const auto& kv : a.params) {
+    params[kv.first] = kv.second;
+  }
+  json j = {
+    {"target", a.target_type == 1 ? "Agent" : "Cell"},
+    {"tag", SemanticTagToString(a.tag)},
+    {"owner_lens_id", a.owner_lens_id},
+    {"params", params},
+  };
+  if (a.target_type == 0) {
+    j["pos"] = PositionToJson(a.pos);
+  } else {
+    j["agent_id"] = a.agent_id;
+  }
+  return j;
+}
+
+AnnotationSnapshot JsonToAnnotationSnapshot(const json& j) {
+  AnnotationSnapshot a;
+  std::string target = j.at("target").get<std::string>();
+  a.target_type = (target == "Agent") ? 1 : 0;
+  a.tag = StringToSemanticTag(j.at("tag").get<std::string>());
+  a.owner_lens_id = j.value("owner_lens_id", -1);
+  if (a.target_type == 0 && j.contains("pos")) {
+    a.pos = JsonToPosition(j.at("pos"));
+  }
+  if (a.target_type == 1 && j.contains("agent_id")) {
+    a.agent_id = j.at("agent_id").get<ObjectId>();
+  }
+  if (j.contains("params") && j.at("params").is_object()) {
+    for (auto it = j.at("params").begin(); it != j.at("params").end(); ++it) {
+      a.params.emplace_back(it.key(), it.value().get<std::string>());
+    }
+  }
+  return a;
+}
+
 }  // namespace
 
 // =============================================================================
@@ -372,6 +426,13 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
   }
   j["patrol_path"] = patrol;
 
+  // Semantic annotations
+  json annotations = json::array();
+  for (const auto& a : snapshot.annotations) {
+    annotations.push_back(AnnotationSnapshotToJson(a));
+  }
+  j["annotations"] = annotations;
+
   return j.dump(2);  // Pretty-print with 2-space indent
 }
 
@@ -419,6 +480,13 @@ Snapshot SnapshotFromJson(const std::string& json_str) {
   // Patrol path
   for (const auto& pos_json : j.at("patrol_path")) {
     snapshot.patrol_path.push_back(JsonToPosition(pos_json));
+  }
+
+  // Semantic annotations (optional: absent in v1-format JSON)
+  if (j.contains("annotations") && j.at("annotations").is_array()) {
+    for (const auto& a_json : j.at("annotations")) {
+      snapshot.annotations.push_back(JsonToAnnotationSnapshot(a_json));
+    }
   }
 
   return snapshot;

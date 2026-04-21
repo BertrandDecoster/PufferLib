@@ -85,12 +85,6 @@ class AggroEnv : public BaseEnv {
   static constexpr int kAggroRange = 3;
   static constexpr int kLoseTargetRange = 5;
 
-  // Observation masking - Target cells are goals, Synchro cells hidden
-  CellKind GetMaskedCellKind(CellKind kind) const override {
-    if (kind == CellKind::Synchro) return CellKind::Floor;
-    return kind;  // Target cells remain visible
-  }
-
   // Snapshot validation - AggroEnv requires target cell and patrol path
   void ValidateSnapshot(const Snapshot& snapshot) const override;
 

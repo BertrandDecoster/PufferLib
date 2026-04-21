@@ -83,14 +83,6 @@ class DodgeEnv : public BaseEnv {
   // Register default hazard effects (call once at startup)
   static void RegisterDefaultEffects();
 
-  // Observation masking - No goal cells in DodgeEnv, hide all special cells
-  CellKind GetMaskedCellKind(CellKind kind) const override {
-    if (kind == CellKind::Synchro || kind == CellKind::Target) {
-      return CellKind::Floor;
-    }
-    return kind;
-  }
-
   // Snapshot validation - DodgeEnv has minimal requirements (just floor cells)
   void ValidateSnapshot(const Snapshot& snapshot) const override;
 

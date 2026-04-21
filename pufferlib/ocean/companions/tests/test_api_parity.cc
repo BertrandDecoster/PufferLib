@@ -7,16 +7,21 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "companions_api.h"
+#include "../src/core/annotations.h"
 #include "../src/core/pcg32.h"
 #include "../src/core/snapshot.h"
 #include "../src/core/types.h"
 #include "../src/env/synchro_env.h"
+#include "../src/env/synchro_lens.h"
 
 using namespace companions;
 
@@ -343,22 +348,15 @@ TEST(ParityTest_GridState) {
         case CellKind::Floor: expected = Companions_CellKind_Floor; break;
         case CellKind::Wall: expected = Companions_CellKind_Wall; break;
         case CellKind::Hazard: expected = Companions_CellKind_Hazard; break;
-        case CellKind::Synchro: expected = Companions_CellKind_Synchro; break;
         case CellKind::HealArea: expected = Companions_CellKind_HealArea; break;
-        case CellKind::Target: expected = Companions_CellKind_Target; break;
         default: expected = Companions_CellKind_Floor;
       }
 
       ASSERT_EQ(api_kind, expected);
     }
   }
-
-  // Count synchro cells
-  int api_synchro_count = 0;
-  for (auto kind : api_grid) {
-    if (kind == Companions_CellKind_Synchro) api_synchro_count++;
-  }
-  ASSERT_EQ(api_synchro_count, synchro);
+  (void)synchro;  // synchro goal count is an annotation concern; not
+                  // reflected in the physical grid anymore.
 
   companions_destroy(api_env);
 }
@@ -488,9 +486,7 @@ TEST(ParityTest_ConfigQueries) {
         case CellKind::Floor: expected = Companions_CellKind_Floor; break;
         case CellKind::Wall: expected = Companions_CellKind_Wall; break;
         case CellKind::Hazard: expected = Companions_CellKind_Hazard; break;
-        case CellKind::Synchro: expected = Companions_CellKind_Synchro; break;
         case CellKind::HealArea: expected = Companions_CellKind_HealArea; break;
-        case CellKind::Target: expected = Companions_CellKind_Target; break;
         default: expected = Companions_CellKind_Floor;
       }
       ASSERT_EQ(api_kind, expected);
@@ -637,6 +633,127 @@ TEST(TestSnapshotParity_DirectSaveDLLLoad) {
   for (size_t i = 0; i < cpp_positions.size(); ++i) {
     ASSERT_EQ(api_state.agents[i].position.row, cpp_positions[i].row);
     ASSERT_EQ(api_state.agents[i].position.col, cpp_positions[i].col);
+  }
+
+  companions_destroy(api_env);
+}
+
+// =============================================================================
+// Annotation Parity Tests
+// =============================================================================
+
+// Verifies that companions_get_annotations exposes the exact same entries
+// (in the same order) as env.GetAnnotations().Serialize() after reset. Since
+// win conditions depend on annotation state, a drift here would mean the DLL
+// and direct-C++ callers disagree about what the task is.
+TEST(ParityTest_Annotations) {
+  const int rows = 8, cols = 8, agents = 2, synchro = 2;
+  const uint32_t seed = 42;
+
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
+  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+
+  companions_reset(api_env, seed);
+  cpp_env.Reset(seed);
+
+  int32_t api_count = companions_get_annotation_count(api_env);
+  auto cpp_serialized = cpp_env.GetAnnotations().Serialize();
+  ASSERT_EQ(api_count, static_cast<int32_t>(cpp_serialized.size()));
+  ASSERT_TRUE(api_count > 0);  // SynchroGoal tags from Reset, at minimum.
+
+  std::vector<Companions_Annotation> api_anns(api_count);
+  int32_t written = companions_get_annotations(api_env, api_anns.data(), api_count);
+  ASSERT_EQ(written, api_count);
+
+  for (int32_t i = 0; i < api_count; ++i) {
+    const Companions_Annotation& ca = api_anns[i];
+    const AnnotationSnapshot& cpp = cpp_serialized[i];
+    ASSERT_EQ(ca.target_kind, static_cast<int32_t>(cpp.target_type));
+    ASSERT_EQ(ca.pos.row, cpp.pos.row);
+    ASSERT_EQ(ca.pos.col, cpp.pos.col);
+    ASSERT_EQ(ca.agent_id, cpp.agent_id);
+    ASSERT_EQ(ca.tag, static_cast<int32_t>(cpp.tag));
+    ASSERT_EQ(ca.owner_lens_id, cpp.owner_lens_id);
+    // Reset-placed annotations have no params, so the compact JSON is "{}".
+    if (cpp.params.empty()) {
+      ASSERT_EQ(std::string(ca.params_json), std::string("{}"));
+    }
+  }
+
+  companions_destroy(api_env);
+}
+
+// Verifies that companions_set_task_lens_with_params stamps the same
+// SynchroGoal annotations as env.SetTaskLensWithParams(SynchroLens, params)
+// on the direct C++ side.
+TEST(ParityTest_Annotations_After_SetTaskLens_With_Params) {
+  const int rows = 8, cols = 8, agents = 2, synchro = 2;
+  const uint32_t seed = 42;
+
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
+  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+
+  companions_reset(api_env, seed);
+  cpp_env.Reset(seed);
+
+  // Pick a few Floor cells known to exist on an empty 8x8 synchro map.
+  const Companions_Position api_positions[] = {{1, 2}, {3, 4}, {5, 6}};
+  const int n_positions = 3;
+  std::vector<Position> cpp_positions;
+  for (int i = 0; i < n_positions; ++i) {
+    cpp_positions.push_back({api_positions[i].row, api_positions[i].col});
+  }
+
+  bool api_ok = companions_set_task_lens_with_params(
+      api_env, Companions_Lens_Synchro, api_positions, n_positions);
+  ASSERT_TRUE(api_ok);
+
+  LensParams cpp_params;
+  cpp_params.positions = cpp_positions;
+  bool cpp_ok = cpp_env.SetTaskLensWithParams(
+      std::make_unique<SynchroLens>(), cpp_params);
+  ASSERT_TRUE(cpp_ok);
+
+  int32_t api_count = companions_get_annotation_count(api_env);
+  auto cpp_serialized = cpp_env.GetAnnotations().Serialize();
+  ASSERT_EQ(api_count, static_cast<int32_t>(cpp_serialized.size()));
+
+  std::vector<Companions_Annotation> api_anns(api_count);
+  companions_get_annotations(api_env, api_anns.data(), api_count);
+
+  // The Reset-placed SynchroGoal tags (owner_lens_id == -1) are environment-
+  // specific and survive lens activation; only the lens-owned subset (owner
+  // == SynchroLens::kOwnerId) is what SetTaskLensWithParams controls.
+  // Assert that both sides see the same lens-owned SynchroGoal positions and
+  // that they match exactly what we passed in.
+  auto collect = [&]() {
+    std::set<std::pair<int,int>> api_set, cpp_set;
+    for (const auto& a : api_anns) {
+      if (a.target_kind == 0 &&
+          a.tag == static_cast<int32_t>(SemanticTag::SynchroGoal) &&
+          a.owner_lens_id == SynchroLens::kOwnerId) {
+        api_set.insert({a.pos.row, a.pos.col});
+      }
+    }
+    for (const auto& a : cpp_serialized) {
+      if (a.target_type == 0 && a.tag == SemanticTag::SynchroGoal &&
+          a.owner_lens_id == SynchroLens::kOwnerId) {
+        cpp_set.insert({a.pos.row, a.pos.col});
+      }
+    }
+    return std::make_pair(api_set, cpp_set);
+  };
+  auto [api_set, cpp_set] = collect();
+  ASSERT_EQ(api_set.size(), cpp_set.size());
+  ASSERT_TRUE(api_set == cpp_set);
+  ASSERT_EQ(static_cast<int>(api_set.size()), n_positions);
+  for (int i = 0; i < n_positions; ++i) {
+    std::pair<int,int> expected = {api_positions[i].row, api_positions[i].col};
+    ASSERT_TRUE(api_set.count(expected) == 1);
   }
 
   companions_destroy(api_env);

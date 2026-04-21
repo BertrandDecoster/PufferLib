@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "../src/core/annotations.h"
 #include "../src/core/cell.h"
 #include "../src/core/fsm/enemies.h"
 #include "../src/core/fsm/fsm_states.h"
@@ -98,18 +99,17 @@ TEST(TestAggroEnvGridSetup) {
     ASSERT_EQ(grid.GetCellKind({r, 9}), CellKind::Wall);
   }
 
-  // Interior should be Floor (except for Target cell)
+  // Interior is all Floor now; target role lives on the annotation layer.
   int floor_count = 0;
-  int target_count = 0;
   for (int r = 1; r < 9; ++r) {
     for (int c = 1; c < 9; ++c) {
-      CellKind kind = grid.GetCellKind({r, c});
-      if (kind == CellKind::Floor) floor_count++;
-      if (kind == CellKind::Target) target_count++;
+      if (grid.GetCellKind({r, c}) == CellKind::Floor) floor_count++;
     }
   }
-  ASSERT_EQ(target_count, 1);
   ASSERT_GT(floor_count, 0);
+  auto targets =
+      env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
+  ASSERT_EQ(targets.size(), 1u);
 }
 
 TEST(TestPatrolSquareGeneration) {
@@ -199,7 +199,12 @@ TEST(TestTargetIsTargetCell) {
   Position target = env.GetTargetPosition();
   const Grid& grid = env.GetGrid();
 
-  ASSERT_EQ(grid.GetCellKind(target), CellKind::Target);
+  // Target cell is physically Floor; the AggroTarget role lives on the
+  // annotation layer.
+  ASSERT_EQ(grid.GetCellKind(target), CellKind::Floor);
+  ASSERT_TRUE(env.GetAnnotations().HasTag(
+      AnnotationKey{AnnotationTarget::Cell, target, kInvalidObjectId},
+      SemanticTag::AggroTarget));
 }
 
 // =============================================================================

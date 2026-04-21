@@ -140,6 +140,38 @@ TEST(RemoveByOwnerOnlyRemovesThatOwner) {
   ASSERT_EQ(store.FindCellsWithTag(SemanticTag::Room).size(), 1u);
 }
 
+TEST(RemoveByOwnerPreservesOtherOwners) {
+  // Two lenses both attach tags to the same cell, plus a persistent tag.
+  // Swapping out lens A must leave lens B's tag and the persistent one intact.
+  AnnotationStore store;
+  const int32_t kLensA = 1;
+  const int32_t kLensB = 2;
+  const AnnotationKey shared = CellKey(4, 4);
+
+  store.Add(shared, Annotation{SemanticTag::SynchroGoal, {}, kLensA});
+  store.Add(shared, Annotation{SemanticTag::AggroTarget, {}, kLensB});
+  store.Add(shared, Annotation{SemanticTag::Room, {{"room", "main"}}, -1});
+
+  ASSERT_EQ(store.Get(shared).size(), 3u);
+
+  store.RemoveByOwner(kLensA);
+  ASSERT_FALSE(store.HasTag(shared, SemanticTag::SynchroGoal));
+  ASSERT_TRUE(store.HasTag(shared, SemanticTag::AggroTarget));
+  ASSERT_TRUE(store.HasTag(shared, SemanticTag::Room));
+  ASSERT_EQ(store.Get(shared).size(), 2u);
+
+  store.RemoveByOwner(kLensB);
+  ASSERT_FALSE(store.HasTag(shared, SemanticTag::AggroTarget));
+  ASSERT_TRUE(store.HasTag(shared, SemanticTag::Room));
+  ASSERT_EQ(store.Get(shared).size(), 1u);
+
+  // Persistent tag survives removal of an explicit id equal to -1 unless we
+  // expressly ask for it. RemoveByOwner(-1) wipes the persistent tier.
+  store.RemoveByOwner(-1);
+  ASSERT_FALSE(store.HasTag(shared, SemanticTag::Room));
+  ASSERT_TRUE(store.Empty());
+}
+
 TEST(RemoveByKeyRemovesOneTag) {
   AnnotationStore store;
   store.Add(CellKey(4, 5), Annotation{SemanticTag::SynchroGoal, {}, -1});
@@ -240,9 +272,9 @@ TEST(BaseEnvAnnotationStoreIsUsable) {
 TEST(BaseEnvSaveLoadRoundTripsAnnotations) {
   SynchroEnv env(8, 8, 2, 2, 0, 42, 0, 100);
   env.Reset();
-  env.GetMutableAnnotations().Clear();  // Isolate from Reset-placed tags.
-
-  // Add an external annotation and an agent-targeted annotation.
+  // Keep Reset-placed SynchroGoal tags so ValidateSnapshot still passes; add
+  // two extra tags on top (one cell, one agent) to exercise round-trip.
+  std::size_t base_count = env.GetAnnotations().Size();
   env.GetMutableAnnotations().Add(
       AnnotationKey{AnnotationTarget::Cell, Position{1, 1}, kInvalidObjectId},
       Annotation{SemanticTag::Room, {{"room", "main"}}, -1});
@@ -251,11 +283,15 @@ TEST(BaseEnvSaveLoadRoundTripsAnnotations) {
       Annotation{SemanticTag::HtnName, {{"name", "p1"}}, -1});
 
   Snapshot snap = env.SaveSnapshot();
-  ASSERT_EQ(snap.annotations.size(), 2u);
+  ASSERT_EQ(snap.annotations.size(), base_count + 2u);
 
-  // Wipe and reload.
-  env.GetMutableAnnotations().Clear();
-  ASSERT_TRUE(env.GetAnnotations().Empty());
+  // Drop the two extras, then reload from snapshot; they should come back.
+  env.GetMutableAnnotations().RemoveByKey(
+      AnnotationKey{AnnotationTarget::Cell, Position{1, 1}, kInvalidObjectId},
+      SemanticTag::Room);
+  env.GetMutableAnnotations().RemoveByKey(
+      AnnotationKey{AnnotationTarget::Agent, Position{-1, -1}, 0},
+      SemanticTag::HtnName);
   env.LoadSnapshot(snap);
 
   ASSERT_TRUE(env.GetAnnotations().HasTag(
@@ -270,20 +306,14 @@ TEST(SynchroEnvResetPopulatesSynchroGoalAnnotations) {
   SynchroEnv env(8, 8, 2, 2, 0, 42, 0, 100);
   env.Reset();
 
-  // Each cell marked CellKind::Synchro by the level generator should also
-  // have a SynchroGoal annotation attached (dual-path during migration).
+  // The level generator emits the task's goal cells as SynchroGoal
+  // annotations. Physical CellKind on the grid stays Floor.
   auto synchro_cells =
       env.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal);
-  int stamped = 0;
-  for (int r = 0; r < env.GetRows(); ++r) {
-    for (int c = 0; c < env.GetCols(); ++c) {
-      if (env.GetGrid().GetCellKind(r, c) == CellKind::Synchro) {
-        ++stamped;
-      }
-    }
+  ASSERT_TRUE(synchro_cells.size() > 0);
+  for (const Position& pos : synchro_cells) {
+    ASSERT_EQ(env.GetGrid().GetCellKind(pos), CellKind::Floor);
   }
-  ASSERT_EQ(synchro_cells.size(), static_cast<std::size_t>(stamped));
-  ASSERT_TRUE(stamped > 0);
 }
 
 TEST(SynchroLensActivateAddsAnnotations) {
@@ -315,20 +345,9 @@ TEST(AggroEnvResetPopulatesAggroTargetAnnotation) {
   auto target_cells =
       env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
   ASSERT_EQ(target_cells.size(), 1u);
-
-  // The annotated cell matches the one CellKind::Target in the grid (dual-path).
-  int target_grid_cells = 0;
-  Position grid_target{-1, -1};
-  for (int r = 0; r < env.GetRows(); ++r) {
-    for (int c = 0; c < env.GetCols(); ++c) {
-      if (env.GetGrid().GetCellKind(r, c) == CellKind::Target) {
-        ++target_grid_cells;
-        grid_target = {r, c};
-      }
-    }
-  }
-  ASSERT_EQ(target_grid_cells, 1);
-  ASSERT_EQ(target_cells[0], grid_target);
+  // Target cell is physically Floor; the AggroTarget role lives on the
+  // annotation layer only.
+  ASSERT_EQ(env.GetGrid().GetCellKind(target_cells[0]), CellKind::Floor);
 }
 
 TEST(BaseEnvCopyConstructorPreservesAnnotations) {

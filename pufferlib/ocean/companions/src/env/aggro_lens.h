@@ -17,7 +17,7 @@ class AggroLens : public TaskLens {
   bool IsDone(const BaseEnv& env) const override;
   bool IsSuccess(const BaseEnv& env) const override;
   float ComputeReward(const BaseEnv& env, int agent_id) const override;
-  CellKind MaskCell(CellKind kind) const override;
+  bool IsGoalCell(const BaseEnv& env, Position pos) const override;
 
   void AppendVectorObs(const BaseEnv& env, int agent_id,
                        std::vector<float>& obs) const override;

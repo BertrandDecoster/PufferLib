@@ -101,13 +101,13 @@ void AggroEnv::Reset() {
   // These will be transformed after LoadSnapshot applies D4
   int snap_cols = snapshot.cols;
 
-  // Extract target cell position
+  // Extract target cell position. Target lives in the annotation layer now
+  // (Floor cell + AggroTarget tag).
+  (void)snap_cols;
   target_pos_ = {0, 0};
-  for (size_t i = 0; i < snapshot.cells.size(); ++i) {
-    if (snapshot.cells[i].kind == CellKind::Target) {
-      int r = static_cast<int>(i) / snap_cols;
-      int c = static_cast<int>(i) % snap_cols;
-      target_pos_ = {r, c};
+  for (const AnnotationSnapshot& a : snapshot.annotations) {
+    if (a.tag == SemanticTag::AggroTarget && a.target_type == 0) {
+      target_pos_ = a.pos;
       break;
     }
   }
@@ -262,7 +262,10 @@ void AggroEnv::PlaceTargetCell() {
   Rectangle interior{2, 2, cols_ - 4, rows_ - 4};
   auto candidates = FindEmptyCells(1, rng_, interior, std::nullopt);
   target_pos_ = candidates[0];
-  grid_->SetCell(target_pos_, CellKind::Target);
+  // Target cell is a semantic annotation; the grid cell stays Floor.
+  GetMutableAnnotations().Add(
+      AnnotationKey{AnnotationTarget::Cell, target_pos_, kInvalidObjectId},
+      Annotation{SemanticTag::AggroTarget, {}, -1});
 }
 
 void AggroEnv::SpawnCompanions() {
@@ -431,13 +434,11 @@ void AggroEnv::LoadSnapshot(const Snapshot& snapshot) {
   // Call base implementation first
   BaseEnv::LoadSnapshot(snapshot);
 
-  // Extract target_pos_ from loaded cells
+  // Extract target_pos_ from the annotation layer.
   target_pos_ = {0, 0};
-  for (size_t i = 0; i < snapshot.cells.size(); ++i) {
-    if (snapshot.cells[i].kind == CellKind::Target) {
-      int r = static_cast<int>(i) / cols_;
-      int c = static_cast<int>(i) % cols_;
-      target_pos_ = {r, c};
+  for (const AnnotationSnapshot& a : snapshot.annotations) {
+    if (a.tag == SemanticTag::AggroTarget && a.target_type == 0) {
+      target_pos_ = a.pos;
       break;
     }
   }

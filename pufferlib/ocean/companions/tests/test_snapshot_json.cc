@@ -165,16 +165,16 @@ TEST(TestCellKindSerialization) {
   original.cells[0].kind = CellKind::Floor;
   original.cells[1].kind = CellKind::Wall;
   original.cells[2].kind = CellKind::Hazard;
-  original.cells[3].kind = CellKind::Synchro;
+  original.cells[3].kind = CellKind::HealArea;
   original.cells[4].kind = CellKind::HealArea;
-  original.cells[5].kind = CellKind::Target;
+  original.cells[5].kind = CellKind::Hazard;
 
   std::string json = SnapshotToJson(original);
 
   // Verify enum strings in JSON
   ASSERT_TRUE(json.find("\"cell_kind\": \"Floor\"") != std::string::npos);
   ASSERT_TRUE(json.find("\"cell_kind\": \"Wall\"") != std::string::npos);
-  ASSERT_TRUE(json.find("\"cell_kind\": \"Synchro\"") != std::string::npos);
+  ASSERT_TRUE(json.find("\"cell_kind\": \"HealArea\"") != std::string::npos);
 
   Snapshot restored = SnapshotFromJson(json);
   AssertSnapshotsEqual(original, restored);
@@ -310,7 +310,7 @@ TEST(TestFileIO) {
   original.cols = 4;
   original.cells.resize(16);
   original.cells[0].kind = CellKind::Wall;
-  original.cells[5].kind = CellKind::Synchro;
+  original.cells[5].kind = CellKind::HealArea;
   original.tick = 42;
   original.horizon = 200;
 

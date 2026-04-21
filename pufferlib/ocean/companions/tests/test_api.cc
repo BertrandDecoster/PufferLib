@@ -209,17 +209,15 @@ TEST(TestGetCell) {
   ASSERT_EQ(companions_get_cell(env, 11, 0), Companions_CellKind_Wall);
   ASSERT_EQ(companions_get_cell(env, 11, 11), Companions_CellKind_Wall);
 
-  // Interior should include some synchro cells
-  // (we have 3 synchro cells in a 12x12 grid)
-  int synchro_count = 0;
+  // Interior cells are now all Floor (task-semantic role "synchro goal"
+  // lives on the annotation layer, not on CellKind). Just verify the grid
+  // comes back with only physical cell kinds.
   for (int r = 1; r < 11; r++) {
     for (int c = 1; c < 11; c++) {
-      if (companions_get_cell(env, r, c) == Companions_CellKind_Synchro) {
-        synchro_count++;
-      }
+      Companions_CellKind k = companions_get_cell(env, r, c);
+      ASSERT_TRUE(k == Companions_CellKind_Floor || k == Companions_CellKind_Wall);
     }
   }
-  ASSERT_EQ(synchro_count, 3);
 
   companions_destroy(env);
 }
@@ -382,17 +380,10 @@ TEST(TestSpecialCells) {
   Companions_GameState state = {};
   companions_get_state(env, &state);
 
-  // Should have special cells (walls at perimeter, synchro cells)
+  // Should have special cells at the perimeter walls. Synchro/Target roles
+  // now flow through the annotation layer rather than the physical CellKind,
+  // so they're not reflected in special_cells.
   ASSERT_TRUE(state.special_cell_count > 0);
-
-  // Count synchro cells in special cells
-  int synchro_count = 0;
-  for (int i = 0; i < state.special_cell_count; i++) {
-    if (state.special_cells[i].kind == Companions_CellKind_Synchro) {
-      synchro_count++;
-    }
-  }
-  ASSERT_EQ(synchro_count, 3);
 
   companions_destroy(env);
 }
@@ -701,6 +692,214 @@ TEST(TestGetGeneratedLevelWithoutGenerate) {
   // Now try to get without valid generation
   bool ok = companions_get_generated_level(buffer, 100);
   ASSERT_FALSE(ok);
+}
+
+// =============================================================================
+// Annotation API Tests
+// =============================================================================
+// SemanticTag integer values (must stay in sync with annotations.h /
+// htn_bridge.py SEMANTIC_TAG_NAMES).
+static constexpr int32_t kTagSynchroGoal = 0;
+static constexpr int32_t kTagAggroTarget = 1;
+static constexpr int32_t kTagQuestPickup = 2;
+
+TEST(TestAnnotationCountMatchesNumSynchro) {
+  Companions_EnvConfig config = MakeConfig(12, 12, 3, 3, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  companions_reset(env, 42);
+
+  // SynchroEnv places exactly `num_synchro` persistent SynchroGoal cell
+  // annotations during Reset.
+  int32_t count = companions_get_annotation_count(env);
+  ASSERT_EQ(count, 3);
+
+  companions_destroy(env);
+}
+
+TEST(TestAnnotationCountNullEnv) {
+  ASSERT_EQ(companions_get_annotation_count(nullptr), 0);
+}
+
+TEST(TestGetAnnotationsReturnsSynchroGoals) {
+  Companions_EnvConfig config = MakeConfig(12, 12, 3, 3, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+
+  int32_t count = companions_get_annotation_count(env);
+  std::vector<Companions_Annotation> anns(count);
+  int32_t written = companions_get_annotations(env, anns.data(), count);
+  ASSERT_EQ(written, count);
+
+  // Every returned annotation should be a persistent cell-level SynchroGoal
+  // at a valid interior position.
+  for (int i = 0; i < written; i++) {
+    ASSERT_EQ(anns[i].target_kind, 0);  // 0 = Cell
+    ASSERT_EQ(anns[i].tag, kTagSynchroGoal);
+    ASSERT_EQ(anns[i].owner_lens_id, -1);  // Persistent (external owner)
+    ASSERT_TRUE(anns[i].pos.row > 0 && anns[i].pos.row < 11);
+    ASSERT_TRUE(anns[i].pos.col > 0 && anns[i].pos.col < 11);
+    // params_json is null-terminated
+    ASSERT_EQ(anns[i].params_json[COMPANIONS_MAX_ANNOTATION_PARAMS - 1], '\0');
+  }
+
+  companions_destroy(env);
+}
+
+TEST(TestGetAnnotationsBufferTooSmall) {
+  Companions_EnvConfig config = MakeConfig(12, 12, 3, 3, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+
+  // Request fewer annotations than exist. Should write `count` and stop.
+  Companions_Annotation one = {};
+  int32_t written = companions_get_annotations(env, &one, 1);
+  ASSERT_EQ(written, 1);
+  ASSERT_EQ(one.tag, kTagSynchroGoal);
+
+  companions_destroy(env);
+}
+
+TEST(TestGetAnnotationsNullArgs) {
+  Companions_EnvConfig config = MakeConfig();
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+
+  Companions_Annotation buf[1] = {};
+  ASSERT_EQ(companions_get_annotations(nullptr, buf, 1), 0);
+  ASSERT_EQ(companions_get_annotations(env, nullptr, 1), 0);
+  // Zero count is a no-op (not an error).
+  ASSERT_EQ(companions_get_annotations(env, buf, 0), 0);
+
+  companions_destroy(env);
+}
+
+TEST(TestHasTagAtSynchroGoalPositions) {
+  Companions_EnvConfig config = MakeConfig(12, 12, 3, 3, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+
+  int32_t count = companions_get_annotation_count(env);
+  std::vector<Companions_Annotation> anns(count);
+  companions_get_annotations(env, anns.data(), count);
+
+  // Every reported goal position answers yes; wrong tag answers no.
+  for (const auto& a : anns) {
+    ASSERT_TRUE(companions_has_tag_at(env, a.pos.row, a.pos.col, kTagSynchroGoal));
+    ASSERT_FALSE(companions_has_tag_at(env, a.pos.row, a.pos.col, kTagAggroTarget));
+    ASSERT_FALSE(companions_has_tag_at(env, a.pos.row, a.pos.col, kTagQuestPickup));
+  }
+
+  // A wall corner carries no semantic tags.
+  ASSERT_FALSE(companions_has_tag_at(env, 0, 0, kTagSynchroGoal));
+  // A clearly-non-goal interior position (start search from (1,1), skip goals)
+  for (int r = 1; r < 11; r++) {
+    for (int c = 1; c < 11; c++) {
+      bool is_goal = false;
+      for (const auto& a : anns) {
+        if (a.pos.row == r && a.pos.col == c) { is_goal = true; break; }
+      }
+      if (!is_goal) {
+        ASSERT_FALSE(companions_has_tag_at(env, r, c, kTagSynchroGoal));
+        goto done;
+      }
+    }
+  }
+  done:;
+  companions_destroy(env);
+}
+
+TEST(TestHasTagAtNullEnv) {
+  ASSERT_FALSE(companions_has_tag_at(nullptr, 1, 1, kTagSynchroGoal));
+}
+
+TEST(TestAgentHasTagFalseForCompanions) {
+  // SynchroEnv does not tag companions with any SemanticTag; agent-level tags
+  // (TargetMob, SkillGiver, HtnName, ...) are set by the HTN planner, not the
+  // default env reset.
+  Companions_EnvConfig config = MakeConfig(12, 12, 3, 3, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+
+  for (int i = 0; i < companions_get_agent_count(env); i++) {
+    Companions_AgentState agent = {};
+    ASSERT_TRUE(companions_get_agent_by_index(env, i, &agent));
+    ASSERT_FALSE(companions_agent_has_tag(env, agent.id, kTagSynchroGoal));
+    ASSERT_FALSE(companions_agent_has_tag(env, agent.id, kTagAggroTarget));
+  }
+
+  companions_destroy(env);
+}
+
+TEST(TestAgentHasTagNullEnv) {
+  ASSERT_FALSE(companions_agent_has_tag(nullptr, 1, kTagSynchroGoal));
+}
+
+TEST(TestAggroEnvHasTargetAnnotation) {
+  Companions_AggroEnvConfig config = {};
+  config.rows = 10;
+  config.cols = 10;
+  config.num_companions = 1;
+  config.patrol_square_size = 3;
+  config.horizon = 100;
+  config.d4_transform = 0;
+  config.seed = 42;
+  config.enemy_type = Companions_Enemy_Zombie;
+  config.map_complexity = 0;
+
+  Companions_Env* env = companions_create_aggro(&config);
+  ASSERT_NOT_NULL(env);
+  companions_reset(env, 42);
+
+  // AggroEnv places exactly one persistent AggroTarget cell annotation.
+  int32_t count = companions_get_annotation_count(env);
+  ASSERT_TRUE(count >= 1);
+
+  std::vector<Companions_Annotation> anns(count);
+  companions_get_annotations(env, anns.data(), count);
+
+  int target_count = 0;
+  Companions_Annotation target = {};
+  for (const auto& a : anns) {
+    if (a.tag == kTagAggroTarget) {
+      target_count++;
+      target = a;
+    }
+  }
+  ASSERT_EQ(target_count, 1);
+  ASSERT_EQ(target.target_kind, 0);
+  ASSERT_EQ(target.owner_lens_id, -1);
+  ASSERT_TRUE(companions_has_tag_at(env, target.pos.row, target.pos.col,
+                                    kTagAggroTarget));
+
+  companions_destroy(env);
+}
+
+TEST(TestAnnotationsSurviveSnapshotRoundTrip) {
+  Companions_EnvConfig config = MakeConfig(12, 12, 3, 3, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+
+  int32_t count_before = companions_get_annotation_count(env);
+  std::vector<Companions_Annotation> before(count_before);
+  companions_get_annotations(env, before.data(), count_before);
+
+  // Save, reset to a different seed, reload.
+  int32_t size = companions_get_snapshot_size(env);
+  std::vector<uint8_t> buffer(size);
+  ASSERT_TRUE(companions_save_snapshot(env, buffer.data(), size));
+  companions_reset(env, 999);
+  ASSERT_TRUE(companions_load_snapshot(env, buffer.data(), size));
+
+  int32_t count_after = companions_get_annotation_count(env);
+  ASSERT_EQ(count_after, count_before);
+
+  // Every pre-save SynchroGoal position is still a SynchroGoal after reload.
+  for (const auto& a : before) {
+    ASSERT_TRUE(companions_has_tag_at(env, a.pos.row, a.pos.col, a.tag));
+  }
+
+  companions_destroy(env);
 }
 
 // =============================================================================

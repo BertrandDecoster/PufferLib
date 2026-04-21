@@ -31,15 +31,6 @@ float DodgeLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   return kSurvivalReward;
 }
 
-CellKind DodgeLens::MaskCell(CellKind kind) const {
-  // Hide both Synchro and Target cells (show as Floor)
-  // DodgeLens focuses only on survival, not on reaching goals
-  if (kind == CellKind::Synchro || kind == CellKind::Target) {
-    return CellKind::Floor;
-  }
-  return kind;
-}
-
 bool DodgeLens::AnyCompanionIncapacitated(const BaseEnv& env) const {
   const ObjectManager& om = env.GetObjectManager();
 

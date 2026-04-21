@@ -69,14 +69,16 @@ class TaskLens {
   virtual float ComputeReward(const BaseEnv& env, int agent_id) const = 0;
 
   // ===========================================================================
-  // Observation masking - hide irrelevant cell types from RL agent
+  // Goal cell predicate - is this cell a "goal" for the current task?
   // ===========================================================================
-  // Called during observation generation to filter out cells not relevant
-  // to the current task. For example:
-  //   - SynchroLens: hides Target cells (shows as Floor)
-  //   - AggroLens: hides Synchro cells (shows as Floor)
-  // This focuses the RL agent's attention on task-relevant features.
-  virtual CellKind MaskCell(CellKind kind) const = 0;
+  // Used by the observation pipeline (plane 2 of the 5-plane tensor) to mark
+  // task-relevant target cells. Default: no goals. Lenses override by reading
+  // the appropriate SemanticTag from env.GetAnnotations().
+  virtual bool IsGoalCell(const BaseEnv& env, Position pos) const {
+    (void)env;
+    (void)pos;
+    return false;
+  }
 
   // ===========================================================================
   // Optional: lens-specific vector observation features

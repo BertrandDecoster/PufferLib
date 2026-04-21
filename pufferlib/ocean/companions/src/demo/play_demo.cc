@@ -276,33 +276,6 @@ void PrintHelp(const std::string& env_name, int num_companions,
   std::cout << "========================================\n\n";
 }
 
-// Helper to render health boxes with companion color
-std::string RenderHealth(const Companion* comp) {
-  int health = comp->GetHealth();
-  int max_health = comp->GetMaxHealth();
-  ActorColor color = comp->GetColor();
-
-  // ANSI color code
-  int ansi = 0;
-  switch (color) {
-    case ActorColor::Red:   ansi = 91; break;
-    case ActorColor::Green: ansi = 92; break;
-    case ActorColor::Blue:  ansi = 94; break;
-    default: break;
-  }
-
-  std::string result;
-  for (int i = 0; i < max_health; ++i) {
-    std::string box = (i < health) ? "■" : "□";
-    if (ansi != 0) {
-      result += "\033[" + std::to_string(ansi) + "m[" + box + "]\033[0m";
-    } else {
-      result += "[" + box + "]";
-    }
-  }
-  return result;
-}
-
 }  // namespace companions
 
 int main(int argc, char* argv[]) {
@@ -509,16 +482,55 @@ int main(int argc, char* argv[]) {
   // Track current seed for display
   unsigned int current_seed = seed;
 
-  // Load agent configs from CSV (try multiple paths for different working dirs)
-  if (!AgentConfigRegistry::Instance().LoadFromCSV("data/agents.csv") &&
-      !AgentConfigRegistry::Instance().LoadFromCSV("../data/agents.csv")) {
-    std::cerr << "Warning: Could not load agent configs from data/agents.csv\n";
+  // Load agent and effect configs. We look under several locations because
+  // the demo can be launched from different working directories (the build
+  // dir, the repo root, the companions dir, ...). In particular:
+  //   - "<exe_dir>/data/..."   (CMake copies data next to the binary)
+  //   - "data/..."             (cwd == companions/ or companions/build/bin)
+  //   - "../data/..."          (cwd == companions/build)
+  //   - "pufferlib/ocean/companions/data/..."  (cwd == repo root)
+  //
+  // Attack damage is delivered via effects spawned from zombie/goblin configs,
+  // so if these CSVs don't load the FSM cycles (Telegraph -> Attack ->
+  // Recovery) run visually but no damage lands. A past regression silently
+  // turned zombie attacks into no-ops when the demo was started from the
+  // repo root; we now refuse to start if the data cannot be found.
+  std::string exe_dir;
+  {
+    std::string path(argv[0]);
+    auto slash = path.find_last_of('/');
+    exe_dir = (slash == std::string::npos) ? std::string(".")
+                                            : path.substr(0, slash);
   }
+  auto try_paths = [&](const char* leaf, auto load_fn) -> bool {
+    std::vector<std::string> candidates = {
+        exe_dir + "/data/" + leaf,
+        std::string("data/") + leaf,
+        std::string("../data/") + leaf,
+        std::string("pufferlib/ocean/companions/data/") + leaf,
+        std::string("../pufferlib/ocean/companions/data/") + leaf,
+    };
+    for (const auto& p : candidates) {
+      if (load_fn(p)) {
+        return true;
+      }
+    }
+    std::cerr << "Error: Could not load data/" << leaf << ". Tried:\n";
+    for (const auto& p : candidates) std::cerr << "  " << p << "\n";
+    std::cerr << "Start the demo from the companions/ directory or keep the "
+                 "data/ folder next to the binary.\n";
+    return false;
+  };
 
-  // Load effect configs from CSV (needed for dodge env and FSM attacks)
-  if (!EffectConfigRegistry::Instance().LoadFromCSV("data/effects.csv") &&
-      !EffectConfigRegistry::Instance().LoadFromCSV("../data/effects.csv")) {
-    std::cerr << "Warning: Could not load effect configs from data/effects.csv\n";
+  if (!try_paths("agents.csv", [](const std::string& p) {
+        return AgentConfigRegistry::Instance().LoadFromCSV(p);
+      })) {
+    return 1;
+  }
+  if (!try_paths("effects.csv", [](const std::string& p) {
+        return EffectConfigRegistry::Instance().LoadFromCSV(p);
+      })) {
+    return 1;
   }
 
   // Create environment (polymorphic)
@@ -560,7 +572,7 @@ int main(int argc, char* argv[]) {
       } else {
         std::cout << "\n========== TICK " << env->GetTick() << " ==========\n";
       }
-      renderer.Render(*env, RenderMode::Ascii);
+      std::cout << renderer.RenderAsciiWithNPCPanel(*env) << std::flush;
       std::cout << "Env: " << env_name << " | Seed: " << current_seed;
       if (d4_transform != 0) {
         std::cout << " | Transform: " << d4_transform;
@@ -578,7 +590,7 @@ int main(int argc, char* argv[]) {
       // Print initial lines with placeholder for human-controlled agents
       for (int i = 0; i < human_agents; ++i) {
         std::cout << "Companion " << color_names[i] << " "
-                  << RenderHealth(companions[i]) << ": _\n";
+                  << renderer.RenderHealth(*companions[i]) << ": _\n";
       }
 
       // Collect actions, updating display in place

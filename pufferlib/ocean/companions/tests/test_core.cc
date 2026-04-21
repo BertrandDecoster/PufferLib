@@ -156,13 +156,6 @@ TEST(TestCellKinds) {
   ASSERT_EQ(hazard.GetKind(), CellKind::Hazard);
   ASSERT_EQ(hazard.GetChar(), '~');
 
-  // Synchro cell
-  Cell synchro(pos, CellKind::Synchro);
-  ASSERT_TRUE(synchro.IsWalkable());
-  ASSERT_TRUE(synchro.IsPathable());
-  ASSERT_EQ(synchro.GetKind(), CellKind::Synchro);
-  ASSERT_EQ(synchro.GetChar(), 'S');
-
   // HealArea cell
   Cell heal(pos, CellKind::HealArea);
   ASSERT_TRUE(heal.IsWalkable());
@@ -236,14 +229,13 @@ TEST(TestGridSetCell) {
 TEST(TestGridFindCells) {
   Grid grid(10, 10);
 
-  // Add some synchro cells
   Position s1{2, 3};
   Position s2{7, 8};
-  grid.SetCell(s1, CellKind::Synchro);
-  grid.SetCell(s2, CellKind::Synchro);
+  grid.SetCell(s1, CellKind::HealArea);
+  grid.SetCell(s2, CellKind::HealArea);
 
-  auto synchros = grid.FindCellsOfKind(CellKind::Synchro);
-  ASSERT_EQ(synchros.size(), 2u);
+  auto heals = grid.FindCellsOfKind(CellKind::HealArea);
+  ASSERT_EQ(heals.size(), 2u);
 }
 
 TEST(TestGridFindWalkable) {
@@ -356,10 +348,10 @@ TEST(TestLevelBuilderLine) {
   }
 
   // Vertical line
-  builder.Line(CellKind::Synchro, {1, 7}, {6, 7});
+  builder.Line(CellKind::HealArea, {1, 7}, {6, 7});
 
   for (int r = 1; r <= 6; ++r) {
-    ASSERT_EQ(grid.GetCellKind({r, 7}), CellKind::Synchro);
+    ASSERT_EQ(grid.GetCellKind({r, 7}), CellKind::HealArea);
   }
 
   // Diagonal line - should throw
@@ -378,9 +370,9 @@ TEST(TestLevelBuilderLine) {
   }
 
   // Reversed vertical line (bottom-to-top)
-  builder.Line(CellKind::Synchro, {8, 2}, {4, 2});
+  builder.Line(CellKind::HealArea, {8, 2}, {4, 2});
   for (int r = 4; r <= 8; ++r) {
-    ASSERT_EQ(grid.GetCellKind({r, 2}), CellKind::Synchro);
+    ASSERT_EQ(grid.GetCellKind({r, 2}), CellKind::HealArea);
   }
 }
 
@@ -1336,10 +1328,12 @@ TEST(TestFindEmptyCellsThrowsWhenNotEnough) {
 
   pcg32 rng(123);
 
-  // Try to find more empty cells than available
+  // Try to find more empty cells than could possibly exist in the grid.
+  // (Goal cells are annotations now, so they don't take up physical slots,
+  //  but 10000 is always too many.)
   bool threw = false;
   try {
-    env.FindEmptyCells(1, rng);  // Should throw - all cells used
+    env.FindEmptyCells(10000, rng);
   } catch (const std::runtime_error&) {
     threw = true;
   }
@@ -1359,15 +1353,18 @@ TEST(TestSynchroEnvFullPopulation) {
   ASSERT_EQ(env.NumAgents(), num_companions);
   ASSERT_EQ(env.GetSynchroPositions().size(), static_cast<size_t>(num_synchro));
 
-  // All interior cells should be occupied (by either synchro or companion)
+  // All interior cells should be reserved (by either a companion or a
+  // SynchroGoal annotation).
+  const auto& annotations = env.GetAnnotations();
   int total_occupied = 0;
   for (int r = 1; r < rows - 1; ++r) {
     for (int c = 1; c < cols - 1; ++c) {
       Position pos{r, c};
-      CellKind kind = env.GetGrid().GetCellKind(pos);
-      bool is_synchro = (kind == CellKind::Synchro);
+      bool is_goal = annotations.HasTag(
+          AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+          SemanticTag::SynchroGoal);
       bool is_occupied = env.GetObjectManager().IsOccupied(pos);
-      if (is_synchro || is_occupied) {
+      if (is_goal || is_occupied) {
         total_occupied++;
       }
     }
@@ -1491,6 +1488,7 @@ TEST(TestObservationTensorPlane2Synchro) {
   auto synchro_positions = env.GetSynchroPositions();
 
   int synchro_count = 0;
+  const auto& annotations = env.GetAnnotations();
 
   // Check each cell
   for (int r = 0; r < rows; ++r) {
@@ -1499,9 +1497,11 @@ TEST(TestObservationTensorPlane2Synchro) {
       int plane2_idx = 2 * rows * cols + r * cols + c;
       float plane2_value = obs[plane2_idx];
 
-      CellKind kind = env.GetGrid().GetCellKind(pos);
+      bool is_goal = annotations.HasTag(
+          AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+          SemanticTag::SynchroGoal);
 
-      if (kind == CellKind::Synchro) {
+      if (is_goal) {
         ASSERT_EQ(plane2_value, 1.0f);
         synchro_count++;
       } else {
@@ -2196,23 +2196,27 @@ TEST(TestSeed1337InitialPositions) {
   const auto& synchro_pos = env.GetSynchroPositions();
   ASSERT_EQ(synchro_pos.size(), 3u);
 
-  // Verify all synchro positions are on walkable floor cells
+  // Verify all synchro positions are on Floor cells with a SynchroGoal
+  // annotation attached (physical + semantic separation).
   const Grid& grid = env.GetGrid();
+  const auto& annotations = env.GetAnnotations();
   for (const auto& pos : synchro_pos) {
     ASSERT_TRUE(grid.IsInBounds(pos));
-    ASSERT_EQ(grid.GetCell(pos).GetKind(), CellKind::Synchro);
+    ASSERT_EQ(grid.GetCell(pos).GetKind(), CellKind::Floor);
+    ASSERT_TRUE(annotations.HasTag(
+        AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+        SemanticTag::SynchroGoal));
   }
 
   // Verify correct number of agents
   auto agents = env.GetObjectManager().GetAllAgents();
   ASSERT_EQ(agents.size(), 3u);
 
-  // Verify all agents are on walkable cells (not walls)
+  // Verify all agents are on walkable (Floor) cells, not walls.
   for (const auto* agent : agents) {
     Position pos = agent->GetPosition();
     ASSERT_TRUE(grid.IsInBounds(pos));
-    CellKind kind = grid.GetCell(pos).GetKind();
-    ASSERT_TRUE(kind == CellKind::Floor || kind == CellKind::Synchro);
+    ASSERT_EQ(grid.GetCell(pos).GetKind(), CellKind::Floor);
   }
 
   // Verify no agents start on synchro cells

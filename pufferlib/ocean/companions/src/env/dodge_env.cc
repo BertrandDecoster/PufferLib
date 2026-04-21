@@ -293,7 +293,7 @@ void DodgeEnv::ObservationTensor(std::vector<float>& values, int player) const {
       if (kind == CellKind::Wall) {
         set_plane(1, r, c, 1.0f);
       }
-      if (kind == CellKind::Synchro) {
+      if (task_lens_ && task_lens_->IsGoalCell(*this, pos)) {
         set_plane(2, r, c, 1.0f);
       }
 

@@ -1,12 +1,15 @@
 // Copyright 2024
 // Test suite for Snapshot system
 
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "../src/core/annotations.h"
 #include "../src/core/snapshot.h"
 #include "../src/core/types.h"
 #include "../src/core/cell.h"
@@ -89,7 +92,7 @@ TEST(TestSnapshotCountCells) {
 
   ASSERT_EQ(snap.CountCells(CellKind::Floor), 9);
   ASSERT_EQ(snap.CountCells(CellKind::Wall), 0);
-  ASSERT_EQ(snap.CountCells(CellKind::Synchro), 0);
+  ASSERT_EQ(snap.CountCells(CellKind::HealArea), 0);
 
   // Add some walls
   snap.cells[0].kind = CellKind::Wall;
@@ -97,11 +100,12 @@ TEST(TestSnapshotCountCells) {
   ASSERT_EQ(snap.CountCells(CellKind::Floor), 7);
   ASSERT_EQ(snap.CountCells(CellKind::Wall), 2);
 
-  // Add synchro cells
-  snap.cells[4].kind = CellKind::Synchro;
-  snap.cells[5].kind = CellKind::Synchro;
-  snap.cells[6].kind = CellKind::Synchro;
-  ASSERT_EQ(snap.CountCells(CellKind::Synchro), 3);
+  // Add heal-area cells (task-semantic roles like Synchro live on the
+  // annotation layer now, not on CellKind).
+  snap.cells[4].kind = CellKind::HealArea;
+  snap.cells[5].kind = CellKind::HealArea;
+  snap.cells[6].kind = CellKind::HealArea;
+  ASSERT_EQ(snap.CountCells(CellKind::HealArea), 3);
   ASSERT_EQ(snap.CountCells(CellKind::Floor), 4);
 }
 
@@ -117,7 +121,13 @@ TEST(TestSnapshotHasSynchroCells) {
 
   ASSERT_FALSE(snap.HasSynchroCells());
 
-  snap.cells[4].kind = CellKind::Synchro;
+  // HasSynchroCells reads the annotation layer (semantic), not the physical
+  // CellKind. Adding a SynchroGoal annotation is the way to mark a goal cell.
+  AnnotationSnapshot a;
+  a.target_type = 0;
+  a.pos = Position{1, 1};
+  a.tag = SemanticTag::SynchroGoal;
+  snap.annotations.push_back(a);
   ASSERT_TRUE(snap.HasSynchroCells());
 }
 
@@ -133,7 +143,11 @@ TEST(TestSnapshotHasTargetCell) {
 
   ASSERT_FALSE(snap.HasTargetCell());
 
-  snap.cells[4].kind = CellKind::Target;
+  AnnotationSnapshot a;
+  a.target_type = 0;
+  a.pos = Position{1, 1};
+  a.tag = SemanticTag::AggroTarget;
+  snap.annotations.push_back(a);
   ASSERT_TRUE(snap.HasTargetCell());
 }
 
@@ -209,7 +223,7 @@ TEST(TestSnapshotSerializeDeserializeWithCells) {
       }
     }
   }
-  original.cells[5].kind = CellKind::Synchro;  // Position (1,1)
+  original.cells[5].kind = CellKind::HealArea;  // Position (1,1)
 
   std::vector<uint8_t> data = original.Serialize();
   Snapshot restored = Snapshot::Deserialize(data);
@@ -220,7 +234,7 @@ TEST(TestSnapshotSerializeDeserializeWithCells) {
 
   // Verify cell pattern
   ASSERT_EQ(restored.cells[0].kind, CellKind::Wall);
-  ASSERT_EQ(restored.cells[5].kind, CellKind::Synchro);
+  ASSERT_EQ(restored.cells[5].kind, CellKind::HealArea);
   ASSERT_EQ(restored.cells[6].kind, CellKind::Floor);  // Position (1,2)
   ASSERT_EQ(restored.cells[15].kind, CellKind::Wall);  // Position (3,3)
 }
@@ -495,8 +509,13 @@ TEST(TestSynchroEnvValidateSnapshotMissingSynchro) {
     snap.cells[i * 8].kind = CellKind::Wall;       // Left col
     snap.cells[i * 8 + 7].kind = CellKind::Wall;   // Right col
   }
-  // Only 1 synchro cell (need 3)
-  snap.cells[9].kind = CellKind::Synchro;
+  // SynchroEnv expects at least 3 SynchroGoal annotations. Provide only 1
+  // so ValidateSnapshot throws.
+  AnnotationSnapshot a;
+  a.target_type = 0;
+  a.pos = Position{1, 1};
+  a.tag = SemanticTag::SynchroGoal;
+  snap.annotations.push_back(a);
 
   // Add agents to make snapshot loadable
   AgentSnapshot agent1;
@@ -570,8 +589,12 @@ TEST(TestAggroEnvValidateSnapshotMissingPatrol) {
     snap.cells[i * 10].kind = CellKind::Wall;
     snap.cells[i * 10 + 9].kind = CellKind::Wall;
   }
-  // Has target but no patrol path
-  snap.cells[55].kind = CellKind::Target;
+  // Has target (via annotation) but no patrol path.
+  AnnotationSnapshot a;
+  a.target_type = 0;
+  a.pos = Position{5, 5};
+  a.tag = SemanticTag::AggroTarget;
+  snap.annotations.push_back(a);
 
   ASSERT_THROW(env.LoadSnapshot(snap), std::runtime_error);
 }
@@ -607,6 +630,158 @@ TEST(TestLoadSnapshotDimensionMismatch) {
   }
 
   ASSERT_THROW(env.LoadSnapshot(snap), std::runtime_error);
+}
+
+// =============================================================================
+// v1 → v2 Snapshot Migration
+// =============================================================================
+//
+// Old CellKind enum (v1):  Floor=0 Wall=1 Hazard=2 Synchro=3 HealArea=4 Target=5
+// New CellKind enum (v2):  Floor=0 Wall=1 Hazard=2 HealArea=3
+//
+// Loading a v1 snapshot must remap:
+//   - int 3 (old Synchro) → Floor cell + SynchroGoal annotation at that pos
+//   - int 4 (old HealArea) → HealArea cell (shifted down to new value 3)
+//   - int 5 (old Target)   → Floor cell + AggroTarget annotation at that pos
+// All migrated annotations are persistent (owner_lens_id == -1).
+
+namespace {
+
+template <typename T>
+void AppendBytes(std::vector<uint8_t>& buf, T value) {
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&value);
+  buf.insert(buf.end(), p, p + sizeof(T));
+}
+
+// Build a minimal v1 snapshot buffer (no agents, no effects, no patrol path)
+// with `rows*cols` cells taken from `kinds_v1` using the *old* CellKind
+// numbering. origin is written as 0 (Default) for every cell.
+std::vector<uint8_t> BuildV1Snapshot(int rows, int cols,
+                                     const std::vector<int>& kinds_v1) {
+  std::vector<uint8_t> buf;
+  AppendBytes<uint32_t>(buf, 0x534E4150);     // magic "SNAP"
+  AppendBytes<uint32_t>(buf, 1);              // version 1
+  AppendBytes<int>(buf, rows);
+  AppendBytes<int>(buf, cols);
+  AppendBytes<uint32_t>(buf, static_cast<uint32_t>(kinds_v1.size()));
+  for (int kind : kinds_v1) {
+    AppendBytes<int>(buf, kind);
+    AppendBytes<int>(buf, 0);                 // origin = Default
+  }
+  AppendBytes<uint32_t>(buf, 0);              // num_agents
+  AppendBytes<uint32_t>(buf, 0);              // num_effects
+  AppendBytes<int>(buf, 0);                   // tick
+  AppendBytes<int>(buf, 100);                 // horizon
+  AppendBytes<uint64_t>(buf, 0);              // rng_state
+  AppendBytes<uint64_t>(buf, 0);              // rng_inc
+  AppendBytes<int>(buf, 0);                   // d4_transform
+  AppendBytes<uint32_t>(buf, 0);              // patrol_path size
+  // v1: no annotations block.
+  return buf;
+}
+
+}  // namespace
+
+TEST(TestSnapshotV1MigrationRemapsCellKinds) {
+  // 3x3 grid exercising every remappable kind:
+  //   (0,0)=0 Floor    (0,1)=1 Wall    (0,2)=3 Synchro
+  //   (1,0)=4 HealArea (1,1)=2 Hazard  (1,2)=5 Target
+  //   (2,0)=5 Target   (2,1)=0 Floor   (2,2)=3 Synchro
+  std::vector<int> kinds_v1 = {0, 1, 3, 4, 2, 5, 5, 0, 3};
+  std::vector<uint8_t> buf = BuildV1Snapshot(3, 3, kinds_v1);
+
+  Snapshot snap = Snapshot::Deserialize(buf);
+
+  ASSERT_EQ(snap.rows, 3);
+  ASSERT_EQ(snap.cols, 3);
+  ASSERT_EQ(snap.cells.size(), 9u);
+  // Unchanged kinds.
+  ASSERT_EQ(snap.cells[0].kind, CellKind::Floor);
+  ASSERT_EQ(snap.cells[1].kind, CellKind::Wall);
+  ASSERT_EQ(snap.cells[4].kind, CellKind::Hazard);
+  ASSERT_EQ(snap.cells[7].kind, CellKind::Floor);
+  // Old Synchro → Floor (annotation emitted separately).
+  ASSERT_EQ(snap.cells[2].kind, CellKind::Floor);
+  ASSERT_EQ(snap.cells[8].kind, CellKind::Floor);
+  // Old HealArea (int 4) → new HealArea (int 3).
+  ASSERT_EQ(snap.cells[3].kind, CellKind::HealArea);
+  // Old Target → Floor.
+  ASSERT_EQ(snap.cells[5].kind, CellKind::Floor);
+  ASSERT_EQ(snap.cells[6].kind, CellKind::Floor);
+}
+
+TEST(TestSnapshotV1MigrationEmitsPersistentAnnotations) {
+  // Same layout as above; verify emitted annotations.
+  std::vector<int> kinds_v1 = {0, 1, 3, 4, 2, 5, 5, 0, 3};
+  std::vector<uint8_t> buf = BuildV1Snapshot(3, 3, kinds_v1);
+
+  Snapshot snap = Snapshot::Deserialize(buf);
+
+  ASSERT_EQ(snap.annotations.size(), 4u);  // 2 Synchro + 2 Target
+
+  int synchro_count = 0, aggro_count = 0;
+  bool saw_synchro_0_2 = false, saw_synchro_2_2 = false;
+  bool saw_target_1_2 = false, saw_target_2_0 = false;
+  for (const AnnotationSnapshot& a : snap.annotations) {
+    ASSERT_EQ(a.target_type, (uint8_t)0);       // Cell
+    ASSERT_EQ(a.owner_lens_id, -1);             // Persistent
+    ASSERT_EQ(a.agent_id, kInvalidObjectId);
+    if (a.tag == SemanticTag::SynchroGoal) {
+      synchro_count++;
+      if (a.pos == Position{0, 2}) saw_synchro_0_2 = true;
+      if (a.pos == Position{2, 2}) saw_synchro_2_2 = true;
+    } else if (a.tag == SemanticTag::AggroTarget) {
+      aggro_count++;
+      if (a.pos == Position{1, 2}) saw_target_1_2 = true;
+      if (a.pos == Position{2, 0}) saw_target_2_0 = true;
+    }
+  }
+  ASSERT_EQ(synchro_count, 2);
+  ASSERT_EQ(aggro_count, 2);
+  ASSERT_TRUE(saw_synchro_0_2);
+  ASSERT_TRUE(saw_synchro_2_2);
+  ASSERT_TRUE(saw_target_1_2);
+  ASSERT_TRUE(saw_target_2_0);
+}
+
+TEST(TestSnapshotV1MigrationRoundTripsAsV2) {
+  // A migrated v1 snapshot should re-serialize as v2 (with the annotation
+  // block) and round-trip byte-for-byte identically from that point on.
+  std::vector<int> kinds_v1 = {0, 3, 5, 2};  // 2x2 grid, minimal case
+  std::vector<uint8_t> buf_v1 = BuildV1Snapshot(2, 2, kinds_v1);
+  Snapshot migrated = Snapshot::Deserialize(buf_v1);
+
+  std::vector<uint8_t> buf_v2 = migrated.Serialize();
+  // Serialize always writes version 2 now.
+  uint32_t magic = 0, version = 0;
+  std::memcpy(&magic, buf_v2.data(), sizeof(magic));
+  std::memcpy(&version, buf_v2.data() + sizeof(magic), sizeof(version));
+  ASSERT_EQ(magic, (uint32_t)0x534E4150);
+  ASSERT_EQ(version, (uint32_t)2);
+
+  Snapshot round = Snapshot::Deserialize(buf_v2);
+  ASSERT_EQ(round.cells.size(), migrated.cells.size());
+  ASSERT_EQ(round.annotations.size(), migrated.annotations.size());
+  for (std::size_t i = 0; i < round.cells.size(); ++i) {
+    ASSERT_EQ(round.cells[i].kind, migrated.cells[i].kind);
+  }
+  // One SynchroGoal (from old 3 at index 1 → pos (0,1)) and one AggroTarget
+  // (from old 5 at index 2 → pos (1,0)).
+  ASSERT_EQ(round.annotations.size(), 2u);
+  bool synchro_ok = false, aggro_ok = false;
+  for (const AnnotationSnapshot& a : round.annotations) {
+    if (a.tag == SemanticTag::SynchroGoal && a.pos == Position{0, 1}) synchro_ok = true;
+    if (a.tag == SemanticTag::AggroTarget && a.pos == Position{1, 0}) aggro_ok = true;
+  }
+  ASSERT_TRUE(synchro_ok);
+  ASSERT_TRUE(aggro_ok);
+}
+
+TEST(TestSnapshotV1MigrationRejectsUnknownCellKind) {
+  // An int outside 0..5 was never a legal v1 CellKind; migration should throw.
+  std::vector<int> kinds_v1 = {0, 99, 0, 0};
+  std::vector<uint8_t> buf = BuildV1Snapshot(2, 2, kinds_v1);
+  ASSERT_THROW(Snapshot::Deserialize(buf), std::runtime_error);
 }
 
 // =============================================================================

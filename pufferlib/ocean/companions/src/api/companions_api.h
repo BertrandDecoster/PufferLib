@@ -121,9 +121,7 @@ typedef enum {
   Companions_CellKind_Floor = 0,
   Companions_CellKind_Wall = 1,
   Companions_CellKind_Hazard = 2,
-  Companions_CellKind_Synchro = 3,
-  Companions_CellKind_HealArea = 4,
-  Companions_CellKind_Target = 5,
+  Companions_CellKind_HealArea = 3,
 } Companions_CellKind;
 
 typedef enum {
@@ -438,6 +436,46 @@ companions_get_agent_count(const Companions_Env* env);
 COMPANIONS_API int32_t companions_get_tick(const Companions_Env* env);
 COMPANIONS_API bool companions_is_done(const Companions_Env* env);
 COMPANIONS_API bool companions_is_success(const Companions_Env* env);
+
+// =============================================================================
+// Semantic Annotations (task-specific tags on cells and agents)
+// =============================================================================
+//
+// The physical CellKind enum is now restricted to terrain (Floor / Wall /
+// Hazard / HealArea). Task-specific roles such as "synchro goal" and
+// "aggro target" live in the annotation layer and flow through the DLL via
+// the accessors below. See SemanticTag in annotations.h for the complete
+// list of tag integer values (kept in sync with htn_bridge.py's
+// SEMANTIC_TAG_NAMES).
+
+#define COMPANIONS_MAX_ANNOTATION_PARAMS 160  // bytes, including null terminator
+
+typedef struct {
+  int32_t target_kind;          // 0 = Cell, 1 = Agent
+  Companions_Position pos;      // Used when target_kind == 0
+  Companions_ObjectId agent_id; // Used when target_kind == 1
+  int32_t tag;                  // SemanticTag value (see annotations.h)
+  int32_t owner_lens_id;        // -1 = persistent (external); otherwise lens id
+  char params_json[COMPANIONS_MAX_ANNOTATION_PARAMS];  // Compact JSON "{\"k\":\"v\",...}"
+} Companions_Annotation;
+
+// Number of annotations attached to the env's state.
+COMPANIONS_API int32_t companions_get_annotation_count(const Companions_Env* env);
+
+// Fill `out` with up to `count` annotations. Caller should allocate at least
+// `companions_get_annotation_count()` entries. Returns the number written.
+COMPANIONS_API int32_t companions_get_annotations(
+    const Companions_Env* env,
+    Companions_Annotation* out,
+    int32_t count);
+
+// Test whether a given cell carries `tag` (a SemanticTag int value).
+COMPANIONS_API bool companions_has_tag_at(
+    const Companions_Env* env, int32_t row, int32_t col, int32_t tag);
+
+// Test whether a given agent carries `tag`.
+COMPANIONS_API bool companions_agent_has_tag(
+    const Companions_Env* env, Companions_ObjectId agent_id, int32_t tag);
 
 // =============================================================================
 // Rendering

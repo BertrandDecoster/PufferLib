@@ -13,11 +13,17 @@ namespace companions {
 // =============================================================================
 
 bool Snapshot::HasSynchroCells() const {
-  return CountCells(CellKind::Synchro) > 0;
+  for (const AnnotationSnapshot& a : annotations) {
+    if (a.tag == SemanticTag::SynchroGoal && a.target_type == 0) return true;
+  }
+  return false;
 }
 
 bool Snapshot::HasTargetCell() const {
-  return CountCells(CellKind::Target) > 0;
+  for (const AnnotationSnapshot& a : annotations) {
+    if (a.tag == SemanticTag::AggroTarget && a.target_type == 0) return true;
+  }
+  return false;
 }
 
 bool Snapshot::HasPatrolPath() const {
@@ -291,9 +297,53 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     throw std::runtime_error("Snapshot buffer corrupt: unreasonable cell count");
   }
   snap.cells.resize(num_cells);
+
+  // v1 → v2 CellKind migration. Old enum reserved values 3 (Synchro) and 5
+  // (Target) for task-semantic roles that now live in AnnotationStore, and
+  // HealArea was at int 4 instead of 3. Remap and emit persistent annotations
+  // at the former-semantic positions so downstream code still sees the task
+  // roles.  v2 snapshots fall through to a plain static_cast.
+  std::vector<AnnotationSnapshot> v1_migrated_annotations;
   for (uint32_t i = 0; i < num_cells; ++i) {
-    snap.cells[i].kind = static_cast<CellKind>(ReadValue<int>(ptr, end));
-    snap.cells[i].origin = static_cast<CellOrigin>(ReadValue<int>(ptr, end));
+    int kind_int = ReadValue<int>(ptr, end);
+    int origin_int = ReadValue<int>(ptr, end);
+    if (version == 1) {
+      const int row = snap.cols > 0 ? static_cast<int>(i) / snap.cols : 0;
+      const int col = snap.cols > 0 ? static_cast<int>(i) % snap.cols : 0;
+      switch (kind_int) {
+        case 0: snap.cells[i].kind = CellKind::Floor; break;
+        case 1: snap.cells[i].kind = CellKind::Wall; break;
+        case 2: snap.cells[i].kind = CellKind::Hazard; break;
+        case 3: {  // Old Synchro → Floor + SynchroGoal annotation
+          snap.cells[i].kind = CellKind::Floor;
+          AnnotationSnapshot a;
+          a.target_type = 0;
+          a.pos = Position{row, col};
+          a.agent_id = kInvalidObjectId;
+          a.tag = SemanticTag::SynchroGoal;
+          a.owner_lens_id = -1;
+          v1_migrated_annotations.push_back(std::move(a));
+          break;
+        }
+        case 4: snap.cells[i].kind = CellKind::HealArea; break;  // Old 4 → new 3
+        case 5: {  // Old Target → Floor + AggroTarget annotation
+          snap.cells[i].kind = CellKind::Floor;
+          AnnotationSnapshot a;
+          a.target_type = 0;
+          a.pos = Position{row, col};
+          a.agent_id = kInvalidObjectId;
+          a.tag = SemanticTag::AggroTarget;
+          a.owner_lens_id = -1;
+          v1_migrated_annotations.push_back(std::move(a));
+          break;
+        }
+        default:
+          throw std::runtime_error("Snapshot v1: unknown CellKind value");
+      }
+    } else {
+      snap.cells[i].kind = static_cast<CellKind>(kind_int);
+    }
+    snap.cells[i].origin = static_cast<CellOrigin>(origin_int);
   }
 
   // Agents
@@ -383,7 +433,8 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
   // Patrol path (for AggroEnv without FSM agents)
   snap.patrol_path = ReadPositionVector(ptr, end);
 
-  // Annotations (v2+). v1 snapshots have no annotations block, leave empty.
+  // Annotations (v2+). v1 snapshots have no annotations block; the migrated
+  // annotations from the v1 cell remap are adopted below.
   if (version >= 2) {
     uint32_t num_annotations = ReadValue<uint32_t>(ptr, end);
     if (num_annotations > 1000000) {
@@ -408,6 +459,8 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
         a.params.emplace_back(std::move(k), std::move(v));
       }
     }
+  } else {
+    snap.annotations = std::move(v1_migrated_annotations);
   }
 
   return snap;

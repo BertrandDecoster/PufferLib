@@ -105,14 +105,12 @@ void SynchroEnv::Reset() {
   // Generate snapshot using LevelGenerator
   Snapshot snapshot = LevelGenerator::Generate(config);
 
-  // Extract synchro positions from snapshot BEFORE loading (pre-transform order)
+  // Extract synchro positions from snapshot BEFORE loading (pre-transform order).
+  // Synchro goals live in the annotation layer now (Floor cell + SynchroGoal tag).
   synchro_positions_.clear();
-  int snap_cols = snapshot.cols;
-  for (size_t i = 0; i < snapshot.cells.size(); ++i) {
-    if (snapshot.cells[i].kind == CellKind::Synchro) {
-      int r = static_cast<int>(i) / snap_cols;
-      int c = static_cast<int>(i) % snap_cols;
-      synchro_positions_.push_back({r, c});
+  for (const AnnotationSnapshot& a : snapshot.annotations) {
+    if (a.tag == SemanticTag::SynchroGoal && a.target_type == 0) {
+      synchro_positions_.push_back(a.pos);
     }
   }
 
@@ -171,13 +169,16 @@ void SynchroEnv::SetupGrid() {
 }
 
 void SynchroEnv::PlaceSynchroCells() {
-  // Find random empty cells for synchro positions
+  // Find random empty cells for synchro positions. Goals live in the
+  // annotation layer; the grid stays physical Floor.
   std::vector<Position> positions = FindEmptyCells(num_synchro_, rng_);
 
-  // Set them as Synchro cells
+  AnnotationStore& annotations = GetMutableAnnotations();
   for (const Position& pos : positions) {
-    grid_->SetCell(pos, CellKind::Synchro);
     synchro_positions_.push_back(pos);
+    annotations.Add(
+        AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+        Annotation{SemanticTag::SynchroGoal, {}, -1});
   }
 }
 
@@ -213,10 +214,13 @@ bool SynchroEnv::IsSuccess() const {
 
 int SynchroEnv::NumAgentsOnSynchroCells() const {
   int count = 0;
+  const AnnotationStore& annotations = GetAnnotations();
   for (const Agent* agent : object_manager_->GetAllAgents()) {
     if (!agent->IsAlive()) continue;
     Position pos = agent->GetPosition();
-    if (grid_->GetCellKind(pos) == CellKind::Synchro) {
+    if (annotations.HasTag(
+            AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+            SemanticTag::SynchroGoal)) {
       count++;
     }
   }
@@ -259,8 +263,13 @@ double SynchroEnv::MaxUtility() const {
 }
 
 void SynchroEnv::ValidateSnapshot(const Snapshot& snapshot) const {
-  // SynchroEnv requires synchro cells to function
-  int synchro_count = snapshot.CountCells(CellKind::Synchro);
+  // SynchroEnv requires SynchroGoal annotations (cell-level tags) to function.
+  int synchro_count = 0;
+  for (const AnnotationSnapshot& a : snapshot.annotations) {
+    if (a.tag == SemanticTag::SynchroGoal && a.target_type == 0) {
+      ++synchro_count;
+    }
+  }
   if (synchro_count < num_synchro_) {
     throw std::runtime_error(
         "SynchroEnv requires at least " + std::to_string(num_synchro_) +

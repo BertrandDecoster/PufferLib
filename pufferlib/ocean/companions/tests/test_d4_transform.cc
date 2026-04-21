@@ -228,20 +228,20 @@ TEST(TestD4TransformPosition_Rectangular) {
 TEST(TestD4TransformGrid_Identity) {
   Grid grid(5, 5);
   grid.SetCell({1, 2}, CellKind::Wall);
-  grid.SetCell({3, 4}, CellKind::Synchro);
+  grid.SetCell({3, 4}, CellKind::HealArea);
 
   auto result = TransformGrid(grid, D4Transform::Identity);
 
   ASSERT_EQ(result->GetRows(), 5);
   ASSERT_EQ(result->GetCols(), 5);
   ASSERT_TRUE(result->GetCellKind({1, 2}) == CellKind::Wall);
-  ASSERT_TRUE(result->GetCellKind({3, 4}) == CellKind::Synchro);
+  ASSERT_TRUE(result->GetCellKind({3, 4}) == CellKind::HealArea);
 }
 
 TEST(TestD4TransformGrid_Rot90) {
   Grid grid(5, 5);
   grid.SetCell({0, 0}, CellKind::Wall);
-  grid.SetCell({1, 2}, CellKind::Synchro);
+  grid.SetCell({1, 2}, CellKind::HealArea);
 
   auto result = TransformGrid(grid, D4Transform::Rot90);
 
@@ -249,7 +249,7 @@ TEST(TestD4TransformGrid_Rot90) {
   // (0, 0) -> (4, 0)
   ASSERT_TRUE(result->GetCellKind({4, 0}) == CellKind::Wall);
   // (1, 2) -> (5-1-2, 1) = (2, 1)
-  ASSERT_TRUE(result->GetCellKind({2, 1}) == CellKind::Synchro);
+  ASSERT_TRUE(result->GetCellKind({2, 1}) == CellKind::HealArea);
 }
 
 TEST(TestD4TransformGrid_Rectangular) {
@@ -540,8 +540,8 @@ TEST(TestD4GridTransformCycle) {
   // Rotating a grid 4 times should restore original
   Grid grid(5, 5);
   grid.SetCell({0, 0}, CellKind::Wall);
-  grid.SetCell({1, 3}, CellKind::Synchro);
-  grid.SetCell({4, 2}, CellKind::Target);
+  grid.SetCell({1, 3}, CellKind::HealArea);
+  grid.SetCell({4, 2}, CellKind::Hazard);
 
   std::unique_ptr<Grid> current = std::make_unique<Grid>(grid);
   for (int i = 0; i < 4; ++i) {
@@ -554,8 +554,8 @@ TEST(TestD4GridTransformCycle) {
 
   // Check cells restored
   ASSERT_TRUE(current->GetCellKind({0, 0}) == CellKind::Wall);
-  ASSERT_TRUE(current->GetCellKind({1, 3}) == CellKind::Synchro);
-  ASSERT_TRUE(current->GetCellKind({4, 2}) == CellKind::Target);
+  ASSERT_TRUE(current->GetCellKind({1, 3}) == CellKind::HealArea);
+  ASSERT_TRUE(current->GetCellKind({4, 2}) == CellKind::Hazard);
 }
 
 TEST(TestD4AllTransformsPreserveGridContent) {
@@ -563,8 +563,8 @@ TEST(TestD4AllTransformsPreserveGridContent) {
   Grid grid(6, 6);
   grid.SetCell({0, 0}, CellKind::Wall);
   grid.SetCell({0, 1}, CellKind::Wall);
-  grid.SetCell({2, 3}, CellKind::Synchro);
-  grid.SetCell({4, 5}, CellKind::Target);
+  grid.SetCell({2, 3}, CellKind::HealArea);
+  grid.SetCell({4, 5}, CellKind::Hazard);
 
   for (int t = 0; t < 8; ++t) {
     auto transformed = TransformGrid(grid, ToD4Transform(t));
@@ -577,8 +577,8 @@ TEST(TestD4AllTransformsPreserveGridContent) {
       for (int c = 0; c < cols; ++c) {
         CellKind kind = transformed->GetCellKind({r, c});
         if (kind == CellKind::Wall) walls++;
-        else if (kind == CellKind::Synchro) synchros++;
-        else if (kind == CellKind::Target) targets++;
+        else if (kind == CellKind::HealArea) synchros++;
+        else if (kind == CellKind::Hazard) targets++;
       }
     }
 

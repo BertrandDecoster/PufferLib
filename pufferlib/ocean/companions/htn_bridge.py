@@ -58,6 +58,93 @@ class FSMStateType(IntEnum):
     ReturnToPatrol = 3
 
 
+class SemanticTag(IntEnum):
+    """Maps to companions::SemanticTag. Keep in sync with annotations.h."""
+    SynchroGoal = 0
+    AggroTarget = 1
+    QuestPickup = 2
+    SafeZone = 3
+    TargetMob = 4
+    SkillGiver = 5
+    Escort = 6
+    HtnName = 7
+    Room = 8
+
+
+# String <-> SemanticTag, mirrored in C++ SemanticTagToString() (annotations.cc).
+SEMANTIC_TAG_NAMES: Dict[SemanticTag, str] = {
+    SemanticTag.SynchroGoal: "SynchroGoal",
+    SemanticTag.AggroTarget: "AggroTarget",
+    SemanticTag.QuestPickup: "QuestPickup",
+    SemanticTag.SafeZone:    "SafeZone",
+    SemanticTag.TargetMob:   "TargetMob",
+    SemanticTag.SkillGiver:  "SkillGiver",
+    SemanticTag.Escort:      "Escort",
+    SemanticTag.HtnName:     "HtnName",
+    SemanticTag.Room:        "Room",
+}
+SEMANTIC_TAG_FROM_NAME = {v: k for k, v in SEMANTIC_TAG_NAMES.items()}
+
+
+# =============================================================================
+# Annotation helpers (read semantic tags attached to cells and agents)
+# =============================================================================
+
+def _iter_annotations(snapshot: Dict[str, Any]):
+    """Yield each annotation dict in the snapshot (empty list if absent)."""
+    for ann in snapshot.get("annotations", []) or []:
+        yield ann
+
+
+def cells_with_tag(snapshot: Dict[str, Any], tag: SemanticTag) -> List[Tuple[int, int]]:
+    """Return (row, col) positions tagged with `tag` in the snapshot."""
+    tag_name = SEMANTIC_TAG_NAMES[tag]
+    out: List[Tuple[int, int]] = []
+    for ann in _iter_annotations(snapshot):
+        if ann.get("target") != "Cell" or ann.get("tag") != tag_name:
+            continue
+        pos = ann.get("pos", {})
+        r, c = pos.get("row", -1), pos.get("col", -1)
+        if r >= 0 and c >= 0:
+            out.append((r, c))
+    return out
+
+
+def agents_with_tag(
+    snapshot: Dict[str, Any], tag: SemanticTag
+) -> List[Tuple[int, Dict[str, str]]]:
+    """Return (agent_id, params_dict) for each agent annotated with `tag`."""
+    tag_name = SEMANTIC_TAG_NAMES[tag]
+    out: List[Tuple[int, Dict[str, str]]] = []
+    for ann in _iter_annotations(snapshot):
+        if ann.get("target") != "Agent" or ann.get("tag") != tag_name:
+            continue
+        out.append((ann.get("agent_id", -1), ann.get("params", {}) or {}))
+    return out
+
+
+def agent_htn_name(snapshot: Dict[str, Any], agent_id: int) -> Optional[str]:
+    """Read the HtnName annotation for an agent (None if absent)."""
+    for aid, params in agents_with_tag(snapshot, SemanticTag.HtnName):
+        if aid == agent_id:
+            name = params.get("name")
+            if name:
+                return name
+    return None
+
+
+def cell_room_name(snapshot: Dict[str, Any], row: int, col: int) -> Optional[str]:
+    """Read the Room annotation for a cell position (None if absent)."""
+    tag_name = SEMANTIC_TAG_NAMES[SemanticTag.Room]
+    for ann in _iter_annotations(snapshot):
+        if ann.get("target") != "Cell" or ann.get("tag") != tag_name:
+            continue
+        pos = ann.get("pos", {})
+        if pos.get("row") == row and pos.get("col") == col:
+            return (ann.get("params", {}) or {}).get("room")
+    return None
+
+
 # =============================================================================
 # Room Definition - HTN operates at room level, game at cell level
 # =============================================================================
@@ -244,11 +331,13 @@ class SnapshotToFacts:
             if not alive:
                 continue
 
-            # Determine entity name (hardcoded mapping for now)
-            entity_name = self._agent_id_to_name(agent_id, agent_type)
+            # Determine entity name: annotation first, then legacy mapping.
+            entity_name = self._agent_id_to_name(agent_id, agent_type, snapshot)
 
-            # at(?entity, ?room) - requires room lookup
-            room = self.layout.get_room_at(row, col)
+            # at(?entity, ?room) - annotation takes precedence over layout map.
+            room = cell_room_name(snapshot, row, col)
+            if room is None:
+                room = self.layout.get_room_at(row, col)
             if room:
                 facts.append(format_fact("at", [entity_name, room]))
 
@@ -268,8 +357,18 @@ class SnapshotToFacts:
                 fsm = agent.get("fsm", {})
                 target_id = fsm.get("target_id", -1)
                 if target_id >= 0:
-                    target_name = self._agent_id_to_name(target_id, 0)  # Type unknown
+                    target_name = self._agent_id_to_name(target_id, 0, snapshot)
                     facts.append(format_fact("hasAggro", [entity_name, target_name]))
+
+        # Emit skill-giver / quest facts derived from agent annotations.
+        for aid, params in agents_with_tag(snapshot, SemanticTag.SkillGiver):
+            giver_name = self._agent_id_to_name(aid, 0, snapshot)
+            skill = params.get("skill")
+            if skill:
+                facts.append(format_fact("givesSkill", [giver_name, skill]))
+        for aid, _ in agents_with_tag(snapshot, SemanticTag.TargetMob):
+            mob_name = self._agent_id_to_name(aid, 0, snapshot)
+            facts.append(format_fact("isTargetMob", [mob_name]))
 
         return facts
 
@@ -297,15 +396,21 @@ class SnapshotToFacts:
 
         return facts
 
-    def _agent_id_to_name(self, agent_id: int, agent_type: int) -> str:
+    def _agent_id_to_name(self, agent_id: int, agent_type: int,
+                           snapshot: Optional[Dict[str, Any]] = None) -> str:
         """
         Map agent ID to HTN entity name.
 
-        This is hardcoded for now. In production, this mapping would come
-        from level metadata or agent config.
+        Prefers the HtnName annotation on the agent (params["name"]) when the
+        snapshot carries one. Falls back to the legacy hardcoded mapping.
         """
-        # Default mapping based on ID
-        # ID 0 is typically player, higher IDs are enemies
+        if snapshot is not None:
+            name = agent_htn_name(snapshot, agent_id)
+            if name:
+                return name
+
+        # Fallback: legacy hardcoded mapping for old snapshots that lack
+        # HtnName annotations. New levels should emit HtnName on spawn.
         if agent_id == 0:
             return "player"
         elif agent_id == 1:
@@ -354,6 +459,7 @@ class FactsToSnapshot:
             "effects": [],
             "tick": 0,
             "horizon": 100,
+            "annotations": [],
         }
 
         # Initialize cells grid
@@ -416,6 +522,30 @@ class FactsToSnapshot:
 
         # Convert agents dict to list
         snapshot["agents"] = list(agents_data.values())
+
+        # Emit HtnName annotations so a subsequent SnapshotToFacts can recover
+        # entity names without the hardcoded fallback.
+        for entity_name, agent in agents_data.items():
+            snapshot["annotations"].append({
+                "target": "Agent",
+                "agent_id": agent["id"],
+                "tag": SEMANTIC_TAG_NAMES[SemanticTag.HtnName],
+                "owner_lens_id": -1,
+                "params": {"name": entity_name},
+            })
+
+        # Emit Room annotations for every cell in every defined room, so the
+        # HTN room membership is captured in the snapshot rather than only the
+        # Python-side LevelLayout.
+        for room_name, room_def in self.layout.rooms.items():
+            for (r, c) in room_def.cells:
+                snapshot["annotations"].append({
+                    "target": "Cell",
+                    "pos": {"row": r, "col": c},
+                    "tag": SEMANTIC_TAG_NAMES[SemanticTag.Room],
+                    "owner_lens_id": -1,
+                    "params": {"room": room_name},
+                })
 
         return snapshot
 
@@ -644,5 +774,34 @@ if __name__ == "__main__":
     print(f"\nRecovered {len(recovered_facts)} facts from snapshot")
     for fact in recovered_facts[:10]:
         print(f"  {fact}")
+
+    # Test annotation-driven path: synthetic snapshot w/ HtnName + Room tags
+    # replaces the hardcoded id→name / layout-room lookup.
+    anno_snapshot = {
+        "rows": 3, "cols": 3,
+        "cells": [{"kind": 0, "origin": 0} for _ in range(9)],
+        "agents": [{
+            "id": 42, "type": 4, "position": {"row": 1, "col": 1},
+            "faction": int(Faction.Enemy), "alive": True, "statuses": [],
+        }],
+        "effects": [], "tick": 0, "horizon": 100,
+        "annotations": [
+            {"target": "Agent", "agent_id": 42,
+             "tag": "HtnName", "params": {"name": "dragon_boss"}},
+            {"target": "Cell", "pos": {"row": 1, "col": 1},
+             "tag": "Room", "params": {"room": "throne"}},
+            {"target": "Agent", "agent_id": 42,
+             "tag": "SkillGiver", "params": {"skill": "fire"}},
+        ],
+    }
+    dummy_layout = LevelLayout(rows=3, cols=3, rooms={})
+    anno_facts = SnapshotToFacts(dummy_layout).convert(anno_snapshot)
+    print("\nAnnotation-driven facts (no hardcoded id/room map):")
+    for fact in anno_facts:
+        print(f"  {fact}")
+    assert "at(dragon_boss, throne)" in anno_facts, "expected annotation-driven at()"
+    assert "isEnemy(dragon_boss)" in anno_facts, "expected annotation-driven isEnemy()"
+    assert "givesSkill(dragon_boss, fire)" in anno_facts, \
+        "expected SkillGiver annotation to emit givesSkill() fact"
 
     print("\nBridge module loaded successfully!")

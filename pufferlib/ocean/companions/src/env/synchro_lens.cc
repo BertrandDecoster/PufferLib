@@ -42,13 +42,10 @@ float SynchroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   return reward;
 }
 
-CellKind SynchroLens::MaskCell(CellKind kind) const {
-  // Hide Target cells (used by AggroEnv) - show as Floor
-  if (kind == CellKind::Target) {
-    return CellKind::Floor;
-  }
-  // Keep Synchro cells visible - they are the goals for this task
-  return kind;
+bool SynchroLens::IsGoalCell(const BaseEnv& env, Position pos) const {
+  return env.GetAnnotations().HasTag(
+      AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+      SemanticTag::SynchroGoal);
 }
 
 int SynchroLens::CountAgentsOnSynchroCells(const BaseEnv& env) const {
@@ -73,37 +70,23 @@ int SynchroLens::CountSynchroCells(const BaseEnv& env) const {
 }
 
 void SynchroLens::Activate(BaseEnv& env, const LensParams& params) {
-  Grid& grid = env.GetMutableGrid();
+  const Grid& grid = env.GetGrid();
   AnnotationStore& annotations = env.GetMutableAnnotations();
-  // Drop any stale SynchroGoal tags from a prior lens instance before adding
-  // our own, so a back-to-back Activate does not double-count goals.
+  // Drop any stale SynchroGoal tags from a prior instance of this lens before
+  // adding our own, so a back-to-back Activate does not double-count goals.
   annotations.RemoveByOwner(kOwnerId);
-  stamped_positions_.clear();
-  stamped_positions_.reserve(params.positions.size());
   for (const Position& pos : params.positions) {
     if (pos.row < 0 || pos.row >= grid.GetRows() ||
         pos.col < 0 || pos.col >= grid.GetCols()) {
       continue;
     }
-    Cell& cell = grid.GetMutableCell(pos);
-    cell.StampOverlay(CellKind::Synchro, /*is_stamp_overlay=*/true);
-    stamped_positions_.push_back(pos);
-
-    AnnotationKey key{AnnotationTarget::Cell, pos, kInvalidObjectId};
-    annotations.Add(key, Annotation{SemanticTag::SynchroGoal, {}, kOwnerId});
+    annotations.Add(
+        AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+        Annotation{SemanticTag::SynchroGoal, {}, kOwnerId});
   }
 }
 
 void SynchroLens::Deactivate(BaseEnv& env) {
-  Grid& grid = env.GetMutableGrid();
-  for (const Position& pos : stamped_positions_) {
-    if (pos.row < 0 || pos.row >= grid.GetRows() ||
-        pos.col < 0 || pos.col >= grid.GetCols()) {
-      continue;
-    }
-    grid.GetMutableCell(pos).RemoveOverlay();
-  }
-  stamped_positions_.clear();
   env.GetMutableAnnotations().RemoveByOwner(kOwnerId);
 }
 

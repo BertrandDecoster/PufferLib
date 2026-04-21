@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "../core/annotations.h"
 #include "../core/cell.h"
 #include "../core/fsm/fsm_state.h"
 #include "../core/fsm/fsm_states.h"
@@ -130,12 +131,8 @@ static Companions_CellKind ToAPICellKind(companions::CellKind kind) {
       return Companions_CellKind_Wall;
     case companions::CellKind::Hazard:
       return Companions_CellKind_Hazard;
-    case companions::CellKind::Synchro:
-      return Companions_CellKind_Synchro;
     case companions::CellKind::HealArea:
       return Companions_CellKind_HealArea;
-    case companions::CellKind::Target:
-      return Companions_CellKind_Target;
   }
   return Companions_CellKind_Floor;
 }
@@ -791,6 +788,99 @@ COMPANIONS_API int32_t companions_render_ascii(
   out_buffer[ascii.size()] = '\0';
 
   return required_size;
+}
+
+// =============================================================================
+// Semantic Annotations (task-role tags on cells / agents)
+// =============================================================================
+
+namespace {
+
+// Render an annotation's params map as compact JSON into `out`. Writes a
+// "{...}" string fitting in `out_size` bytes. If any key/value can't fit,
+// output is truncated and null-terminated.
+void ParamsToCompactJson(const std::unordered_map<std::string, std::string>& params,
+                         char* out, std::size_t out_size) {
+  if (out_size == 0) return;
+  std::string buf;
+  buf.reserve(out_size);
+  buf.push_back('{');
+  bool first = true;
+  for (const auto& kv : params) {
+    if (!first) buf.push_back(',');
+    first = false;
+    buf.push_back('"');
+    buf.append(kv.first);
+    buf.append("\":\"");
+    buf.append(kv.second);
+    buf.push_back('"');
+    if (buf.size() + 1 >= out_size) break;  // leave room for closing brace
+  }
+  buf.push_back('}');
+  std::size_t copy_len = std::min(buf.size(), out_size - 1);
+  std::memcpy(out, buf.data(), copy_len);
+  out[copy_len] = '\0';
+}
+
+}  // namespace
+
+COMPANIONS_API int32_t
+companions_get_annotation_count(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  return static_cast<int32_t>(env->env->GetAnnotations().Size());
+}
+
+COMPANIONS_API int32_t companions_get_annotations(
+    const Companions_Env* env, Companions_Annotation* out, int32_t count) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid environment or output buffer");
+    return 0;
+  }
+  const auto& store = env->env->GetAnnotations();
+  auto serialized = store.Serialize();
+  int32_t n = std::min(count, static_cast<int32_t>(serialized.size()));
+  for (int32_t i = 0; i < n; ++i) {
+    const auto& a = serialized[i];
+    out[i].target_kind = a.target_type;
+    out[i].pos.row = a.pos.row;
+    out[i].pos.col = a.pos.col;
+    out[i].agent_id = a.agent_id;
+    out[i].tag = static_cast<int32_t>(a.tag);
+    out[i].owner_lens_id = a.owner_lens_id;
+    std::unordered_map<std::string, std::string> params_map;
+    for (const auto& kv : a.params) params_map.emplace(kv.first, kv.second);
+    ParamsToCompactJson(params_map, out[i].params_json,
+                        COMPANIONS_MAX_ANNOTATION_PARAMS);
+  }
+  return n;
+}
+
+COMPANIONS_API bool companions_has_tag_at(
+    const Companions_Env* env, int32_t row, int32_t col, int32_t tag) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return false;
+  }
+  return env->env->GetAnnotations().HasTag(
+      companions::AnnotationKey{companions::AnnotationTarget::Cell,
+                                companions::Position{row, col},
+                                companions::kInvalidObjectId},
+      static_cast<companions::SemanticTag>(tag));
+}
+
+COMPANIONS_API bool companions_agent_has_tag(
+    const Companions_Env* env, Companions_ObjectId agent_id, int32_t tag) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return false;
+  }
+  return env->env->GetAnnotations().HasTag(
+      companions::AnnotationKey{companions::AnnotationTarget::Agent,
+                                companions::Position{-1, -1}, agent_id},
+      static_cast<companions::SemanticTag>(tag));
 }
 
 COMPANIONS_API const char* companions_version(void) {

@@ -20,9 +20,7 @@ const std::unordered_map<CellKind, CellProperties>
         {CellKind::Floor,    {true,     true,     '.', " .",    0}},
         {CellKind::Wall,     {false,    false,    '#', "##",    90}},  // Gray
         {CellKind::Hazard,   {false,    true,     '~', "~~",    91}},  // Red
-        {CellKind::Synchro,  {true,     true,     'S', " S",    93}},  // Yellow
         {CellKind::HealArea, {true,     true,     '+', " +",    92}},  // Green
-        {CellKind::Target,   {true,     true,     'T', " T",    95}},  // Magenta
 };
 
 // Default properties for unknown cell kinds
@@ -44,10 +42,9 @@ const CellProperties& CellProperties::Get(CellKind kind) {
 // =============================================================================
 // Cell
 // =============================================================================
-Cell::Cell() : pos_{-1, -1}, kind_(CellKind::Floor), base_kind_(CellKind::Floor) {}
+Cell::Cell() : pos_{-1, -1}, kind_(CellKind::Floor) {}
 
-Cell::Cell(Position pos, CellKind kind)
-    : pos_(pos), kind_(kind), base_kind_(kind) {}
+Cell::Cell(Position pos, CellKind kind) : pos_(pos), kind_(kind) {}
 
 bool Cell::IsWalkable() const {
   return CellProperties::Get(kind_).walkable;
@@ -91,12 +88,8 @@ std::string CellKindToString(CellKind kind) {
       return "Wall";
     case CellKind::Hazard:
       return "Hazard";
-    case CellKind::Synchro:
-      return "Synchro";
     case CellKind::HealArea:
       return "HealArea";
-    case CellKind::Target:
-      return "Target";
     default:
       return "Unknown";
   }
