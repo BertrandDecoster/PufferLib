@@ -5,6 +5,7 @@
 #define COMPANIONS_ENV_EFFECT_SYSTEM_H_
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "../core/effect_config.h"
@@ -55,9 +56,19 @@ class EffectSystem {
   // Add a pre-constructed effect (for snapshot restoration)
   void AddEffect(ActiveEffect effect) { active_effects_.push_back(std::move(effect)); }
 
+ public:
+  // Per-agent depth cap for cascading effects within a single Tick(). The
+  // 5th+ application on the same agent in one tick is skipped; earlier ones
+  // resolve normally in insertion order. Applied only in Tick() — one-shot
+  // spawn-time applications (telegraph_ticks == 0 effects) are not capped.
+  static constexpr int kCascadeDepthLimit = 4;
+
  private:
-  // Apply effect modifiers (damage, push, status) to targets in area
-  void ApplyEffectModifiers(const ActiveEffect& effect);
+  // Apply effect modifiers (damage, push, status) to targets in area.
+  // `apply_count` tracks how many effects have touched each agent this tick;
+  // pass nullptr from one-shot paths (spawn-time instant effects) to bypass.
+  void ApplyEffectModifiers(const ActiveEffect& effect,
+                             std::unordered_map<ObjectId, int>* apply_count);
 
   // Apply push to an agent (blocked by walls and other agents)
   void ApplyPush(Agent* agent, int dx, int dy, int distance);

@@ -33,6 +33,21 @@ struct NPCStatusLine {
 };
 
 // =============================================================================
+// EffectStatusLine - one row of the active-effect panel used by the demo
+//
+// Each visible ActiveEffect contributes an EffectStatusLine so players can
+// read what's on the board: the hazard's glyph (coloured for its phase),
+// its effect name (e.g. "dodge_fire"), and its current phase with ticks
+// remaining (e.g. "Telegraph:2" or "Active:1").
+// =============================================================================
+struct EffectStatusLine {
+  char glyph = '?';            // Same glyph used in the grid (! / ~ / + / *)
+  std::string name;            // Effect name (from effects.csv), e.g. "dodge_fire"
+  std::string phase;           // "Telegraph:N" or "Active:N" where N = ticks_remaining
+  int ansi_code = 0;           // ANSI colour for the glyph (matches the in-grid colour)
+};
+
+// =============================================================================
 // Renderer - renders the game state
 // =============================================================================
 class Renderer {
@@ -46,16 +61,19 @@ class Renderer {
   std::string RenderAscii(const BaseEnv& env) const;
   void RenderVisual(const BaseEnv& env) const;  // Placeholder for now
 
-  // NPC state panel support (used by the interactive demo)
+  // Side-panel support (used by the interactive demo).
   //
-  // CollectNPCStatusLines returns one line per live AgentFSM in the env,
-  // keyed to the agent's display glyph and the FSM state's single-word label.
-  // The collection order mirrors ObjectManager::GetAllAgents().
+  // CollectNPCStatusLines returns one line per live AgentFSM in the env;
+  // CollectEffectStatusLines returns one line per visible ActiveEffect.
+  // Both panels share the same "glyph + single-word label" shape so a
+  // player can scan them together.
   //
   // RenderAsciiWithNPCPanel returns the same ASCII map as RenderAscii but
-  // with each NPC's status line spliced on the RIGHT of a data row. When
-  // there are no FSM NPCs the output is byte-identical to RenderAscii.
+  // with the NPC and effect status lines spliced on the RIGHT of the grid
+  // data rows (NPCs first, then effects). When there are no FSM NPCs *and*
+  // no visible effects the output is byte-identical to RenderAscii.
   std::vector<NPCStatusLine> CollectNPCStatusLines(const BaseEnv& env) const;
+  std::vector<EffectStatusLine> CollectEffectStatusLines(const BaseEnv& env) const;
   std::string RenderAsciiWithNPCPanel(const BaseEnv& env) const;
 
   // Render a Companion's current/max health as coloured filled/empty boxes
@@ -89,6 +107,16 @@ class Renderer {
 
   // Map FSM state name to ANSI color code
   int FSMStateToAnsi(const std::string& state_name) const;
+
+  // One-cell summary of any visible active effect (fire/wind/etc.) covering
+  // `pos`. Returns an empty glyph (glyph == '\0') when no visible effect is
+  // on the cell so callers can fall through to the annotation/terrain path.
+  // Used to make DodgeEnv hazards visible during and before they strike.
+  struct EffectGlyph {
+    char glyph = '\0';   // '\0' means "no effect on this cell"
+    int ansi_code = 0;   // colour for the glyph (yellow = telegraph, etc.)
+  };
+  EffectGlyph GetEffectGlyphAt(const BaseEnv& env, Position pos) const;
 };
 
 }  // namespace companions

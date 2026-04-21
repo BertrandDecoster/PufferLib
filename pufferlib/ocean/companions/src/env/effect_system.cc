@@ -74,9 +74,10 @@ void EffectSystem::SpawnEffect(const std::string& effect_name,
     effect.in_telegraph = false;
     effect.ticks_remaining = config->active_ticks;
     effect.loops_remaining = config->loop;
-    // Apply the effect on spawn since there's no telegraph
+    // Apply the effect on spawn since there's no telegraph. One-shot
+    // spawn-time application doesn't participate in cascade counting.
     active_effects_.push_back(effect);
-    ApplyEffectModifiers(active_effects_.back());
+    ApplyEffectModifiers(active_effects_.back(), /*apply_count=*/nullptr);
     return;
   }
 
@@ -87,14 +88,29 @@ void EffectSystem::SpawnEffect(const std::string& effect_name,
 }
 
 void EffectSystem::Tick() {
-  // Process effects and collect finished ones for removal
+  // Process effects and collect finished ones for removal.
+  // apply_count tracks the cascade depth per agent across all effects
+  // resolving within this single Tick(). When an agent has already been
+  // touched kCascadeDepthLimit times, later effects this tick skip them.
   std::vector<size_t> to_remove;
+  std::unordered_map<ObjectId, int> apply_count;
 
   for (size_t i = 0; i < active_effects_.size(); ++i) {
     ActiveEffect& effect = active_effects_[i];
 
     if (effect.ticks_remaining > 0) {
       effect.ticks_remaining--;
+    }
+
+    // Continuous effects (apply_every_tick) fire their modifiers on every
+    // tick they spend in the active phase, not just the transition. We do
+    // this after the decrement: if we're still in active and haven't hit
+    // the end-of-phase branch below, apply again. The transition tick also
+    // applies (via the ticks_remaining == 0 branch), so the total number of
+    // applications equals `active_ticks` for continuous effects.
+    if (effect.ticks_remaining > 0 && !effect.in_telegraph &&
+        effect.config && effect.config->apply_every_tick) {
+      ApplyEffectModifiers(effect, &apply_count);
     }
 
     // Check for phase transitions
@@ -117,7 +133,7 @@ void EffectSystem::Tick() {
         }
 
         // Apply effect modifiers when entering active phase
-        ApplyEffectModifiers(effect);
+        ApplyEffectModifiers(effect, &apply_count);
       } else {
         // Active phase complete - check for looping
         if (effect.loops_remaining > 0) {
@@ -132,7 +148,7 @@ void EffectSystem::Tick() {
             effect.ticks_remaining = effect.config->telegraph_ticks;
           } else {
             effect.ticks_remaining = effect.config->active_ticks;
-            ApplyEffectModifiers(effect);
+            ApplyEffectModifiers(effect, &apply_count);
           }
         } else if (effect.config->loop == -1) {
           // Infinite loop - restart
@@ -141,7 +157,7 @@ void EffectSystem::Tick() {
             effect.ticks_remaining = effect.config->telegraph_ticks;
           } else {
             effect.ticks_remaining = effect.config->active_ticks;
-            ApplyEffectModifiers(effect);
+            ApplyEffectModifiers(effect, &apply_count);
           }
         } else {
           // Effect is finished
@@ -159,7 +175,9 @@ void EffectSystem::Tick() {
   }
 }
 
-void EffectSystem::ApplyEffectModifiers(const ActiveEffect& effect) {
+void EffectSystem::ApplyEffectModifiers(
+    const ActiveEffect& effect,
+    std::unordered_map<ObjectId, int>* apply_count) {
   if (!effect.config) return;
 
   const EffectConfig& cfg = *effect.config;
@@ -176,9 +194,12 @@ void EffectSystem::ApplyEffectModifiers(const ActiveEffect& effect) {
 
   (void)cfg.GetAreaSize();  // Area size already used by IsPositionAffected
 
-  // Get rotated push direction
-  int push_dx, push_dy;
-  cfg.GetRotatedPush(effect.direction, push_dx, push_dy);
+  // Default push direction from the effect's facing. `radial_push` effects
+  // override this per-agent below (each cardinal cell of the area shoves
+  // outward; the center uses the facing-derived direction).
+  int default_push_dx = 0;
+  int default_push_dy = 0;
+  cfg.GetRotatedPush(effect.direction, default_push_dx, default_push_dy);
 
   // Find all agents affected
   for (Agent* agent : object_manager_->GetAllAgents()) {
@@ -201,6 +222,30 @@ void EffectSystem::ApplyEffectModifiers(const ActiveEffect& effect) {
       continue;
     }
 
+    // Resolve the push vector for THIS agent.
+    // - Non-radial: the effect's facing-derived vector (GetRotatedPush).
+    // - Radial + cardinal: sign of the offset to the centre (pushes outward).
+    // - Radial + centre: map the effect's Direction straight to a cardinal
+    //   push so a Direction::Up spawn actually shoves the occupant north.
+    //   We bypass GetRotatedPush here because its base-vector convention is
+    //   oriented for "wind-comes-from-N = push-south" semantics, which is
+    //   not what "random direction at the centre" means here.
+    int push_dx = default_push_dx;
+    int push_dy = default_push_dy;
+    if (cfg.radial_push) {
+      if (rel_row == 0 && rel_col == 0) {
+        switch (effect.direction) {
+          case Direction::Up:    push_dx = 0;  push_dy = -1; break;
+          case Direction::Down:  push_dx = 0;  push_dy = 1;  break;
+          case Direction::Left:  push_dx = -1; push_dy = 0;  break;
+          case Direction::Right: push_dx = 1;  push_dy = 0;  break;
+        }
+      } else {
+        push_dy = (rel_row > 0) ? 1 : (rel_row < 0 ? -1 : 0);
+        push_dx = (rel_col > 0) ? 1 : (rel_col < 0 ? -1 : 0);
+      }
+    }
+
     // Check faction filter
     bool should_affect = false;
     switch (cfg.filter) {
@@ -219,6 +264,19 @@ void EffectSystem::ApplyEffectModifiers(const ActiveEffect& effect) {
     }
 
     if (!should_affect) continue;
+
+    // Cascade depth cap: each agent can be touched by at most
+    // kCascadeDepthLimit effects in a single Tick(). After the cap, later
+    // effects this tick see the agent but no-op on them (no damage, no
+    // push, no status). Non-tick contexts (spawn-time instant effects)
+    // pass nullptr and bypass the cap.
+    if (apply_count != nullptr) {
+      int already = 0;
+      auto it = apply_count->find(agent->GetId());
+      if (it != apply_count->end()) already = it->second;
+      if (already >= kCascadeDepthLimit) continue;
+      (*apply_count)[agent->GetId()] = already + 1;
+    }
 
     // Track what we apply for logging
     bool applied_damage = false;

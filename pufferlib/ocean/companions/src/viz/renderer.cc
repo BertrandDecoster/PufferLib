@@ -113,10 +113,71 @@ int Renderer::ActorColorToAnsi(ActorColor color) const {
   }
 }
 
+Renderer::EffectGlyph Renderer::GetEffectGlyphAt(const BaseEnv& env,
+                                                 Position pos) const {
+  // Iterate active effects; first visible effect covering `pos` wins.
+  // Telegraphed cells show a yellow warning marker so players can dodge;
+  // active cells show a phase-specific glyph coloured by the effect's role
+  // (damage = red, push = blue, other = magenta).
+  const ObjectManager& mgr = env.GetObjectManager();
+  for (const ActiveEffect& eff : env.GetActiveEffects()) {
+    if (!eff.config) continue;
+    if (!eff.config->telegraph_visible) continue;
+
+    Position center = eff.GetCenter(mgr);
+    int n = eff.config->GetAreaSize();
+    int half = n / 2;
+    int dr = pos.row - center.row;
+    int dc = pos.col - center.col;
+    if (std::abs(dr) > half || std::abs(dc) > half) continue;
+    if (!eff.config->IsPositionAffected(dr, dc, eff.direction)) continue;
+
+    // Classify effect by its primary modifier.
+    bool is_damage = eff.config->damage > 0;
+    bool is_push = eff.config->push_distance != 0;
+    bool is_heal = eff.config->damage < 0;
+
+    EffectGlyph g;
+    if (eff.in_telegraph) {
+      // Danger warning: yellow, marker depends on what's coming.
+      g.glyph = is_damage ? '!' : (is_push ? '~' : '*');
+      g.ansi_code = 93;  // yellow
+    } else {
+      if (is_damage) {
+        g.glyph = '!';
+        g.ansi_code = 91;  // red
+      } else if (is_push) {
+        g.glyph = '~';
+        g.ansi_code = 94;  // blue
+      } else if (is_heal) {
+        g.glyph = '+';
+        g.ansi_code = 92;  // green
+      } else {
+        g.glyph = '*';
+        g.ansi_code = 95;  // magenta
+      }
+    }
+    return g;
+  }
+  return {};  // no effect here
+}
+
 std::string Renderer::GetCellDisplay(const BaseEnv& env, Position pos,
                                       const Cell& cell) const {
-  // Priority: SynchroGoal > AggroTarget > terrain. Room / HtnName / etc. are
-  // metadata tags with no visual representation.
+  // Priority: active effect (second slot only) > SynchroGoal > AggroTarget
+  // > terrain. Effects win over annotations because they're transient and
+  // urgent (a telegraphed fire tile matters more than the goal underneath).
+  // The first slot stays the terrain's own first char (e.g. '#' for walls)
+  // so the shape of the map stays readable under a hazard area.
+  EffectGlyph fx = GetEffectGlyphAt(env, pos);
+  if (fx.glyph != '\0') {
+    std::string first(1, cell.GetDisplay()[0]);
+    int cell_color = cell.GetColorCode();
+    if (cell_color != 0) first = Colorize(first, cell_color);
+    std::string second(1, fx.glyph);
+    if (fx.ansi_code != 0) second = Colorize(second, fx.ansi_code);
+    return first + second;
+  }
   const AnnotationStore& ann = env.GetAnnotations();
   AnnotationKey key{AnnotationTarget::Cell, pos, kInvalidObjectId};
   if (ann.HasTag(key, SemanticTag::SynchroGoal)) {
@@ -134,6 +195,8 @@ std::string Renderer::GetCellDisplay(const BaseEnv& env, Position pos,
 }
 
 char Renderer::GetCellChar(const BaseEnv& env, Position pos, const Cell& cell) const {
+  EffectGlyph fx = GetEffectGlyphAt(env, pos);
+  if (fx.glyph != '\0') return fx.glyph;
   const AnnotationStore& ann = env.GetAnnotations();
   AnnotationKey key{AnnotationTarget::Cell, pos, kInvalidObjectId};
   if (ann.HasTag(key, SemanticTag::SynchroGoal)) return 'S';
@@ -146,9 +209,17 @@ std::string Renderer::GetCellActorDisplay(const BaseEnv& env, Position pos,
                                            const Actor* actor) const {
   if (!actor) return "??";
 
-  // Get cell character, honouring annotation overrides so actors on goal
-  // cells still show 'S' / 'T' in the second slot rather than ' '.
+  // Get cell character, honouring annotation / effect overrides so actors on
+  // goal cells still show 'S' / 'T' in the second slot and actors standing
+  // in a telegraphed hazard still see the warning glyph. Effect glyphs are
+  // coloured here (yellow for telegraph, red/blue/green for active); plain
+  // terrain keeps its un-coloured char.
   char cell_char = GetCellChar(env, pos, cell);
+  EffectGlyph fx = GetEffectGlyphAt(env, pos);
+  std::string cell_slot(1, cell_char);
+  if (fx.glyph != '\0' && fx.ansi_code != 0) {
+    cell_slot = Colorize(cell_slot, fx.ansi_code);
+  }
 
   // Check if it's a Companion (has direction and color)
   const Companion* comp = dynamic_cast<const Companion*>(actor);
@@ -158,8 +229,8 @@ std::string Renderer::GetCellActorDisplay(const BaseEnv& env, Position pos,
     if (ansi_code != 0) {
       arrow = Colorize(arrow, ansi_code);
     }
-    // Colored arrow + cell char (e.g., "<S")
-    return arrow + std::string(1, cell_char);
+    // Colored arrow + cell slot (e.g., "<S", or "v!" on a telegraphed fire)
+    return arrow + cell_slot;
   }
 
   // Check if it's an AgentFSM (has FSM state)
@@ -170,15 +241,15 @@ std::string Renderer::GetCellActorDisplay(const BaseEnv& env, Position pos,
     if (state) {
       int ansi_code = FSMStateToAnsi(state->GetName());
       if (ansi_code != 0) {
-        return Colorize(std::string(1, actor_char), ansi_code) + std::string(1, cell_char);
+        return Colorize(std::string(1, actor_char), ansi_code) + cell_slot;
       }
     }
-    return std::string(1, actor_char) + std::string(1, cell_char);
+    return std::string(1, actor_char) + cell_slot;
   }
 
-  // For other actors, use actor char + cell char
+  // For other actors, use actor char + cell slot
   char actor_char = actor->GetChar();
-  return std::string(1, actor_char) + std::string(1, cell_char);
+  return std::string(1, actor_char) + cell_slot;
 }
 
 std::string Renderer::Colorize(const std::string& text, int color_code) const {
@@ -265,9 +336,65 @@ std::vector<NPCStatusLine> Renderer::CollectNPCStatusLines(
   return result;
 }
 
+std::vector<EffectStatusLine> Renderer::CollectEffectStatusLines(
+    const BaseEnv& env) const {
+  std::vector<EffectStatusLine> result;
+  for (const ActiveEffect& eff : env.GetActiveEffects()) {
+    if (!eff.config) continue;
+    if (!eff.config->telegraph_visible) continue;
+
+    EffectStatusLine line;
+    line.name = eff.config->name;
+
+    // Pick the same glyph + colour the grid renderer uses so the panel and
+    // the grid agree visually.
+    bool is_damage = eff.config->damage > 0;
+    bool is_push = eff.config->push_distance != 0;
+    bool is_heal = eff.config->damage < 0;
+    if (eff.in_telegraph) {
+      line.glyph = is_damage ? '!' : (is_push ? '~' : '*');
+      line.ansi_code = 93;
+      line.phase = "Telegraph:" + std::to_string(eff.ticks_remaining);
+    } else {
+      if (is_damage) {
+        line.glyph = '!';
+        line.ansi_code = 91;
+      } else if (is_push) {
+        line.glyph = '~';
+        line.ansi_code = 94;
+      } else if (is_heal) {
+        line.glyph = '+';
+        line.ansi_code = 92;
+      } else {
+        line.glyph = '*';
+        line.ansi_code = 95;
+      }
+      line.phase = "Active:" + std::to_string(eff.ticks_remaining);
+    }
+    result.push_back(std::move(line));
+  }
+  return result;
+}
+
 std::string Renderer::RenderAsciiWithNPCPanel(const BaseEnv& env) const {
   std::string map_str = RenderAscii(env);
-  std::vector<NPCStatusLine> panel = CollectNPCStatusLines(env);
+
+  // Combine NPC status + visible effect status into a single list; NPCs
+  // first (they're slower-moving), then effects. Each entry is rendered as
+  // "<colored glyph> <label>".
+  struct PanelEntry { std::string text; };
+  std::vector<PanelEntry> panel;
+  for (const NPCStatusLine& s : CollectNPCStatusLines(env)) {
+    std::string letter(1, s.letter);
+    if (s.ansi_code != 0) letter = Colorize(letter, s.ansi_code);
+    panel.push_back({letter + " " + s.state_name});
+  }
+  for (const EffectStatusLine& s : CollectEffectStatusLines(env)) {
+    std::string glyph(1, s.glyph);
+    if (s.ansi_code != 0) glyph = Colorize(glyph, s.ansi_code);
+    panel.push_back({glyph + " " + s.name + " " + s.phase});
+  }
+
   if (panel.empty()) {
     return map_str;  // Nothing to splice - preserve byte-for-byte output.
   }
@@ -300,39 +427,31 @@ std::string Renderer::RenderAsciiWithNPCPanel(const BaseEnv& env) const {
   int ref_width = 0;
   if (lines.size() > 1) ref_width = static_cast<int>(lines[1].size());
 
-  auto format_line = [this](const NPCStatusLine& line) {
-    std::string letter_str(1, line.letter);
-    if (line.ansi_code != 0) {
-      letter_str = Colorize(letter_str, line.ansi_code);
-    }
-    return letter_str + " " + line.state_name;
-  };
-
   // Pack panel entries into the data rows (2, 4, 6, ..., 2 + 2*(rows-1)).
-  // If there are more NPCs than grid rows, extra lines are appended below
+  // If there are more entries than grid rows, extra lines are appended below
   // the map on their own lines so the information is never lost.
   int grid_rows = env.GetGrid().GetRows();
   std::size_t last_data_row =
       static_cast<std::size_t>(2 + 2 * (grid_rows - 1));
   std::ostringstream out;
-  std::size_t npc_idx = 0;
+  std::size_t panel_idx = 0;
   for (std::size_t i = 0; i < lines.size(); ++i) {
     out << lines[i];
     bool is_data_row = (i >= 2) && (i <= last_data_row) &&
                        ((i - 2) % 2 == 0);
-    if (is_data_row && npc_idx < panel.size()) {
+    if (is_data_row && panel_idx < panel.size()) {
       int visual = VisualWidth(lines[i]);
       int pad = std::max(2, ref_width - visual + 2);
       out << std::string(static_cast<std::size_t>(pad), ' ')
-          << format_line(panel[npc_idx]);
-      ++npc_idx;
+          << panel[panel_idx].text;
+      ++panel_idx;
     }
     if (i + 1 < lines.size()) out << "\n";
   }
   // Emit any panel entries that didn't fit next to a data row.
-  while (npc_idx < panel.size()) {
-    out << "\n" << format_line(panel[npc_idx]);
-    ++npc_idx;
+  while (panel_idx < panel.size()) {
+    out << "\n" << panel[panel_idx].text;
+    ++panel_idx;
   }
   return out.str();
 }

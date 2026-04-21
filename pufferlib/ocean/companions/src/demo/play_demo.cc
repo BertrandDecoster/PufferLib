@@ -219,7 +219,7 @@ void PrintUsage(const char* prog_name) {
   std::cerr << "  --height H        Grid height (rows) - synchro only\n";
   std::cerr << "  --companions N    Number of companions, 1-3 (default: 3 for synchro, 1 for others)\n";
   std::cerr << "  --synchro N       Number of synchro cells (default: same as companions) - synchro only\n";
-  std::cerr << "  --complexity N    Map complexity 0-5 (default: 0 = empty) - synchro only\n";
+  std::cerr << "  --complexity N    Map complexity 0-2 (default: 0 = empty) - synchro only\n";
   std::cerr << "  --enemy TYPE      Enemy type: zombie (default), goblin - aggro only\n";
   std::cerr << "  --interval N      Hazard spawn interval in ticks (default: 3) - dodge only\n";
   std::cerr << "  --survival N      Ticks to survive (default: 50) - dodge only\n";
@@ -253,10 +253,12 @@ void PrintHelp(const std::string& env_name, int num_companions,
     }
   } else if (env_name == "dodge") {
     std::cout << "Goal: Survive " << survival_ticks << " ticks without dying!\n\n";
-    std::cout << "Hazards spawn every " << hazard_interval << " ticks\n";
-    std::cout << "  - Fire (!) = 3x3 damage area\n";
-    std::cout << "  - Wind (~) = Push effect\n";
-    std::cout << "  - Yellow cells = Telegraph (danger incoming!)\n\n";
+    std::cout << "Hazards spawn every " << hazard_interval << " ticks on a random floor cell.\n";
+    std::cout << "Each hazard goes through phases: TELEGRAPH (warning) then ACTIVE (strike).\n";
+    std::cout << "Move OUT of telegraphed cells before the strike lands.\n\n";
+    std::cout << "  Yellow ! / ~  = Telegraph (danger incoming)\n";
+    std::cout << "  Red !         = Active fire (3x3 damage, lethal)\n";
+    std::cout << "  Blue ~        = Active wind (pushes you 2 cells)\n\n";
   }
 
   std::cout << "Controls:\n";
@@ -550,6 +552,23 @@ int main(int argc, char* argv[]) {
   }
 
   PrintHelp(env_name, num_companions, enemy_type, hazard_interval, survival_ticks);
+
+  // Echo the effective parsed configuration so mistyped / shell-eaten flags
+  // are obvious instead of silently falling back to defaults.
+  std::cout << "Parsed config: env=" << env_name
+            << "  grid=" << rows << "x" << cols
+            << "  companions=" << num_companions;
+  if (env_name == "synchro") {
+    std::cout << "  synchro=" << num_synchro
+              << "  complexity=" << map_complexity;
+  } else if (env_name == "aggro") {
+    std::cout << "  enemy=" << enemy_type;
+  } else if (env_name == "dodge") {
+    std::cout << "  interval=" << hazard_interval
+              << "  survival=" << survival_ticks;
+  }
+  std::cout << "  seed=" << seed
+            << "  transform=" << d4_transform << "\n\n";
 
   Renderer renderer;
   KeyboardInput input;

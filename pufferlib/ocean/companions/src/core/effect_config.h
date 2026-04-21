@@ -46,6 +46,18 @@ struct EffectConfig {
   std::string status_applied;  // "stunned", "slowed", "marked", or ""
   int status_duration = 0;     // Ticks the status lasts
 
+  // When true, push_dx/push_dy are IGNORED for non-center cells: each
+  // affected cell pushes its occupant outward (away from the center). The
+  // center cell uses the effect's own Direction to decide where to shove.
+  // Used by DodgeEnv's cross-shaped wind.
+  bool radial_push = false;
+
+  // When true, the effect applies its modifiers on *every* active tick,
+  // not just the telegraph→active transition. Default (false) preserves
+  // the single-shot behaviour attacks rely on; wind uses true so it keeps
+  // blowing through anyone in its area for the whole `active_ticks` span.
+  bool apply_every_tick = false;
+
   // === Visibility ===
   bool telegraph_visible = true;  // Show danger zone during telegraph
 

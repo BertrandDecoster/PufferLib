@@ -101,19 +101,32 @@ void DodgeEnv::RegisterDefaultEffects() {
   fire.telegraph_visible = true;
   registry.RegisterConfig(fire);
 
-  // Wind push: 1x1 push effect
+  // Wind: 5-cell cross (centre + 4 cardinals) with radial push.
+  // Each cardinal cell pushes its occupant outward; the centre pushes in
+  // the direction chosen at spawn (random, see DodgeEnv::SpawnHazard).
+  // Active phase is telegraph_ticks=1 + active_ticks=1. The push_dx/dy
+  // below are only used as the centre's fallback vector; radial_push=true
+  // tells the effect system to derive each cardinal's direction from its
+  // offset to the centre.
   EffectConfig wind;
   wind.name = "dodge_wind";
-  wind.telegraph_ticks = 1;
-  wind.active_ticks = 1;
+  wind.telegraph_ticks = 1;  // 1-turn windup
+  wind.active_ticks = 2;     // blows for 2 turns
   wind.recovery_ticks = 0;
   wind.loop = 0;
-  wind.area = {1};  // 1x1
+  // 3x3 with corners masked off:  .#.  (centre + 4 cardinals)
+  //                               ###
+  //                               .#.
+  wind.area = {0, 1, 0,
+               1, 1, 1,
+               0, 1, 0};
   wind.filter = TargetFilter::Companion;
   wind.damage = 0;
   wind.push_dx = 0;
-  wind.push_dy = 1;  // Push down
+  wind.push_dy = 1;              // centre fallback; actual random dir set per spawn
   wind.push_distance = 2;
+  wind.radial_push = true;       // cardinals push outward
+  wind.apply_every_tick = true;  // re-pushes anyone still in the cross each active tick
   wind.telegraph_visible = true;
   registry.RegisterConfig(wind);
 }
@@ -174,24 +187,52 @@ void DodgeEnv::SpawnCompanions() {
 }
 
 void DodgeEnv::SpawnHazard() {
-  // Find valid spawn positions (any floor cell)
   std::vector<Position> floor_cells = grid_->FindCellsOfKind(CellKind::Floor);
-
   if (floor_cells.empty()) return;
 
-  // Pick a random position
-  std::uniform_int_distribution<size_t> pos_dist(0, floor_cells.size() - 1);
-  Position spawn_pos = floor_cells[pos_dist(rng_)];
-
-  // Pick a random hazard type
-  std::uniform_int_distribution<size_t> hazard_dist(0, hazard_effects_.size() - 1);
+  // Pick a random hazard type.
+  std::uniform_int_distribution<size_t> hazard_dist(
+      0, hazard_effects_.size() - 1);
   const std::string& effect_name = hazard_effects_[hazard_dist(rng_)];
 
-  // Pick a random direction for push effects
+  // Filter out cells currently occupied by a live companion for *damaging*
+  // hazards. A 3x3 fire centered on the player is unavoidable: the telegraph
+  // grants only one move tick before damage lands, and the player can't
+  // escape a 3x3 in one step. Wind centered on the player is fine — it just
+  // pushes them — so we only restrict damaging effects.
+  const EffectConfig* cfg =
+      EffectConfigRegistry::Instance().GetConfig(effect_name);
+  bool is_damage = cfg && cfg->damage > 0;
+
+  std::vector<Position> candidates = floor_cells;
+  if (is_damage) {
+    std::vector<Position> player_cells;
+    for (const Companion* c : object_manager_->GetAllCompanions()) {
+      if (c->IsAlive()) player_cells.push_back(c->GetPosition());
+    }
+    std::vector<Position> filtered;
+    filtered.reserve(candidates.size());
+    for (const Position& p : candidates) {
+      bool on_player = false;
+      for (const Position& pc : player_cells) {
+        if (p == pc) {
+          on_player = true;
+          break;
+        }
+      }
+      if (!on_player) filtered.push_back(p);
+    }
+    // Only downgrade to the unfiltered list if nothing else is available
+    // (small grids packed with companions). Otherwise use the filtered one.
+    if (!filtered.empty()) candidates = std::move(filtered);
+  }
+
+  std::uniform_int_distribution<size_t> pos_dist(0, candidates.size() - 1);
+  Position spawn_pos = candidates[pos_dist(rng_)];
+
   std::uniform_int_distribution<int> dir_dist(0, 3);
   Direction dir = static_cast<Direction>(dir_dist(rng_));
 
-  // Spawn the effect
   SpawnEffect(effect_name, EffectTarget::AtCell(spawn_pos), dir);
 }
 
@@ -210,10 +251,9 @@ bool DodgeEnv::IsDone() const {
 }
 
 void DodgeEnv::PreStep() {
-  // Spawn hazards at regular intervals
-  if (tick_ > 0 && tick_ % hazard_interval_ == 0) {
-    SpawnHazard();
-  }
+  // Hazard spawning moved to PostStep — we need the player's post-movement
+  // position when picking a centre cell, otherwise a damaging area can land
+  // dead-centre on whatever cell the player just walked into.
 }
 
 void DodgeEnv::PostStep() {
@@ -228,6 +268,14 @@ void DodgeEnv::PostStep() {
   // Check for success
   if (tick_ >= horizon_ && !any_dead_) {
     success_ = true;
+  }
+
+  // Spawn hazards at regular intervals, AFTER movement has resolved so the
+  // companion-cell exclusion inside SpawnHazard sees their new position.
+  // tick_ was incremented by BaseEnv::Step() just before PostStep runs, so
+  // it holds the index of the step that just completed.
+  if (tick_ > 0 && tick_ % hazard_interval_ == 0) {
+    SpawnHazard();
   }
 }
 

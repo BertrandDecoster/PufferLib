@@ -18,6 +18,8 @@
 #include "../src/core/agent_config.h"
 #include "../src/core/annotations.h"
 #include "../src/core/effect_config.h"
+#include "../src/env/dodge_env.h"
+#include "../src/env/effect_system.h"
 #include "../src/core/fsm/enemies.h"
 #include "../src/core/fsm/fsm_states.h"
 #include "../src/core/object_manager.h"
@@ -507,6 +509,409 @@ TEST(TestAggroEnvZombieDealsDamageToStandingPlayer) {
     }
   }
   ASSERT_TRUE(damaged);
+}
+
+// =============================================================================
+// DodgeEnv hazard rendering
+//
+// Regression: the interactive demo used to show an empty grid for DodgeEnv
+// because RenderAscii never consulted GetActiveEffects(), so telegraphed
+// fire / wind zones were invisible and the player had nothing to dodge.
+// These tests spawn a hazard directly and assert the glyph appears in the
+// rendered grid at the affected cells, with the right colour for the
+// telegraph vs active phase.
+// =============================================================================
+
+TEST(TestDodgeFireTelegraphGlyphsRender) {
+  // dodge_fire is a 3x3 damage effect with a 2-tick telegraph.
+  DodgeEnv env(7, 1, /*hazard_interval=*/100, /*horizon=*/50, 42);
+
+  // Spawn a fire hazard directly at a known location so rendering is
+  // independent of the RNG. Center at (3,3): affects the 3x3 around it.
+  env.SpawnEffect("dodge_fire", EffectTarget::AtCell({3, 3}), Direction::Up);
+
+  Renderer r;
+  std::string out = StripAnsi(r.RenderAscii(env));
+
+  // Fire telegraph glyph is '!', 3x3 around (3,3) = rows 2..4, cols 2..4.
+  // Each row rendered on line 2 + 2*r, each cell's second char at col 1 + 3*c + 1.
+  auto cell_second_char = [&](int row, int col) -> char {
+    std::vector<std::string> lines;
+    std::stringstream ss(out);
+    std::string l;
+    while (std::getline(ss, l)) lines.push_back(l);
+    std::size_t line_idx = static_cast<std::size_t>(2 + 2 * row);
+    const std::string& dl = lines.at(line_idx);
+    std::size_t col_idx = static_cast<std::size_t>(1 + 3 * col + 1);
+    return dl.at(col_idx);
+  };
+
+  int banged = 0;
+  for (int rr = 2; rr <= 4; ++rr) {
+    for (int cc = 2; cc <= 4; ++cc) {
+      if (cell_second_char(rr, cc) == '!') ++banged;
+    }
+  }
+  // All 9 cells in the 3x3 area should show the fire glyph.
+  ASSERT_EQ(banged, 9);
+}
+
+TEST(TestDodgeWindActiveDurationIsTwoTicks) {
+  // dodge_wind: telegraph=1, active=2. After the telegraph tick the effect
+  // should report "Active:2", then "Active:1" on the next tick, then be
+  // gone on the tick after that.
+  DodgeEnv env(9, 1, /*hazard_interval=*/1000, /*horizon=*/100, 42);
+  env.GetMutableObjectManager().UpdatePosition(
+      env.GetMutableObjectManager().GetAllCompanions()[0]->GetId(), {7, 7});
+  env.SpawnEffect("dodge_wind", EffectTarget::AtCell({2, 2}), Direction::Up);
+
+  Renderer r;
+  std::vector<Action> a = {EncodeAction(MovementAction::Stay)};
+
+  auto phase = [&]() -> std::string {
+    auto lines = r.CollectEffectStatusLines(env);
+    return lines.empty() ? "" : lines[0].phase;
+  };
+
+  // After spawn (before any Step): telegraph counter shows its full value.
+  ASSERT_EQ(phase(), std::string("Telegraph:1"));
+
+  env.Step(a);  // telegraph -> active
+  ASSERT_EQ(phase(), std::string("Active:2"));
+
+  env.Step(a);  // second active tick
+  ASSERT_EQ(phase(), std::string("Active:1"));
+
+  env.Step(a);  // expires
+  ASSERT_EQ(phase(), std::string(""));
+}
+
+TEST(TestDodgeWindPushesOnEachActiveTick) {
+  // Verify apply_every_tick fires a push during the SECOND active tick, not
+  // just the transition. We use two players: A enters the wind's cross on
+  // tick 1 (gets pushed at transition), B is teleported into the cross
+  // between steps so only the tick-2 application can reach them. If the
+  // flag works, B also gets pushed.
+  DodgeEnv env(11, 2, /*hazard_interval=*/1000, /*horizon=*/100, 42);
+  auto& mgr = env.GetMutableObjectManager();
+  auto companions = mgr.GetAllCompanions();
+  ASSERT_EQ(companions.size(), 2u);
+  auto* a = companions[0];
+  auto* b = companions[1];
+
+  // A sits at the wind's north cardinal (pushed north on each active tick).
+  mgr.UpdatePosition(a->GetId(), {4, 5});   // north of (5,5)
+  // B parked far away so it doesn't cascade on tick 1.
+  mgr.UpdatePosition(b->GetId(), {9, 9});
+
+  env.SpawnEffect("dodge_wind", EffectTarget::AtCell({5, 5}), Direction::Up);
+
+  std::vector<Action> stay2 = {EncodeAction(MovementAction::Stay),
+                               EncodeAction(MovementAction::Stay)};
+
+  // Step 1: telegraph -> active. A is in the north cardinal, gets pushed
+  // north by 2 cells (4,5) -> (2,5). B is out of area, unaffected.
+  env.Step(stay2);
+  ASSERT_EQ(a->GetPosition().row, 2);
+  ASSERT_EQ(a->GetPosition().col, 5);
+  ASSERT_EQ(b->GetPosition().row, 9);
+
+  // Now teleport B into the wind's south cardinal (6,5) BEFORE the second
+  // active tick. Only apply_every_tick can reach B now.
+  mgr.UpdatePosition(b->GetId(), {6, 5});
+
+  // Step 2: second active tick. apply_every_tick fires again -> B pushed
+  // south by 2 cells (6,5) -> (8,5). A is no longer in the cross (they
+  // moved to (2,5)), so A stays put.
+  env.Step(stay2);
+  ASSERT_EQ(b->GetPosition().row, 8);
+  ASSERT_EQ(b->GetPosition().col, 5);
+  ASSERT_EQ(a->GetPosition().row, 2);  // A unchanged
+}
+
+TEST(TestFourWindSquareBouncesPlayerBackToStart) {
+  // Four winds arranged in a 2-cell square at centres (3,3), (3,5), (5,5),
+  // (5,3). Spawn order + centre directions chain the push in a cycle:
+  //   A at (3,3) pushes east  -> player lands at (3,5) = B centre
+  //   B at (3,5) pushes south -> player lands at (5,5) = C centre
+  //   C at (5,5) pushes west  -> player lands at (5,3) = D centre
+  //   D at (5,3) pushes north -> player lands at (3,3) = A centre (origin)
+  //
+  // push_distance = 2 so each leg of the square is two cells. The effect
+  // system's insertion-order resolution processes A,B,C,D within a single
+  // Tick() and each sees the player's post-previous-push position. With a
+  // depth cap of >= 4, all four legs fire and the player bounces back to A.
+  DodgeEnv env(9, 1, /*hazard_interval=*/1000, /*horizon=*/100, 42);
+  auto& mgr = env.GetMutableObjectManager();
+  auto* p = dynamic_cast<Player*>(mgr.GetAllCompanions()[0]);
+  ASSERT_TRUE(p != nullptr);
+
+  mgr.UpdatePosition(p->GetId(), {3, 3});
+
+  env.SpawnEffect("dodge_wind", EffectTarget::AtCell({3, 3}), Direction::Right);
+  env.SpawnEffect("dodge_wind", EffectTarget::AtCell({3, 5}), Direction::Down);
+  env.SpawnEffect("dodge_wind", EffectTarget::AtCell({5, 5}), Direction::Left);
+  env.SpawnEffect("dodge_wind", EffectTarget::AtCell({5, 3}), Direction::Up);
+
+  // All four effects are in telegraph with ticks_remaining=1. One Step
+  // transitions them all to active simultaneously, and the insertion-order
+  // chain should bounce the player back to (3,3).
+  std::vector<Action> a = {EncodeAction(MovementAction::Stay)};
+  env.Step(a);
+
+  ASSERT_EQ(p->GetPosition().row, 3);
+  ASSERT_EQ(p->GetPosition().col, 3);
+}
+
+TEST(TestCascadeDepthCapPreventsFifthPush) {
+  // Chain 6 winds along a straight line, each pushing south by 2 cells. With
+  // a depth cap of 4 per agent per tick, only the first 4 should push; the
+  // 5th and 6th fire (state-wise) but find the player beyond their cap and
+  // leave them alone.
+  //
+  //   wind 0 at (1,3) push south -> (3,3)
+  //   wind 1 at (3,3) push south -> (5,3)
+  //   wind 2 at (5,3) push south -> (7,3)
+  //   wind 3 at (7,3) push south -> (9,3)
+  //   wind 4 at (9,3) push south -> would go to (11,3)  <-- capped
+  //   wind 5 at (11,3) push south -> would go to (13,3) <-- capped
+  //
+  // Grid is 15x15 (plenty of room), so we can verify the cap is what stops
+  // us rather than the wall.
+  DodgeEnv env(15, 1, /*hazard_interval=*/1000, /*horizon=*/100, 42);
+  auto& mgr = env.GetMutableObjectManager();
+  auto* p = dynamic_cast<Player*>(mgr.GetAllCompanions()[0]);
+  mgr.UpdatePosition(p->GetId(), {1, 3});
+
+  for (int r = 1; r <= 11; r += 2) {
+    env.SpawnEffect("dodge_wind", EffectTarget::AtCell({r, 3}), Direction::Down);
+  }
+
+  std::vector<Action> a = {EncodeAction(MovementAction::Stay)};
+  env.Step(a);
+
+  // 4 pushes of 2 cells each, starting at row 1: 1 + 4*2 = 9.
+  ASSERT_EQ(p->GetPosition().row, 9);
+  ASSERT_EQ(p->GetPosition().col, 3);
+}
+
+TEST(TestDodgeWindIsCrossShapeWithRadialPush) {
+  // Wind should be a 5-cell cross (center + 4 cardinals). Each cardinal
+  // cell pushes its occupant AWAY from the center; the center cell pushes
+  // in a random direction chosen at spawn.
+  DodgeEnv env(9, 1, /*hazard_interval=*/1000, /*horizon=*/100, 42);
+  auto& mgr = env.GetMutableObjectManager();
+  auto* p = dynamic_cast<Player*>(mgr.GetAllCompanions()[0]);
+
+  // Helper: reset player, spawn a wind centered at (4,4) with a fixed
+  // direction so the center push is deterministic; step once so the effect
+  // transitions from telegraph to active and applies.
+  auto run_at = [&](Position start, Direction center_dir) {
+    env.ClearEffects();
+    mgr.UpdatePosition(p->GetId(), start);
+    env.SpawnEffect("dodge_wind", EffectTarget::AtCell({4, 4}), center_dir);
+    std::vector<Action> a = {EncodeAction(MovementAction::Stay)};
+    env.Step(a);
+  };
+
+  // North cardinal (3,4): must be pushed further north.
+  run_at({3, 4}, Direction::Up);
+  ASSERT_EQ(p->GetPosition().row, 1);  // push_distance = 2
+  ASSERT_EQ(p->GetPosition().col, 4);
+
+  // South cardinal (5,4): pushed further south.
+  run_at({5, 4}, Direction::Up);
+  ASSERT_EQ(p->GetPosition().row, 7);
+  ASSERT_EQ(p->GetPosition().col, 4);
+
+  // West cardinal (4,3): pushed further west.
+  run_at({4, 3}, Direction::Up);
+  ASSERT_EQ(p->GetPosition().row, 4);
+  ASSERT_EQ(p->GetPosition().col, 1);
+
+  // East cardinal (4,5): pushed further east.
+  run_at({4, 5}, Direction::Up);
+  ASSERT_EQ(p->GetPosition().row, 4);
+  ASSERT_EQ(p->GetPosition().col, 7);
+
+  // Center (4,4): the "random" direction for this test is pinned via the
+  // spawn's Direction arg. Up at the center means push up (2 cells north).
+  run_at({4, 4}, Direction::Up);
+  ASSERT_EQ(p->GetPosition().row, 2);
+  ASSERT_EQ(p->GetPosition().col, 4);
+
+  // Corner of the 3x3 bounding box (3,3): NOT part of the cross, no push.
+  run_at({3, 3}, Direction::Up);
+  ASSERT_EQ(p->GetPosition().row, 3);
+  ASSERT_EQ(p->GetPosition().col, 3);
+}
+
+TEST(TestEffectStatusPanelShowsVisibleHazards) {
+  DodgeEnv env(7, 1, /*hazard_interval=*/100, /*horizon=*/50, 42);
+  env.SpawnEffect("dodge_fire", EffectTarget::AtCell({3, 3}), Direction::Up);
+
+  Renderer r;
+  auto lines = r.CollectEffectStatusLines(env);
+  ASSERT_EQ(lines.size(), 1u);
+  ASSERT_EQ(lines[0].glyph, '!');
+  ASSERT_EQ(lines[0].name, std::string("dodge_fire"));
+  // Telegraph phase starts with ticks_remaining = telegraph_ticks (2).
+  ASSERT_EQ(lines[0].phase, std::string("Telegraph:2"));
+
+  // The combined side panel should contain the effect line too.
+  std::string out = StripAnsi(r.RenderAsciiWithNPCPanel(env));
+  ASSERT_TRUE(out.find("! dodge_fire Telegraph:2") != std::string::npos);
+}
+
+TEST(TestEffectStatusPanelReflectsActivePhase) {
+  DodgeEnv env(7, 1, /*hazard_interval=*/100, /*horizon=*/50, 42);
+  env.SpawnEffect("dodge_fire", EffectTarget::AtCell({3, 3}), Direction::Up);
+
+  // Drive past telegraph so the effect enters active phase.
+  std::vector<Action> actions = {EncodeAction(MovementAction::Stay)};
+  env.Step(actions);
+  env.Step(actions);
+
+  Renderer r;
+  auto lines = r.CollectEffectStatusLines(env);
+  ASSERT_EQ(lines.size(), 1u);
+  ASSERT_EQ(lines[0].phase.rfind("Active:", 0), 0u);  // starts with "Active:"
+}
+
+TEST(TestEffectOnWallPreservesFirstChar) {
+  // When a fire spills onto a wall tile, the rendered cell should show
+  // '#!' (wall first char + fire glyph), not ' !'. The fire only damages
+  // companions (walls are passive), but the area visualisation should still
+  // reflect the terrain underneath it.
+  DodgeEnv env(7, 1, /*hazard_interval=*/100, /*horizon=*/50, 42);
+  // Spawn a fire near the top wall so the 3x3 overlaps row 0 (all walls).
+  env.SpawnEffect("dodge_fire", EffectTarget::AtCell({1, 3}), Direction::Up);
+
+  Renderer r;
+  std::string out = StripAnsi(r.RenderAscii(env));
+
+  auto cell_slot = [&](int row, int col) -> std::string {
+    std::vector<std::string> lines;
+    std::stringstream ss(out);
+    std::string l;
+    while (std::getline(ss, l)) lines.push_back(l);
+    std::size_t line_idx = static_cast<std::size_t>(2 + 2 * row);
+    const std::string& dl = lines.at(line_idx);
+    std::size_t col_idx = static_cast<std::size_t>(1 + 3 * col);
+    return dl.substr(col_idx, 2);
+  };
+
+  // Row 0 is a wall: first char must remain '#' even when the fire covers
+  // the cell (cols 2, 3, 4 are all within the 3x3 area).
+  ASSERT_EQ(cell_slot(0, 2), std::string("#!"));
+  ASSERT_EQ(cell_slot(0, 3), std::string("#!"));
+  ASSERT_EQ(cell_slot(0, 4), std::string("#!"));
+  // Row 1 is floor at cols 2,3,4: first char stays ' ' (floor display " .").
+  ASSERT_EQ(cell_slot(1, 2), std::string(" !"));
+  ASSERT_EQ(cell_slot(1, 3), std::string(" !"));
+  ASSERT_EQ(cell_slot(1, 4), std::string(" !"));
+}
+
+TEST(TestDodgeHazardTelegraphIsYellowActiveIsRed) {
+  DodgeEnv env(7, 1, /*hazard_interval=*/100, /*horizon=*/50, 42);
+  env.SpawnEffect("dodge_fire", EffectTarget::AtCell({3, 3}), Direction::Up);
+
+  Renderer r;
+
+  // While in telegraph phase the fire glyph is yellow (ANSI 93).
+  std::string raw_tel = r.RenderAscii(env);
+  ASSERT_TRUE(raw_tel.find("\033[93m!") != std::string::npos);
+
+  // After the telegraph expires, the effect enters its active phase. Drive
+  // the env two Step() calls (dodge_fire has telegraph_ticks=2): the first
+  // tick decrements to 1, the second transitions to active.
+  std::vector<Action> actions = {EncodeAction(MovementAction::Stay)};
+  env.Step(actions);
+  env.Step(actions);
+
+  // Now active fire glyph: red (ANSI 91).
+  std::string raw_active = r.RenderAscii(env);
+  ASSERT_TRUE(raw_active.find("\033[91m!") != std::string::npos);
+}
+
+// =============================================================================
+// Hazard spawning: fire must not center on a living companion
+//
+// A 3x3 damage hazard centered on the player is unavoidable — its area
+// covers every cell adjacent to the center, and the player only gets one
+// movement tick between telegraph and active, which keeps them inside the
+// 3x3. The DodgeEnv must pick a center cell that is not occupied by a live
+// companion, so dodging is possible.
+// =============================================================================
+
+TEST(TestHazardSpawnIgnoresPreMovePlayerCell) {
+  // Regression: previously SpawnHazard ran in PreStep (before movement), so
+  // the exclusion zone used the player's pre-move position. A player walking
+  // Up would end on the very cell PreStep had just cleared for spawning,
+  // and the fire would land dead-centre on them.
+  //
+  // This test drives many scripted Up moves and asserts the hazard NEVER
+  // centres on the post-movement cell the player just stepped into.
+  DodgeEnv env(9, 1, /*hazard_interval=*/1, /*horizon=*/500, 42);
+  auto& mgr = env.GetMutableObjectManager();
+  auto* p = dynamic_cast<Player*>(mgr.GetAllCompanions()[0]);
+  ASSERT_TRUE(p != nullptr);
+
+  for (int i = 0; i < 150; ++i) {
+    // Reset the player near the centre so moves have room in all directions.
+    Position start{5, 5};
+    mgr.UpdatePosition(p->GetId(), start);
+    env.ClearEffects();
+
+    // Alternate between Up / Right / Down / Left so we cover multiple
+    // post-move positions and multiple RNG draws.
+    MovementAction m;
+    switch (i % 4) {
+      case 0: m = MovementAction::Up; break;
+      case 1: m = MovementAction::Right; break;
+      case 2: m = MovementAction::Down; break;
+      default: m = MovementAction::Left; break;
+    }
+    std::vector<Action> actions = {EncodeAction(m)};
+    env.Step(actions);
+
+    Position post_move = p->GetPosition();
+    for (const ActiveEffect& eff : env.GetActiveEffects()) {
+      if (!eff.config || eff.config->damage <= 0) continue;
+      ASSERT_FALSE(eff.target.cell == post_move);
+    }
+  }
+}
+
+TEST(TestDodgeFireNeverSpawnsCenteredOnLivingCompanion) {
+  // Force fire-only hazards and drive the RNG for many spawns. Even across
+  // 200 hazard samples the center must never coincide with the player.
+  DodgeEnv env(7, 1, /*hazard_interval=*/1, /*horizon=*/1000, 7);
+  auto companions = env.GetMutableObjectManager().GetAllCompanions();
+  ASSERT_EQ(companions.size(), 1u);
+  Player* player = dynamic_cast<Player*>(companions[0]);
+  ASSERT_TRUE(player != nullptr);
+
+  for (int i = 0; i < 200; ++i) {
+    // Pin the player to a known cell so we have a stable expectation.
+    Position pinned{3, 3};
+    env.GetMutableObjectManager().UpdatePosition(player->GetId(), pinned);
+
+    // Clear effects so the next Step triggers a fresh spawn without
+    // carry-over from a prior one landing on the player.
+    env.ClearEffects();
+
+    std::vector<Action> actions = {EncodeAction(MovementAction::Stay)};
+    env.Step(actions);
+
+    for (const ActiveEffect& eff : env.GetActiveEffects()) {
+      if (!eff.config) continue;
+      // Only enforce the rule on damaging area effects — wind at the player
+      // cell just pushes them, which is fair.
+      if (eff.config->damage <= 0) continue;
+      ASSERT_FALSE(eff.target.cell == pinned);
+    }
+  }
 }
 
 // =============================================================================
