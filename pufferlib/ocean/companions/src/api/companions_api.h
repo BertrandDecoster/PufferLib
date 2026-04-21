@@ -363,11 +363,22 @@ COMPANIONS_API Companions_Env* companions_create_aggro(
 typedef enum {
     Companions_Lens_Synchro = 0,
     Companions_Lens_Aggro = 1,
-    Companions_Lens_Dodge = 2
+    Companions_Lens_Dodge = 2,
+    Companions_Lens_TagApply = 3
 } Companions_LensType;
 
 // Set task lens on environment (swaps interpretation layer)
 COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_LensType lens);
+
+// Set task lens with positional parameters. The lens will materialize objective
+// cells at the given positions (e.g. SynchroLens stamps Synchro cells at plate
+// positions for a pressure-plate puzzle). Positions are an array of length
+// `num_positions`. Returns false if lens is incompatible after activation.
+COMPANIONS_API bool companions_set_task_lens_with_params(
+    Companions_Env* env,
+    Companions_LensType lens,
+    const Companions_Position* positions,
+    int num_positions);
 
 // Get current lens type
 COMPANIONS_API Companions_LensType companions_get_task_lens(Companions_Env* env);

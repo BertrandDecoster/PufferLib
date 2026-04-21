@@ -44,9 +44,10 @@ const CellProperties& CellProperties::Get(CellKind kind) {
 // =============================================================================
 // Cell
 // =============================================================================
-Cell::Cell() : pos_{-1, -1}, kind_(CellKind::Floor) {}
+Cell::Cell() : pos_{-1, -1}, kind_(CellKind::Floor), base_kind_(CellKind::Floor) {}
 
-Cell::Cell(Position pos, CellKind kind) : pos_(pos), kind_(kind) {}
+Cell::Cell(Position pos, CellKind kind)
+    : pos_(pos), kind_(kind), base_kind_(kind) {}
 
 bool Cell::IsWalkable() const {
   return CellProperties::Get(kind_).walkable;

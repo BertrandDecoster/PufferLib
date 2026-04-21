@@ -480,6 +480,59 @@ COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_Len
   }
 }
 
+COMPANIONS_API bool companions_set_task_lens_with_params(
+    Companions_Env* env,
+    Companions_LensType lens,
+    const Companions_Position* positions,
+    int num_positions) {
+  if (!env || !env->env) {
+    SetError("companions_set_task_lens_with_params: null env");
+    return false;
+  }
+  try {
+    std::unique_ptr<companions::TaskLens> new_lens;
+    switch (lens) {
+      case Companions_Lens_Synchro:
+        new_lens = std::make_unique<companions::SynchroLens>();
+        break;
+      case Companions_Lens_Aggro:
+        new_lens = std::make_unique<companions::AggroLens>();
+        break;
+      case Companions_Lens_Dodge:
+        new_lens = std::make_unique<companions::DodgeLens>();
+        break;
+      case Companions_Lens_TagApply:
+        // TagApplyLens not yet implemented — fall back to SynchroLens so the
+        // plumbing path exercises. Remove this fallback once the lens lands.
+        new_lens = std::make_unique<companions::SynchroLens>();
+        break;
+      default:
+        SetError("companions_set_task_lens_with_params: invalid lens type");
+        return false;
+    }
+
+    companions::LensParams params;
+    if (positions && num_positions > 0) {
+      params.positions.reserve(num_positions);
+      for (int i = 0; i < num_positions; ++i) {
+        params.positions.push_back(companions::Position{
+            positions[i].row, positions[i].col});
+      }
+    }
+
+    if (!env->env->SetTaskLensWithParams(std::move(new_lens), params)) {
+      SetError("Lens incompatible with current environment state");
+      return false;
+    }
+    env->done = env->env->IsDone();
+    env->success = env->env->IsSuccess();
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  }
+}
+
 COMPANIONS_API Companions_LensType companions_get_task_lens(Companions_Env* env) {
   if (!env || !env->env) {
     return Companions_Lens_Synchro;  // Default

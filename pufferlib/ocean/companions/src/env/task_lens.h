@@ -4,12 +4,23 @@
 #ifndef COMPANIONS_ENV_TASK_LENS_H_
 #define COMPANIONS_ENV_TASK_LENS_H_
 
+#include <string>
 #include <vector>
 #include "../core/cell.h"
+#include "../core/types.h"
 
 namespace companions {
 
 class BaseEnv;  // Forward declaration
+
+// Parameters handed to a lens at activation time. Positions tell the lens
+// where to stamp objective cells (Synchro plates, TagApply markers, etc.).
+// Args are the textual operator arguments from the HTN (e.g. {"wet","gob1"})
+// for lenses that need entity identity beyond raw positions.
+struct LensParams {
+  std::vector<Position> positions;
+  std::vector<std::string> args;
+};
 
 // =============================================================================
 // TaskLens - Abstract interface for task-specific interpretation of world state
@@ -89,6 +100,24 @@ class TaskLens {
   // Return the number of additional features appended by AppendVectorObs.
   // Must match the actual number of floats added.
   virtual int AdditionalVectorObsSize() const { return 0; }
+
+  // ===========================================================================
+  // Activation / Deactivation - materialize objective cells on the grid
+  // ===========================================================================
+  // Activate: called when the lens is set on an env. Lens may stamp objective
+  // cells (Synchro, Target) at positions specified in params. Default: no-op.
+  //
+  // Deactivate: called before the lens is replaced. Lens should un-stamp cells
+  // it placed so the next lens sees a clean slate. Default: no-op.
+  //
+  // Subclasses that stamp cells MUST override both and pair them symmetrically.
+  virtual void Activate(BaseEnv& env, const LensParams& params) {
+    (void)env;
+    (void)params;
+  }
+  virtual void Deactivate(BaseEnv& env) {
+    (void)env;
+  }
 };
 
 }  // namespace companions

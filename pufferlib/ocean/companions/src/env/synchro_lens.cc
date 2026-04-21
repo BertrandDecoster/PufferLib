@@ -81,4 +81,31 @@ int SynchroLens::CountSynchroCells(const BaseEnv& env) const {
   return count;
 }
 
+void SynchroLens::Activate(BaseEnv& env, const LensParams& params) {
+  Grid& grid = env.GetMutableGrid();
+  stamped_positions_.clear();
+  stamped_positions_.reserve(params.positions.size());
+  for (const Position& pos : params.positions) {
+    if (pos.row < 0 || pos.row >= grid.GetRows() ||
+        pos.col < 0 || pos.col >= grid.GetCols()) {
+      continue;
+    }
+    Cell& cell = grid.GetMutableCell(pos);
+    cell.StampOverlay(CellKind::Synchro, /*is_stamp_overlay=*/true);
+    stamped_positions_.push_back(pos);
+  }
+}
+
+void SynchroLens::Deactivate(BaseEnv& env) {
+  Grid& grid = env.GetMutableGrid();
+  for (const Position& pos : stamped_positions_) {
+    if (pos.row < 0 || pos.row >= grid.GetRows() ||
+        pos.col < 0 || pos.col >= grid.GetCols()) {
+      continue;
+    }
+    grid.GetMutableCell(pos).RemoveOverlay();
+  }
+  stamped_positions_.clear();
+}
+
 }  // namespace companions

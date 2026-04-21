@@ -28,7 +28,7 @@
       "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/companions_test",
       "args": [],
       "cwd": "${workspaceFolder}/pufferlib/ocean/companions",
-      "preLaunchTask": "companions-build",
+      "preLaunchTask": "companions-cpp-build",
       "env": {}
     },
     {
@@ -37,7 +37,7 @@
       "request": "launch",
       "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \"",
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "companions-build"
+      "preLaunchTask": "companions-cpp-build"
     },
     {
       "name": "Companions: Play (Aggro)",
@@ -45,7 +45,7 @@
       "request": "launch",
       "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env aggro --size 10\"",
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "companions-build"
+      "preLaunchTask": "companions-cpp-build"
     },
     {
       "name": "Companions: Play (Dodge)",
@@ -53,7 +53,7 @@
       "request": "launch",
       "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env dodge --size 7\"",
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "companions-build"
+      "preLaunchTask": "companions-cpp-build"
     },
     {
       "name": "Companions: Benchmark",
@@ -62,7 +62,7 @@
       "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/companions_fsm_benchmark",
       "args": [],
       "cwd": "${workspaceFolder}/pufferlib/ocean/companions",
-      "preLaunchTask": "companions-build",
+      "preLaunchTask": "companions-cpp-build",
       "env": {}
     },
     {
@@ -71,7 +71,7 @@
       "request": "launch",
       "command": "${workspaceFolder}/pufferlib/ocean/companions/scripts/profile_benchmark.sh",
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "companions-build"
+      "preLaunchTask": "companions-cpp-build"
     }
   ],
   "inputs": [

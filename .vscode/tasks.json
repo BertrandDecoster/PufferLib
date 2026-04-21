@@ -2,7 +2,7 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "companions-build",
+            "label": "companions-cpp-build",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh",
             "group": {
@@ -25,7 +25,7 @@
             }
         },
         {
-            "label": "companions-build-clean",
+            "label": "companions-cpp-build-clean",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --clean",
             "group": "build",
@@ -45,7 +45,7 @@
             }
         },
         {
-            "label": "companions-build-release",
+            "label": "companions-cpp-build-release",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release",
             "group": "build",
@@ -65,7 +65,7 @@
             }
         },
         {
-            "label": "companions-build-release-clean",
+            "label": "companions-cpp-build-release-clean",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release --clean",
             "group": "build",
@@ -85,7 +85,7 @@
             }
         },
         {
-            "label": "companions-build-full",
+            "label": "companions-cpp-python-build",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release --python",
             "group": "build",
@@ -105,7 +105,7 @@
             }
         },
         {
-            "label": "companions-build-full-clean",
+            "label": "companions-cpp-python-build-clean",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release --python --clean",
             "group": "build",

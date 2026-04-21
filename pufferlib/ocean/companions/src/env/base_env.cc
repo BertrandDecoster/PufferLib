@@ -1028,8 +1028,38 @@ bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
   if (lens && !lens->CanOperateOn(*this)) {
     return false;
   }
+  // Deactivate the outgoing lens so it restores any stamped cells.
+  if (task_lens_) {
+    task_lens_->Deactivate(*this);
+  }
   task_lens_ = std::move(lens);
   // Reset success flag so new lens can evaluate victory from scratch
+  ResetSuccess();
+  return true;
+}
+
+bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
+                                     const LensParams& params) {
+  // Deactivate outgoing lens first so it un-stamps before new stamps happen.
+  if (task_lens_) {
+    task_lens_->Deactivate(*this);
+  }
+
+  if (lens) {
+    // Activate BEFORE CanOperateOn so lenses that materialize their own
+    // objective cells (SynchroLens, TagApplyLens) can satisfy the check.
+    lens->Activate(*this, params);
+    if (!lens->CanOperateOn(*this)) {
+      lens->Deactivate(*this);
+      // Restore the previous lens — deactivation already wiped its overlay,
+      // but the previous lens object is gone. The env is effectively
+      // lens-less until a successor SetTaskLens* call.
+      task_lens_.reset();
+      ResetSuccess();
+      return false;
+    }
+  }
+  task_lens_ = std::move(lens);
   ResetSuccess();
   return true;
 }

@@ -19,9 +19,18 @@ class SynchroLens : public TaskLens {
   float ComputeReward(const BaseEnv& env, int agent_id) const override;
   CellKind MaskCell(CellKind kind) const override;
 
+  // Stamp Synchro cells at params.positions (overlaying base terrain).
+  // These cells ARE the synchro goals until Deactivate restores the base.
+  void Activate(BaseEnv& env, const LensParams& params) override;
+  void Deactivate(BaseEnv& env) override;
+
  private:
   int CountAgentsOnSynchroCells(const BaseEnv& env) const;
   int CountSynchroCells(const BaseEnv& env) const;
+
+  // Positions this lens stamped on Activate, remembered so Deactivate can
+  // un-stamp exactly those cells.
+  std::vector<Position> stamped_positions_;
 };
 
 }  // namespace companions

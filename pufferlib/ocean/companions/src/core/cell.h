@@ -70,6 +70,33 @@ class Cell {
   CellOrigin GetOrigin() const { return origin_; }
   void SetOrigin(CellOrigin origin) { origin_ = origin; }
 
+  // Base kind: the "physical" terrain the cell represents. Remains stable
+  // when a lens stamps an objective kind (Synchro, Target) over the cell.
+  // Stamp saves the current kind into base_kind (if not already stamped),
+  // then sets kind. Unstamp restores kind from base_kind.
+  CellKind GetBaseKind() const { return base_kind_; }
+  void SetBaseKind(CellKind kind) { base_kind_ = kind; }
+
+  // Stamp an overlay kind onto this cell. First stamp preserves current kind
+  // in base_kind; subsequent stamps while already-stamped just swap overlays.
+  void StampOverlay(CellKind overlay_kind, bool is_stamp_overlay) {
+    if (is_stamp_overlay && !IsStamped()) {
+      base_kind_ = kind_;
+      stamped_ = true;
+    }
+    kind_ = overlay_kind;
+  }
+
+  // Remove any overlay, restoring base_kind as the current kind.
+  void RemoveOverlay() {
+    if (stamped_) {
+      kind_ = base_kind_;
+      stamped_ = false;
+    }
+  }
+
+  bool IsStamped() const { return stamped_; }
+
   // Property accessors (delegate to CellProperties)
   bool IsWalkable() const;
   bool IsPathable() const;
@@ -80,7 +107,9 @@ class Cell {
  private:
   Position pos_;
   CellKind kind_ = CellKind::Floor;
+  CellKind base_kind_ = CellKind::Floor;   // Physical terrain (restored on unstamp)
   CellOrigin origin_ = CellOrigin::Default;
+  bool stamped_ = false;                    // True while an overlay is active
 };
 
 // =============================================================================
