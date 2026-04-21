@@ -40,7 +40,8 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       effect_system_(std::make_unique<EffectSystem>(*other.effect_system_)),
       tick_(other.tick_),
       horizon_(other.horizon_),
-      d4_transform_(other.d4_transform_) {
+      d4_transform_(other.d4_transform_),
+      annotations_(other.annotations_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -56,6 +57,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     tick_ = other.tick_;
     horizon_ = other.horizon_;
     d4_transform_ = other.d4_transform_;
+    annotations_ = other.annotations_;
   }
   return *this;
 }
@@ -867,6 +869,9 @@ Snapshot BaseEnv::SaveSnapshot() const {
   snap.horizon = horizon_;
   snap.d4_transform = d4_transform_;
 
+  // Semantic annotations
+  snap.annotations = annotations_.Serialize();
+
   return snap;
 }
 
@@ -1006,6 +1011,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   tick_ = snapshot.tick;
   horizon_ = snapshot.horizon;
   d4_transform_ = snapshot.d4_transform;
+
+  // Restore semantic annotations (present in v2+ snapshots; empty vector in v1).
+  annotations_.Deserialize(snapshot.annotations);
 
   // Apply D4 symmetry transformation if specified
   // (Snapshot contains pre-transform positions, so we apply transform after loading)

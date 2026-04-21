@@ -4,6 +4,7 @@
 #include "synchro_lens.h"
 
 #include "base_env.h"
+#include "../core/annotations.h"
 #include "../core/grid.h"
 #include "../core/object_manager.h"
 
@@ -52,13 +53,14 @@ CellKind SynchroLens::MaskCell(CellKind kind) const {
 
 int SynchroLens::CountAgentsOnSynchroCells(const BaseEnv& env) const {
   int count = 0;
-  const Grid& grid = env.GetGrid();
+  const AnnotationStore& annotations = env.GetAnnotations();
   const ObjectManager& om = env.GetObjectManager();
 
   for (const Agent* agent : om.GetAllAgents()) {
     if (!agent->IsAlive()) continue;
     Position pos = agent->GetPosition();
-    if (grid.GetCellKind(pos) == CellKind::Synchro) {
+    AnnotationKey key{AnnotationTarget::Cell, pos, kInvalidObjectId};
+    if (annotations.HasTag(key, SemanticTag::SynchroGoal)) {
       count++;
     }
   }
@@ -66,23 +68,16 @@ int SynchroLens::CountAgentsOnSynchroCells(const BaseEnv& env) const {
 }
 
 int SynchroLens::CountSynchroCells(const BaseEnv& env) const {
-  const Grid& grid = env.GetGrid();
-  int rows = grid.GetRows();
-  int cols = grid.GetCols();
-  int count = 0;
-
-  for (int r = 0; r < rows; ++r) {
-    for (int c = 0; c < cols; ++c) {
-      if (grid.GetCellKind(r, c) == CellKind::Synchro) {
-        count++;
-      }
-    }
-  }
-  return count;
+  return static_cast<int>(
+      env.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal).size());
 }
 
 void SynchroLens::Activate(BaseEnv& env, const LensParams& params) {
   Grid& grid = env.GetMutableGrid();
+  AnnotationStore& annotations = env.GetMutableAnnotations();
+  // Drop any stale SynchroGoal tags from a prior lens instance before adding
+  // our own, so a back-to-back Activate does not double-count goals.
+  annotations.RemoveByOwner(kOwnerId);
   stamped_positions_.clear();
   stamped_positions_.reserve(params.positions.size());
   for (const Position& pos : params.positions) {
@@ -93,6 +88,9 @@ void SynchroLens::Activate(BaseEnv& env, const LensParams& params) {
     Cell& cell = grid.GetMutableCell(pos);
     cell.StampOverlay(CellKind::Synchro, /*is_stamp_overlay=*/true);
     stamped_positions_.push_back(pos);
+
+    AnnotationKey key{AnnotationTarget::Cell, pos, kInvalidObjectId};
+    annotations.Add(key, Annotation{SemanticTag::SynchroGoal, {}, kOwnerId});
   }
 }
 
@@ -106,6 +104,7 @@ void SynchroLens::Deactivate(BaseEnv& env) {
     grid.GetMutableCell(pos).RemoveOverlay();
   }
   stamped_positions_.clear();
+  env.GetMutableAnnotations().RemoveByOwner(kOwnerId);
 }
 
 }  // namespace companions

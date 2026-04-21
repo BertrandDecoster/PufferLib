@@ -4,6 +4,7 @@
 #include "aggro_lens.h"
 
 #include "base_env.h"
+#include "../core/annotations.h"
 #include "../core/grid.h"
 #include "../core/object_manager.h"
 #include "../core/fsm/fsm_state.h"
@@ -63,16 +64,9 @@ CellKind AggroLens::MaskCell(CellKind kind) const {
 }
 
 Position AggroLens::FindTargetCell(const BaseEnv& env) const {
-  const Grid& grid = env.GetGrid();
-  int rows = grid.GetRows();
-  int cols = grid.GetCols();
-
-  for (int r = 0; r < rows; ++r) {
-    for (int c = 0; c < cols; ++c) {
-      if (grid.GetCellKind(r, c) == CellKind::Target) {
-        return Position{r, c};
-      }
-    }
+  auto targets = env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
+  if (!targets.empty()) {
+    return targets.front();
   }
   return Position{-1, -1};  // Not found
 }

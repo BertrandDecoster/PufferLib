@@ -13,6 +13,11 @@ class SynchroLens : public TaskLens {
   static constexpr float kWinReward = 1.0f;
   static constexpr float kProgressReward = 0.01f;
 
+  // Stable owner id used in the AnnotationStore for SynchroGoal tags placed
+  // by this lens (and by SynchroEnv::Reset on initial spawn). Swapping in a
+  // new SynchroLens via SetTaskLens removes tags from the previous owner.
+  static constexpr int32_t kOwnerId = 1;
+
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;
   bool IsSuccess(const BaseEnv& env) const override;

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "../core/annotations.h"
 #include "../core/d4_transform.h"
 #include "../core/pcg32.h"
 #include "../core/effect_config.h"
@@ -144,6 +145,13 @@ class BaseEnv {
   // Patrol path accessor (override in AggroEnv)
   virtual const std::vector<Position>& GetPatrolPath() const;
 
+  // Semantic annotations (task tags on cells and agents, independent of
+  // physical CellKind). Lenses populate on Activate and clean up via
+  // owner_lens_id on Deactivate; persistent annotations (owner_lens_id == -1)
+  // come from the map generator or external HTN input.
+  const AnnotationStore& GetAnnotations() const { return annotations_; }
+  AnnotationStore& GetMutableAnnotations() { return annotations_; }
+
   // Effect system access (delegates to EffectSystem)
   const std::vector<ActiveEffect>& GetActiveEffects() const;
   void ClearEffects();
@@ -213,6 +221,7 @@ class BaseEnv {
   int horizon_ = kDefaultHorizon;
   int d4_transform_ = 0;  // D4 symmetry transformation (0-7)
   std::unique_ptr<TaskLens> task_lens_;
+  AnnotationStore annotations_;
 };
 
 }  // namespace companions

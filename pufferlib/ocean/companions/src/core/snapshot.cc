@@ -157,7 +157,7 @@ std::vector<uint8_t> Snapshot::Serialize() const {
 
   // Magic number and version
   WriteValue(buffer, static_cast<uint32_t>(0x534E4150));  // "SNAP"
-  WriteValue(buffer, static_cast<uint32_t>(1));           // Version 1
+  WriteValue(buffer, static_cast<uint32_t>(2));           // Version 2 (adds annotations)
 
   // Grid dimensions
   WriteValue(buffer, rows);
@@ -243,6 +243,21 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   // Patrol path (for AggroEnv without FSM agents)
   WritePositionVector(buffer, patrol_path);
 
+  // Annotations (v2+)
+  WriteValue(buffer, static_cast<uint32_t>(annotations.size()));
+  for (const auto& a : annotations) {
+    WriteValue(buffer, a.target_type);
+    WritePosition(buffer, a.pos);
+    WriteValue(buffer, a.agent_id);
+    WriteValue(buffer, static_cast<uint16_t>(a.tag));
+    WriteValue(buffer, a.owner_lens_id);
+    WriteValue(buffer, static_cast<uint32_t>(a.params.size()));
+    for (const auto& kv : a.params) {
+      WriteString(buffer, kv.first);
+      WriteString(buffer, kv.second);
+    }
+  }
+
   return buffer;
 }
 
@@ -260,7 +275,7 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     throw std::runtime_error("Invalid snapshot magic number");
   }
   uint32_t version = ReadValue<uint32_t>(ptr, end);
-  if (version != 1) {
+  if (version != 1 && version != 2) {
     throw std::runtime_error("Unsupported snapshot version");
   }
 
@@ -367,6 +382,33 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
 
   // Patrol path (for AggroEnv without FSM agents)
   snap.patrol_path = ReadPositionVector(ptr, end);
+
+  // Annotations (v2+). v1 snapshots have no annotations block, leave empty.
+  if (version >= 2) {
+    uint32_t num_annotations = ReadValue<uint32_t>(ptr, end);
+    if (num_annotations > 1000000) {
+      throw std::runtime_error("Snapshot buffer corrupt: unreasonable annotation count");
+    }
+    snap.annotations.resize(num_annotations);
+    for (uint32_t i = 0; i < num_annotations; ++i) {
+      auto& a = snap.annotations[i];
+      a.target_type = ReadValue<uint8_t>(ptr, end);
+      a.pos = ReadPosition(ptr, end);
+      a.agent_id = ReadValue<ObjectId>(ptr, end);
+      a.tag = static_cast<SemanticTag>(ReadValue<uint16_t>(ptr, end));
+      a.owner_lens_id = ReadValue<int32_t>(ptr, end);
+      uint32_t num_params = ReadValue<uint32_t>(ptr, end);
+      if (num_params > 1000) {
+        throw std::runtime_error("Snapshot buffer corrupt: unreasonable annotation param count");
+      }
+      a.params.reserve(num_params);
+      for (uint32_t j = 0; j < num_params; ++j) {
+        std::string k = ReadString(ptr, end);
+        std::string v = ReadString(ptr, end);
+        a.params.emplace_back(std::move(k), std::move(v));
+      }
+    }
+  }
 
   return snap;
 }

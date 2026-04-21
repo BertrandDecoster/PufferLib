@@ -9,6 +9,7 @@
 #include <random>
 #include <stdexcept>
 
+#include "../core/annotations.h"
 #include "../core/cell.h"
 #include "../core/d4_transform.h"
 #include "../core/fsm/enemies.h"
@@ -123,6 +124,21 @@ void AggroEnv::Reset() {
     D4Transform transform = ToD4Transform(d4_transform_);
     target_pos_ = TransformPosition(target_pos_, snapshot.rows, snapshot.cols, transform);
     patrol_path_ = TransformPositions(patrol_path_, snapshot.rows, snapshot.cols, transform);
+  }
+
+  // Dual-path semantic annotation for the target cell. owner_lens_id = -1
+  // keeps it persistent across lens swaps (it's intrinsic level data).
+  {
+    AnnotationStore& annotations = GetMutableAnnotations();
+    for (const Position& old_pos :
+         annotations.FindCellsWithTag(SemanticTag::AggroTarget)) {
+      annotations.RemoveByKey(
+          AnnotationKey{AnnotationTarget::Cell, old_pos, kInvalidObjectId},
+          SemanticTag::AggroTarget);
+    }
+    annotations.Add(
+        AnnotationKey{AnnotationTarget::Cell, target_pos_, kInvalidObjectId},
+        Annotation{SemanticTag::AggroTarget, {}, -1});
   }
 
   // Spawn the enemy using the correct type (Zombie/Goblin)

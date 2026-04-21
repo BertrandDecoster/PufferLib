@@ -125,6 +125,26 @@ void SynchroEnv::Reset() {
     synchro_positions_ = TransformPositions(synchro_positions_,
                                             snapshot.rows, snapshot.cols, transform);
   }
+
+  // Populate the semantic annotation layer so readers can switch to it
+  // (dual-path alongside the CellKind::Synchro overlay during migration).
+  // owner_lens_id = -1 means persistent: these represent the level's intrinsic
+  // goal setup and must survive lens swaps. Only lens-activated tags (placed
+  // via SetTaskLensWithParams) get removed when the lens is deactivated.
+  AnnotationStore& annotations = GetMutableAnnotations();
+  // Clear any persistent SynchroGoal tags from a previous Reset before adding
+  // new ones for the fresh level layout.
+  for (const Position& old_pos :
+       annotations.FindCellsWithTag(SemanticTag::SynchroGoal)) {
+    annotations.RemoveByKey(
+        AnnotationKey{AnnotationTarget::Cell, old_pos, kInvalidObjectId},
+        SemanticTag::SynchroGoal);
+  }
+  for (const Position& pos : synchro_positions_) {
+    annotations.Add(
+        AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+        Annotation{SemanticTag::SynchroGoal, {}, -1});
+  }
 }
 
 void SynchroEnv::Reset(unsigned int seed) {

@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "annotations.h"
 #include "cell.h"
 #include "fsm/fsm_state.h"
 #include "types.h"
@@ -135,6 +136,10 @@ struct Snapshot {
   // Patrol path (for AggroEnv) - stored here even if no FSM agent,
   // so it can be used with specialized enemy types (Zombie/Goblin)
   std::vector<Position> patrol_path;
+
+  // Semantic annotations (cell tags, agent tags). Separate from physical world
+  // data so CellKind stays pure terrain. Added in v2; absent in v1 snapshots.
+  std::vector<AnnotationSnapshot> annotations;
 
   // ==========================================================================
   // Validation helpers

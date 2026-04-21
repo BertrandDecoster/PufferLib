@@ -39,6 +39,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CORE_SOURCES
   src/core/types.cc
   src/core/cell.cc
+  src/core/annotations.cc
   src/core/grid.cc
   src/core/object.cc
   src/core/object_manager.cc
@@ -62,6 +63,7 @@ set(CORE_SOURCES
 set(CORE_HEADERS
   src/core/types.h
   src/core/cell.h
+  src/core/annotations.h
   src/core/grid.h
   src/core/object.h
   src/core/object_manager.h
@@ -223,6 +225,10 @@ add_executable(companions_task_lens_test tests/test_task_lens.cc)
 target_link_libraries(companions_task_lens_test companions_viz companions_env companions_core)
 target_include_directories(companions_task_lens_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_annotations_test tests/test_annotations.cc)
+target_link_libraries(companions_annotations_test companions_viz companions_env companions_core)
+target_include_directories(companions_annotations_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # =============================================================================
 # Demo executable (cross-platform)
 # =============================================================================
@@ -259,6 +265,7 @@ add_test(NAME companions_snapshot_test COMMAND companions_snapshot_test)
 add_test(NAME companions_snapshot_json_test COMMAND companions_snapshot_json_test)
 add_test(NAME companions_fsm_timing_test COMMAND companions_fsm_timing_test)
 add_test(NAME companions_task_lens_test COMMAND companions_task_lens_test)
+add_test(NAME companions_annotations_test COMMAND companions_annotations_test)
 
 # =============================================================================
 # DLL (Dynamic library for external integration)

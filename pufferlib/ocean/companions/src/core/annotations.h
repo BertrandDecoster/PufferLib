@@ -1,0 +1,153 @@
+// Copyright 2024
+// Semantic annotation store. Separates task-semantic tags (SynchroGoal,
+// SkillGiver, Room, ...) from physical world data (CellKind, Agent, Grid).
+//
+// Annotations are key-value records attached to either a cell position or an
+// agent id. They are typically placed by a TaskLens during Activate() and
+// removed on Deactivate() via owner_lens_id; annotations with
+// owner_lens_id == -1 are persistent (e.g. placed by the map generator or the
+// HTN planner and intended to survive lens swaps).
+
+#ifndef COMPANIONS_CORE_ANNOTATIONS_H_
+#define COMPANIONS_CORE_ANNOTATIONS_H_
+
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "types.h"
+
+namespace companions {
+
+// =============================================================================
+// SemanticTag - enumerated task-level tag names.
+// Extending this enum is a minor C++ ABI change (DLL consumers see ints).
+// Keep symmetric with SEMANTIC_TAG_NAMES in htn_bridge.py.
+// =============================================================================
+enum class SemanticTag : uint16_t {
+  // Cell-role tags placed by the HTN planner / task lenses.
+  SynchroGoal = 0,   // All companions must occupy this cell.
+  AggroTarget = 1,   // Lure an enemy to this cell.
+  QuestPickup = 2,   // Item pickup location.
+  SafeZone = 3,      // Retreat destination for dodge-style tasks.
+
+  // Agent-role tags.
+  TargetMob = 4,     // HTN plan marks this agent as the objective.
+  SkillGiver = 5,    // Defeating grants a skill (params: "skill").
+  Escort = 6,        // NPC to protect.
+  HtnName = 7,       // Stable string handle for HTN facts (params: "name").
+
+  // Cell-grouping tag (replaces hardcoded LevelLayout.rooms in htn_bridge.py).
+  Room = 8,          // Cell belongs to a named room (params: "room").
+
+  _Count,            // Sentinel, not a real tag.
+};
+
+// =============================================================================
+// AnnotationTarget, AnnotationKey
+// =============================================================================
+enum class AnnotationTarget : uint8_t { Cell = 0, Agent = 1 };
+
+struct AnnotationKey {
+  AnnotationTarget target = AnnotationTarget::Cell;
+  Position pos{-1, -1};               // Used when target == Cell.
+  ObjectId agent_id = kInvalidObjectId;  // Used when target == Agent.
+
+  bool operator==(const AnnotationKey& other) const {
+    if (target != other.target) return false;
+    if (target == AnnotationTarget::Cell) return pos == other.pos;
+    return agent_id == other.agent_id;
+  }
+  bool operator!=(const AnnotationKey& other) const { return !(*this == other); }
+};
+
+struct AnnotationKeyHash {
+  std::size_t operator()(const AnnotationKey& k) const {
+    std::size_t h = std::hash<int>()(static_cast<int>(k.target));
+    if (k.target == AnnotationTarget::Cell) {
+      h ^= (std::hash<int>()(k.pos.row) << 1);
+      h ^= (std::hash<int>()(k.pos.col) << 3);
+    } else {
+      h ^= (std::hash<int>()(k.agent_id) << 1);
+    }
+    return h;
+  }
+};
+
+// =============================================================================
+// Annotation
+// =============================================================================
+struct Annotation {
+  SemanticTag tag = SemanticTag::SynchroGoal;
+  std::unordered_map<std::string, std::string> params;
+  int32_t owner_lens_id = -1;   // -1 means persistent (not auto-removed on lens swap).
+};
+
+// =============================================================================
+// AnnotationSnapshot - serializable form of a single annotation.
+// Goes into Snapshot::annotations for round-trip through save/load.
+// =============================================================================
+struct AnnotationSnapshot {
+  uint8_t target_type = 0;   // 0 = Cell, 1 = Agent.
+  Position pos{-1, -1};
+  ObjectId agent_id = kInvalidObjectId;
+  SemanticTag tag = SemanticTag::SynchroGoal;
+  std::vector<std::pair<std::string, std::string>> params;
+  int32_t owner_lens_id = -1;
+};
+
+// =============================================================================
+// AnnotationStore - owns all semantic tags for a BaseEnv.
+// Thread compat: single-threaded, like the rest of the env.
+// =============================================================================
+class AnnotationStore {
+ public:
+  AnnotationStore() = default;
+  AnnotationStore(const AnnotationStore&) = default;
+  AnnotationStore(AnnotationStore&&) = default;
+  AnnotationStore& operator=(const AnnotationStore&) = default;
+  AnnotationStore& operator=(AnnotationStore&&) = default;
+
+  // Mutation ---------------------------------------------------------------
+  void Add(AnnotationKey key, Annotation ann);
+  void RemoveByOwner(int32_t lens_id);
+  void RemoveByKey(AnnotationKey key, SemanticTag tag);
+  void Clear();
+
+  // Query ------------------------------------------------------------------
+  // All annotations attached to `key`. Pointers remain valid until any
+  // mutating call on this store.
+  std::vector<const Annotation*> Get(AnnotationKey key) const;
+  bool HasTag(AnnotationKey key, SemanticTag tag) const;
+
+  // Tag-indexed lookups. Order is unspecified but stable between mutations.
+  std::vector<Position> FindCellsWithTag(SemanticTag tag) const;
+  std::vector<ObjectId> FindAgentsWithTag(SemanticTag tag) const;
+
+  std::size_t Size() const { return entries_.size(); }
+  bool Empty() const { return entries_.empty(); }
+
+  // Snapshot round-trip ----------------------------------------------------
+  std::vector<AnnotationSnapshot> Serialize() const;
+  void Deserialize(const std::vector<AnnotationSnapshot>& s);
+
+ private:
+  // Storage: one entry per (key, tag) pair. Multimap would work but the
+  // explicit vector keeps iteration order deterministic for snapshot output.
+  struct Entry {
+    AnnotationKey key;
+    Annotation ann;
+  };
+  std::vector<Entry> entries_;
+};
+
+// =============================================================================
+// SemanticTagToString - stable string names (keep in sync with htn_bridge.py).
+// =============================================================================
+std::string SemanticTagToString(SemanticTag tag);
+
+}  // namespace companions
+
+#endif  // COMPANIONS_CORE_ANNOTATIONS_H_
