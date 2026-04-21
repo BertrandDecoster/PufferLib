@@ -3,6 +3,9 @@
 
 #include "aggro_lens.h"
 
+#include <cstdlib>
+#include <sstream>
+
 #include "base_env.h"
 #include "../core/annotations.h"
 #include "../core/grid.h"
@@ -52,6 +55,45 @@ float AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
     return kWinReward;
   }
   return kTimePenalty;
+}
+
+std::string AggroLens::GetObjectiveString(const BaseEnv& env) const {
+  std::ostringstream ss;
+  ss << "Aggro: lure enemy to target";
+
+  Position target = FindTargetCell(env);
+  if (target.row < 0 || target.col < 0) {
+    ss << " (no target cell)";
+    return ss.str();
+  }
+
+  const ObjectManager& om = env.GetObjectManager();
+  const AgentFSM* enemy = nullptr;
+  for (const Actor* actor : om.GetAllActors()) {
+    const AgentFSM* fsm_agent = dynamic_cast<const AgentFSM*>(actor);
+    if (fsm_agent && fsm_agent->IsAlive() && fsm_agent->HasFSM()) {
+      enemy = fsm_agent;
+      break;
+    }
+  }
+
+  if (!enemy) {
+    ss << " (no enemy)";
+    return ss.str();
+  }
+
+  if (enemy->GetPosition() == target) {
+    ss << " [SUCCESS - enemy on target]";
+    return ss.str();
+  }
+
+  Position epos = enemy->GetPosition();
+  int dist = std::abs(epos.row - target.row) + std::abs(epos.col - target.col);
+  std::string state_name = "?";
+  const FSMState* state = enemy->GetCurrentState();
+  if (state) state_name = state->GetName();
+  ss << " (enemy " << state_name << ", " << dist << " cells from target)";
+  return ss.str();
 }
 
 bool AggroLens::IsGoalCell(const BaseEnv& env, Position pos) const {

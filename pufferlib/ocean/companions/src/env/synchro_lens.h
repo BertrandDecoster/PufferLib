@@ -22,6 +22,7 @@ class SynchroLens : public TaskLens {
   bool IsDone(const BaseEnv& env) const override;
   bool IsSuccess(const BaseEnv& env) const override;
   float ComputeReward(const BaseEnv& env, int agent_id) const override;
+  std::string GetObjectiveString(const BaseEnv& env) const override;
   bool IsGoalCell(const BaseEnv& env, Position pos) const override;
 
   // Stamp Synchro cells at params.positions (overlaying base terrain).

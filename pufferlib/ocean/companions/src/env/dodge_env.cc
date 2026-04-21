@@ -14,6 +14,7 @@
 #include "../core/level_builder.h"
 #include "../core/level_config.h"
 #include "../core/level_generator.h"
+#include "dodge_lens.h"
 #include "effect_system.h"
 
 namespace companions {
@@ -35,6 +36,7 @@ DodgeEnv::DodgeEnv(int grid_size, int num_companions, int hazard_interval,
   hazard_effects_ = {"dodge_fire", "dodge_wind"};
 
   Reset();
+  SetTaskLens(std::make_unique<DodgeLens>());
 }
 
 DodgeEnv::DodgeEnv(const DodgeEnv& other)

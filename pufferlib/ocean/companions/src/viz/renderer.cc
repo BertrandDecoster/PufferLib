@@ -64,21 +64,14 @@ std::string Renderer::RenderAscii(const BaseEnv& env) const {
     ss << "\n" << sep << "\n";
   }
 
-  // Status line - count agents on goal cells (SynchroGoal annotation)
-  int on_goal = 0;
-  int total_agents = obj_mgr.GetNumAgents();
-  const AnnotationStore& annotations = env.GetAnnotations();
-  for (const Agent* agent : obj_mgr.GetAllAgents()) {
-    if (!agent->IsAlive()) continue;
-    if (annotations.HasTag(
-            AnnotationKey{AnnotationTarget::Cell, agent->GetPosition(),
-                          kInvalidObjectId},
-            SemanticTag::SynchroGoal)) {
-      on_goal++;
-    }
-  }
+  // Status line - delegate to the active TaskLens so each task describes
+  // itself (synchro shows "X/Y on goals", aggro shows lure progress, etc).
   (void)grid;
-  ss << "Agents on goals: " << on_goal << "/" << total_agents << "\n";
+  (void)obj_mgr;
+  const TaskLens* lens = env.GetTaskLens();
+  if (lens) {
+    ss << lens->GetObjectiveString(env) << "\n";
+  }
 
   return ss.str();
 }

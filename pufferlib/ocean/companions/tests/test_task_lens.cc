@@ -83,6 +83,10 @@ TEST(TestTaskLensInterface) {
       (void)agent_id;
       return 0.0f;
     }
+    std::string GetObjectiveString(const BaseEnv& env) const override {
+      (void)env;
+      return "mock";
+    }
   };
 
   MockLens lens;
@@ -107,6 +111,9 @@ TEST(TestTaskLensVirtualDestructor) {
     float ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
     }
+    std::string GetObjectiveString(const BaseEnv& env) const override {
+      (void)env; return "mock";
+    }
   };
 
   bool destroyed = false;
@@ -126,6 +133,9 @@ TEST(TestTaskLensOptionalMethods) {
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
     float ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
+    }
+    std::string GetObjectiveString(const BaseEnv& env) const override {
+      (void)env; return "minimal";
     }
     // Note: NOT overriding AppendVectorObs or AdditionalVectorObsSize
   };
@@ -152,6 +162,9 @@ TEST(TestBaseEnvSetTaskLens) {
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
     float ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.5f;
+    }
+    std::string GetObjectiveString(const BaseEnv& env) const override {
+      (void)env; return "mock";
     }
   };
 

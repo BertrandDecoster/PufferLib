@@ -12,4 +12,4 @@ Tick: 0
 +--+--+--+--+--+--+
 |##|##|##|##|##|##|
 +--+--+--+--+--+--+
-Agents on goals: 0/2
+Synchro: 0/2 companions on goal cells

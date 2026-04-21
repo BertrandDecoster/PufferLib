@@ -944,7 +944,7 @@ TEST(TestRendererAscii) {
 
   ASSERT_FALSE(output.empty());
   ASSERT_TRUE(output.find("Tick:") != std::string::npos);
-  ASSERT_TRUE(output.find("Agents on goals:") != std::string::npos);
+  ASSERT_TRUE(output.find("Synchro:") != std::string::npos);
 }
 
 // =============================================================================

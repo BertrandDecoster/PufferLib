@@ -3,6 +3,8 @@
 
 #include "synchro_lens.h"
 
+#include <sstream>
+
 #include "base_env.h"
 #include "../core/annotations.h"
 #include "../core/grid.h"
@@ -40,6 +42,17 @@ float SynchroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   }
 
   return reward;
+}
+
+std::string SynchroLens::GetObjectiveString(const BaseEnv& env) const {
+  std::ostringstream ss;
+  int on = CountAgentsOnSynchroCells(env);
+  int total = CountSynchroCells(env);
+  ss << "Synchro: " << on << "/" << total << " companions on goal cells";
+  if (IsSuccess(env)) {
+    ss << " [SUCCESS]";
+  }
+  return ss.str();
 }
 
 bool SynchroLens::IsGoalCell(const BaseEnv& env, Position pos) const {

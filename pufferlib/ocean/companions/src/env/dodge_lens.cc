@@ -3,6 +3,8 @@
 
 #include "dodge_lens.h"
 
+#include <sstream>
+
 #include "base_env.h"
 #include "../core/object_manager.h"
 
@@ -29,6 +31,18 @@ float DodgeLens::ComputeReward(const BaseEnv& env, int agent_id) const {
     return kDeathPenalty;
   }
   return kSurvivalReward;
+}
+
+std::string DodgeLens::GetObjectiveString(const BaseEnv& env) const {
+  std::ostringstream ss;
+  ss << "Dodge: survive until horizon (" << env.GetTick() << "/"
+     << env.GetHorizon() << ")";
+  if (AnyCompanionIncapacitated(env)) {
+    ss << " [FAILED - companion incapacitated]";
+  } else if (IsSuccess(env)) {
+    ss << " [SUCCESS]";
+  }
+  return ss.str();
 }
 
 bool DodgeLens::AnyCompanionIncapacitated(const BaseEnv& env) const {

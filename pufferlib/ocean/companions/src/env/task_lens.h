@@ -69,6 +69,14 @@ class TaskLens {
   virtual float ComputeReward(const BaseEnv& env, int agent_id) const = 0;
 
   // ===========================================================================
+  // Human-readable objective line for the demo HUD
+  // ===========================================================================
+  // Returns a one-line description of what the task is about plus current
+  // progress (e.g. "Synchro: 2/3 companions on goal cells"). The renderer
+  // prints this below the grid so each env explains itself.
+  virtual std::string GetObjectiveString(const BaseEnv& env) const = 0;
+
+  // ===========================================================================
   // Goal cell predicate - is this cell a "goal" for the current task?
   // ===========================================================================
   // Used by the observation pipeline (plane 2 of the 5-plane tensor) to mark

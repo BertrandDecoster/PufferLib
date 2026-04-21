@@ -20,4 +20,4 @@ Tick: 0
 +--+--+--+--+--+--+--+--+--+--+
 |##|##|##|##|##|##|##|##|##|##|
 +--+--+--+--+--+--+--+--+--+--+
-Agents on goals: 0/2
+Aggro: lure enemy to target (enemy Patrol, 6 cells from target)

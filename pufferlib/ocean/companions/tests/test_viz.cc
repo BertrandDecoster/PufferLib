@@ -247,8 +247,9 @@ TEST(TestRendererActorOverlayPreservesAnnotationGlyph) {
 
 TEST(TestRendererAnnotationStatusLineMatchesGrid) {
   // Build a scenario where some companions sit on synchro cells and others
-  // don't.  The status line "Agents on goals: N/M" must agree with the count
-  // of companions whose rendered glyph ends in 'S'.
+  // don't.  The SynchroLens status line "Synchro: N/M companions on goal
+  // cells" must agree with the count of companions whose rendered glyph
+  // ends in 'S'.
   SynchroEnv env(8, 8, 2, 2, 0, 42, 0, 100);
   env.Reset(42);
 
@@ -275,9 +276,9 @@ TEST(TestRendererAnnotationStatusLineMatchesGrid) {
   }
   ASSERT_TRUE(expected >= 1);  // at least the one we moved
 
-  // Parse the status line "Agents on goals: N/M".
+  // Parse the SynchroLens status line "Synchro: N/M companions on goal cells".
   std::smatch m;
-  std::regex re("Agents on goals: (\\d+)/(\\d+)");
+  std::regex re("Synchro: (\\d+)/(\\d+) companions on goal cells");
   ASSERT_TRUE(std::regex_search(out, m, re));
   int reported = std::stoi(m[1].str());
   ASSERT_EQ(reported, expected);
