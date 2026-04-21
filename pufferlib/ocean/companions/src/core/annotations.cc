@@ -11,6 +11,15 @@ namespace companions {
 // Mutation
 // =============================================================================
 void AnnotationStore::Add(AnnotationKey key, Annotation ann) {
+  // Game-rule analog: the board can't hold two agents on the same cell, so
+  // two identical (key, tag) entries are rejected. First-write-wins keeps
+  // the already-stamped entry (including its owner_lens_id) and ignores the
+  // later Add silently. Keeping duplicates out at insertion time means
+  // query helpers like FindCellsWithTag(...).size() and HasTag(...) agree
+  // on a per-cell basis (no duplicate rows to inflate the count).
+  for (const Entry& e : entries_) {
+    if (e.key == key && e.ann.tag == ann.tag) return;
+  }
   entries_.push_back({key, std::move(ann)});
 }
 
@@ -33,6 +42,15 @@ void AnnotationStore::RemoveByKey(AnnotationKey key, SemanticTag tag) {
 }
 
 void AnnotationStore::Clear() { entries_.clear(); }
+
+void AnnotationStore::TransformCellPositions(
+    const std::function<Position(Position)>& func) {
+  for (Entry& e : entries_) {
+    if (e.key.target == AnnotationTarget::Cell) {
+      e.key.pos = func(e.key.pos);
+    }
+  }
+}
 
 // =============================================================================
 // Query

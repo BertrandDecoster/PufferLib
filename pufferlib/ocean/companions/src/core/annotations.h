@@ -15,6 +15,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "types.h"
@@ -115,6 +116,13 @@ class AnnotationStore {
   void RemoveByOwner(int32_t lens_id);
   void RemoveByKey(AnnotationKey key, SemanticTag tag);
   void Clear();
+
+  // Rewrite the Position of every Cell-target entry via `func`. Agent-target
+  // entries are keyed by ObjectId and are left untouched. Used by
+  // BaseEnv::ApplyD4Transform to keep annotation positions in the same
+  // frame as the grid and actors after a symmetry rotation.
+  void TransformCellPositions(
+      const std::function<Position(Position)>& func);
 
   // Query ------------------------------------------------------------------
   // All annotations attached to `key`. Pointers remain valid until any

@@ -157,6 +157,16 @@ void BaseEnv::ApplyD4Transform() {
       [transform](Position pos, int rows, int cols) {
         return TransformPosition(pos, rows, cols, transform);
       });
+
+  // Transform annotation cell positions so goal tags / room tags / other
+  // cell-keyed semantic data stay aligned with the rotated grid. Agent
+  // annotations are keyed by ObjectId and need no transformation.
+  // TransformPosition takes the pre-transform dims (matches the convention
+  // used by ObjectManager::TransformActorPositions).
+  annotations_.TransformCellPositions(
+      [transform, old_rows, old_cols](Position pos) {
+        return TransformPosition(pos, old_rows, old_cols, transform);
+      });
 }
 
 std::string BaseEnv::ToString() const {

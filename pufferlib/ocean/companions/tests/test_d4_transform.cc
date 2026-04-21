@@ -7,8 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "../src/core/annotations.h"
 #include "../src/core/d4_transform.h"
 #include "../src/core/grid.h"
+#include "../src/core/snapshot.h"
 #include "../src/core/types.h"
 #include "../src/env/synchro_env.h"
 #include "../src/env/aggro_env.h"
@@ -590,6 +592,56 @@ TEST(TestD4AllTransformsPreserveGridContent) {
 
 // =============================================================================
 // Main
+// =============================================================================
+// ApplyD4Transform must also rotate annotation Positions
+//
+// Regression: BaseEnv::ApplyD4Transform used to transform the grid and actors
+// but leave `annotations_` untouched. When a snapshot was loaded directly
+// through BaseEnv::LoadSnapshot with a non-zero d4_transform (the DLL
+// save/load path), annotations kept pre-transform positions while the grid
+// rotated under them — FindCellsWithTag returned the wrong cells.
+// =============================================================================
+TEST(TestApplyD4TransformAlsoRotatesCellAnnotations) {
+  // 1) Take a plain (identity) SynchroEnv and capture its snapshot.
+  SynchroEnv src(6, 6, 1, 1, 0, 42, 0);
+  src.Reset(42);
+  Snapshot snap = src.SaveSnapshot();
+
+  // 2) Find the single SynchroGoal cell the level generator placed.
+  Position pre_transform_pos{-1, -1};
+  for (const AnnotationSnapshot& a : snap.annotations) {
+    if (a.tag == SemanticTag::SynchroGoal && a.target_type == 0) {
+      pre_transform_pos = a.pos;
+      break;
+    }
+  }
+  ASSERT_TRUE(pre_transform_pos.row >= 0);
+
+  // 3) Set the snapshot's transform to Rot90 and load it into a fresh env
+  //    that does NOT re-stamp annotations (we call LoadSnapshot directly
+  //    rather than Reset, so the subclass workaround doesn't mask the bug).
+  snap.d4_transform = 1;  // Rot90
+  SynchroEnv dst(6, 6, 1, 1, 0, 42, 0);
+  dst.LoadSnapshot(snap);
+
+  // 4) FindCellsWithTag must return the transformed position, not the
+  //    pre-transform one.
+  Position expected =
+      TransformPosition(pre_transform_pos, 6, 6, D4Transform::Rot90);
+  auto cells =
+      dst.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal);
+  ASSERT_EQ(cells.size(), 1u);
+  ASSERT_EQ(cells[0].row, expected.row);
+  ASSERT_EQ(cells[0].col, expected.col);
+  // Defensive: unless pre and post happen to coincide (they shouldn't for
+  // Rot90 on a non-centre cell), the new position must differ.
+  if (!(pre_transform_pos.row == expected.row &&
+        pre_transform_pos.col == expected.col)) {
+    ASSERT_FALSE(cells[0].row == pre_transform_pos.row &&
+                 cells[0].col == pre_transform_pos.col);
+  }
+}
+
 // =============================================================================
 #ifdef _WIN32
 #include <windows.h>

@@ -98,6 +98,43 @@ TEST(AllowsMultipleTagsPerKey) {
   ASSERT_EQ(store.Get(CellKey(1, 1)).size(), 2u);
 }
 
+TEST(RefusesDuplicateKeyTagPair) {
+  // Game-rule analog: the board can't hold two agents on the same cell, so
+  // two identical (key, tag) entries are rejected. First-write-wins — the
+  // persistent owner is preserved, later adds are silent no-ops. This makes
+  // FindCellsWithTag(...).size() a valid "number of distinct goal cells"
+  // count because each (cell, tag) pair exists at most once.
+  AnnotationStore store;
+  AnnotationKey k = CellKey(3, 3);
+
+  // Persistent (owner -1) lands first, then a lens tries to re-stamp with
+  // its own owner id. The lens' add must be dropped.
+  store.Add(k, Annotation{SemanticTag::SynchroGoal, {}, -1});
+  store.Add(k, Annotation{SemanticTag::SynchroGoal, {}, 42});
+
+  ASSERT_EQ(store.Size(), 1u);
+  auto found = store.Get(k);
+  ASSERT_EQ(found.size(), 1u);
+  ASSERT_EQ(found[0]->owner_lens_id, -1);
+
+  // A different tag at the same key still lands.
+  store.Add(k, Annotation{SemanticTag::Room, {{"room", "alpha"}}, -1});
+  ASSERT_EQ(store.Size(), 2u);
+
+  // Re-adding that Room tag is also refused.
+  store.Add(k, Annotation{SemanticTag::Room, {{"room", "beta"}}, -1});
+  ASSERT_EQ(store.Size(), 2u);
+  // Params of the first Room tag should be preserved (not overwritten).
+  bool found_alpha = false;
+  for (const Annotation* a : store.Get(k)) {
+    if (a->tag == SemanticTag::Room) {
+      ASSERT_EQ(a->params.at("room"), std::string("alpha"));
+      found_alpha = true;
+    }
+  }
+  ASSERT_TRUE(found_alpha);
+}
+
 // =============================================================================
 // Tag-indexed lookups
 // =============================================================================
