@@ -32,7 +32,8 @@
       "env": {},
       "windows": {
         "type": "cppvsdbg",
-        "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug/companions_test.exe"
+        "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug/companions_test.exe",
+        "logging": { "exceptions": false }
       }
     },
     {

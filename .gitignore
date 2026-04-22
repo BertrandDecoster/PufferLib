@@ -166,3 +166,4 @@ pufferlib/ocean/impulse_wars/benchmark/
 trace.json
 /pufferlib/ocean/companions/Testing/Temporary
 .claude/settings.local.json
+pufferlib/ocean/companions/companions_version.hpp

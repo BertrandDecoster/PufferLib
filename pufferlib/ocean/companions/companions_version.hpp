@@ -1,4 +1,0 @@
-#pragma once
-
-#define COMPANIONS_LIB_VERSION "0.3.0"
-#define COMPANIONS_LIB_BUILD_TIME "2026-04-22 11:52:23"
