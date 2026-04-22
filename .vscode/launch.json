@@ -40,33 +40,33 @@
       "name": "Companions: Play (Synchro)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \"",
+      "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \"",
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "companions-build",
       "windows": {
-        "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \""
+        "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \""
       }
     },
     {
       "name": "Companions: Play (Aggro)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env aggro --size 10\"",
+      "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env aggro --size 10\"",
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "companions-build",
       "windows": {
-        "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env aggro --size 10\""
+        "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env aggro --size 10\""
       }
     },
     {
       "name": "Companions: Play (Dodge)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env dodge --size 7\"",
+      "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env dodge --size 7\"",
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "companions-build",
       "windows": {
-        "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env dodge --size 7\""
+        "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env dodge --size 7\""
       }
     },
     {
