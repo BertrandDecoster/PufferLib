@@ -6,5 +6,5 @@
             "args": []
         }
     },
-    "cmake.sourceDirectory": "C:/Users/bertr/Projects/PufferLib/pufferlib/ocean/companions"
+    "cmake.sourceDirectory": "${workspaceFolder}/pufferlib/ocean/companions"
 }
