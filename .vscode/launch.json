@@ -29,7 +29,11 @@
       "args": [],
       "cwd": "${workspaceFolder}/pufferlib/ocean/companions",
       "preLaunchTask": "companions-build",
-      "env": {}
+      "env": {},
+      "windows": {
+        "type": "cppvsdbg",
+        "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug/companions_test.exe"
+      }
     },
     {
       "name": "Companions: Play (Synchro)",
@@ -37,7 +41,10 @@
       "request": "launch",
       "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \"",
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "companions-build"
+      "preLaunchTask": "companions-build",
+      "windows": {
+        "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \""
+      }
     },
     {
       "name": "Companions: Play (Aggro)",
@@ -45,7 +52,10 @@
       "request": "launch",
       "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env aggro --size 10\"",
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "companions-build"
+      "preLaunchTask": "companions-build",
+      "windows": {
+        "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env aggro --size 10\""
+      }
     },
     {
       "name": "Companions: Play (Dodge)",
@@ -53,7 +63,10 @@
       "request": "launch",
       "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env dodge --size 7\"",
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "companions-build"
+      "preLaunchTask": "companions-build",
+      "windows": {
+        "command": "${workspaceFolder}/.vscode/launch_in_terminal.sh \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env dodge --size 7\""
+      }
     },
     {
       "name": "Companions: Benchmark",
@@ -63,7 +76,11 @@
       "args": [],
       "cwd": "${workspaceFolder}/pufferlib/ocean/companions",
       "preLaunchTask": "companions-build",
-      "env": {}
+      "env": {},
+      "windows": {
+        "type": "cppvsdbg",
+        "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug/companions_fsm_benchmark.exe"
+      }
     },
     {
       "name": "Companions: Profile Benchmark (samply)",
