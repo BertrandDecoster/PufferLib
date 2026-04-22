@@ -4,9 +4,7 @@
         {
             "label": "companions-build",
             "type": "shell",
-            "windows": {
-                "command": "./pufferlib/ocean/companions/scripts/build.sh",
-            },
+            "command": "./pufferlib/ocean/companions/scripts/build.sh",
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -17,10 +15,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -35,10 +35,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -53,10 +55,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -71,10 +75,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -89,10 +95,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         },
@@ -107,10 +115,12 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "options": {
-                "shell": {
-                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                    "args": ["-c"]
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
                 }
             }
         }
