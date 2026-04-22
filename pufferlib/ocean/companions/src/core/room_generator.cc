@@ -75,10 +75,8 @@ RoomShape RoomGenerator::GenerateInQuadrant(const Quadrant& quad,
   int max_width = quad.width;
   int max_height = quad.height;
 
-  std::uniform_int_distribution<int> width_dist(min_width, max_width);
-  std::uniform_int_distribution<int> height_dist(min_height, max_height);
-  int room_width = width_dist(ctx_.rng);
-  int room_height = height_dist(ctx_.rng);
+  int room_width = portable_uniform_int(ctx_.rng, min_width, max_width);
+  int room_height = portable_uniform_int(ctx_.rng, min_height, max_height);
 
   // Random position within quadrant
   int max_offset_col = quad.width - room_width;
@@ -87,12 +85,10 @@ RoomShape RoomGenerator::GenerateInQuadrant(const Quadrant& quad,
   int room_left = quad.left;
   int room_top = quad.top;
   if (max_offset_col > 0) {
-    std::uniform_int_distribution<int> col_dist(0, max_offset_col);
-    room_left += col_dist(ctx_.rng);
+    room_left += portable_uniform_int(ctx_.rng, 0, max_offset_col);
   }
   if (max_offset_row > 0) {
-    std::uniform_int_distribution<int> row_dist(0, max_offset_row);
-    room_top += row_dist(ctx_.rng);
+    room_top += portable_uniform_int(ctx_.rng, 0, max_offset_row);
   }
 
   shape.top = room_top;
@@ -217,10 +213,8 @@ std::vector<Room> RoomGenerator::PlaceRooms(int num_rooms) {
       int max_room_width = std::max(min_room_size, sector_width - 1);
       int max_room_height = std::max(min_room_size, sector_height - 1);
 
-      std::uniform_int_distribution<int> width_dist(min_room_size, max_room_width);
-      std::uniform_int_distribution<int> height_dist(min_room_size, max_room_height);
-      int room_width = width_dist(ctx_.rng);
-      int room_height = height_dist(ctx_.rng);
+      int room_width = portable_uniform_int(ctx_.rng, min_room_size, max_room_width);
+      int room_height = portable_uniform_int(ctx_.rng, min_room_size, max_room_height);
 
       int max_offset_col = std::max(0, sector_width - room_width);
       int max_offset_row = std::max(0, sector_height - room_height);
@@ -228,12 +222,10 @@ std::vector<Room> RoomGenerator::PlaceRooms(int num_rooms) {
       int room_left = sector_left;
       int room_top = sector_top;
       if (max_offset_col > 0) {
-        std::uniform_int_distribution<int> col_dist(0, max_offset_col);
-        room_left += col_dist(ctx_.rng);
+        room_left += portable_uniform_int(ctx_.rng, 0, max_offset_col);
       }
       if (max_offset_row > 0) {
-        std::uniform_int_distribution<int> row_dist(0, max_offset_row);
-        room_top += row_dist(ctx_.rng);
+        room_top += portable_uniform_int(ctx_.rng, 0, max_offset_row);
       }
 
       room_left = std::min(room_left, ctx_.config.cols - room_width - 1);

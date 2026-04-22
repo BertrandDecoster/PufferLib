@@ -370,9 +370,8 @@ void CorridorGenerator::ConnectRooms(const std::vector<Room>& rooms,
   // Extra connections for lower complexity
   int extra_connections = std::max(0, 3 - (ctx_.config.complexity - 2));
   for (int i = 0; i < extra_connections && rooms.size() >= 2; ++i) {
-    std::uniform_int_distribution<size_t> room_dist(0, rooms.size() - 1);
-    size_t r1 = room_dist(ctx_.rng);
-    size_t r2 = room_dist(ctx_.rng);
+    size_t r1 = portable_uniform_int<size_t>(ctx_.rng, 0, rooms.size() - 1);
+    size_t r2 = portable_uniform_int<size_t>(ctx_.rng, 0, rooms.size() - 1);
     if (r1 == r2) continue;
 
     Position from = rooms[r1].Center();

@@ -1,0 +1,31 @@
+# Enforce LF line endings for all text files committed through this repo.
+# Avoids CRLF/LF drift on Windows checkouts with core.autocrlf=true.
+* text=auto eol=lf
+
+# Golden fixtures are byte-compared in tests — must always be LF on disk.
+pufferlib/ocean/companions/tests/fixtures/*.txt text eol=lf
+
+# Binary files that must not be touched by normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.so binary
+*.dll binary
+*.dylib binary
+*.a binary
+*.lib binary
+*.exe binary
+*.o binary
+*.obj binary
+*.pyc binary
+*.pyd binary
+*.pt binary
+*.pth binary
+*.npy binary
+*.npz binary

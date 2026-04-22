@@ -2,9 +2,11 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "companions-cpp-build",
+            "label": "companions-build",
             "type": "shell",
-            "command": "./pufferlib/ocean/companions/scripts/build.sh",
+            "windows": {
+                "command": "./pufferlib/ocean/companions/scripts/build.sh",
+            },
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -15,17 +17,15 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "windows": {
-                "options": {
-                    "shell": {
-                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                        "args": ["-c"]
-                    }
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
                 }
             }
         },
         {
-            "label": "companions-cpp-build-clean",
+            "label": "companions-build-clean",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --clean",
             "group": "build",
@@ -35,17 +35,15 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "windows": {
-                "options": {
-                    "shell": {
-                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                        "args": ["-c"]
-                    }
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
                 }
             }
         },
         {
-            "label": "companions-cpp-build-release",
+            "label": "companions-build-release",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release",
             "group": "build",
@@ -55,17 +53,15 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "windows": {
-                "options": {
-                    "shell": {
-                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                        "args": ["-c"]
-                    }
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
                 }
             }
         },
         {
-            "label": "companions-cpp-build-release-clean",
+            "label": "companions-build-release-clean",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release --clean",
             "group": "build",
@@ -75,17 +71,15 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "windows": {
-                "options": {
-                    "shell": {
-                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                        "args": ["-c"]
-                    }
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
                 }
             }
         },
         {
-            "label": "companions-cpp-python-build",
+            "label": "companions-build-full",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release --python",
             "group": "build",
@@ -95,17 +89,15 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "windows": {
-                "options": {
-                    "shell": {
-                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                        "args": ["-c"]
-                    }
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
                 }
             }
         },
         {
-            "label": "companions-cpp-python-build-clean",
+            "label": "companions-build-full-clean",
             "type": "shell",
             "command": "./pufferlib/ocean/companions/scripts/build.sh --release --python --clean",
             "group": "build",
@@ -115,12 +107,10 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "windows": {
-                "options": {
-                    "shell": {
-                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
-                        "args": ["-c"]
-                    }
+            "options": {
+                "shell": {
+                    "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                    "args": ["-c"]
                 }
             }
         }

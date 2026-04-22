@@ -12,8 +12,10 @@
 
 namespace companions {
 
-// PCG32 random number generator - compatible with C++ standard library
-// Usage: works with std::shuffle, std::uniform_int_distribution, etc.
+// PCG32 random number generator - compatible with C++ standard library.
+// For cross-platform determinism, pair with portable_shuffle and
+// portable_uniform_int below (std::shuffle and std::uniform_int_distribution
+// produce different results across libc++, libstdc++, and MSVC STL).
 class pcg32 {
  public:
   using result_type = uint32_t;
@@ -81,6 +83,17 @@ void portable_shuffle(RandomIt first, RandomIt last, URBG&& g) {
             std::iter_swap(first + i, first + j);
         }
     }
+}
+
+// Portable uniform int in [lo, hi] - identical across platforms.
+// Unlike std::uniform_int_distribution (whose consumption pattern varies across
+// libc++/libstdc++/MSVC STL), this uses the same modulo reduction idiom as
+// portable_shuffle. Slight modulo bias for non-power-of-2 ranges is acceptable
+// for game RNG.
+template <typename T, typename URBG>
+T portable_uniform_int(URBG&& g, T lo, T hi) {
+    uint32_t range = static_cast<uint32_t>(hi - lo + 1);
+    return static_cast<T>(lo + static_cast<T>(g() % range));
 }
 
 }  // namespace companions

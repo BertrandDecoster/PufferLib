@@ -193,9 +193,9 @@ void DodgeEnv::SpawnHazard() {
   if (floor_cells.empty()) return;
 
   // Pick a random hazard type.
-  std::uniform_int_distribution<size_t> hazard_dist(
-      0, hazard_effects_.size() - 1);
-  const std::string& effect_name = hazard_effects_[hazard_dist(rng_)];
+  size_t hazard_idx = portable_uniform_int<size_t>(
+      rng_, 0, hazard_effects_.size() - 1);
+  const std::string& effect_name = hazard_effects_[hazard_idx];
 
   // Filter out cells currently occupied by a live companion for *damaging*
   // hazards. A 3x3 fire centered on the player is unavoidable: the telegraph
@@ -229,11 +229,10 @@ void DodgeEnv::SpawnHazard() {
     if (!filtered.empty()) candidates = std::move(filtered);
   }
 
-  std::uniform_int_distribution<size_t> pos_dist(0, candidates.size() - 1);
-  Position spawn_pos = candidates[pos_dist(rng_)];
+  size_t pos_idx = portable_uniform_int<size_t>(rng_, 0, candidates.size() - 1);
+  Position spawn_pos = candidates[pos_idx];
 
-  std::uniform_int_distribution<int> dir_dist(0, 3);
-  Direction dir = static_cast<Direction>(dir_dist(rng_));
+  Direction dir = static_cast<Direction>(portable_uniform_int(rng_, 0, 3));
 
   SpawnEffect(effect_name, EffectTarget::AtCell(spawn_pos), dir);
 }

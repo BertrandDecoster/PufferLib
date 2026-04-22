@@ -182,11 +182,8 @@ void AggroEnv::PlacePatrolSquare() {
   int max_top = rows_ - 4;   // Leave room for walls
   int max_left = cols_ - 4;
 
-  std::uniform_int_distribution<int> top_dist(1, max_top);
-  std::uniform_int_distribution<int> left_dist(1, max_left);
-
-  int top = top_dist(rng_);
-  int left = left_dist(rng_);
+  int top = portable_uniform_int(rng_, 1, max_top);
+  int left = portable_uniform_int(rng_, 1, max_left);
 
   // Generate clockwise patrol path (8 cells)
   // +--+--+--+
@@ -218,9 +215,9 @@ void AggroEnv::SpawnEnemy() {
   }
 
   // Pick random from valid patrol cells
-  std::uniform_int_distribution<int> idx_dist(
-      0, static_cast<int>(valid_patrol.size()) - 1);
-  Position start_pos = valid_patrol[idx_dist(rng_)];
+  int idx = portable_uniform_int(
+      rng_, 0, static_cast<int>(valid_patrol.size()) - 1);
+  Position start_pos = valid_patrol[idx];
   enemy_spawn_pos_ = start_pos;  // Store for companion spawning
 
   // Find index in original patrol_path_ for FSM context
@@ -233,8 +230,7 @@ void AggroEnv::SpawnEnemy() {
   }
 
   // Random initial direction (forward or backward on patrol)
-  std::uniform_int_distribution<int> dir_dist(0, 1);
-  bool forward = dir_dist(rng_) == 1;
+  bool forward = portable_uniform_int(rng_, 0, 1) == 1;
 
   // Create agent based on type
   AgentFSM* fsm_agent = nullptr;

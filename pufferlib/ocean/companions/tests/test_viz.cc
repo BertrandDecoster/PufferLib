@@ -9,6 +9,7 @@
 //         multi-tag priority on a single cell.
 // Tier 3: multi-tick render pipeline smoke test.
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -157,7 +158,11 @@ std::string ReadGolden(const std::string& path) {
   if (!f) throw std::runtime_error("golden missing: " + path + " (run with UPDATE_GOLDENS=1)");
   std::ostringstream ss;
   ss << f.rdbuf();
-  return ss.str();
+  std::string content = ss.str();
+  // Strip CR bytes so the test survives a checkout with core.autocrlf=true
+  // (the canonical on-disk form is LF; see .gitattributes at the repo root).
+  content.erase(std::remove(content.begin(), content.end(), '\r'), content.end());
+  return content;
 }
 
 // Compare `actual` against the fixture at `fixture_name`. On mismatch, throw

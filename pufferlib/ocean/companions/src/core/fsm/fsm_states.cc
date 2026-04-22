@@ -55,8 +55,8 @@ ObjectId FindClosestCompanion(const Position& agent_pos, int detection_range,
 
   // Otherwise use RNG for deterministic selection
   if (rng && tied_ids.size() > 1) {
-    std::uniform_int_distribution<size_t> dist(0, tied_ids.size() - 1);
-    return tied_ids[dist(*rng)];
+    size_t idx = portable_uniform_int<size_t>(*rng, 0, tied_ids.size() - 1);
+    return tied_ids[idx];
   }
 
   return tied_ids[0];
