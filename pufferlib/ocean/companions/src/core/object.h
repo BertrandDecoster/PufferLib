@@ -43,6 +43,20 @@ enum class ObjectType {
   NPCCompanion
 };
 
+// Fine-grained per-class archetype. Complementary to ObjectType: ObjectType
+// stops at the base-class level (AgentFSM), AgentKind identifies the concrete
+// class (Zombie / Goblin / Dragon / ...). Values kept numerically in sync
+// with Companions_AgentKind in the C API (companions_api.h) so the API
+// translation is a `static_cast`; a block of static_asserts guards drift.
+enum class AgentKind : int32_t {
+  Unknown     = 0,
+  Companion   = 1,
+  NeutralNpc  = 2,
+  EnemyZombie = 10,
+  EnemyGoblin = 11,
+  EnemyDragon = 12,
+};
+
 // =============================================================================
 // Actor Colors (logical, not terminal-specific)
 // =============================================================================
@@ -136,6 +150,14 @@ class Agent : public Actor {
 
   ObjectType GetType() const override { return ObjectType::Agent; }
   std::string GetTypeName() const override { return "Agent"; }
+
+  // Concrete archetype for API/rendering consumers. Default picks NeutralNpc
+  // when the agent is neutral and no concrete subclass has overridden this;
+  // this matches the pre-refactor ToAPIAgentKind fallback exactly.
+  virtual AgentKind GetAgentKind() const {
+    return faction_ == Faction::NEUTRAL ? AgentKind::NeutralNpc
+                                        : AgentKind::Unknown;
+  }
 
   // The intended action for this step
   void SetIntention(DecodedAction action) { intention_ = action; }
@@ -287,6 +309,7 @@ class Companion : public Agent {
 
   ObjectType GetType() const override { return ObjectType::Companion; }
   std::string GetTypeName() const override { return "Companion"; }
+  AgentKind GetAgentKind() const override { return AgentKind::Companion; }
 
   virtual bool IsPlayerControlled() const { return false; }
 

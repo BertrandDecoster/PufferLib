@@ -152,27 +152,30 @@ static Companions_StatusType ToAPIStatusType(companions::StatusType type) {
   return Companions_Status_None;
 }
 
-// Classify an agent into a concrete archetype. Uses the runtime C++ type —
-// Zombie/Goblin/Dragon inherit from AgentFSM, Companion from Agent. For new
-// enemy/NPC classes, extend this chain alongside Pure::NpcKind and
-// Companions_AgentKind.
+// companions::AgentKind is numerically 1:1 with Companions_AgentKind by
+// construction — these asserts fire at compile time if someone adds a value
+// to one enum and forgets the other.
+static_assert(static_cast<int32_t>(companions::AgentKind::Unknown) ==
+                  Companions_AgentKind_Unknown,
+              "AgentKind::Unknown out of sync with C API");
+static_assert(static_cast<int32_t>(companions::AgentKind::Companion) ==
+                  Companions_AgentKind_Companion,
+              "AgentKind::Companion out of sync with C API");
+static_assert(static_cast<int32_t>(companions::AgentKind::NeutralNpc) ==
+                  Companions_AgentKind_NeutralNpc,
+              "AgentKind::NeutralNpc out of sync with C API");
+static_assert(static_cast<int32_t>(companions::AgentKind::EnemyZombie) ==
+                  Companions_AgentKind_EnemyZombie,
+              "AgentKind::EnemyZombie out of sync with C API");
+static_assert(static_cast<int32_t>(companions::AgentKind::EnemyGoblin) ==
+                  Companions_AgentKind_EnemyGoblin,
+              "AgentKind::EnemyGoblin out of sync with C API");
+static_assert(static_cast<int32_t>(companions::AgentKind::EnemyDragon) ==
+                  Companions_AgentKind_EnemyDragon,
+              "AgentKind::EnemyDragon out of sync with C API");
+
 static Companions_AgentKind ToAPIAgentKind(const companions::Agent* agent) {
-  if (dynamic_cast<const companions::Zombie*>(agent)) {
-    return Companions_AgentKind_EnemyZombie;
-  }
-  if (dynamic_cast<const companions::Goblin*>(agent)) {
-    return Companions_AgentKind_EnemyGoblin;
-  }
-  if (dynamic_cast<const companions::Dragon*>(agent)) {
-    return Companions_AgentKind_EnemyDragon;
-  }
-  if (dynamic_cast<const companions::Companion*>(agent)) {
-    return Companions_AgentKind_Companion;
-  }
-  if (agent->GetFaction() == companions::Faction::NEUTRAL) {
-    return Companions_AgentKind_NeutralNpc;
-  }
-  return Companions_AgentKind_Unknown;
+  return static_cast<Companions_AgentKind>(agent->GetAgentKind());
 }
 
 static Companions_FSMStateType ToAPIFSMState(const companions::FSMState* state) {

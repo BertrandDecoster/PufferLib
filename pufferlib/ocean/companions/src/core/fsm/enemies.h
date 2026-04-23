@@ -21,6 +21,7 @@ class Zombie : public AgentFSM {
   Zombie(ObjectId id, Position pos);
 
   std::string GetTypeName() const override { return "Zombie"; }
+  AgentKind GetAgentKind() const override { return AgentKind::EnemyZombie; }
   char GetChar() const override { return 'Z'; }
 
   std::unique_ptr<Object> Clone() const override {
@@ -39,6 +40,7 @@ class Goblin : public AgentFSM {
   Goblin(ObjectId id, Position pos);
 
   std::string GetTypeName() const override { return "Goblin"; }
+  AgentKind GetAgentKind() const override { return AgentKind::EnemyGoblin; }
   char GetChar() const override { return 'G'; }
 
   std::unique_ptr<Object> Clone() const override {
@@ -57,6 +59,7 @@ class Dragon : public AgentFSM {
   Dragon(ObjectId id, Position pos);
 
   std::string GetTypeName() const override { return "Dragon"; }
+  AgentKind GetAgentKind() const override { return AgentKind::EnemyDragon; }
   char GetChar() const override { return 'D'; }
 
   std::unique_ptr<Object> Clone() const override {

@@ -151,8 +151,11 @@ typedef enum {
 // distinguishes the C++ base class). Consumers that need to pick a mesh,
 // glyph, or animation set for an NPC key off this field.
 //
-// Kept numerically in sync with Pure::NpcKind in companions-loop. When adding
-// a new enemy/NPC class, add it in both enums and in ToAPIAgentKind below.
+// Numerically 1:1 with companions::AgentKind (core/object.h); the mapping is
+// a static_cast guarded by static_asserts in companions_api.cc. Kept
+// numerically in sync with Pure::NpcKind in companions-loop. When adding a
+// new enemy/NPC class: add one entry in each of the three enums and override
+// Agent::GetAgentKind() on the new class.
 typedef enum {
   Companions_AgentKind_Unknown     = 0,
   Companions_AgentKind_Companion   = 1,   // generic player companion
@@ -184,9 +187,9 @@ typedef struct {
   Companions_ObjectType type;
   // Concrete archetype. Unlike `type` (which only tells you "AgentFSM" vs
   // "Companion"), this carries the actual C++ class: Zombie / Goblin /
-  // Dragon / Companion / NeutralNpc. Set by ToAPIAgentKind via dynamic_cast
-  // on the runtime class. Consumers that render meshes / glyphs / animation
-  // sets per NPC kind key off this field.
+  // Dragon / Companion / NeutralNpc. Sourced from Agent::GetAgentKind() (a
+  // virtual on the C++ side). Consumers that render meshes / glyphs /
+  // animation sets per NPC kind key off this field.
   Companions_AgentKind kind;
   Companions_Position position;
   Companions_Position prev_position;  // Position before this step (for animation)
