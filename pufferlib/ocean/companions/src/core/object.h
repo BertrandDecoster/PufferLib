@@ -168,6 +168,13 @@ class Agent : public Actor {
   void CaptureOriginalIntention() { original_intention_ = intention_; }
   DecodedAction GetOriginalIntention() const { return original_intention_; }
 
+  // Executed action: snapshot of intention_ taken after collision resolution
+  // but before ClearIntention() resets it for the next step. Read by the C
+  // API to populate action_actual on Companions_AgentState (GetIntention()
+  // would return {Stay, None} post-clear).
+  void CaptureExecutedAction() { action_actual_ = intention_; }
+  DecodedAction GetExecutedAction() const { return action_actual_; }
+
   // Agent index for action array ordering
   void SetAgentIndex(int idx) { agent_index_ = idx; }
   int GetAgentIndex() const { return agent_index_; }
@@ -214,6 +221,7 @@ class Agent : public Actor {
  protected:
   DecodedAction intention_;
   DecodedAction original_intention_;  // Captured before collision resolution
+  DecodedAction action_actual_;       // Snapshot after collision, before clear
   int agent_index_ = -1;
   Faction faction_ = Faction::NEUTRAL;
   int health_ = 3;

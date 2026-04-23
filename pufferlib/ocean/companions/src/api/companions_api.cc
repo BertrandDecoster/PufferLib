@@ -245,7 +245,7 @@ static void ExtractAgentState(const companions::Agent* agent,
   out->action_intent.interact =
       static_cast<Companions_InteractAction>(intent.interact);
 
-  auto actual = agent->GetIntention();
+  auto actual = agent->GetExecutedAction();
   out->action_actual.movement =
       static_cast<Companions_MovementAction>(actual.movement);
   out->action_actual.interact =
@@ -356,11 +356,13 @@ static void AddMovementEvents(Companions_Env* wrapper) {
       evt.from_pos = ToAPIPosition(prev);
       evt.to_pos = ToAPIPosition(curr);
       evt.move_action = static_cast<Companions_MovementAction>(
-          agents[i]->GetIntention().movement);
+          agents[i]->GetExecutedAction().movement);
       wrapper->events.push_back(evt);
-    } else if (agents[i]->GetIntention().movement !=
+    } else if (agents[i]->GetOriginalIntention().movement !=
                companions::MovementAction::Stay) {
-      // Tried to move but was blocked
+      // Tried to move but was blocked. Use original_intention_ (pre-collision)
+      // because collision resolution overwrites intention_ with Stay, so
+      // GetExecutedAction() would report Stay for every blocked agent.
       Companions_Event evt = {};
       evt.type = Companions_Event_AgentBlocked;
       evt.tick = env->GetTick();
@@ -368,10 +370,10 @@ static void AddMovementEvents(Companions_Env* wrapper) {
       evt.position = ToAPIPosition(curr);
       evt.from_pos = ToAPIPosition(prev);
       auto intended = companions::ApplyMovement(
-          prev, agents[i]->GetIntention().movement);
+          prev, agents[i]->GetOriginalIntention().movement);
       evt.to_pos = ToAPIPosition(intended);
       evt.move_action = static_cast<Companions_MovementAction>(
-          agents[i]->GetIntention().movement);
+          agents[i]->GetOriginalIntention().movement);
       wrapper->events.push_back(evt);
     }
   }

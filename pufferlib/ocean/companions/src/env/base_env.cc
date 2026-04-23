@@ -689,6 +689,13 @@ void BaseEnv::ExecuteValidatedMovements() {
     object_manager_->UpdatePosition(mv.id, mv.to);
   }
 
+  // Snapshot executed action (post-collision, pre-clear) so the C API can
+  // read it after Step returns. GetIntention() alone would be {Stay, None}
+  // immediately after the ClearIntention loop below.
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    agent->CaptureExecutedAction();
+  }
+
   // Clear intentions
   for (Agent* agent : object_manager_->GetAllAgents()) {
     agent->ClearIntention();
