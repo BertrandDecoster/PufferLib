@@ -15,6 +15,7 @@
 #include "../core/grid.h"
 #include "../core/level_config.h"
 #include "../core/level_generator.h"
+#include "../core/fsm/enemies.h"
 #include "../core/object.h"
 #include "../core/object_manager.h"
 #include "../core/snapshot.h"
@@ -151,6 +152,29 @@ static Companions_StatusType ToAPIStatusType(companions::StatusType type) {
   return Companions_Status_None;
 }
 
+// Classify an agent into a concrete archetype. Uses the runtime C++ type —
+// Zombie/Goblin/Dragon inherit from AgentFSM, Companion from Agent. For new
+// enemy/NPC classes, extend this chain alongside Pure::NpcKind and
+// Companions_AgentKind.
+static Companions_AgentKind ToAPIAgentKind(const companions::Agent* agent) {
+  if (dynamic_cast<const companions::Zombie*>(agent)) {
+    return Companions_AgentKind_EnemyZombie;
+  }
+  if (dynamic_cast<const companions::Goblin*>(agent)) {
+    return Companions_AgentKind_EnemyGoblin;
+  }
+  if (dynamic_cast<const companions::Dragon*>(agent)) {
+    return Companions_AgentKind_EnemyDragon;
+  }
+  if (dynamic_cast<const companions::Companion*>(agent)) {
+    return Companions_AgentKind_Companion;
+  }
+  if (agent->GetFaction() == companions::Faction::NEUTRAL) {
+    return Companions_AgentKind_NeutralNpc;
+  }
+  return Companions_AgentKind_Unknown;
+}
+
 static Companions_FSMStateType ToAPIFSMState(const companions::FSMState* state) {
   if (!state) return Companions_FSMState_None;
 
@@ -170,6 +194,7 @@ static void ExtractAgentState(const companions::Agent* agent,
                               companions::Position prev_pos) {
   out->id = agent->GetId();
   out->type = ToAPIObjectType(agent->GetType());
+  out->kind = ToAPIAgentKind(agent);
   out->position = ToAPIPosition(agent->GetPosition());
   out->prev_position = ToAPIPosition(prev_pos);
   out->faction = ToAPIFaction(agent->GetFaction());

@@ -147,6 +147,21 @@ typedef enum {
   Companions_Enemy_Mage = 2,
 } Companions_EnemyType;
 
+// Concrete per-agent archetype. Richer than Companions_ObjectType (which only
+// distinguishes the C++ base class). Consumers that need to pick a mesh,
+// glyph, or animation set for an NPC key off this field.
+//
+// Kept numerically in sync with Pure::NpcKind in companions-loop. When adding
+// a new enemy/NPC class, add it in both enums and in ToAPIAgentKind below.
+typedef enum {
+  Companions_AgentKind_Unknown     = 0,
+  Companions_AgentKind_Companion   = 1,   // generic player companion
+  Companions_AgentKind_NeutralNpc  = 2,   // generic friendly/quest NPC
+  Companions_AgentKind_EnemyZombie = 10,
+  Companions_AgentKind_EnemyGoblin = 11,
+  Companions_AgentKind_EnemyDragon = 12,
+} Companions_AgentKind;
+
 // =============================================================================
 // Composite Structs
 // =============================================================================
@@ -167,6 +182,12 @@ typedef struct {
 typedef struct {
   Companions_ObjectId id;
   Companions_ObjectType type;
+  // Concrete archetype. Unlike `type` (which only tells you "AgentFSM" vs
+  // "Companion"), this carries the actual C++ class: Zombie / Goblin /
+  // Dragon / Companion / NeutralNpc. Set by ToAPIAgentKind via dynamic_cast
+  // on the runtime class. Consumers that render meshes / glyphs / animation
+  // sets per NPC kind key off this field.
+  Companions_AgentKind kind;
   Companions_Position position;
   Companions_Position prev_position;  // Position before this step (for animation)
   Companions_Direction facing;
