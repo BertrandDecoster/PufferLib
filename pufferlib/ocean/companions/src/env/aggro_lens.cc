@@ -30,25 +30,20 @@ bool AggroLens::IsDone(const BaseEnv& env) const {
 
 bool AggroLens::IsSuccess(const BaseEnv& env) const {
   // Success when any AgentFSM (enemy) is standing on the target cell
-  // (the goal is to lure the enemy to the target)
+  // (the goal is to lure the enemy to the target).
   Position target = FindTargetCell(env);
   if (target.row < 0 || target.col < 0) {
     return false;
   }
-
-  const ObjectManager& om = env.GetObjectManager();
-  for (const Actor* actor : om.GetAllActors()) {
-    const AgentFSM* fsm_agent = dynamic_cast<const AgentFSM*>(actor);
-    if (fsm_agent && fsm_agent->IsAlive()) {
-      if (fsm_agent->GetPosition() == target) {
-        return true;
-      }
+  for (const AgentFSM* fsm_agent : env.GetObjectManager().GetAllAgentFSMs()) {
+    if (fsm_agent->IsAlive() && fsm_agent->GetPosition() == target) {
+      return true;
     }
   }
   return false;
 }
 
-float AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
+double AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   (void)agent_id;  // Same reward for all agents in cooperative task
 
   if (IsSuccess(env)) {
@@ -67,11 +62,9 @@ std::string AggroLens::GetObjectiveString(const BaseEnv& env) const {
     return ss.str();
   }
 
-  const ObjectManager& om = env.GetObjectManager();
   const AgentFSM* enemy = nullptr;
-  for (const Actor* actor : om.GetAllActors()) {
-    const AgentFSM* fsm_agent = dynamic_cast<const AgentFSM*>(actor);
-    if (fsm_agent && fsm_agent->IsAlive() && fsm_agent->HasFSM()) {
+  for (const AgentFSM* fsm_agent : env.GetObjectManager().GetAllAgentFSMs()) {
+    if (fsm_agent->IsAlive() && fsm_agent->HasFSM()) {
       enemy = fsm_agent;
       break;
     }
@@ -102,6 +95,10 @@ bool AggroLens::IsGoalCell(const BaseEnv& env, Position pos) const {
       SemanticTag::AggroTarget);
 }
 
+std::vector<Position> AggroLens::GetGoalCells(const BaseEnv& env) const {
+  return env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
+}
+
 Position AggroLens::FindTargetCell(const BaseEnv& env) const {
   auto targets = env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
   if (!targets.empty()) {
@@ -111,17 +108,9 @@ Position AggroLens::FindTargetCell(const BaseEnv& env) const {
 }
 
 bool AggroLens::HasPatrolPath(const BaseEnv& env) const {
-  const ObjectManager& om = env.GetObjectManager();
-
-  // Check all actors for FSM agents with non-empty patrol paths
-  for (const Actor* actor : om.GetAllActors()) {
-    // Check if it's an AgentFSM
-    const AgentFSM* fsm_agent = dynamic_cast<const AgentFSM*>(actor);
-    if (fsm_agent && fsm_agent->HasFSM()) {
-      const FSMContext& ctx = fsm_agent->GetFSMContext();
-      if (!ctx.patrol_path.empty()) {
-        return true;
-      }
+  for (const AgentFSM* fsm_agent : env.GetObjectManager().GetAllAgentFSMs()) {
+    if (fsm_agent->HasFSM() && !fsm_agent->GetFSMContext().patrol_path.empty()) {
+      return true;
     }
   }
   return false;
@@ -148,9 +137,8 @@ void AggroLens::AppendVectorObs(const BaseEnv& env, int agent_id,
 
   // Find the first FSM agent (enemy)
   const AgentFSM* enemy = nullptr;
-  for (const Actor* actor : om.GetAllActors()) {
-    const AgentFSM* fsm_agent = dynamic_cast<const AgentFSM*>(actor);
-    if (fsm_agent && fsm_agent->HasFSM()) {
+  for (const AgentFSM* fsm_agent : om.GetAllAgentFSMs()) {
+    if (fsm_agent->HasFSM()) {
       enemy = fsm_agent;
       break;
     }

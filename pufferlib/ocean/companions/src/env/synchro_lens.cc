@@ -24,7 +24,7 @@ bool SynchroLens::IsSuccess(const BaseEnv& env) const {
   return CountAgentsOnSynchroCells(env) >= CountSynchroCells(env);
 }
 
-float SynchroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
+double SynchroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   (void)agent_id;  // Same reward for all agents in cooperative task
 
   int num_agents = env.NumAgents();
@@ -33,8 +33,8 @@ float SynchroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   // Time penalty: -num_agents * kProgressReward
   // This ensures max progress per step is 0 when all agents are on synchro
   // but not yet winning
-  float time_penalty = -static_cast<float>(num_agents) * kProgressReward;
-  float reward = kProgressReward * static_cast<float>(on_synchro) + time_penalty;
+  double time_penalty = -static_cast<double>(num_agents) * kProgressReward;
+  double reward = kProgressReward * static_cast<double>(on_synchro) + time_penalty;
 
   // Win reward if all synchro cells are covered
   if (IsSuccess(env)) {
@@ -59,6 +59,10 @@ bool SynchroLens::IsGoalCell(const BaseEnv& env, Position pos) const {
   return env.GetAnnotations().HasTag(
       AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
       SemanticTag::SynchroGoal);
+}
+
+std::vector<Position> SynchroLens::GetGoalCells(const BaseEnv& env) const {
+  return env.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal);
 }
 
 int SynchroLens::CountAgentsOnSynchroCells(const BaseEnv& env) const {

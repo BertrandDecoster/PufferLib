@@ -24,13 +24,14 @@ bool DodgeLens::IsSuccess(const BaseEnv& env) const {
   return !AnyCompanionIncapacitated(env) && env.GetTick() >= env.GetHorizon();
 }
 
-float DodgeLens::ComputeReward(const BaseEnv& env, int agent_id) const {
+double DodgeLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   (void)agent_id;  // Same reward for all agents in cooperative task
-
-  if (AnyCompanionIncapacitated(env)) {
-    return kDeathPenalty;
-  }
-  return kSurvivalReward;
+  bool any_dead = AnyCompanionIncapacitated(env);
+  double reward = 0.0;
+  if (!any_dead) reward += kSurvivalBonus;
+  if (IsSuccess(env)) reward += kWinReward;
+  if (any_dead) reward += kDeathPenalty;
+  return reward;
 }
 
 std::string DodgeLens::GetObjectiveString(const BaseEnv& env) const {

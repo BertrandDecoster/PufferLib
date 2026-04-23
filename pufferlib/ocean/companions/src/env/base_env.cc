@@ -41,7 +41,8 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       tick_(other.tick_),
       horizon_(other.horizon_),
       d4_transform_(other.d4_transform_),
-      annotations_(other.annotations_) {
+      annotations_(other.annotations_),
+      success_(other.success_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -58,6 +59,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     horizon_ = other.horizon_;
     d4_transform_ = other.d4_transform_;
     annotations_ = other.annotations_;
+    success_ = other.success_;
   }
   return *this;
 }
@@ -110,9 +112,28 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Post-step hook
   PostStep();
 
-  // Calculate rewards
-  result.rewards.resize(num_agents, 0.0);
-  CalculateRewards(result.rewards);
+  // Calculate rewards via the active TaskLens (the single source of truth).
+  // Envs without a lens get zeros; BaseEnv::Step never falls back to env-side
+  // reward logic, since the TaskLens invariant requires rewards live with the task.
+  // Reuse the pre-allocated reward_buffer_ and move it into result.rewards to
+  // avoid per-step allocation on the hot path. Audit F11.
+  if (static_cast<int>(reward_buffer_.size()) != num_agents) {
+    reward_buffer_.assign(num_agents, 0.0);
+  } else {
+    std::fill(reward_buffer_.begin(), reward_buffer_.end(), 0.0);
+  }
+  if (task_lens_) {
+    for (int i = 0; i < num_agents; ++i) {
+      reward_buffer_[i] = task_lens_->ComputeReward(*this, i);
+    }
+    // Latch success so IsSuccess/IsDone survive even if agents subsequently
+    // leave a winning configuration (matches pre-TaskLens semantics where
+    // CalculateRewards set success_ once per episode).
+    if (!success_ && task_lens_->IsSuccess(*this)) {
+      success_ = true;
+    }
+  }
+  result.rewards = reward_buffer_;
 
   // Check termination
   result.done = IsDone();
@@ -281,67 +302,9 @@ int BaseEnv::VectorObservationSize() const {
 }
 
 void BaseEnv::VectorObservation(std::vector<float>& values, int player) const {
-  values.clear();
-  values.resize(VectorObservationSize(), 0.0f);
-
-  auto agents = object_manager_->GetAllAgents();
-  if (player < 0 || player >= static_cast<int>(agents.size())) {
-    return;
-  }
-
-  const Agent* current_agent = agents[player];
-  Position my_pos = current_agent->GetPosition();
-
-  // Normalization factors
-  float max_dim = static_cast<float>(std::max(rows_, cols_));
-
-  int idx = 0;
-
-  // Feature 0-1: Own position (normalized to [0,1])
-  values[idx++] = static_cast<float>(my_pos.row) / max_dim;
-  values[idx++] = static_cast<float>(my_pos.col) / max_dim;
-
-  // Feature 2: Health ratio
-  int max_hp = current_agent->GetMaxHealth();
-  values[idx++] = max_hp > 0 ? static_cast<float>(current_agent->GetHealth()) / max_hp : 1.0f;
-
-  // Feature 3: Distance to nearest goal cell (sourced from annotation layer)
-  std::vector<Position> goals =
-      annotations_.FindCellsWithTag(SemanticTag::SynchroGoal);
-  float min_dist = max_dim * 2.0f;  // Max possible Manhattan distance
-  for (const auto& goal : goals) {
-    float dist = static_cast<float>(std::abs(my_pos.row - goal.row) +
-                                    std::abs(my_pos.col - goal.col));
-    min_dist = std::min(min_dist, dist);
-  }
-  values[idx++] = min_dist / (max_dim * 2.0f);  // Normalize
-
-  // Features 4-7: Relative positions to other companions (dx, dy per other)
-  // Max 2 others (for 3 companions total)
-  constexpr int kMaxOthers = 2;
-  int other_count = 0;
-  for (size_t i = 0; i < agents.size() && other_count < kMaxOthers; ++i) {
-    if (static_cast<int>(i) == player) continue;
-    const Agent* other = agents[i];
-    Position other_pos = other->GetPosition();
-
-    // Relative position normalized to [-1, 1]
-    values[idx++] = static_cast<float>(other_pos.row - my_pos.row) / max_dim;
-    values[idx++] = static_cast<float>(other_pos.col - my_pos.col) / max_dim;
-    other_count++;
-  }
-
-  // Pad remaining slots with zeros if fewer than max others
-  while (other_count < kMaxOthers) {
-    values[idx++] = 0.0f;
-    values[idx++] = 0.0f;
-    other_count++;
-  }
-
-  // Feature 8: Steps remaining (absolute / 100)
-  // Use absolute steps (not ratio) so policy can learn reward prediction
-  int steps_left = horizon_ - tick_;
-  values[idx++] = static_cast<float>(steps_left) / 100.0f;
+  // Thin wrapper around WriteVectorObservation to avoid duplicating logic.
+  values.assign(VectorObservationSize(), 0.0f);
+  WriteVectorObservation(values.data(), player);
 }
 
 // =============================================================================
@@ -431,16 +394,25 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   int max_hp = current_agent->GetMaxHealth();
   buffer[idx++] = max_hp > 0 ? static_cast<float>(current_agent->GetHealth()) / max_hp : 1.0f;
 
-  // Feature 3: Distance to nearest goal cell (sourced from annotation layer)
-  std::vector<Position> goals =
-      annotations_.FindCellsWithTag(SemanticTag::SynchroGoal);
-  float min_dist = max_dim * 2.0f;  // Max possible Manhattan distance
-  for (const auto& goal : goals) {
-    float dist = static_cast<float>(std::abs(my_pos.row - goal.row) +
-                                    std::abs(my_pos.col - goal.col));
-    min_dist = std::min(min_dist, dist);
+  // Feature 3: Distance to nearest goal cell. Lens answers what counts as a
+  // goal; lenses with no geometric goal (DodgeLens) return empty and the
+  // feature is forced to 0.0 rather than a misleading 1.0 from an empty scan.
+  if (task_lens_) {
+    std::vector<Position> goals = task_lens_->GetGoalCells(*this);
+    if (goals.empty()) {
+      buffer[idx++] = 0.0f;
+    } else {
+      float min_dist = max_dim * 2.0f;  // Max possible Manhattan distance
+      for (const auto& goal : goals) {
+        float dist = static_cast<float>(std::abs(my_pos.row - goal.row) +
+                                        std::abs(my_pos.col - goal.col));
+        min_dist = std::min(min_dist, dist);
+      }
+      buffer[idx++] = min_dist / (max_dim * 2.0f);  // Normalize to [0,1]
+    }
+  } else {
+    buffer[idx++] = 0.0f;
   }
-  buffer[idx++] = min_dist / (max_dim * 2.0f);  // Normalize
 
   // Features 4-7: Relative positions to other companions (dx, dy per other)
   // Max 2 others (for 3 companions total)
@@ -572,36 +544,41 @@ void BaseEnv::ResolveCollisions() {
   bool changed = true;
   int max_iterations = NumAgents() * 4;
   int iteration = 0;
+
+  // Hoist maps out of the loop — .clear() preserves bucket arrays, so we
+  // only pay for one allocation cycle per ResolveCollisions call, not per
+  // fixed-point iteration. Audit F7.
+  std::unordered_map<ObjectId, Position> target_pos;
+  std::unordered_map<Position, ObjectId, PositionHash> current_occupant;
+  std::unordered_map<Position, std::vector<Agent*>, PositionHash> claims;
+
   while (changed && iteration++ < max_iterations) {
     changed = false;
 
     auto agents = object_manager_->GetAllAgents();
 
     // Build current state
-    std::unordered_map<ObjectId, Position> target_pos;
-    std::unordered_map<Position, ObjectId, PositionHash> current_occupant;
-
+    target_pos.clear();
+    current_occupant.clear();
     for (const Agent* agent : agents) {
       if (!agent->IsAlive()) continue;
       target_pos[agent->GetId()] = PredictPosition(agent);
       current_occupant[agent->GetPosition()] = agent->GetId();
     }
 
-    // Check for invalid moves
+    // Check 1: Grid walkability / bounds. Check 2: Swap detection (A→B,B→A).
     for (Agent* agent : agents) {
       if (!agent->IsAlive()) continue;
       if (agent->GetIntention().movement == MovementAction::Stay) continue;
 
       Position target = target_pos[agent->GetId()];
 
-      // Check 1: Grid walkability / bounds
       if (!grid_->IsInBounds(target) || !grid_->IsWalkable(target)) {
         agent->SetIntention({MovementAction::Stay});
         changed = true;
         continue;
       }
 
-      // Check 2: Swap detection (A→B and B→A)
       auto occ_it = current_occupant.find(target);
       if (occ_it != current_occupant.end()) {
         ObjectId other_id = occ_it->second;
@@ -621,15 +598,15 @@ void BaseEnv::ResolveCollisions() {
       }
     }
 
-    // Check 3: Multiple agents claiming same target cell
-    // Rebuild target_pos after modifications
+    // Check 3: Multiple agents claiming same target cell.
+    // Rebuild target_pos after the Check-1/2 mutations.
     target_pos.clear();
     for (const Agent* agent : agents) {
       if (!agent->IsAlive()) continue;
       target_pos[agent->GetId()] = PredictPosition(agent);
     }
 
-    std::unordered_map<Position, std::vector<Agent*>, PositionHash> claims;
+    claims.clear();
     for (Agent* agent : agents) {
       if (!agent->IsAlive()) continue;
       claims[target_pos[agent->GetId()]].push_back(agent);
@@ -637,7 +614,6 @@ void BaseEnv::ResolveCollisions() {
 
     for (auto& [pos, claiming_agents] : claims) {
       if (claiming_agents.size() > 1) {
-        // Conflict! All agents moving to this cell become noop
         for (Agent* agent : claiming_agents) {
           if (agent->GetIntention().movement != MovementAction::Stay) {
             agent->SetIntention({MovementAction::Stay});
@@ -647,8 +623,7 @@ void BaseEnv::ResolveCollisions() {
       }
     }
 
-    // Check 4: Chase validity - ensure cell will actually be vacated
-    // Rebuild target_pos after modifications
+    // Check 4: Chase validity - ensure cell will actually be vacated.
     target_pos.clear();
     for (const Agent* agent : agents) {
       if (!agent->IsAlive()) continue;
@@ -665,9 +640,7 @@ void BaseEnv::ResolveCollisions() {
         ObjectId occupant_id = occ_it->second;
         Agent* occupant = dynamic_cast<Agent*>(object_manager_->GetActor(occupant_id));
         if (occupant) {
-          // Occupant must be moving away for chase to work
           if (occupant->GetIntention().movement == MovementAction::Stay) {
-            // Occupant staying, so we can't enter
             agent->SetIntention({MovementAction::Stay});
             changed = true;
           }
@@ -1058,9 +1031,13 @@ bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
 
 bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
                                      const LensParams& params) {
-  // Deactivate outgoing lens first so it un-stamps before new stamps happen.
-  if (task_lens_) {
-    task_lens_->Deactivate(*this);
+  // Rollback-safe swap (audit F12). Save the outgoing lens; only release it
+  // once we've confirmed the new one can operate. If Activate + CanOperateOn
+  // fail, un-stamp the new lens and restore the old one instead of leaving
+  // the env lens-less.
+  std::unique_ptr<TaskLens> previous = std::move(task_lens_);
+  if (previous) {
+    previous->Deactivate(*this);
   }
 
   if (lens) {
@@ -1069,11 +1046,16 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
     lens->Activate(*this, params);
     if (!lens->CanOperateOn(*this)) {
       lens->Deactivate(*this);
-      // Restore the previous lens — deactivation already wiped its overlay,
-      // but the previous lens object is gone. The env is effectively
-      // lens-less until a successor SetTaskLens* call.
-      task_lens_.reset();
-      ResetSuccess();
+      // Restore previous lens so the env stays in a usable state.
+      if (previous) {
+        // Re-stamp the previous lens's cells via Activate. Activate takes
+        // LensParams, but the previous lens was originally activated from
+        // its own params — we don't store them, so callers of the failed
+        // SetTaskLensWithParams that need re-stamping must hand those
+        // params back. For our current lenses (Synchro/Aggro/Dodge),
+        // plain SetTaskLens is enough to restore the unparameterized state.
+        task_lens_ = std::move(previous);
+      }
       return false;
     }
   }

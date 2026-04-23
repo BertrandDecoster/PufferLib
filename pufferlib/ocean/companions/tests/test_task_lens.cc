@@ -78,7 +78,8 @@ TEST(TestTaskLensInterface) {
       (void)env;
       return false;
     }
-    float ComputeReward(const BaseEnv& env, int agent_id) const override {
+    Kind GetKind() const override { return kUnknown; }
+    double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env;
       (void)agent_id;
       return 0.0f;
@@ -108,7 +109,8 @@ TEST(TestTaskLensVirtualDestructor) {
     bool CanOperateOn(const BaseEnv& env) const override { (void)env; return true; }
     bool IsDone(const BaseEnv& env) const override { (void)env; return false; }
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
-    float ComputeReward(const BaseEnv& env, int agent_id) const override {
+    Kind GetKind() const override { return kUnknown; }
+    double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
     }
     std::string GetObjectiveString(const BaseEnv& env) const override {
@@ -131,7 +133,8 @@ TEST(TestTaskLensOptionalMethods) {
     bool CanOperateOn(const BaseEnv& env) const override { (void)env; return true; }
     bool IsDone(const BaseEnv& env) const override { (void)env; return false; }
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
-    float ComputeReward(const BaseEnv& env, int agent_id) const override {
+    Kind GetKind() const override { return kUnknown; }
+    double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
     }
     std::string GetObjectiveString(const BaseEnv& env) const override {
@@ -160,7 +163,8 @@ TEST(TestBaseEnvSetTaskLens) {
     bool CanOperateOn(const BaseEnv& env) const override { (void)env; return can_operate; }
     bool IsDone(const BaseEnv& env) const override { (void)env; return false; }
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
-    float ComputeReward(const BaseEnv& env, int agent_id) const override {
+    Kind GetKind() const override { return kUnknown; }
+    double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.5f;
     }
     std::string GetObjectiveString(const BaseEnv& env) const override {
@@ -214,7 +218,7 @@ TEST(TestSynchroLensRewardStructure) {
   SynchroLens lens;
 
   // Initial reward should be negative (time penalty, no agents on synchro)
-  float reward = lens.ComputeReward(env, 0);
+  double reward = lens.ComputeReward(env, 0);
   // Time penalty = -num_agents * kProgressReward = -2 * 0.01 = -0.02
   // Progress = 0 (no agents on synchro initially, most likely)
   ASSERT_TRUE(reward <= 0.0f);
@@ -259,7 +263,7 @@ TEST(TestAggroLensRewardStructure) {
   AggroLens lens;
 
   // Initial reward should be time penalty (not on target yet)
-  float reward = lens.ComputeReward(env, 0);
+  double reward = lens.ComputeReward(env, 0);
   ASSERT_EQ(reward, AggroLens::kTimePenalty);
 }
 
@@ -297,10 +301,10 @@ TEST(TestDodgeLensCanOperateOn) {
 TEST(TestDodgeLensReward) {
   SynchroEnv env(6, 6, 1, 1, 0, 42);
   DodgeLens lens;
-  // All companions alive = survival reward
-  float reward = lens.ComputeReward(env, 0);
+  // All companions alive and not yet at horizon = per-tick survival bonus only
+  double reward = lens.ComputeReward(env, 0);
   ASSERT_TRUE(reward > 0);
-  ASSERT_EQ(reward, DodgeLens::kSurvivalReward);
+  ASSERT_EQ(reward, DodgeLens::kSurvivalBonus);
 }
 
 TEST(TestDodgeLensIsDoneTimeout) {

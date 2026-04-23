@@ -66,8 +66,11 @@ struct Companions_Env {
   // Event buffer for current step
   std::vector<Companions_Event> events;
 
-  // Cached snapshot for two-call save pattern
-  std::vector<uint8_t> cached_snapshot;
+  // Cached snapshot for the two-call save pattern. `mutable` because
+  // companions_get_snapshot_size is declared `const Companions_Env*` on the
+  // C API boundary, yet must populate the cache to return its size.
+  // Audit F13.
+  mutable std::vector<uint8_t> cached_snapshot;
 };
 
 // =============================================================================
@@ -565,10 +568,17 @@ COMPANIONS_API Companions_LensType companions_get_task_lens(Companions_Env* env)
   auto* lens = env->env->GetTaskLens();
   if (!lens) return Companions_Lens_Synchro;
 
-  if (dynamic_cast<companions::SynchroLens*>(lens)) return Companions_Lens_Synchro;
-  if (dynamic_cast<companions::AggroLens*>(lens)) return Companions_Lens_Aggro;
-  if (dynamic_cast<companions::DodgeLens*>(lens)) return Companions_Lens_Dodge;
-  return Companions_Lens_Synchro;
+  // Single virtual dispatch instead of a dynamic_cast chain; unknown kinds
+  // map to Companions_Lens_Unknown rather than silently returning Synchro.
+  // Audit F9.
+  switch (lens->GetKind()) {
+    case companions::TaskLens::kSynchro:  return Companions_Lens_Synchro;
+    case companions::TaskLens::kAggro:    return Companions_Lens_Aggro;
+    case companions::TaskLens::kDodge:    return Companions_Lens_Dodge;
+    case companions::TaskLens::kTagApply: return Companions_Lens_TagApply;
+    case companions::TaskLens::kUnknown:  return Companions_Lens_Unknown;
+  }
+  return Companions_Lens_Unknown;
 }
 
 COMPANIONS_API void companions_reset(Companions_Env* env,
@@ -933,7 +943,7 @@ companions_get_snapshot_size(const Companions_Env* env) {
   try {
     // Save and cache snapshot
     companions::Snapshot snap = env->env->SaveSnapshot();
-    const_cast<Companions_Env*>(env)->cached_snapshot = snap.Serialize();
+    env->cached_snapshot = snap.Serialize();
     return static_cast<int32_t>(env->cached_snapshot.size());
   } catch (const std::exception& e) {
     SetError(e.what());

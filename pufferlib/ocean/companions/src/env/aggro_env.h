@@ -52,9 +52,6 @@ class AggroEnv : public BaseEnv {
   void Reset(unsigned int seed) override;
   bool IsDone() const override;
 
-  // Success check
-  bool IsSuccess() const override;
-  void ResetSuccess() override { success_ = false; }
 
   // Accessors
   Position GetTargetPosition() const { return target_pos_; }
@@ -91,9 +88,6 @@ class AggroEnv : public BaseEnv {
   // Snapshot loading - extract AggroEnv-specific fields from loaded cells
   void LoadSnapshot(const Snapshot& snapshot) override;
 
- protected:
-  void CalculateRewards(std::vector<double>& rewards) override;
-
  private:
   void SetupGrid();
   void PlacePatrolSquare();
@@ -110,7 +104,6 @@ class AggroEnv : public BaseEnv {
   Position target_pos_;
   Position enemy_spawn_pos_;           // Enemy's starting position
   std::vector<Position> patrol_path_;  // 8 cells (3x3 perimeter)
-  bool success_ = false;
 };
 
 }  // namespace companions

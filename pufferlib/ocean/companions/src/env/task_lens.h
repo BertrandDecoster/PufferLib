@@ -66,7 +66,25 @@ class TaskLens {
   // ===========================================================================
   // Returns the reward for the given agent based on current env state.
   // Different lenses implement different reward shaping strategies.
-  virtual float ComputeReward(const BaseEnv& env, int agent_id) const = 0;
+  // Returns double to match StepResult::rewards element type — precision
+  // matters for tests that do exact reward comparisons.
+  virtual double ComputeReward(const BaseEnv& env, int agent_id) const = 0;
+
+  // ===========================================================================
+  // Kind identity — stable integer tag for DLL callers.
+  // ===========================================================================
+  // Keeps the C API free of dynamic_cast chains when identifying the active
+  // lens from the outside. Values must match Companions_LensType in the C API
+  // header (0=Synchro, 1=Aggro, 2=Dodge, 3=TagApply, 0x7FFFFFFF=Unknown).
+  // Audit F9.
+  enum Kind : int {
+    kSynchro = 0,
+    kAggro = 1,
+    kDodge = 2,
+    kTagApply = 3,
+    kUnknown = 0x7FFFFFFF,
+  };
+  virtual Kind GetKind() const = 0;
 
   // ===========================================================================
   // Human-readable objective line for the demo HUD
@@ -86,6 +104,18 @@ class TaskLens {
     (void)env;
     (void)pos;
     return false;
+  }
+
+  // ===========================================================================
+  // Goal cells for "distance to goal" features (observation feature 3)
+  // ===========================================================================
+  // Returns the positions the policy should measure distance to. Lenses with
+  // no geometric goal (e.g. DodgeLens — survival) return empty, and the
+  // distance-to-goal feature becomes explicit zero instead of an accidental
+  // 1.0 from an empty SynchroGoal scan. See audit F15.
+  virtual std::vector<Position> GetGoalCells(const BaseEnv& env) const {
+    (void)env;
+    return {};
   }
 
   // ===========================================================================

@@ -409,6 +409,50 @@ TEST(BaseEnvCopyConstructorPreservesAnnotations) {
 // =============================================================================
 // Main
 // =============================================================================
+// Fuzz test for the cache-invalidation invariant (F5/F6 audit).
+// Runs a pseudo-random sequence of mutators and checks that the cached
+// tag indices match a fresh-from-scratch rebuild. Catches any future
+// mutator that forgets to bump mutation_version_.
+TEST(TestAnnotationsCacheInvariantFuzz) {
+#ifndef NDEBUG
+  AnnotationStore store;
+  // Deterministic LCG — no dependency on env seed machinery here.
+  uint32_t rng = 0xC0FFEE;
+  auto rnd = [&]() { rng = rng * 1664525u + 1013904223u; return rng; };
+  const SemanticTag tags[] = {
+      SemanticTag::SynchroGoal, SemanticTag::AggroTarget,
+      SemanticTag::QuestPickup, SemanticTag::SafeZone,
+      SemanticTag::TargetMob,   SemanticTag::SkillGiver,
+      SemanticTag::Escort,      SemanticTag::HtnName,
+      SemanticTag::Room};
+  for (int i = 0; i < 400; ++i) {
+    int op = rnd() % 6;
+    SemanticTag t = tags[rnd() % 9];
+    Position p{static_cast<int>(rnd() % 8), static_cast<int>(rnd() % 8)};
+    AnnotationKey k{AnnotationTarget::Cell, p, kInvalidObjectId};
+    Annotation a{t, {}, static_cast<int32_t>(rnd() % 4)};
+    switch (op) {
+      case 0: store.Add(k, a); break;
+      case 1: store.RemoveByKey(k, t); break;
+      case 2: store.RemoveByOwner(static_cast<int32_t>(rnd() % 4)); break;
+      case 3: {
+        // Query operations must leave the cache consistent too.
+        (void)store.FindCellsWithTag(t);
+        (void)store.HasTag(k, t);
+        break;
+      }
+      case 4: {
+        store.TransformCellPositions(
+            [](Position pp) { return Position{pp.col, pp.row}; });
+        break;
+      }
+      case 5: store.Clear(); break;
+    }
+    ASSERT_TRUE(store.DebugCacheInvariantHolds());
+  }
+#endif
+}
+
 #ifdef _WIN32
 #include <windows.h>
 #endif

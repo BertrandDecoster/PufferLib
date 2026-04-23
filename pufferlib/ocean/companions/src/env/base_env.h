@@ -66,8 +66,11 @@ class BaseEnv {
   virtual void Reset(unsigned int seed) = 0;
   virtual StepResult Step(const std::vector<Action>& actions);
   virtual bool IsDone() const = 0;
-  virtual bool IsSuccess() const { return false; }  // Override in subclasses
-  virtual void ResetSuccess() {}  // Reset success flag when lens changes
+  // Latched success flag. BaseEnv::Step sets it once the active TaskLens
+  // reports IsSuccess; it stays set until ResetSuccess is called (e.g. by
+  // SetTaskLens). Subclasses normally should not override.
+  virtual bool IsSuccess() const { return success_; }
+  virtual void ResetSuccess() { success_ = false; }
 
   // Task lens management
   bool SetTaskLens(std::unique_ptr<TaskLens> lens);
@@ -184,7 +187,6 @@ class BaseEnv {
   // Subclass hooks for custom step logic
   virtual void PreStep();
   virtual void PostStep() {}
-  virtual void CalculateRewards(std::vector<double>& /*rewards*/) {}
 
   // Update all agents with FSM AI (called in PreStep)
   void UpdateAgentFSM();
@@ -217,6 +219,11 @@ class BaseEnv {
   int d4_transform_ = 0;  // D4 symmetry transformation (0-7)
   std::unique_ptr<TaskLens> task_lens_;
   AnnotationStore annotations_;
+  // Latched once the active lens reports IsSuccess. Reset via ResetSuccess.
+  bool success_ = false;
+  // Pre-reserved reward buffer, reused each Step to avoid allocation on the
+  // hot path. Audit F11.
+  mutable std::vector<double> reward_buffer_;
 };
 
 }  // namespace companions

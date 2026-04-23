@@ -10,15 +10,17 @@ namespace companions {
 
 class AggroLens : public TaskLens {
  public:
-  static constexpr float kWinReward = 1.0f;
-  static constexpr float kTimePenalty = -0.01f;
+  static constexpr double kWinReward = 1.0;
+  static constexpr double kTimePenalty = -0.01;
 
+  Kind GetKind() const override { return kAggro; }
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;
   bool IsSuccess(const BaseEnv& env) const override;
-  float ComputeReward(const BaseEnv& env, int agent_id) const override;
+  double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
   bool IsGoalCell(const BaseEnv& env, Position pos) const override;
+  std::vector<Position> GetGoalCells(const BaseEnv& env) const override;
 
   void AppendVectorObs(const BaseEnv& env, int agent_id,
                        std::vector<float>& obs) const override;

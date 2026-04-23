@@ -388,6 +388,53 @@ TEST(TestPrettyPrint) {
 // =============================================================================
 // Main
 // =============================================================================
+// Cross-format round-trip tests (audit F4/F8)
+// =============================================================================
+
+// Binary -> JSON -> binary must preserve the full Snapshot struct. Guards
+// against schema drift between the two parallel serializers.
+TEST(TestCrossFormatRoundTripSynchroEnv) {
+  SynchroEnv env(8, 8, 3, 3, 0, 1337);
+  Snapshot original = env.SaveSnapshot();
+
+  // Binary -> JSON -> binary
+  std::vector<uint8_t> bin = original.Serialize();
+  Snapshot from_bin = Snapshot::Deserialize(bin);
+  std::string json_str = SnapshotToJson(from_bin);
+  Snapshot from_json = SnapshotFromJson(json_str);
+  std::vector<uint8_t> bin2 = from_json.Serialize();
+
+  // Binary payloads must be byte-identical — proves full-field fidelity.
+  ASSERT_EQ(bin.size(), bin2.size());
+  for (size_t i = 0; i < bin.size(); ++i) {
+    if (bin[i] != bin2[i]) {
+      std::ostringstream oss;
+      oss << "bytes differ at offset " << i;
+      throw std::runtime_error(oss.str());
+    }
+  }
+}
+
+// Version/magic on JSON must be validated — older payloads without the
+// fields still load (backwards compatibility); wrong values must reject.
+TEST(TestJsonSnapshotVersionRejection) {
+  SynchroEnv env(8, 8, 3, 3, 0, 1337);
+  std::string json_str = SnapshotToJson(env.SaveSnapshot());
+
+  // Tamper the version field.
+  std::string tampered = json_str;
+  size_t pos = tampered.find("\"version\": 2");
+  ASSERT_TRUE(pos != std::string::npos);
+  tampered.replace(pos, 12, "\"version\": 99");
+
+  bool threw = false;
+  try {
+    SnapshotFromJson(tampered);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+}
 
 int main() {
   int passed = 0;

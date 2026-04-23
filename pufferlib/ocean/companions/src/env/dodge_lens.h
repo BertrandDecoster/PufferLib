@@ -10,13 +10,15 @@ namespace companions {
 
 class DodgeLens : public TaskLens {
  public:
-  static constexpr float kSurvivalReward = 0.01f;
-  static constexpr float kDeathPenalty = -1.0f;
+  static constexpr double kSurvivalBonus = 0.1;
+  static constexpr double kWinReward = 10.0;
+  static constexpr double kDeathPenalty = -10.0;
 
+  Kind GetKind() const override { return kDodge; }
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;
   bool IsSuccess(const BaseEnv& env) const override;
-  float ComputeReward(const BaseEnv& env, int agent_id) const override;
+  double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
 
  private:

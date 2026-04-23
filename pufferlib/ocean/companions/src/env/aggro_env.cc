@@ -43,8 +43,7 @@ AggroEnv::AggroEnv(const AggroEnv& other)
       rng_(other.rng_),
       target_pos_(other.target_pos_),
       enemy_spawn_pos_(other.enemy_spawn_pos_),
-      patrol_path_(other.patrol_path_),
-      success_(other.success_) {
+      patrol_path_(other.patrol_path_) {
   if (other.GetTaskLens()) {
     SetTaskLens(std::make_unique<AggroLens>());
   }
@@ -60,7 +59,6 @@ AggroEnv& AggroEnv::operator=(const AggroEnv& other) {
     target_pos_ = other.target_pos_;
     enemy_spawn_pos_ = other.enemy_spawn_pos_;
     patrol_path_ = other.patrol_path_;
-    success_ = other.success_;
   }
   return *this;
 }
@@ -305,39 +303,7 @@ void AggroEnv::SpawnCompanions() {
 
 
 bool AggroEnv::IsDone() const {
-  // Delegate to TaskLens if set
-  if (TaskLens* lens = GetTaskLens()) {
-    return lens->IsDone(*this);
-  }
   return success_ || tick_ >= horizon_;
-}
-
-bool AggroEnv::IsSuccess() const {
-  // Delegate to TaskLens if set
-  if (TaskLens* lens = GetTaskLens()) {
-    return lens->IsSuccess(*this);
-  }
-  return success_;
-}
-
-void AggroEnv::CalculateRewards(std::vector<double>& rewards) {
-  // Check if FSM agent is on target cell (lured successfully)
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (auto* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
-      if (fsm_agent->GetPosition() == target_pos_) {
-        success_ = true;
-        for (double& r : rewards) {
-          r = kWinReward;
-        }
-        return;
-      }
-    }
-  }
-
-  // Time penalty
-  for (double& r : rewards) {
-    r = kTimePenalty;
-  }
 }
 
 // =============================================================================

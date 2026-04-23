@@ -65,6 +65,13 @@ class ObjectManager {
   std::vector<Companion*> GetAllCompanions();
   std::vector<const Companion*> GetAllCompanions() const;
 
+  // Filtered iteration over FSM-bearing agents. Cached internally and
+  // invalidated on any mutation, so repeated per-step calls (AggroLens has
+  // four) are O(1) lookups instead of full-scan dynamic_cast loops.
+  // Audit F10.
+  const std::vector<AgentFSM*>& GetAllAgentFSMs();
+  std::vector<const AgentFSM*> GetAllAgentFSMs() const;
+
   // Counts
   int GetNumObjects() const { return static_cast<int>(objects_.size()); }
   int GetNumActors() const;
@@ -90,6 +97,13 @@ class ObjectManager {
   int cols_;
   std::unordered_map<ObjectId, std::unique_ptr<Object>> objects_;
   std::vector<std::vector<Actor*>> actor_grid_;  // [row][col] -> Actor* or nullptr
+
+  // Cached filtered iterator for FSM agents. mutation_version_ is bumped on
+  // CreateActor/RemoveObject/Clear; GetAllAgentFSMs rebuilds the cache when
+  // fsm_cache_version_ lags. Audit F10.
+  mutable uint32_t mutation_version_ = 1;
+  mutable uint32_t fsm_cache_version_ = 0;
+  mutable std::vector<AgentFSM*> fsm_cache_;
 };
 
 // =============================================================================
@@ -116,6 +130,7 @@ T* ObjectManager::CreateActor(Position pos) {
     actor_grid_[pos.row][pos.col] = ptr;
   }
 
+  ++mutation_version_;
   return ptr;
 }
 

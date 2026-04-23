@@ -3,6 +3,7 @@
 
 #include "object_manager.h"
 
+#include <algorithm>
 #include <cassert>
 
 namespace companions {
@@ -89,12 +90,14 @@ void ObjectManager::RemoveObject(ObjectId id) {
   }
 
   objects_.erase(it);
+  ++mutation_version_;
 }
 
 void ObjectManager::Clear() {
   objects_.clear();
   ClearGrid();
   next_id_ = 0;
+  ++mutation_version_;
 }
 
 Object* ObjectManager::GetObject(ObjectId id) {
@@ -245,6 +248,38 @@ std::vector<const Companion*> ObjectManager::GetAllCompanions() const {
   std::sort(result.begin(), result.end(),
             [](const Companion* a, const Companion* b) {
               return a->GetAgentIndex() < b->GetAgentIndex();
+            });
+  return result;
+}
+
+const std::vector<AgentFSM*>& ObjectManager::GetAllAgentFSMs() {
+  if (fsm_cache_version_ != mutation_version_) {
+    fsm_cache_.clear();
+    for (auto& [id, obj] : objects_) {
+      if (AgentFSM* fsm = dynamic_cast<AgentFSM*>(obj.get())) {
+        fsm_cache_.push_back(fsm);
+      }
+    }
+    std::sort(fsm_cache_.begin(), fsm_cache_.end(),
+              [](const AgentFSM* a, const AgentFSM* b) {
+                return a->GetId() < b->GetId();
+              });
+    fsm_cache_version_ = mutation_version_;
+  }
+  return fsm_cache_;
+}
+
+std::vector<const AgentFSM*> ObjectManager::GetAllAgentFSMs() const {
+  std::vector<const AgentFSM*> result;
+  result.reserve(objects_.size());
+  for (const auto& [id, obj] : objects_) {
+    if (const AgentFSM* fsm = dynamic_cast<const AgentFSM*>(obj.get())) {
+      result.push_back(fsm);
+    }
+  }
+  std::sort(result.begin(), result.end(),
+            [](const AgentFSM* a, const AgentFSM* b) {
+              return a->GetId() < b->GetId();
             });
   return result;
 }

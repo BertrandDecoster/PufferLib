@@ -377,8 +377,17 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j) {
 // Main API
 // =============================================================================
 
+// Keep this in sync with the binary version check in snapshot.cc:Serialize.
+// Audit F4: JSON path must be version-gated just like binary.
+static constexpr int kJsonSnapshotVersion = 2;
+static constexpr const char* kJsonSnapshotMagic = "SNAP";
+
 std::string SnapshotToJson(const Snapshot& snapshot) {
   json j;
+
+  // Schema identity — magic + version mirror the binary format.
+  j["magic"] = kJsonSnapshotMagic;
+  j["version"] = kJsonSnapshotVersion;
 
   // Grid
   j["grid"]["rows"] = snapshot.rows;
@@ -438,6 +447,22 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
 
 Snapshot SnapshotFromJson(const std::string& json_str) {
   json j = json::parse(json_str);
+
+  // Schema validation — magic + version. Payloads saved prior to the F4
+  // audit fix won't have either; accept them once but reject future drift.
+  if (j.contains("magic")) {
+    if (!j.at("magic").is_string() ||
+        j.at("magic").get<std::string>() != kJsonSnapshotMagic) {
+      throw std::runtime_error("Invalid snapshot magic (expected \"SNAP\")");
+    }
+  }
+  if (j.contains("version")) {
+    int version = j.at("version").get<int>();
+    if (version != kJsonSnapshotVersion) {
+      throw std::runtime_error(
+          "Unsupported snapshot version: " + std::to_string(version));
+    }
+  }
 
   Snapshot snapshot;
 

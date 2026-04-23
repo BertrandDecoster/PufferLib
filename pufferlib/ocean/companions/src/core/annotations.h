@@ -11,10 +11,12 @@
 #ifndef COMPANIONS_CORE_ANNOTATIONS_H_
 #define COMPANIONS_CORE_ANNOTATIONS_H_
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -141,6 +143,13 @@ class AnnotationStore {
   std::vector<AnnotationSnapshot> Serialize() const;
   void Deserialize(const std::vector<AnnotationSnapshot>& s);
 
+#ifndef NDEBUG
+  // Debug-only paranoid check: rebuild tag indices from scratch and compare
+  // to the cached ones. Tests call this after random mutation sequences to
+  // catch drift if a mutator ever forgets to bump mutation_version_.
+  bool DebugCacheInvariantHolds() const;
+#endif
+
  private:
   // Storage: one entry per (key, tag) pair. Multimap would work but the
   // explicit vector keeps iteration order deterministic for snapshot output.
@@ -149,6 +158,20 @@ class AnnotationStore {
     Annotation ann;
   };
   std::vector<Entry> entries_;
+
+  // Version-counter + lazy-rebuild cache of tag-indexed lookups. Mutators
+  // bump mutation_version_; RebuildCacheIfStale() rebuilds when queried.
+  // See .claude/reviews/companions-audit-2026-04-23.md F5/F6.
+  static constexpr std::size_t kTagCount =
+      static_cast<std::size_t>(SemanticTag::_Count);
+  mutable uint32_t mutation_version_ = 1;  // starts ahead of cache_version_ to force first build
+  mutable uint32_t cache_version_ = 0;
+  mutable std::array<std::vector<Position>, kTagCount> cells_by_tag_;
+  mutable std::array<std::unordered_set<Position, PositionHash>, kTagCount>
+      cell_set_by_tag_;
+  mutable std::array<std::vector<ObjectId>, kTagCount> agents_by_tag_;
+
+  void RebuildCacheIfStale() const;
 };
 
 // =============================================================================

@@ -386,7 +386,8 @@ typedef enum {
     Companions_Lens_Synchro = 0,
     Companions_Lens_Aggro = 1,
     Companions_Lens_Dodge = 2,
-    Companions_Lens_TagApply = 3
+    Companions_Lens_TagApply = 3,
+    Companions_Lens_Unknown = 0x7FFFFFFF  // Sentinel — lens kind not recognized.
 } Companions_LensType;
 
 // Set task lens on environment (swaps interpretation layer)

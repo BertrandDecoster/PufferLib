@@ -46,9 +46,6 @@ class SynchroEnv : public BaseEnv {
   void Reset(unsigned int seed) override;  // Reset with specific seed
   bool IsDone() const override;
 
-  // Success check
-  bool IsSuccess() const override;
-  void ResetSuccess() override { success_ = false; }
 
   // Get synchro cell positions
   const std::vector<Position>& GetSynchroPositions() const {
@@ -76,9 +73,6 @@ class SynchroEnv : public BaseEnv {
   // Snapshot validation - SynchroEnv requires synchro cells
   void ValidateSnapshot(const Snapshot& snapshot) const override;
 
- protected:
-  void CalculateRewards(std::vector<double>& rewards) override;
-
  private:
   void SetupGrid();
   void PlaceSynchroCells();
@@ -90,7 +84,6 @@ class SynchroEnv : public BaseEnv {
   int map_complexity_ = 0;  // 0-5, curriculum learning parameter
   pcg32 rng_;
   std::vector<Position> synchro_positions_;
-  bool success_ = false;
 };
 
 }  // namespace companions

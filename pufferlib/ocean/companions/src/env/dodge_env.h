@@ -50,8 +50,6 @@ class DodgeEnv : public BaseEnv {
   void Reset() override;
   void Reset(unsigned int seed) override;
   bool IsDone() const override;
-  bool IsSuccess() const override { return success_; }
-  void ResetSuccess() override { success_ = false; }
 
   // Observation with hazard zones
   void ObservationTensor(std::vector<float>& values, int player = 0) const override;
@@ -89,7 +87,6 @@ class DodgeEnv : public BaseEnv {
  protected:
   void PreStep() override;
   void PostStep() override;
-  void CalculateRewards(std::vector<double>& rewards) override;
 
  private:
   void SetupGrid();
@@ -102,7 +99,6 @@ class DodgeEnv : public BaseEnv {
   unsigned int seed_;
   pcg32 rng_;
 
-  bool success_ = false;
   bool any_dead_ = false;
 
   // Effect names to randomly spawn

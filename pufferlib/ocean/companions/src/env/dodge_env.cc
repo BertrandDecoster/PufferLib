@@ -45,7 +45,6 @@ DodgeEnv::DodgeEnv(const DodgeEnv& other)
       hazard_interval_(other.hazard_interval_),
       seed_(other.seed_),
       rng_(other.rng_),
-      success_(other.success_),
       any_dead_(other.any_dead_),
       hazard_effects_(other.hazard_effects_) {}
 
@@ -56,7 +55,6 @@ DodgeEnv& DodgeEnv::operator=(const DodgeEnv& other) {
     hazard_interval_ = other.hazard_interval_;
     seed_ = other.seed_;
     rng_ = other.rng_;
-    success_ = other.success_;
     any_dead_ = other.any_dead_;
     hazard_effects_ = other.hazard_effects_;
   }
@@ -277,29 +275,6 @@ void DodgeEnv::PostStep() {
   // it holds the index of the step that just completed.
   if (tick_ > 0 && tick_ % hazard_interval_ == 0) {
     SpawnHazard();
-  }
-}
-
-void DodgeEnv::CalculateRewards(std::vector<double>& rewards) {
-  // Base survival bonus
-  for (size_t i = 0; i < rewards.size(); ++i) {
-    if (!any_dead_) {
-      rewards[i] += kSurvivalBonus;
-    }
-  }
-
-  // Win reward
-  if (success_) {
-    for (size_t i = 0; i < rewards.size(); ++i) {
-      rewards[i] += kWinReward;
-    }
-  }
-
-  // Death penalty
-  if (any_dead_) {
-    for (size_t i = 0; i < rewards.size(); ++i) {
-      rewards[i] += kDeathPenalty;
-    }
   }
 }
 

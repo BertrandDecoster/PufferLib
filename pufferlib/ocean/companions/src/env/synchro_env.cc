@@ -49,8 +49,7 @@ SynchroEnv::SynchroEnv(const SynchroEnv& other)
       num_synchro_(other.num_synchro_),
       map_complexity_(other.map_complexity_),
       rng_(other.rng_),
-      synchro_positions_(other.synchro_positions_),
-      success_(other.success_) {
+      synchro_positions_(other.synchro_positions_) {
   if (other.GetTaskLens()) {
     SetTaskLens(std::make_unique<SynchroLens>());
   }
@@ -64,7 +63,6 @@ SynchroEnv& SynchroEnv::operator=(const SynchroEnv& other) {
     map_complexity_ = other.map_complexity_;
     rng_ = other.rng_;
     synchro_positions_ = other.synchro_positions_;
-    success_ = other.success_;
   }
   return *this;
 }
@@ -94,9 +92,6 @@ void SynchroEnv::ValidateConfig() {
 }
 
 void SynchroEnv::Reset() {
-  // Reset state
-  success_ = false;
-
   // Create level config for synchro env
   LevelConfig config = LevelConfig::ForSynchro(
       rows_, cols_, num_companions_, num_synchro_,
@@ -208,10 +203,6 @@ bool SynchroEnv::IsDone() const {
   return success_ || tick_ >= horizon_;
 }
 
-bool SynchroEnv::IsSuccess() const {
-  return success_;
-}
-
 int SynchroEnv::NumAgentsOnSynchroCells() const {
   int count = 0;
   const AnnotationStore& annotations = GetAnnotations();
@@ -225,25 +216,6 @@ int SynchroEnv::NumAgentsOnSynchroCells() const {
     }
   }
   return count;
-}
-
-void SynchroEnv::CalculateRewards(std::vector<double>& rewards) {
-  int on_synchro = NumAgentsOnSynchroCells();
-  int num_agents = NumAgents();
-
-  // Time penalty is -num_agents * kProgressReward
-  // This ensures max progress per step is 0 when all agents are on synchro but not winning
-  double time_penalty = -static_cast<double>(num_agents) * kProgressReward;
-  double reward = kProgressReward * on_synchro + time_penalty;
-
-  if (on_synchro >= num_synchro_) {
-    success_ = true;
-    reward += kWinReward;
-  }
-
-  for (int i = 0; i < num_agents; ++i) {
-    rewards[i] = reward;
-  }
 }
 
 double SynchroEnv::MinUtility() const {
