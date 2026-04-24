@@ -245,6 +245,10 @@ cleanrl = [
     'tyro==0.8.6',
 ]
 
+test = [
+    'pytest',
+]
+
 [project.scripts]
 puffer = "pufferlib.pufferl:main"
 

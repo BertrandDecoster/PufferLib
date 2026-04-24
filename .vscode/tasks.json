@@ -123,6 +123,29 @@
                     }
                 }
             }
+        },
+        {
+            "label": "companions-test-all",
+            "type": "shell",
+            "command": "./pufferlib/ocean/companions/scripts/build.sh --release --python --pytest",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "windows": {
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Program Files\\Git\\bin\\bash.exe",
+                        "args": ["-c"]
+                    }
+                }
+            }
         }
     ]
 }

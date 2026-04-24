@@ -7,6 +7,7 @@
 #   --release    Build Release config (default: Debug)
 #   --clean      Force full rebuild
 #   --python     Also build and test Python bindings
+#   --pytest     Also run pytest on tests/python/
 #   --no-test    Skip running tests
 #   --help       Show this help
 #
@@ -31,6 +32,7 @@ NC='\033[0m'
 CONFIG="Debug"
 CLEAN_BUILD=false
 BUILD_PYTHON=false
+RUN_PYTEST=false
 RUN_TESTS=true
 
 # Parse arguments
@@ -44,6 +46,9 @@ for arg in "$@"; do
             ;;
         --python)
             BUILD_PYTHON=true
+            ;;
+        --pytest)
+            RUN_PYTEST=true
             ;;
         --no-test)
             RUN_TESTS=false
@@ -63,6 +68,15 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/../build"
 REPO_ROOT="$SCRIPT_DIR/../../../.."
+
+# Resolve venv python (Windows: .venv/Scripts, Unix: .venv/bin)
+if [ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]; then
+    VENV_PYTHON="$REPO_ROOT/.venv/Scripts/python.exe"
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+else
+    VENV_PYTHON=""
+fi
 
 # Configure CMake (always pass BUILD_DLL=ON to ensure it's set)
 if [ ! -d "$BUILD_DIR" ]; then
@@ -99,23 +113,53 @@ if [ "$RUN_TESTS" = true ]; then
     fi
 fi
 
-# Python bindings (optional)
+# Python bindings (optional) — skipped on Windows: setup.py raises on line 144
+# because the C extensions don't support MSVC. Treat --python as a no-op there.
 if [ "$BUILD_PYTHON" = true ]; then
-    echo ""
-    echo "=== Building Python Bindings ==="
-    cd "$REPO_ROOT"
-    if ! .venv/bin/python setup.py build_companions --inplace --force 2>&1 | grep -v "SetuptoolsDeprecationWarning" | grep -v "^\!\!" | grep -v "project.license" | grep -v "By 2026" | grep -v "See https://packaging" | grep -v "tool.setuptools" | grep -v "^\*\*\*"; then
-        echo -e "\n${RED}PYTHON BUILD FAILED${NC}"
-        exit 1
-    fi
-
-    if [ "$RUN_TESTS" = true ]; then
+    if [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [[ "$OSTYPE" == "win32"* ]]; then
         echo ""
-        echo "=== Testing Python Integration ==="
-        if ! .venv/bin/python -m pufferlib.ocean.companions.synchro 2>&1; then
-            echo -e "\n${RED}PYTHON TESTS FAILED${NC}"
+        echo -e "${YELLOW}=== Skipping --python (setup.py does not support Windows) ===${NC}"
+    else
+        if [ -z "$VENV_PYTHON" ]; then
+            echo -e "\n${RED}--python given but no venv found at .venv/{Scripts,bin}${NC}"
             exit 1
         fi
+        echo ""
+        echo "=== Building Python Bindings ==="
+        cd "$REPO_ROOT"
+        if ! "$VENV_PYTHON" setup.py build_companions --inplace --force 2>&1 | grep -v "SetuptoolsDeprecationWarning" | grep -v "^\!\!" | grep -v "project.license" | grep -v "By 2026" | grep -v "See https://packaging" | grep -v "tool.setuptools" | grep -v "^\*\*\*"; then
+            echo -e "\n${RED}PYTHON BUILD FAILED${NC}"
+            exit 1
+        fi
+
+        if [ "$RUN_TESTS" = true ]; then
+            echo ""
+            echo "=== Testing Python Integration ==="
+            if ! "$VENV_PYTHON" -m pufferlib.ocean.companions.synchro 2>&1; then
+                echo -e "\n${RED}PYTHON TESTS FAILED${NC}"
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+# pytest on tests/python/ (optional)
+if [ "$RUN_PYTEST" = true ] && [ "$RUN_TESTS" = true ]; then
+    if [ -z "$VENV_PYTHON" ]; then
+        echo -e "\n${RED}--pytest given but no venv found at .venv/{Scripts,bin}${NC}"
+        exit 1
+    fi
+    if ! "$VENV_PYTHON" -c "import pytest" 2>/dev/null; then
+        echo -e "\n${RED}--pytest given but pytest is not installed in .venv${NC}"
+        echo -e "${YELLOW}Install with:  uv pip install pytest${NC}"
+        exit 1
+    fi
+    echo ""
+    echo "=== Running pytest (tests/python/) ==="
+    cd "$REPO_ROOT"
+    if ! "$VENV_PYTHON" -m pytest pufferlib/ocean/companions/tests/python/ -v 2>&1; then
+        echo -e "\n${RED}PYTEST FAILED${NC}"
+        exit 1
     fi
 fi
 

@@ -33,6 +33,7 @@
       "windows": {
         "type": "cppvsdbg",
         "program": "${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug/companions_test.exe",
+        "console": "integratedTerminal",
         "logging": { "exceptions": false }
       }
     },

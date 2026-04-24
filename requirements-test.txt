@@ -1,0 +1,15 @@
+pytest
+
+# Pufferlib runtime deps (subset of setup.py install_requires, pytest needs these to
+# import `pufferlib` successfully on Windows where `uv pip install -e .` is blocked).
+numpy<2.0
+torch
+shimmy[gym-v21]
+gym==0.23
+gymnasium>=0.29.1
+pettingzoo>=1.24.1
+
+# D4-equivariant network tests (test_d4_networks.py, test_escnn_mps.py) also need:
+#   escnn
+# Installation fails on Windows without MSVC (escnn -> lie-learn -> compiles numpy
+# from source). Add manually on Linux/Mac, or install MSVC Build Tools on Windows.
