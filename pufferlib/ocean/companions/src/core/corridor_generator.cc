@@ -133,14 +133,25 @@ std::vector<CorridorCandidate> CorridorGenerator::GenerateCandidates(
   CORRIDOR_DEBUG("GenerateCandidates: " << doors1.size() << " x " << doors2.size()
                  << " door pairs, width=" << corridor_width);
 
+  struct RectSpan {
+    int r_lo, r_hi, c_lo, c_hi;
+  };
+  auto door_span = [](const std::vector<Position>& cells) -> RectSpan {
+    RectSpan s{cells[0].row, cells[0].row, cells[0].col, cells[0].col};
+    for (const Position& p : cells) {
+      s.r_lo = std::min(s.r_lo, p.row);
+      s.r_hi = std::max(s.r_hi, p.row);
+      s.c_lo = std::min(s.c_lo, p.col);
+      s.c_hi = std::max(s.c_hi, p.col);
+    }
+    return s;
+  };
+
   for (const Door& d1 : doors1) {
     for (const Door& d2 : doors2) {
       CorridorCandidate candidate;
       candidate.door1 = d1;
       candidate.door2 = d2;
-
-      Position from = d1.out_cells[d1.out_cells.size() / 2];
-      Position to = d2.out_cells[d2.out_cells.size() / 2];
 
       std::set<std::pair<int, int>> added_cells;
 
@@ -151,23 +162,18 @@ std::vector<CorridorCandidate> CorridorGenerator::GenerateCandidates(
         }
       };
 
-      auto draw_vertical = [&](int r1, int r2, int col) {
-        int rmin = std::min(r1, r2);
-        int rmax = std::max(r1, r2);
-        for (int r = rmin; r <= rmax; ++r) {
-          add_cell(r, col);
+      auto fill_rect = [&](int r_lo, int r_hi, int c_lo, int c_hi) {
+        for (int r = r_lo; r <= r_hi; ++r) {
+          for (int c = c_lo; c <= c_hi; ++c) {
+            add_cell(r, c);
+          }
         }
       };
 
-      auto draw_horizontal = [&](int row, int c1, int c2) {
-        int cmin = std::min(c1, c2);
-        int cmax = std::max(c1, c2);
-        for (int c = cmin; c <= cmax; ++c) {
-          add_cell(row, c);
-        }
-      };
+      RectSpan s1 = door_span(d1.out_cells);
+      RectSpan s2 = door_span(d2.out_cells);
 
-      // Add door out_cells first
+      // Add door out_cells first (already corridor_width wide by construction)
       for (const Position& p : d1.out_cells) {
         add_cell(p.row, p.col);
       }
@@ -175,24 +181,63 @@ std::vector<CorridorCandidate> CorridorGenerator::GenerateCandidates(
         add_cell(p.row, p.col);
       }
 
-      // Generate L-shaped corridor
+      // Generate corridor bands matching corridor_width, aligned to the
+      // door out_cells span at each endpoint so the carved footprint matches
+      // the door exactly and never clips room walls on the sides.
       if (d1.is_horizontal && d2.is_horizontal) {
-        if (from.col == to.col) {
-          draw_vertical(from.row, to.row, from.col);
+        // Horizontal doors: travel is vertical, width spans columns.
+        int r1 = s1.r_lo;  // s1.r_lo == s1.r_hi for horizontal doors
+        int r2 = s2.r_lo;
+
+        if (s1.c_lo == s2.c_lo && s1.c_hi == s2.c_hi) {
+          // Aligned columns: single vertical band
+          fill_rect(std::min(r1, r2), std::max(r1, r2), s1.c_lo, s1.c_hi);
         } else {
-          int mid_row = (from.row + to.row) / 2;
-          draw_vertical(from.row, mid_row, from.col);
-          draw_horizontal(mid_row, from.col, to.col);
-          draw_vertical(mid_row, to.row, to.col);
+          // Z-shape: vertical leg, horizontal middle leg, vertical leg
+          int mid_row = (r1 + r2) / 2;
+          int mid_r_lo, mid_r_hi;
+          if (r1 < r2) {
+            mid_r_lo = mid_row;
+            mid_r_hi = std::min(mid_row + corridor_width - 1, r2);
+          } else {
+            mid_r_hi = mid_row;
+            mid_r_lo = std::max(mid_row - corridor_width + 1, r2);
+          }
+          // Leg 1: door1 column span from r1 to the elbow
+          fill_rect(std::min(r1, mid_r_lo), std::max(r1, mid_r_lo),
+                    s1.c_lo, s1.c_hi);
+          // Middle leg: full column range, corridor_width rows tall
+          fill_rect(mid_r_lo, mid_r_hi,
+                    std::min(s1.c_lo, s2.c_lo), std::max(s1.c_hi, s2.c_hi));
+          // Leg 3: door2 column span from the elbow to r2
+          int leg3_start = (r1 < r2) ? mid_r_hi : mid_r_lo;
+          fill_rect(std::min(leg3_start, r2), std::max(leg3_start, r2),
+                    s2.c_lo, s2.c_hi);
         }
       } else {
-        if (from.row == to.row) {
-          draw_horizontal(from.row, from.col, to.col);
+        // Vertical doors: travel is horizontal, width spans rows.
+        int c1 = s1.c_lo;  // s1.c_lo == s1.c_hi for vertical doors
+        int c2 = s2.c_lo;
+
+        if (s1.r_lo == s2.r_lo && s1.r_hi == s2.r_hi) {
+          fill_rect(s1.r_lo, s1.r_hi, std::min(c1, c2), std::max(c1, c2));
         } else {
-          int mid_col = (from.col + to.col) / 2;
-          draw_horizontal(from.row, from.col, mid_col);
-          draw_vertical(from.row, to.row, mid_col);
-          draw_horizontal(to.row, mid_col, to.col);
+          int mid_col = (c1 + c2) / 2;
+          int mid_c_lo, mid_c_hi;
+          if (c1 < c2) {
+            mid_c_lo = mid_col;
+            mid_c_hi = std::min(mid_col + corridor_width - 1, c2);
+          } else {
+            mid_c_hi = mid_col;
+            mid_c_lo = std::max(mid_col - corridor_width + 1, c2);
+          }
+          fill_rect(s1.r_lo, s1.r_hi,
+                    std::min(c1, mid_c_lo), std::max(c1, mid_c_lo));
+          fill_rect(std::min(s1.r_lo, s2.r_lo), std::max(s1.r_hi, s2.r_hi),
+                    mid_c_lo, mid_c_hi);
+          int leg3_start = (c1 < c2) ? mid_c_hi : mid_c_lo;
+          fill_rect(s2.r_lo, s2.r_hi,
+                    std::min(leg3_start, c2), std::max(leg3_start, c2));
         }
       }
 

@@ -169,6 +169,30 @@ int CountCellsWithOrigin(const Grid& grid, CellOrigin origin) {
   return count;
 }
 
+// Check if cell (r, c) is contained in at least one width x width block of
+// walkable cells. Used to verify corridor cells are never a 1-wide pinch -
+// walkable rather than corridor-origin so that corridor segments which merge
+// into adjacent rooms still count (the goal is no 1-cell walkable bottleneck,
+// not a specific origin pattern).
+bool IsCellInWalkableBand(const Grid& grid, int r, int c, int width) {
+  for (int dr = -(width - 1); dr <= 0; ++dr) {
+    for (int dc = -(width - 1); dc <= 0; ++dc) {
+      bool all_walkable = true;
+      for (int i = 0; i < width && all_walkable; ++i) {
+        for (int j = 0; j < width && all_walkable; ++j) {
+          int rr = r + dr + i;
+          int cc = c + dc + j;
+          if (!grid.IsInBounds({rr, cc}) || !grid.IsWalkable({rr, cc})) {
+            all_walkable = false;
+          }
+        }
+      }
+      if (all_walkable) return true;
+    }
+  }
+  return false;
+}
+
 // Get quadrant index (0-3) for a position: 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right
 int GetQuadrant(Position pos, int rows, int cols) {
   int mid_row = rows / 2;
@@ -403,6 +427,56 @@ TEST(TestBoundsOverride_WideCorridors) {
 
   ASSERT_TRUE(HasWallPerimeter(*grid));
   ASSERT_TRUE(IsConnected(*grid));
+
+  // Every corridor cell must be part of a 3x3 block of corridor cells - no
+  // pinch points. If the fallback to obstacle-only generation ran (no
+  // corridors carved), skip the width check rather than assert on zero.
+  int corridor_cells = CountCellsWithOrigin(*grid, CellOrigin::Corridor);
+  if (corridor_cells > 0) {
+    for (int r = 0; r < grid->GetRows(); ++r) {
+      for (int c = 0; c < grid->GetCols(); ++c) {
+        if (grid->GetCell(r, c).GetOrigin() == CellOrigin::Corridor) {
+          ASSERT_TRUE(IsCellInWalkableBand(*grid, r, c, 3));
+        }
+      }
+    }
+  }
+}
+
+TEST(TestComplexity2_CorridorWidth) {
+  // Regression test for the bug where complexity-2 corridors were 2 cells
+  // wide at the door but narrowed to 1 cell for the rest of the L-shape.
+  // Repro case reported by the user: size 48, seed 43.
+  auto config = MapGenerator::DefaultConfig(48, 48, 2, 43);
+  auto grid = MapGenerator::Generate(config);
+
+  ASSERT_TRUE(HasWallPerimeter(*grid));
+  ASSERT_TRUE(IsConnected(*grid));
+
+  int corridor_cells = CountCellsWithOrigin(*grid, CellOrigin::Corridor);
+  ASSERT_GT(corridor_cells, 0);
+
+  for (int r = 0; r < grid->GetRows(); ++r) {
+    for (int c = 0; c < grid->GetCols(); ++c) {
+      if (grid->GetCell(r, c).GetOrigin() == CellOrigin::Corridor) {
+        ASSERT_TRUE(IsCellInWalkableBand(*grid, r, c, 2));
+      }
+    }
+  }
+
+  // Sweep seeds at size 16 (typical RL grid) to catch regressions.
+  for (int seed = 0; seed < 30; ++seed) {
+    auto cfg = MapGenerator::DefaultConfig(16, 16, 2, seed);
+    auto g = MapGenerator::Generate(cfg);
+    if (CountCellsWithOrigin(*g, CellOrigin::Corridor) == 0) continue;
+    for (int r = 0; r < g->GetRows(); ++r) {
+      for (int c = 0; c < g->GetCols(); ++c) {
+        if (g->GetCell(r, c).GetOrigin() == CellOrigin::Corridor) {
+          ASSERT_TRUE(IsCellInWalkableBand(*g, r, c, 2));
+        }
+      }
+    }
+  }
 }
 
 TEST(TestBoundsOverride_NoObstacles) {

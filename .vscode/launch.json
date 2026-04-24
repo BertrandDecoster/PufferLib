@@ -40,11 +40,11 @@
       "name": "Companions: Play (Synchro)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \"",
+      "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin\" \"./companions_demo --env synchro --size 24 --complexity 2 --companions 3 --seed 43 \"",
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "companions-build",
       "windows": {
-        "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env synchro --size 12 --complexity 2 --companions 3 --seed 4 \""
+        "command": "\"${workspaceFolder}/.vscode/launch_in_terminal.sh\" \"${workspaceFolder}/pufferlib/ocean/companions/build/bin/Debug\" \"./companions_demo.exe --env synchro --size 24 --complexity 2 --companions 3 --seed 43 \""
       }
     },
     {
