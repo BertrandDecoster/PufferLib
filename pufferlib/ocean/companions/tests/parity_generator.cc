@@ -40,7 +40,7 @@ struct ParityHeader {
 void write_step_record(
     std::ofstream& out,
     const std::vector<int>& actions,       // [num_agents * 2] movement, interact
-    const std::vector<float>& observations, // [num_agents * 5 * rows * cols]
+    const std::vector<float>& observations, // [num_agents * (tensor + vector obs)]
     const std::vector<float>& rewards,      // [num_agents]
     const std::vector<uint8_t>& terminals,  // [num_agents]
     uint32_t reset_seed                     // seed used for reset, 0 if no reset
@@ -132,8 +132,11 @@ int main(int argc, char** argv) {
     std::uniform_int_distribution<int> move_dist(0, 4);
     std::uniform_int_distribution<int> interact_dist(0, 1);
 
-    // Allocate buffers - tensor + vector observations
-    int tensor_size = 5 * rows * cols;
+    // Allocate buffers - tensor + vector observations.
+    // Tensor size is queried from the env (7 planes * rows * cols), never
+    // hardcoded: the obs layout is a versioned contract owned by BaseEnv.
+    std::vector<int> obs_shape = env.ObservationShape();
+    int tensor_size = obs_shape[0] * obs_shape[1] * obs_shape[2];
     int vector_obs_size = env.VectorObservationSize();
     int obs_size = tensor_size + vector_obs_size;  // Total per agent
     std::vector<int> actions(num_agents * 2);

@@ -6,21 +6,27 @@ import numpy as np
 import pufferlib
 from pufferlib.ocean.companions import binding
 
-# Observation tensor: 5 channels x rows x cols
+# Observation tensor: 7 channels x rows x cols (universal layout for all tasks)
 # Plane 0: Floor cells (1.0 if walkable)
 # Plane 1: Wall cells (1.0 if wall)
-# Plane 2: Synchro cells (1.0 if goal)
+# Plane 2: Goal cells (1.0 where the active lens reports a goal)
 # Plane 3: Current player position (1.0 at own position)
 # Plane 4: Other agents positions (1.0 at teammate positions)
-NUM_CHANNELS = 5
+# Plane 5: Telegraphed hazard zones (1.0 where an effect will hit)
+# Plane 6: Active hazard zones (1.0 where an effect is currently live)
+# Must match BaseEnv::kNumObservationPlanes (src/env/base_env.h).
+NUM_CHANNELS = 7
 
-# Vector observation: 9 features appended after tensor
+# Vector observation: base features appended after tensor, followed by the
+# active lens's task-specific tail (SynchroLens adds no extra features).
 # [0-1] Position (row, col) normalized to [0,1]
 # [2] Health ratio
 # [3] Distance to goal (normalized)
 # [4-7] Relative positions to 2 other companions
 # [8] Steps left / 100 (absolute, not ratio)
-VECTOR_OBS_SIZE = 9
+BASE_VECTOR_OBS_SIZE = 9
+SYNCHRO_LENS_TAIL_SIZE = 0  # SynchroLens::AdditionalVectorObsSize()
+VECTOR_OBS_SIZE = BASE_VECTOR_OBS_SIZE + SYNCHRO_LENS_TAIL_SIZE
 
 
 class Synchro(pufferlib.PufferEnv):
@@ -57,7 +63,7 @@ class Synchro(pufferlib.PufferEnv):
         self.vector_size = VECTOR_OBS_SIZE
 
         # Flattened observation: tensor + vector (like MOBA)
-        # Layout: [5*rows*cols tensor floats] + [9 vector floats]
+        # Layout: [NUM_CHANNELS*rows*cols tensor floats] + [VECTOR_OBS_SIZE vector floats]
         obs_size = self.tensor_size + self.vector_size
         self.single_observation_space = gymnasium.spaces.Box(
             low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32  # -1 for relative positions

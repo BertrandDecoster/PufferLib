@@ -417,7 +417,7 @@ TEST(TestResetWithNewSeed) {
 TEST(TestAggroEnvVectorObservationSize) {
   AggroEnv env(10, 1, EnemyType::Goblin, 42);
 
-  // AggroEnv adds 8 features to base (9): total = 17
+  // AggroLens appends 8 features to base (9): total = 17
   ASSERT_EQ(env.VectorObservationSize(), 17);
 }
 
@@ -434,10 +434,9 @@ TEST(TestAggroEnvVectorObservationValues) {
     ASSERT_TRUE(obs[i] >= -1.0f && obs[i] <= 1.0f);
   }
 
-  // Feature 8-9: Relative position to enemy
-  // Feature 8: steps_left (base env)
-  // Feature 9-10: AggroEnv specific (enemy position normalized)
-  // Feature 11: Distance to enemy (normalized)
+  // Layout: features 0-8 are BaseEnv's, then the AggroLens tail:
+  // Features 9-10: Relative position to enemy (per-axis normalized)
+  // Feature 11: Distance to enemy (normalized by rows + cols - 2)
   // Features 12-14: FSM state one-hot (should sum to 1)
   float fsm_sum = obs[12] + obs[13] + obs[14];
   ASSERT_TRUE(fsm_sum > 0.99f && fsm_sum < 1.01f);  // One-hot should sum to 1

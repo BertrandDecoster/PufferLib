@@ -21,6 +21,16 @@ class DodgeLens : public TaskLens {
   double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
 
+  // Dodge-specific vector observation tail (10 features):
+  //   [0]   Survival progress (ticks remaining / horizon)
+  //   [1]   Number of active effects (normalized, capped at 10)
+  //   [2-5] Active hazard danger per direction (up, down, left, right);
+  //         inverted distance: 0 = far/safe, 1 = on top of the hazard
+  //   [6-9] Telegraphed hazard danger per direction (same encoding)
+  void AppendVectorObs(const BaseEnv& env, int agent_id,
+                       std::vector<float>& obs) const override;
+  int AdditionalVectorObsSize() const override { return 10; }
+
  private:
   bool AnyCompanionIncapacitated(const BaseEnv& env) const;
 };

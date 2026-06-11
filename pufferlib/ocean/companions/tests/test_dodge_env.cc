@@ -206,7 +206,7 @@ TEST(TestDodgeEnvRewards) {
 TEST(TestDodgeEnvVectorObservationSize) {
   DodgeEnv env(7, 1, 3, 50, 42);
 
-  // DodgeEnv adds 10 features to base (9): total = 19
+  // DodgeLens appends 10 features to base (9): total = 19
   ASSERT_EQ(env.VectorObservationSize(), 19);
 }
 
@@ -251,8 +251,12 @@ TEST(TestDodgeEnvVectorObservationDanger) {
   std::vector<float> obs_no_effect;
   env.VectorObservation(obs_no_effect, 0);
 
-  // Danger features (indices 10-17) should all be 0 (no danger)
-  for (int i = 10; i < 18; ++i) {
+  // DodgeLens tail layout after the 9 base features:
+  //   [9] survival progress, [10] active effect count,
+  //   [11-14] active danger (up, down, left, right),
+  //   [15-18] telegraph danger (up, down, left, right)
+  // Effect count and all danger features should be 0 with no effects.
+  for (int i = 10; i < 19; ++i) {
     ASSERT_EQ(obs_no_effect[i], 0.0f);
   }
 
@@ -265,12 +269,11 @@ TEST(TestDodgeEnvVectorObservationDanger) {
   std::vector<float> obs_with_effect;
   env.VectorObservation(obs_with_effect, 0);
 
-  // Feature 9 should now show 1 effect
-  ASSERT_TRUE(obs_with_effect[9] > 0.0f);
+  // Feature 10 should now show 1 active effect (1/10 normalized)
+  ASSERT_TRUE(obs_with_effect[10] > 0.0f);
 
-  // Danger in "up" direction should be non-zero
-  // Features 10-13 are active danger (up, down, left, right)
-  ASSERT_TRUE(obs_with_effect[10] > 0.0f);  // Danger up
+  // Danger in "up" direction should be non-zero (active effect 2 cells above)
+  ASSERT_TRUE(obs_with_effect[11] > 0.0f);  // Active danger up
 
   registry.Clear();
 }

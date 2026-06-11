@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.12)
-project(companions VERSION 0.3.0 LANGUAGES CXX)
+# 0.4.0: observation layout contract change - universal 7-plane tensor for all
+# tasks (adds telegraphed/active hazard planes) and lens-provided vector obs
+# tail. Models trained against 0.3.x observations are invalidated.
+project(companions VERSION 0.4.0 LANGUAGES CXX)
 
 # C++17 required
 set(CMAKE_CXX_STANDARD 17)

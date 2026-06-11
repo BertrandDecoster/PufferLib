@@ -114,12 +114,19 @@ We want to integrate the pure C++ game in `companions/` into PufferLib
 
 
 ### Observations
-5-plane tensor [5 × grid_size × grid_size]:
+Universal 7-plane tensor [7 × grid_size × grid_size], identical for all tasks
+(BaseEnv::kNumObservationPlanes):
 - Plane 0: Walkable cells
 - Plane 1: Walls
-- Plane 2: Synchro/goal cells
+- Plane 2: Goal cells (the active TaskLens decides via IsGoalCell)
 - Plane 3: Current player
 - Plane 4: Other agents
+- Plane 5: Telegraphed hazard zones
+- Plane 6: Active hazard zones
+
+Vector observation = 9 base features (BaseEnv) + the active lens's tail
+(TaskLens::AppendVectorObs / AdditionalVectorObsSize). SynchroLens adds 0,
+AggroLens 8, DodgeLens 10.
 
 ### Curriculum Learning
 

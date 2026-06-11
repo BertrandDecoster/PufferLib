@@ -22,18 +22,24 @@ The companions game differs from standard Ocean envs:
 
 ## Observation Space
 
-Flattened tensor + vector: `[5*rows*cols + 9]` floats
+Flattened tensor + vector: `[7*rows*cols + 9 + lens_tail]` floats.
+The layout is universal: BaseEnv owns the tensor planes and the 9 base vector
+features; the active TaskLens owns the goal plane contents and the vector tail
+(`AppendVectorObs`/`AdditionalVectorObsSize`). SynchroLens tail = 0,
+AggroLens = 8, DodgeLens = 10.
 
-**Tensor (5 channels × rows × cols):**
+**Tensor (7 channels × rows × cols, `BaseEnv::kNumObservationPlanes`):**
 | Plane | Content |
 |-------|---------|
 | 0 | Floor cells (1.0 if walkable) |
 | 1 | Wall cells (1.0 if wall) |
-| 2 | Synchro/goal cells (1.0 if goal) |
+| 2 | Goal cells (1.0 where the active lens reports a goal) |
 | 3 | Current player position |
 | 4 | Other agents positions |
+| 5 | Telegraphed hazard zones |
+| 6 | Active hazard zones |
 
-**Vector (9 features appended after tensor):**
+**Vector (9 base features appended after tensor, then the lens tail):**
 | Index | Content |
 |-------|---------|
 | 0-1 | Position (row, col) normalized to [0,1] |
@@ -41,6 +47,7 @@ Flattened tensor + vector: `[5*rows*cols + 9]` floats
 | 3 | Distance to goal (normalized) |
 | 4-7 | Relative positions to 2 other companions |
 | 8 | Steps left / 100 |
+| 9+ | Task-specific lens tail (`TaskLens::AppendVectorObs`) |
 
 ## Action Space
 

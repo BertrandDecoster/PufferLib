@@ -968,7 +968,7 @@ class G2048(nn.Module):
 class Synchro(nn.Module):
     """CNN policy for Synchro with MultiDiscrete actions and flexible grid sizes.
 
-    Handles flattened observations: [tensor (5*rows*cols)] + [vector (9 features)]
+    Handles flattened observations: [tensor (7*rows*cols)] + [vector (9 base features + lens tail)]
     """
 
     def __init__(self, env, hidden_size=64, **kwargs):
@@ -979,9 +979,12 @@ class Synchro(nn.Module):
         # Get dimensions from env
         self.rows = env.rows
         self.cols = env.cols
-        self.tensor_size = env.tensor_size  # 5 * rows * cols
-        self.vector_size = env.vector_size  # 9 features
-        in_channels = 5  # 5 observation planes
+        self.tensor_size = env.tensor_size  # NUM_CHANNELS * rows * cols
+        self.vector_size = env.vector_size  # 9 base features + lens tail
+        # Derive plane count from the env so the obs contract lives in one
+        # place (synchro.NUM_CHANNELS, mirroring BaseEnv::kNumObservationPlanes)
+        in_channels = self.tensor_size // (self.rows * self.cols)
+        self.in_channels = in_channels
 
         # CNN encoder with adaptive pooling for variable grid sizes
         self.conv = nn.Sequential(
@@ -1030,7 +1033,7 @@ class Synchro(nn.Module):
     def encode_observations(self, observations, state=None):
         # Split flattened observations into tensor and vector parts
         obs = observations.float()
-        tensor_obs = obs[:, :self.tensor_size].view(-1, 5, self.rows, self.cols)
+        tensor_obs = obs[:, :self.tensor_size].view(-1, self.in_channels, self.rows, self.cols)
         vector_obs = obs[:, self.tensor_size:]
 
         # Process tensor through CNN
@@ -1062,7 +1065,7 @@ class SynchroMobaTemplate(nn.Module):
     - Actor: single linear layer producing all action logits, split for MultiDiscrete
     - Critic: single linear layer for value
 
-    Handles flattened observations: [tensor (5*rows*cols)] + [vector (9 features)]
+    Handles flattened observations: [tensor (7*rows*cols)] + [vector (9 base features + lens tail)]
     """
 
     def __init__(self, env, cnn_channels=128, hidden_size=128, **kwargs):
@@ -1073,9 +1076,12 @@ class SynchroMobaTemplate(nn.Module):
         # Get dimensions from env
         self.rows = env.rows
         self.cols = env.cols
-        self.tensor_size = env.tensor_size  # 5 * rows * cols
-        self.vector_size = env.vector_size  # 9 features
-        in_channels = 5  # 5 observation planes
+        self.tensor_size = env.tensor_size  # NUM_CHANNELS * rows * cols
+        self.vector_size = env.vector_size  # 9 base features + lens tail
+        # Derive plane count from the env so the obs contract lives in one
+        # place (synchro.NUM_CHANNELS, mirroring BaseEnv::kNumObservationPlanes)
+        in_channels = self.tensor_size // (self.rows * self.cols)
+        self.in_channels = in_channels
 
         # CNN encoder for spatial tensor (like MOBA)
         # For grid sizes around 10-12, use kernel=3, stride=2 to get reasonable output
@@ -1119,7 +1125,7 @@ class SynchroMobaTemplate(nn.Module):
     def encode_observations(self, observations, state=None):
         # Split flattened observations into tensor and vector parts
         obs = observations.float()
-        tensor_obs = obs[:, :self.tensor_size].view(-1, 5, self.rows, self.cols)
+        tensor_obs = obs[:, :self.tensor_size].view(-1, self.in_channels, self.rows, self.cols)
         vector_obs = obs[:, self.tensor_size:]
 
         # Process tensor through CNN (like MOBA)
@@ -1149,7 +1155,7 @@ class SynchroD4(nn.Module):
     - Better generalization to rotated/reflected game states
     - 2-5x sample efficiency improvement
 
-    Handles flattened observations: [tensor (5*rows*cols)] + [vector (9 features)]
+    Handles flattened observations: [tensor (7*rows*cols)] + [vector (9 base features + lens tail)]
 
     Requires: pip install escnn
     """
@@ -1165,10 +1171,13 @@ class SynchroD4(nn.Module):
         # Get dimensions from env
         self.rows = env.rows
         self.cols = env.cols
-        self.tensor_size = env.tensor_size  # 5 * rows * cols
-        self.vector_size = env.vector_size  # 9 features
+        self.tensor_size = env.tensor_size  # NUM_CHANNELS * rows * cols
+        self.vector_size = env.vector_size  # 9 base features + lens tail
 
-        in_channels = 5  # 5 observation planes
+        # Derive plane count from the env (synchro.NUM_CHANNELS,
+        # mirroring BaseEnv::kNumObservationPlanes)
+        in_channels = self.tensor_size // (self.rows * self.cols)
+        self.in_channels = in_channels
         nvec = env.single_action_space.nvec.tolist()  # [5, 2]
         n_agents = 1  # Single agent per observation in vectorized env
 
@@ -1188,7 +1197,7 @@ class SynchroD4(nn.Module):
     def encode_observations(self, observations, state=None):
         # Split flattened observations into tensor and vector parts
         obs = observations.float()
-        tensor_obs = obs[:, :self.tensor_size].view(-1, 5, self.rows, self.cols)
+        tensor_obs = obs[:, :self.tensor_size].view(-1, self.in_channels, self.rows, self.cols)
         vector_obs = obs[:, self.tensor_size:] if self.vector_size > 0 else None
         return (tensor_obs, vector_obs)
 
@@ -1221,7 +1230,7 @@ class SynchroD4V2(nn.Module):
 
     Expected performance: 5-10k SPS (vs 1k for SynchroD4, 40k for SynchroMobaTemplate)
 
-    Handles flattened observations: [tensor (5*rows*cols)] + [vector (9 features)]
+    Handles flattened observations: [tensor (7*rows*cols)] + [vector (9 base features + lens tail)]
 
     Requires: pip install escnn
     """
@@ -1237,10 +1246,13 @@ class SynchroD4V2(nn.Module):
         # Get dimensions from env
         self.rows = env.rows
         self.cols = env.cols
-        self.tensor_size = env.tensor_size  # 5 * rows * cols
-        self.vector_size = env.vector_size  # 9 features
+        self.tensor_size = env.tensor_size  # NUM_CHANNELS * rows * cols
+        self.vector_size = env.vector_size  # 9 base features + lens tail
 
-        in_channels = 5  # 5 observation planes
+        # Derive plane count from the env (synchro.NUM_CHANNELS,
+        # mirroring BaseEnv::kNumObservationPlanes)
+        in_channels = self.tensor_size // (self.rows * self.cols)
+        self.in_channels = in_channels
         nvec = env.single_action_space.nvec.tolist()  # [5, 2]
         n_agents = 1  # Single agent per observation in vectorized env
 
@@ -1264,7 +1276,7 @@ class SynchroD4V2(nn.Module):
     def encode_observations(self, observations, state=None):
         # Split flattened observations into tensor and vector parts
         obs = observations.float()
-        tensor_obs = obs[:, :self.tensor_size].view(-1, 5, self.rows, self.cols)
+        tensor_obs = obs[:, :self.tensor_size].view(-1, self.in_channels, self.rows, self.cols)
         vector_obs = obs[:, self.tensor_size:] if self.vector_size > 0 else None
         return (tensor_obs, vector_obs)
 

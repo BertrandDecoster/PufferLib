@@ -26,7 +26,7 @@ mkdir -p "$BUILD_DIR"
 mkdir -p "$DATA_DIR"
 
 # Build C++ components if needed
-if [ "$REBUILD" = true ] || [ ! -f "$BUILD_DIR/parity_generator" ]; then
+if [ "$REBUILD" = true ] || [ ! -f "$BUILD_DIR/bin/parity_generator" ]; then
     echo "Building C++ components..."
     cd "$BUILD_DIR"
     cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -37,7 +37,7 @@ fi
 # Generate reference data
 REFERENCE_FILE="$DATA_DIR/synchro_parity_42.bin"
 echo "Generating reference data..."
-"$BUILD_DIR/parity_generator" \
+"$BUILD_DIR/bin/parity_generator" \
     --env-seed 42 \
     --action-seed 123 \
     --steps 1000 \

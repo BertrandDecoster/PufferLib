@@ -1186,7 +1186,7 @@ TEST(TestEnvObservationShape) {
 
   auto shape = env.ObservationShape();
   ASSERT_EQ(shape.size(), 3u);
-  ASSERT_EQ(shape[0], 5);   // 5 planes
+  ASSERT_EQ(shape[0], 7);   // Universal 7-plane layout (incl. hazard planes)
   ASSERT_EQ(shape[1], 12);  // Grid size
   ASSERT_EQ(shape[2], 12);
 
@@ -1195,7 +1195,7 @@ TEST(TestEnvObservationShape) {
   ASSERT_EQ(shape, shape2);
 }
 
-TEST(TestEnvObservationTensor5Planes) {
+TEST(TestEnvObservationTensorPlanes) {
   SynchroEnv env(42);
 
   std::vector<float> obs;
@@ -1247,6 +1247,11 @@ TEST(TestEnvObservationTensor5Planes) {
     }
   }
   ASSERT_EQ(plane4_ones, 2);  // Two other agents
+
+  // Hazard planes (5: telegraphed, 6: active) are all zero with no effects
+  for (int i = 5 * size * size; i < 7 * size * size; ++i) {
+    ASSERT_EQ(obs[i], 0.0f);
+  }
 }
 
 TEST(TestEnvHorizon) {

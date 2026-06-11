@@ -87,27 +87,37 @@ class BaseEnv {
   virtual std::unique_ptr<BaseEnv> Clone() const = 0;
 
   // Observation
-  // Returns a 5-plane observation tensor [5 × rows × cols]:
+  // Universal observation layout, identical for every task. The model input
+  // is f(world state, active lens): BaseEnv writes the physical planes and
+  // base vector features; the active TaskLens contributes the goal plane
+  // (IsGoalCell) and the task-specific vector tail (AppendVectorObs).
+  //
+  // Tensor: 7 planes [7 × rows × cols]:
   //   Plane 0: Floor cells (1.0 if walkable, including synchro cells)
   //   Plane 1: Wall cells (1.0 if wall)
-  //   Plane 2: Synchro cells (1.0 if synchro/goal cell)
+  //   Plane 2: Goal cells (1.0 where the active lens reports a goal)
   //   Plane 3: Current player position (1.0 at player's location)
   //   Plane 4: Other agents positions (1.0 at other agent locations)
+  //   Plane 5: Telegraphed hazard zones (1.0 where an effect will hit)
+  //   Plane 6: Active hazard zones (1.0 where an effect is currently live)
+  static constexpr int kNumObservationPlanes = 7;
   virtual std::string ToString() const;
-  virtual void ObservationTensor(std::vector<float>& values, int player = 0) const;
-  virtual std::vector<int> ObservationShape() const;
+  void ObservationTensor(std::vector<float>& values, int player = 0) const;
+  std::vector<int> ObservationShape() const;
   std::vector<int> ObservationTensorShape() const { return ObservationShape(); }
 
   // Vector Observation - flat feature vector alternative to tensor
   // Returns a 1D vector with hand-crafted features suitable for MLP-based RL.
-  // Base features (per player view):
+  // Base features (9, per player view):
   //   - Own position (row, col) normalized to [0,1]
   //   - Own health / max_health
   //   - Distance to nearest goal cell (normalized)
   //   - Relative positions of other companions (dx, dy per companion)
-  // Subclasses may extend with environment-specific features.
-  virtual void VectorObservation(std::vector<float>& values, int player = 0) const;
-  virtual int VectorObservationSize() const;
+  //   - Steps remaining (absolute / 100)
+  // Followed by the active lens's task-specific tail (AppendVectorObs /
+  // AdditionalVectorObsSize). Size = 9 + lens tail.
+  void VectorObservation(std::vector<float>& values, int player = 0) const;
+  int VectorObservationSize() const;
 
   // Direct-write observation methods (zero-copy for C bindings)
   // These write directly to a pre-allocated buffer, avoiding std::vector allocation

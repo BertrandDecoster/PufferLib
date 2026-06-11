@@ -64,15 +64,8 @@ class AggroEnv : public BaseEnv {
   double MinUtility() const override { return -1.0 * horizon_; }  // Time penalty only
   double MaxUtility() const override { return kWinReward; }
 
-  // Vector Observation - adds AggroEnv-specific features:
-  //   - Base features from BaseEnv (8)
-  //   - Relative position to enemy (2)
-  //   - Relative position to target cell (2)
-  //   - Enemy FSM state one-hot (3: patrol, aggro, returning)
-  //   - Distance to enemy (1)
-  // Total: 8 + 2 + 2 + 3 + 1 = 16
-  void VectorObservation(std::vector<float>& values, int player = 0) const override;
-  int VectorObservationSize() const override;
+  // Observations come from BaseEnv (universal 7-plane tensor + 9 base vector
+  // features) plus AggroLens::AppendVectorObs (8 aggro-specific features).
 
   // Reward constants
   static constexpr double kWinReward = 1.0;

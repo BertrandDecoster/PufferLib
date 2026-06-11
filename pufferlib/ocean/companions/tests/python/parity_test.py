@@ -12,6 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
+# Observation tensor channel count - must match synchro.py NUM_CHANNELS and
+# BaseEnv::kNumObservationPlanes (universal 7-plane layout).
+NUM_CHANNELS = 7
+
 # Binary file format constants
 PARITY_MAGIC = 0x50415249  # "PARI"
 PARITY_VERSION_V1 = 1  # tensor only
@@ -57,7 +61,7 @@ class ParityHeader:
         self.num_episodes = fields[11]
 
         # Compute observation sizes
-        self.tensor_size = 5 * self.rows * self.cols
+        self.tensor_size = NUM_CHANNELS * self.rows * self.cols
         self.obs_size = self.tensor_size + self.vector_obs_size
 
     def __repr__(self):
@@ -172,6 +176,7 @@ def test_parity(reference_path: Path, verbose: bool = False):
         map_complexity=header.map_complexity,
         horizon=header.horizon,
         d4_transform=0,
+        overfit=0,
     )
 
     # Initial reset with seed

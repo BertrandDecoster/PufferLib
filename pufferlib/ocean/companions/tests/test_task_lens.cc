@@ -1,6 +1,7 @@
 // Copyright 2024
 // Test suite for TaskLens interface
 
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -8,12 +9,15 @@
 #include <vector>
 
 #include "../src/core/annotations.h"
+#include "../src/core/effect_config.h"
+#include "../src/core/fsm/fsm_states.h"
 #include "../src/env/task_lens.h"
 #include "../src/env/base_env.h"
 #include "../src/env/synchro_env.h"
 #include "../src/env/synchro_lens.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/aggro_lens.h"
+#include "../src/env/dodge_env.h"
 #include "../src/env/dodge_lens.h"
 
 using namespace companions;
@@ -464,6 +468,304 @@ TEST(TestFullTaskSwitchingWorkflow) {
 
   ASSERT_EQ(result.rewards.size(), 2);
   ASSERT_EQ(env.GetTick(), 6);
+}
+
+// =============================================================================
+// Universal observation layout (7-plane tensor + base-9 + lens tail vector)
+//
+// These tests pin the obs contract established by the lens-contract
+// remediation: the model input is f(world state, active lens). The tensor is
+// 7 planes for every task; the vector is BaseEnv's 9 features followed by the
+// active lens's AppendVectorObs tail.
+// =============================================================================
+
+namespace {
+
+// Register deterministic hazard configs for observation tests.
+void RegisterObsTestEffects() {
+  EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
+
+  if (!registry.GetConfig("obs_test_active")) {
+    EffectConfig active;
+    active.name = "obs_test_active";
+    active.telegraph_ticks = 0;  // Spawns directly in the active phase
+    active.active_ticks = 5;
+    active.area = {1, 1, 1, 1, 1, 1, 1, 1, 1};  // 3x3 full
+    active.filter = TargetFilter::Companion;
+    active.damage = 0;  // Observation-only: don't kill the test subject
+    active.telegraph_visible = true;
+    registry.RegisterConfig(active);
+  }
+
+  if (!registry.GetConfig("obs_test_telegraph")) {
+    EffectConfig telegraph;
+    telegraph.name = "obs_test_telegraph";
+    telegraph.telegraph_ticks = 5;  // Stays in telegraph for 5 ticks
+    telegraph.active_ticks = 1;
+    telegraph.area = {1};  // Single cell
+    telegraph.filter = TargetFilter::Companion;
+    telegraph.damage = 0;
+    telegraph.telegraph_visible = true;
+    registry.RegisterConfig(telegraph);
+  }
+}
+
+// Pin the (single) dodge agent to a deterministic interior cell so hazard
+// placement relative to it stays in bounds regardless of spawn seed.
+Position PinFirstAgentAt(BaseEnv& env, Position pos) {
+  Agent* agent = env.GetMutableObjectManager().GetAllAgents()[0];
+  env.GetMutableObjectManager().UpdatePosition(agent->GetId(), pos);
+  return pos;
+}
+
+}  // namespace
+
+TEST(TestUniversalTensorShapeSevenPlanes) {
+  // Every env exposes the same 7-plane tensor regardless of task.
+  SynchroEnv synchro(42);
+  auto shape = synchro.ObservationShape();
+  ASSERT_EQ(shape.size(), 3u);
+  ASSERT_EQ(shape[0], 7);
+
+  AggroEnv aggro(10, 1, EnemyType::Goblin, 42);
+  ASSERT_EQ(aggro.ObservationShape()[0], 7);
+
+  DodgeEnv dodge(7, 1, 3, 50, 42);
+  ASSERT_EQ(dodge.ObservationShape()[0], 7);
+}
+
+TEST(TestSynchroTensorHazardPlanesEmptyWithoutEffects) {
+  // Tasks without hazards still carry planes 5/6 - all zeros.
+  SynchroEnv env(42);
+  std::vector<float> obs;
+  env.ObservationTensor(obs, 0);
+
+  int rows = env.GetRows();
+  int cols = env.GetCols();
+  ASSERT_EQ(static_cast<int>(obs.size()), 7 * rows * cols);
+  for (int i = 5 * rows * cols; i < 7 * rows * cols; ++i) {
+    ASSERT_EQ(obs[i], 0.0f);
+  }
+}
+
+TEST(TestDodgeTensorEnvPathMatchesBaseWriter) {
+  // Transitional parity check for the verbatim move of DodgeEnv's hazard
+  // plane logic into BaseEnv::WriteObservationTensor: the polymorphic env
+  // path and the direct base writer must produce identical tensors for the
+  // same world state.
+  RegisterObsTestEffects();
+  DodgeEnv env(9, 1, 100, 50, 42);  // hazard_interval=100: no random spawns
+
+  Position player_pos = PinFirstAgentAt(env, {4, 4});
+  // One active hazard and one telegraphed hazard near the player.
+  env.SpawnEffect("obs_test_active",
+                  EffectTarget::AtCell({player_pos.row - 2, player_pos.col}));
+  env.SpawnEffect("obs_test_telegraph",
+                  EffectTarget::AtCell({player_pos.row, player_pos.col + 2}));
+
+  std::vector<float> env_path;
+  env.ObservationTensor(env_path, 0);
+
+  int total = 7 * env.GetRows() * env.GetCols();
+  ASSERT_EQ(static_cast<int>(env_path.size()), total);
+
+  std::vector<float> base_path(total, -1.0f);
+  env.WriteObservationTensor(base_path.data(), 0);
+
+  for (int i = 0; i < total; ++i) {
+    ASSERT_EQ(env_path[i], base_path[i]);
+  }
+}
+
+TEST(TestDodgeTensorHazardPlaneSemantics) {
+  // Plane 5 marks telegraphed hazard cells, plane 6 marks active hazard
+  // cells (same plane order the pre-refactor DodgeEnv override used).
+  RegisterObsTestEffects();
+  DodgeEnv env(9, 1, 100, 50, 42);
+
+  int rows = env.GetRows();
+  int cols = env.GetCols();
+  Position player_pos = PinFirstAgentAt(env, {4, 4});
+
+  Position active_center{player_pos.row - 2, player_pos.col};
+  Position telegraph_cell{player_pos.row, player_pos.col + 2};
+  env.SpawnEffect("obs_test_active", EffectTarget::AtCell(active_center));
+  env.SpawnEffect("obs_test_telegraph", EffectTarget::AtCell(telegraph_cell));
+
+  std::vector<float> obs;
+  env.ObservationTensor(obs, 0);
+
+  auto plane_at = [&](int plane, Position p) {
+    return obs[plane * rows * cols + p.row * cols + p.col];
+  };
+
+  // Telegraphed single-cell hazard shows up in plane 5 only.
+  ASSERT_EQ(plane_at(5, telegraph_cell), 1.0f);
+  ASSERT_EQ(plane_at(6, telegraph_cell), 0.0f);
+
+  // Active 3x3 hazard shows up in plane 6 (check center + a corner).
+  ASSERT_EQ(plane_at(6, active_center), 1.0f);
+  ASSERT_EQ(plane_at(
+                6, Position{active_center.row - 1, active_center.col - 1}),
+            1.0f);
+  ASSERT_EQ(plane_at(5, active_center), 0.0f);
+
+  // Plane 5/6 totals: 1 telegraph cell, 9 active cells.
+  int plane5_ones = 0, plane6_ones = 0;
+  for (int i = 0; i < rows * cols; ++i) {
+    if (obs[5 * rows * cols + i] > 0.5f) plane5_ones++;
+    if (obs[6 * rows * cols + i] > 0.5f) plane6_ones++;
+  }
+  ASSERT_EQ(plane5_ones, 1);
+  ASSERT_EQ(plane6_ones, 9);
+}
+
+TEST(TestDodgeVectorObsLensTailMatchesEnvPath) {
+  // Transitional parity check for the verbatim move of DodgeEnv's 10 extra
+  // vector features into DodgeLens::AppendVectorObs: the env's vector
+  // observation tail must equal the lens output exactly.
+  RegisterObsTestEffects();
+  DodgeEnv env(9, 1, 100, 50, 42);
+
+  Position player_pos = PinFirstAgentAt(env, {4, 4});
+  env.SpawnEffect("obs_test_active",
+                  EffectTarget::AtCell({player_pos.row - 2, player_pos.col}));
+  env.SpawnEffect("obs_test_telegraph",
+                  EffectTarget::AtCell({player_pos.row, player_pos.col + 2}));
+
+  DodgeLens lens;
+  ASSERT_EQ(lens.AdditionalVectorObsSize(), 10);
+  ASSERT_EQ(env.VectorObservationSize(), 9 + 10);
+
+  std::vector<float> env_path;
+  env.VectorObservation(env_path, 0);
+  ASSERT_EQ(static_cast<int>(env_path.size()), 19);
+
+  std::vector<float> lens_tail;
+  lens.AppendVectorObs(env, 0, lens_tail);
+  ASSERT_EQ(static_cast<int>(lens_tail.size()), 10);
+
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_EQ(env_path[9 + i], lens_tail[i]);
+  }
+
+  // Sanity on the tail semantics: an active hazard above the player and a
+  // telegraphed hazard to its right must register in the danger features.
+  ASSERT_TRUE(lens_tail[2] > 0.0f);  // Active danger up
+  ASSERT_TRUE(lens_tail[9] > 0.0f);  // Telegraph danger right
+}
+
+TEST(TestAggroVectorObsLensTailIsCanonical) {
+  // AggroLens::AppendVectorObs is the single vector-obs tail implementation.
+  // Its semantics INTENTIONALLY differ from the deleted
+  // AggroEnv::VectorObservation override:
+  //   1. Relative positions normalize per-axis (dr/rows, dc/cols) instead of
+  //      both by max(rows, cols).
+  //   2. Distance normalizes by the true max Manhattan distance
+  //      (rows + cols - 2) instead of max(rows, cols) * 2.
+  //   3. With no enemy present, the distance feature defaults to 1.0
+  //      ("maximally far") instead of being skipped as 0.
+  //   4. The FSM one-hot uses FSMStateType via GetType(), folding
+  //      Telegraph/Attack/Recovery into the "aggressive" bucket; the env
+  //      version pointer-compared only the Patrol/Aggro/Return singletons and
+  //      emitted an all-zero one-hot during attack phases (a bug).
+  //   5. agent_id indexes the companion list, not the raw agent list (which
+  //      in AggroEnv put the FSM enemy at index 0).
+  AggroEnv env(10, 1, EnemyType::Goblin, 42);
+  AggroLens lens;
+
+  ASSERT_EQ(env.VectorObservationSize(), 9 + 8);
+
+  std::vector<float> env_path;
+  env.VectorObservation(env_path, 0);
+  ASSERT_EQ(static_cast<int>(env_path.size()), 17);
+
+  std::vector<float> lens_tail;
+  lens.AppendVectorObs(env, 0, lens_tail);
+  ASSERT_EQ(static_cast<int>(lens_tail.size()), 8);
+
+  // The env's vector observation tail must be exactly the lens output.
+  for (int i = 0; i < 8; ++i) {
+    ASSERT_EQ(env_path[9 + i], lens_tail[i]);
+  }
+
+  // Hand-check the lens semantics against world state.
+  const Companion* companion =
+      env.GetObjectManager().GetAllCompanions()[0];
+  const AgentFSM* enemy = env.GetObjectManager().GetAllAgentFSMs()[0];
+  Position cpos = companion->GetPosition();
+  Position epos = enemy->GetPosition();
+  float rows = static_cast<float>(env.GetRows());
+  float cols = static_cast<float>(env.GetCols());
+
+  // (1) Per-axis normalization.
+  ASSERT_EQ(lens_tail[0], static_cast<float>(epos.row - cpos.row) / rows);
+  ASSERT_EQ(lens_tail[1], static_cast<float>(epos.col - cpos.col) / cols);
+
+  // (2) Distance normalized by rows + cols - 2.
+  float manhattan = static_cast<float>(std::abs(epos.row - cpos.row) +
+                                       std::abs(epos.col - cpos.col));
+  ASSERT_EQ(lens_tail[2], manhattan / (rows + cols - 2.0f));
+
+  // Enemy starts on patrol: one-hot = (1, 0, 0).
+  ASSERT_EQ(lens_tail[3], 1.0f);
+  ASSERT_EQ(lens_tail[4], 0.0f);
+  ASSERT_EQ(lens_tail[5], 0.0f);
+
+  // Relative position to the target cell, also per-axis.
+  Position target = env.GetTargetPosition();
+  ASSERT_EQ(lens_tail[6], static_cast<float>(target.row - cpos.row) / rows);
+  ASSERT_EQ(lens_tail[7], static_cast<float>(target.col - cpos.col) / cols);
+}
+
+TEST(TestAggroLensFoldsAttackPhasesIntoAggressiveBucket) {
+  // Intended difference (4) above: forcing the enemy into Telegraph must
+  // light the "aggressive" one-hot slot. The deleted env implementation
+  // emitted (0, 0, 0) here because it pointer-compared only the
+  // Patrol/Aggro/Return singletons.
+  AggroEnv env(10, 1, EnemyType::Goblin, 42);
+  AggroLens lens;
+
+  AgentFSM* enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
+  enemy->SetCurrentState(GetFSMStateByType(FSMStateType::Telegraph));
+
+  std::vector<float> tail;
+  lens.AppendVectorObs(env, 0, tail);
+  ASSERT_EQ(tail[3], 0.0f);  // Not patrol
+  ASSERT_EQ(tail[4], 1.0f);  // Aggressive (Telegraph folded in)
+  ASSERT_EQ(tail[5], 0.0f);  // Not returning
+}
+
+TEST(TestAggroLensNoEnemyDefaultsDistanceToMax) {
+  // Intended difference (3) above: on an env with no FSM enemy, the lens
+  // reports distance-to-enemy = 1.0 (max) instead of the env version's 0.
+  SynchroEnv env(6, 6, 1, 1, 0, 42);
+  AggroLens lens;
+
+  std::vector<float> tail;
+  lens.AppendVectorObs(env, 0, tail);
+  ASSERT_EQ(static_cast<int>(tail.size()), 8);
+  ASSERT_EQ(tail[0], 0.0f);  // No relative position
+  ASSERT_EQ(tail[1], 0.0f);
+  ASSERT_EQ(tail[2], 1.0f);  // Max distance, not skipped-as-zero
+  // No target cell annotation on a SynchroEnv either.
+  ASSERT_EQ(tail[6], 0.0f);
+  ASSERT_EQ(tail[7], 0.0f);
+}
+
+TEST(TestVectorObsSizeIsLensAware) {
+  // VectorObservationSize = base 9 + active lens tail. Swapping the lens on
+  // the same world changes the observation contract accordingly.
+  DodgeEnv env(9, 1, 100, 50, 42);
+  ASSERT_EQ(env.VectorObservationSize(), 19);  // DodgeLens tail = 10
+
+  // SynchroLens has no tail; DodgeEnv has no synchro cells so swap to a
+  // fresh DodgeLens-free state via the base setter with a null lens.
+  ASSERT_TRUE(env.SetTaskLens(nullptr));
+  ASSERT_EQ(env.VectorObservationSize(), 9);  // No lens: base features only
+
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
+  ASSERT_EQ(env.VectorObservationSize(), 19);
 }
 
 // =============================================================================

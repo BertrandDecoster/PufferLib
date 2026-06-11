@@ -306,77 +306,10 @@ bool AggroEnv::IsDone() const {
   return success_ || tick_ >= horizon_;
 }
 
-// =============================================================================
-// Vector Observation
-// =============================================================================
-
-int AggroEnv::VectorObservationSize() const {
-  // Base features (8) + AggroEnv-specific (8)
-  return BaseEnv::VectorObservationSize() + 8;
-}
-
-void AggroEnv::VectorObservation(std::vector<float>& values, int player) const {
-  // Start with base features
-  BaseEnv::VectorObservation(values, player);
-
-  // Resize to include our additional features
-  int base_size = BaseEnv::VectorObservationSize();
-  values.resize(VectorObservationSize(), 0.0f);
-
-  auto agents = object_manager_->GetAllAgents();
-  if (player < 0 || player >= static_cast<int>(agents.size())) {
-    return;
-  }
-
-  const Agent* current_agent = agents[player];
-  Position my_pos = current_agent->GetPosition();
-  float max_dim = static_cast<float>(std::max(rows_, cols_));
-
-  int idx = base_size;
-
-  // Find the enemy (AgentFSM)
-  const AgentFSM* enemy = nullptr;
-  for (const Agent* agent : agents) {
-    if (auto* fsm_agent = dynamic_cast<const AgentFSM*>(agent)) {
-      enemy = fsm_agent;
-      break;
-    }
-  }
-
-  if (enemy) {
-    Position enemy_pos = enemy->GetPosition();
-
-    // Feature: Relative position to enemy (2)
-    values[idx++] = static_cast<float>(enemy_pos.row - my_pos.row) / max_dim;
-    values[idx++] = static_cast<float>(enemy_pos.col - my_pos.col) / max_dim;
-
-    // Feature: Distance to enemy normalized (1)
-    float enemy_dist = static_cast<float>(std::abs(enemy_pos.row - my_pos.row) +
-                                          std::abs(enemy_pos.col - my_pos.col));
-    values[idx++] = enemy_dist / (max_dim * 2.0f);
-
-    // Feature: Enemy FSM state one-hot (3)
-    const FSMState* state = enemy->GetCurrentState();
-    float patrol = 0.0f, aggro = 0.0f, returning = 0.0f;
-    if (state == &PatrolState::Instance()) {
-      patrol = 1.0f;
-    } else if (state == &AggroState::Instance()) {
-      aggro = 1.0f;
-    } else if (state == &ReturnToPatrolState::Instance()) {
-      returning = 1.0f;
-    }
-    values[idx++] = patrol;
-    values[idx++] = aggro;
-    values[idx++] = returning;
-  } else {
-    // No enemy found - fill with zeros
-    idx += 6;  // Skip enemy-related features
-  }
-
-  // Feature: Relative position to target cell (2)
-  values[idx++] = static_cast<float>(target_pos_.row - my_pos.row) / max_dim;
-  values[idx++] = static_cast<float>(target_pos_.col - my_pos.col) / max_dim;
-}
+// Vector observation tail comes from AggroLens::AppendVectorObs (8 features),
+// wired in by BaseEnv::WriteVectorObservation. The former env-side override
+// was deleted in favor of the lens semantics (per-axis normalization,
+// FSMStateType-based one-hot, max-distance default with no enemy).
 
 void AggroEnv::ValidateSnapshot(const Snapshot& snapshot) const {
   // AggroEnv requires a target cell

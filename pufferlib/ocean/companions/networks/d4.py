@@ -166,7 +166,7 @@ class D4EquivariantEncoder(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 5,
+        in_channels: int = 7,
         hidden_dim: int = 64,
         n_hidden: int = 8,
     ):
@@ -281,7 +281,7 @@ class D4Actor(nn.Module):
         self,
         n_agents: int,
         nvec: list[int],
-        in_channels: int = 5,
+        in_channels: int = 7,
         hidden_dim: int = 64,
         n_hidden: int = 8,
         vector_size: int = 0,
@@ -462,7 +462,7 @@ class D4Critic(nn.Module):
     def __init__(
         self,
         n_agents: int,
-        in_channels: int = 5,
+        in_channels: int = 7,
         hidden_dim: int = 64,
         centralised: bool = False,
         n_hidden: int = 8,
@@ -573,7 +573,7 @@ class D4ActorV2(nn.Module):
         self,
         n_agents: int,
         nvec: list[int],
-        in_channels: int = 5,
+        in_channels: int = 7,
         cnn_channels: int = 128,
         hidden_size: int = 128,
         vector_size: int = 0,
@@ -737,7 +737,7 @@ class D4CriticV2(nn.Module):
     def __init__(
         self,
         n_agents: int,
-        in_channels: int = 5,
+        in_channels: int = 7,
         cnn_channels: int = 128,
         hidden_size: int = 128,
         centralised: bool = False,

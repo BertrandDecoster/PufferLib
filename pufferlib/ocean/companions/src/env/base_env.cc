@@ -222,21 +222,63 @@ std::string BaseEnv::ToString() const {
 }
 
 void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
+  // Thin wrapper around WriteObservationTensor to avoid duplicating logic.
   auto shape = ObservationShape();
   int total = 1;
   for (int dim : shape) total *= dim;
 
   values.resize(total);
-  std::fill(values.begin(), values.end(), 0.0f);
+  WriteObservationTensor(values.data(), player);
+}
 
-  // 5-plane observation (matching OpenSpiel format):
+std::vector<int> BaseEnv::ObservationShape() const {
+  return {kNumObservationPlanes, rows_, cols_};
+}
+
+// =============================================================================
+// Vector Observation
+// =============================================================================
+
+int BaseEnv::VectorObservationSize() const {
+  // Base features per player:
+  // - Own position (row, col): 2
+  // - Own health ratio: 1
+  // - Distance to nearest goal (normalized): 1
+  // - Relative positions to other companions (dx, dy per other): 2 * (max_companions - 1)
+  // - Steps remaining (absolute / 100): 1
+  // For simplicity, we use a fixed max of 3 companions
+  constexpr int kMaxCompanions = 3;
+  int base = 2 + 1 + 1 + 2 * (kMaxCompanions - 1) + 1;  // = 9
+  // Task-specific tail: the active lens appends its own features (the task's
+  // "extra information"). The observation contract is f(world state, lens).
+  int lens_tail = task_lens_ ? task_lens_->AdditionalVectorObsSize() : 0;
+  return base + lens_tail;
+}
+
+void BaseEnv::VectorObservation(std::vector<float>& values, int player) const {
+  // Thin wrapper around WriteVectorObservation to avoid duplicating logic.
+  values.assign(VectorObservationSize(), 0.0f);
+  WriteVectorObservation(values.data(), player);
+}
+
+// =============================================================================
+// Direct-Write Observation Methods (Zero-Copy for C Bindings)
+// =============================================================================
+
+void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
+  int total = kNumObservationPlanes * rows_ * cols_;
+  std::memset(buffer, 0, total * sizeof(float));
+
+  // Universal 7-plane observation, identical for every task:
   // Plane 0: Floor cells (walkable, non-goal)
   // Plane 1: Wall cells (obstacles)
-  // Plane 2: Goal cells (Synchro or Target depending on env)
+  // Plane 2: Goal cells (the active lens decides via IsGoalCell)
   // Plane 3: Current player position
   // Plane 4: Other agents positions
+  // Plane 5: Telegraphed hazard zones (danger zones showing where effects will hit)
+  // Plane 6: Active hazard zones (currently damaging areas)
   auto set_plane = [&](int plane, int row, int col, float value) {
-    values[plane * rows_ * cols_ + row * cols_ + col] = value;
+    buffer[plane * rows_ * cols_ + row * cols_ + col] = value;
   };
 
   // Get current player agent for player-specific observation
@@ -279,89 +321,31 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
       }
     }
   }
-}
 
-std::vector<int> BaseEnv::ObservationShape() const {
-  return {5, rows_, cols_};
-}
+  // Planes 5-6: Hazard zones from the effect system (physical state, so it
+  // belongs to BaseEnv; moved verbatim from the former DodgeEnv override).
+  for (const auto& effect : effect_system_->GetActiveEffects()) {
+    if (!effect.config || !effect.config->telegraph_visible) continue;
 
-// =============================================================================
-// Vector Observation
-// =============================================================================
+    Position center = effect.GetCenter(*object_manager_);
+    int area_size = effect.config->GetAreaSize();
+    int half = area_size / 2;
 
-int BaseEnv::VectorObservationSize() const {
-  // Base features per player:
-  // - Own position (row, col): 2
-  // - Own health ratio: 1
-  // - Distance to nearest goal (normalized): 1
-  // - Relative positions to other companions (dx, dy per other): 2 * (max_companions - 1)
-  // - Steps remaining (absolute / 100): 1
-  // For simplicity, we use a fixed max of 3 companions
-  constexpr int kMaxCompanions = 3;
-  return 2 + 1 + 1 + 2 * (kMaxCompanions - 1) + 1;  // = 9
-}
+    // Mark affected cells
+    for (int dr = -half; dr <= half; ++dr) {
+      for (int dc = -half; dc <= half; ++dc) {
+        if (!effect.config->IsPositionAffected(dr, dc, effect.direction)) {
+          continue;
+        }
 
-void BaseEnv::VectorObservation(std::vector<float>& values, int player) const {
-  // Thin wrapper around WriteVectorObservation to avoid duplicating logic.
-  values.assign(VectorObservationSize(), 0.0f);
-  WriteVectorObservation(values.data(), player);
-}
+        int r = center.row + dr;
+        int c = center.col + dc;
+        if (r < 0 || r >= rows_ || c < 0 || c >= cols_) continue;
 
-// =============================================================================
-// Direct-Write Observation Methods (Zero-Copy for C Bindings)
-// =============================================================================
-
-void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
-  // Same logic as ObservationTensor() but writes directly to buffer
-  int total = 5 * rows_ * cols_;
-  std::memset(buffer, 0, total * sizeof(float));
-
-  // 5-plane observation (matching OpenSpiel format):
-  // Plane 0: Floor cells (walkable, non-goal)
-  // Plane 1: Wall cells (obstacles)
-  // Plane 2: Goal cells (Synchro or Target depending on env)
-  // Plane 3: Current player position
-  // Plane 4: Other agents positions
-  auto set_plane = [&](int plane, int row, int col, float value) {
-    buffer[plane * rows_ * cols_ + row * cols_ + col] = value;
-  };
-
-  // Get current player agent for player-specific observation
-  auto agents = object_manager_->GetAllAgents();
-  const Agent* current_agent = nullptr;
-  if (player >= 0 && player < static_cast<int>(agents.size())) {
-    current_agent = agents[player];
-  }
-
-  for (int r = 0; r < rows_; ++r) {
-    for (int c = 0; c < cols_; ++c) {
-      Position pos{r, c};
-      CellKind kind = grid_->GetCellKind(pos);
-
-      // Plane 0: Floor (all walkable cells, including synchro)
-      if (grid_->IsWalkable(pos)) {
-        set_plane(0, r, c, 1.0f);
-      }
-
-      // Plane 1: Walls
-      if (kind == CellKind::Wall) {
-        set_plane(1, r, c, 1.0f);
-      }
-
-      // Plane 2: Goal cells (lens decides via annotations)
-      if (task_lens_ && task_lens_->IsGoalCell(*this, pos)) {
-        set_plane(2, r, c, 1.0f);
-      }
-
-      // Plane 3 & 4: Agent positions
-      const Actor* actor = object_manager_->GetActorAt(pos);
-      if (actor && actor->IsAlive()) {
-        if (current_agent && actor->GetId() == current_agent->GetId()) {
-          // Plane 3: Current player
-          set_plane(3, r, c, 1.0f);
+        if (effect.in_telegraph) {
+          set_plane(5, r, c, 1.0f);  // Telegraphed hazard zone
         } else {
-          // Plane 4: Other agents
-          set_plane(4, r, c, 1.0f);
+          set_plane(6, r, c, 1.0f);  // Active hazard zone
         }
       }
     }
@@ -439,6 +423,20 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   // Feature 8: Steps remaining (absolute / 100)
   int steps_left = horizon_ - tick_;
   buffer[idx++] = static_cast<float>(steps_left) / 100.0f;
+
+  // Features 9+: Task-specific tail appended by the active lens.
+  if (task_lens_) {
+    int tail = task_lens_->AdditionalVectorObsSize();
+    if (tail > 0) {
+      std::vector<float> extra;
+      extra.reserve(tail);
+      task_lens_->AppendVectorObs(*this, player, extra);
+      assert(static_cast<int>(extra.size()) == tail &&
+             "Lens AppendVectorObs wrote a different feature count than "
+             "AdditionalVectorObsSize declares");
+      std::memcpy(buffer + idx, extra.data(), tail * sizeof(float));
+    }
+  }
 }
 
 int BaseEnv::NumAgents() const {

@@ -97,7 +97,7 @@ class TaskLens {
   // ===========================================================================
   // Goal cell predicate - is this cell a "goal" for the current task?
   // ===========================================================================
-  // Used by the observation pipeline (plane 2 of the 5-plane tensor) to mark
+  // Used by the observation pipeline (plane 2 of the 7-plane tensor) to mark
   // task-relevant target cells. Default: no goals. Lenses override by reading
   // the appropriate SemanticTag from env.GetAnnotations().
   virtual bool IsGoalCell(const BaseEnv& env, Position pos) const {
@@ -119,15 +119,15 @@ class TaskLens {
   }
 
   // ===========================================================================
-  // Optional: lens-specific vector observation features
+  // Lens-specific vector observation features (the task's "extra information")
   // ===========================================================================
-  // Override to add features beyond BaseEnv's default vector observation.
-  // These are appended after the base features.
+  // Override to add features beyond BaseEnv's 9 base vector features.
+  // BaseEnv::WriteVectorObservation appends these after the base features, so
+  // the model input is always f(world state, active lens).
   //
-  // Example: AggroLens might add:
-  //   - Relative position to enemy
-  //   - Enemy FSM state (patrol/aggro/return)
-  //   - Distance to target cell
+  // Examples:
+  //   - AggroLens: relative enemy position, FSM one-hot, target cell (8)
+  //   - DodgeLens: survival progress, hazard danger per direction (10)
   //
   // Default implementation adds no features.
   virtual void AppendVectorObs(const BaseEnv& env, int agent_id,

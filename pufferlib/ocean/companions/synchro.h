@@ -20,8 +20,9 @@ typedef struct {
 // C-compatible environment struct
 typedef struct {
     Log log;                       // Required first field
-    float* observations;           // [num_agents, tensor_size + 9] flattened observations
-                                   // tensor: 5 * rows * cols, vector: 9 features
+    float* observations;           // [num_agents, tensor_obs_size + vector_obs_size]
+                                   // tensor: 7 planes * rows * cols, vector: 9 base
+                                   // features + the active lens's task-specific tail
     int* actions;                  // [num_agents, 2] MultiDiscrete actions
     float* rewards;                // [num_agents]
     unsigned char* terminals;      // [num_agents]
@@ -35,6 +36,7 @@ typedef struct {
     int horizon;
     int d4_transform;              // D4 symmetry (0-7), CCW convention
     int overfit;                   // If true, always reset to same seed (for equivariance testing)
+    int tensor_obs_size;           // Size of tensor observation (planes * rows * cols)
     int vector_obs_size;           // Size of vector observation (appended to tensor)
 
     // Internal state

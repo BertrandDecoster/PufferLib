@@ -16,7 +16,7 @@ extern "C" {
 // Helper function to write observations for all agents (eliminates code duplication)
 static void write_observations(Synchro* env) {
     auto* cpp_env = static_cast<companions::SynchroEnv*>(env->cpp_env);
-    int tensor_size = 5 * env->rows * env->cols;
+    int tensor_size = env->tensor_obs_size;
     int obs_size = tensor_size + env->vector_obs_size;
 
     for (int i = 0; i < env->num_agents; i++) {
@@ -45,13 +45,25 @@ void synchro_init(Synchro* env) {
     env->cpp_env = static_cast<void*>(cpp_env);
     env->cumulative_reward = 0.0f;
     env->episode_steps = 0;
+
+    // Observation layout is a versioned contract owned by BaseEnv + TaskLens:
+    // tensor = planes * rows * cols (queried from the env, never hardcoded),
+    // vector = 9 base features + the active lens's tail.
+    std::vector<int> obs_shape = cpp_env->ObservationShape();
+    env->tensor_obs_size = obs_shape[0] * obs_shape[1] * obs_shape[2];
     env->vector_obs_size = cpp_env->VectorObservationSize();
 
-    // Validate vector observation size matches Python's VECTOR_OBS_SIZE (9)
-    // If this fails, update VECTOR_OBS_SIZE in synchro.py
-    if (env->vector_obs_size != 9) {
-        std::fprintf(stderr, "ERROR: Vector obs size mismatch! C++=%d, expected=9. "
-                     "Update VECTOR_OBS_SIZE in synchro.py\n", env->vector_obs_size);
+    // Validate the vector size against the lens-derived expectation. Python's
+    // synchro.py derives its buffer size from NUM_CHANNELS / VECTOR_OBS_SIZE,
+    // so any mismatch here means synchro.py must be updated too.
+    constexpr int kBaseVectorObsSize = 9;
+    const companions::TaskLens* lens = cpp_env->GetTaskLens();
+    int expected_vector_obs =
+        kBaseVectorObsSize + (lens ? lens->AdditionalVectorObsSize() : 0);
+    if (env->vector_obs_size != expected_vector_obs) {
+        std::fprintf(stderr, "ERROR: Vector obs size mismatch! C++=%d, expected=%d "
+                     "(base %d + lens tail). Update VECTOR_OBS_SIZE in synchro.py\n",
+                     env->vector_obs_size, expected_vector_obs, kBaseVectorObsSize);
     }
 
     // Allocate render buffer dynamically based on grid size
