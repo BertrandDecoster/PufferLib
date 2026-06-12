@@ -18,6 +18,7 @@
 #include "../../third_party/nlohmann/json.hpp"
 #include "annotations.h"
 #include "cell.h"
+#include "enum_strings.h"
 #include "object.h"
 #include "types.h"
 
@@ -26,113 +27,12 @@ using json = nlohmann::json;
 namespace companions {
 
 // =============================================================================
-// Helper functions for enum serialization
+// Helper functions for serialization
 // =============================================================================
+// Enum <-> string conversion lives in enum_strings.h (wire format locked by
+// the golden-fixture test and pinned per value by test_enum_strings.cc).
 
 namespace {
-
-std::string ActorColorToString(ActorColor color) {
-  switch (color) {
-    case ActorColor::None: return "None";
-    case ActorColor::Red: return "Red";
-    case ActorColor::Green: return "Green";
-    case ActorColor::Blue: return "Blue";
-    default: return "None";
-  }
-}
-
-ActorColor StringToActorColor(const std::string& str) {
-  if (str == "Red") return ActorColor::Red;
-  if (str == "Green") return ActorColor::Green;
-  if (str == "Blue") return ActorColor::Blue;
-  return ActorColor::None;
-}
-
-CellKind StringToCellKind(const std::string& str) {
-  if (str == "Wall") return CellKind::Wall;
-  if (str == "Hazard") return CellKind::Hazard;
-  if (str == "HealArea") return CellKind::HealArea;
-  // Legacy v1 JSON: Synchro/Target cells now flatten to Floor; their
-  // task-semantic role lives in the annotations array.
-  return CellKind::Floor;
-}
-
-CellOrigin StringToCellOrigin(const std::string& str) {
-  if (str == "Room") return CellOrigin::Room;
-  if (str == "Corridor") return CellOrigin::Corridor;
-  if (str == "Obstacle") return CellOrigin::Obstacle;
-  return CellOrigin::Default;
-}
-
-ObjectType StringToObjectType(const std::string& str) {
-  if (str == "Actor") return ObjectType::Actor;
-  if (str == "Agent") return ObjectType::Agent;
-  if (str == "AgentFSM") return ObjectType::AgentFSM;
-  if (str == "Companion") return ObjectType::Companion;
-  if (str == "Player") return ObjectType::Player;
-  if (str == "NPCCompanion") return ObjectType::NPCCompanion;
-  return ObjectType::Object;
-}
-
-Faction StringToFaction(const std::string& str) {
-  if (str == "ENEMY") return Faction::ENEMY;
-  if (str == "NEUTRAL") return Faction::NEUTRAL;
-  return Faction::COMPANION;
-}
-
-Direction StringToDirection(const std::string& str) {
-  if (str == "Down") return Direction::Down;
-  if (str == "Left") return Direction::Left;
-  if (str == "Right") return Direction::Right;
-  return Direction::Up;
-}
-
-StatusType StringToStatusType(const std::string& str) {
-  // StatusTypeToString (object.cc) emits lowercase names; older code briefly
-  // matched only capitalized forms, silently dropping statuses on JSON load
-  // (caught by the golden-fixture round-trip test). Accept both.
-  if (str == "stunned" || str == "Stunned") return StatusType::Stunned;
-  if (str == "slowed" || str == "Slowed") return StatusType::Slowed;
-  if (str == "marked" || str == "Marked") return StatusType::Marked;
-  return StatusType::None;
-}
-
-// SemanticTag string conversion (symmetric with Python SEMANTIC_TAG_NAMES).
-SemanticTag StringToSemanticTag(const std::string& str) {
-  if (str == "SynchroGoal") return SemanticTag::SynchroGoal;
-  if (str == "AggroTarget") return SemanticTag::AggroTarget;
-  if (str == "QuestPickup") return SemanticTag::QuestPickup;
-  if (str == "SafeZone")    return SemanticTag::SafeZone;
-  if (str == "TargetMob")   return SemanticTag::TargetMob;
-  if (str == "SkillGiver")  return SemanticTag::SkillGiver;
-  if (str == "Escort")      return SemanticTag::Escort;
-  if (str == "HtnName")     return SemanticTag::HtnName;
-  if (str == "Room")        return SemanticTag::Room;
-  return SemanticTag::SynchroGoal;  // Fallback
-}
-
-// FSMStateType to/from string
-std::string FSMStateTypeToString(FSMStateType type) {
-  switch (type) {
-    case FSMStateType::Patrol: return "Patrol";
-    case FSMStateType::Aggro: return "Aggro";
-    case FSMStateType::ReturnToPatrol: return "ReturnToPatrol";
-    case FSMStateType::Telegraph: return "Telegraph";
-    case FSMStateType::Attack: return "Attack";
-    case FSMStateType::Recovery: return "Recovery";
-    default: return "None";
-  }
-}
-
-FSMStateType StringToFSMStateType(const std::string& s) {
-  if (s == "Patrol") return FSMStateType::Patrol;
-  if (s == "Aggro") return FSMStateType::Aggro;
-  if (s == "ReturnToPatrol") return FSMStateType::ReturnToPatrol;
-  if (s == "Telegraph") return FSMStateType::Telegraph;
-  if (s == "Attack") return FSMStateType::Attack;
-  if (s == "Recovery") return FSMStateType::Recovery;
-  return FSMStateType::None;
-}
 
 // Position serialization
 json PositionToJson(const Position& pos) {
@@ -156,8 +56,8 @@ json CellSnapshotToJson(const CellSnapshot& cell, int row, int col) {
 
 CellSnapshot JsonToCellSnapshot(const json& j) {
   CellSnapshot cell;
-  cell.kind = StringToCellKind(j.at("cell_kind").get<std::string>());
-  cell.origin = StringToCellOrigin(j.at("cell_origin").get<std::string>());
+  cell.kind = CellKindFromString(j.at("cell_kind").get<std::string>());
+  cell.origin = CellOriginFromString(j.at("cell_origin").get<std::string>());
   return cell;
 }
 
@@ -188,7 +88,7 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j) {
   AnnotationSnapshot a;
   std::string target = j.at("target").get<std::string>();
   a.target_type = (target == "Agent") ? 1 : 0;
-  a.tag = StringToSemanticTag(j.at("tag").get<std::string>());
+  a.tag = SemanticTagFromString(j.at("tag").get<std::string>());
   a.owner_lens_id = j.value("owner_lens_id", -1);
   if (a.target_type == 0 && j.contains("pos")) {
     a.pos = JsonToPosition(j.at("pos"));
@@ -363,7 +263,7 @@ class JsonReader {
   void operator()(const char* name, FSMStateType& v, bool json_optional = false) {
     const json* j = Find(name, json_optional);
     if (!j) return;
-    v = StringToFSMStateType(j->get<std::string>());
+    v = FSMStateTypeFromString(j->get<std::string>());
   }
   void operator()(const char* name, TargetFilter& v, bool json_optional = false) {
     const json* j = Find(name, json_optional);
@@ -376,35 +276,35 @@ class JsonReader {
                   bool json_optional = false) {
     const json* j = Find(name, json_optional);
     if (!j) return;
-    f.value = static_cast<int>(StringToObjectType(j->get<std::string>()));
+    f.value = static_cast<int>(ObjectTypeFromString(j->get<std::string>()));
   }
   template <class IntT>
   void operator()(const char* name, EnumFieldRef<Faction, IntT> f,
                   bool json_optional = false) {
     const json* j = Find(name, json_optional);
     if (!j) return;
-    f.value = static_cast<int>(StringToFaction(j->get<std::string>()));
+    f.value = static_cast<int>(FactionFromString(j->get<std::string>()));
   }
   template <class IntT>
   void operator()(const char* name, EnumFieldRef<Direction, IntT> f,
                   bool json_optional = false) {
     const json* j = Find(name, json_optional);
     if (!j) return;
-    f.value = static_cast<int>(StringToDirection(j->get<std::string>()));
+    f.value = static_cast<int>(DirectionFromString(j->get<std::string>()));
   }
   template <class IntT>
   void operator()(const char* name, EnumFieldRef<ActorColor, IntT> f,
                   bool json_optional = false) {
     const json* j = Find(name, json_optional);
     if (!j) return;
-    f.value = static_cast<int>(StringToActorColor(j->get<std::string>()));
+    f.value = static_cast<int>(ActorColorFromString(j->get<std::string>()));
   }
   template <class IntT>
   void operator()(const char* name, EnumFieldRef<StatusType, IntT> f,
                   bool json_optional = false) {
     const json* j = Find(name, json_optional);
     if (!j) return;
-    f.value = static_cast<int>(StringToStatusType(j->get<std::string>()));
+    f.value = static_cast<int>(StatusTypeFromString(j->get<std::string>()));
   }
 
   template <class BoolT, class FsmT>

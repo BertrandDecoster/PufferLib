@@ -44,21 +44,6 @@ Position ApplyMovement(const Position& pos, MovementAction action) {
   return result;
 }
 
-std::string DirectionToString(Direction dir) {
-  switch (dir) {
-    case Direction::Up:
-      return "Up";
-    case Direction::Down:
-      return "Down";
-    case Direction::Left:
-      return "Left";
-    case Direction::Right:
-      return "Right";
-    default:
-      return "Unknown";
-  }
-}
-
 std::optional<Direction> MovementToDirection(MovementAction action) {
   switch (action) {
     case MovementAction::Up:
@@ -106,19 +91,6 @@ std::optional<Action> StringToAction(const std::string& str) {
   if (str == "Left" || str == "left") return EncodeAction(MovementAction::Left);
   if (str == "Right" || str == "right") return EncodeAction(MovementAction::Right);
   return std::nullopt;
-}
-
-std::string FactionToString(Faction faction) {
-  switch (faction) {
-    case Faction::COMPANION:
-      return "COMPANION";
-    case Faction::ENEMY:
-      return "ENEMY";
-    case Faction::NEUTRAL:
-      return "NEUTRAL";
-    default:
-      return "Unknown";
-  }
 }
 
 std::string InteractActionToString(InteractAction action) {

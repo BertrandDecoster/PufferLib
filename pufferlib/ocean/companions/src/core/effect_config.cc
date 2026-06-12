@@ -5,10 +5,11 @@
 
 #include <cmath>
 #include <fstream>
-#include <sstream>
+#include <iostream>
 #include <stdexcept>
 
 #include "agent_config.h"  // For TargetFilter
+#include "csv_utils.h"
 #include "object_manager.h"
 
 namespace companions {
@@ -201,9 +202,7 @@ std::vector<int> ParseArea(const std::string& area_str) {
     return result;
   }
 
-  std::stringstream ss(area_str);
-  std::string token;
-  while (std::getline(ss, token, ';')) {
+  for (const std::string& token : SplitOn(area_str, ';')) {
     if (!token.empty()) {
       result.push_back(std::stoi(token));
     }
@@ -224,13 +223,8 @@ TargetFilter ParseFilter(const std::string& filter_str) {
   return TargetFilter::All;  // Default
 }
 
-// Helper to trim whitespace
-std::string Trim(const std::string& s) {
-  size_t start = s.find_first_not_of(" \t\r\n");
-  if (start == std::string::npos) return "";
-  size_t end = s.find_last_not_of(" \t\r\n");
-  return s.substr(start, end - start + 1);
-}
+// Trim / ParseCSVLine / SplitOn come from csv_utils.h (shared with
+// agent_config.cc).
 
 }  // namespace
 
@@ -247,38 +241,45 @@ bool EffectConfigRegistry::LoadFromCSV(const std::string& path) {
     return false;
   }
 
+  int line_num = 1;
   while (std::getline(file, line)) {
+    ++line_num;
     if (line.empty() || line[0] == '#') continue;
 
-    std::stringstream ss(line);
-    std::string token;
-    std::vector<std::string> tokens;
-
-    while (std::getline(ss, token, ',')) {
-      tokens.push_back(Trim(token));
-    }
+    // Quote-aware, like agent_config.cc: one CSV dialect for both data files.
+    std::vector<std::string> tokens = ParseCSVLine(line);
 
     // Expected columns:
     // name,telegraph,active,recovery,loop,area,filter,damage,push_dx,push_dy,push_dist,status,status_dur,visible
-    if (tokens.size() < 14) continue;
+    if (tokens.size() < 14) {
+      std::cerr << "Line " << line_num << ": expected 14 columns, got "
+                << tokens.size() << "\n";
+      continue;
+    }
 
-    EffectConfig config;
-    config.name = tokens[0];
-    config.telegraph_ticks = std::stoi(tokens[1]);
-    config.active_ticks = std::stoi(tokens[2]);
-    config.recovery_ticks = std::stoi(tokens[3]);
-    config.loop = std::stoi(tokens[4]);
-    config.area = ParseArea(tokens[5]);
-    config.filter = ParseFilter(tokens[6]);
-    config.damage = std::stoi(tokens[7]);
-    config.push_dx = std::stoi(tokens[8]);
-    config.push_dy = std::stoi(tokens[9]);
-    config.push_distance = std::stoi(tokens[10]);
-    config.status_applied = tokens[11];
-    config.status_duration = std::stoi(tokens[12]);
-    config.telegraph_visible = (tokens[13] == "true" || tokens[13] == "1");
+    try {
+      EffectConfig config;
+      config.name = tokens[0];
+      config.telegraph_ticks = std::stoi(tokens[1]);
+      config.active_ticks = std::stoi(tokens[2]);
+      config.recovery_ticks = std::stoi(tokens[3]);
+      config.loop = std::stoi(tokens[4]);
+      config.area = ParseArea(tokens[5]);
+      config.filter = ParseFilter(tokens[6]);
+      config.damage = std::stoi(tokens[7]);
+      config.push_dx = std::stoi(tokens[8]);
+      config.push_dy = std::stoi(tokens[9]);
+      config.push_distance = std::stoi(tokens[10]);
+      config.status_applied = tokens[11];
+      config.status_duration = std::stoi(tokens[12]);
+      config.telegraph_visible = (tokens[13] == "true" || tokens[13] == "1");
 
-    RegisterConfig(std::move(config));
+      RegisterConfig(std::move(config));
+    } catch (const std::exception& e) {
+      std::cerr << "Line " << line_num << ": parse error: " << e.what()
+                << "\n";
+      continue;
+    }
   }
 
   return true;

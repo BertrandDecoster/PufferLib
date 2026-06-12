@@ -11,6 +11,7 @@
 // Include all modules
 #include "../src/core/pcg32.h"
 #include "../src/core/types.h"
+#include "../src/core/enum_strings.h"
 #include "../src/core/cell.h"
 #include "../src/core/grid.h"
 #include "../src/core/object.h"

@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 #include <stdexcept>
+#include <unordered_map>
+
+#include "csv_utils.h"
 
 namespace companions {
 
@@ -51,44 +53,16 @@ std::vector<std::string> AgentConfigRegistry::GetAllTypeNames() const {
 
 namespace {
 
-// Trim whitespace from string
-std::string Trim(const std::string& str) {
-  size_t first = str.find_first_not_of(" \t\n\r");
-  if (first == std::string::npos) return "";
-  size_t last = str.find_last_not_of(" \t\n\r");
-  return str.substr(first, last - first + 1);
-}
+// Trim / ParseCSVLine / SplitOn come from csv_utils.h (shared with
+// effect_config.cc).
 
-// Parse CSV line respecting quotes
-std::vector<std::string> ParseCSVLine(const std::string& line) {
-  std::vector<std::string> result;
-  std::string cell;
-  bool in_quotes = false;
-
-  for (size_t i = 0; i < line.size(); ++i) {
-    char c = line[i];
-    if (c == '"') {
-      in_quotes = !in_quotes;
-    } else if (c == ',' && !in_quotes) {
-      result.push_back(Trim(cell));
-      cell.clear();
-    } else {
-      cell += c;
-    }
-  }
-  result.push_back(Trim(cell));
-  return result;
-}
-
-// Parse cadence string like "1,0" or "" for empty
+// Parse cadence string like "1;0" or "" for empty
+// (semicolon-separated since comma is the CSV column delimiter).
 std::vector<int> ParseCadence(const std::string& str) {
   std::vector<int> result;
   if (str.empty()) return result;
 
-  std::stringstream ss(str);
-  std::string item;
-  while (std::getline(ss, item, ';')) {
-    // Use semicolon since comma is CSV delimiter
+  for (const std::string& item : SplitOn(str, ';')) {
     result.push_back(std::stoi(Trim(item)));
   }
   return result;

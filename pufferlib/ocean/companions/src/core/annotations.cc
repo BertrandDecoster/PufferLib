@@ -183,23 +183,4 @@ bool AnnotationStore::DebugCacheInvariantHolds() const {
 }
 #endif
 
-// =============================================================================
-// SemanticTagToString - keep in sync with htn_bridge.py SEMANTIC_TAG_NAMES.
-// =============================================================================
-std::string SemanticTagToString(SemanticTag tag) {
-  switch (tag) {
-    case SemanticTag::SynchroGoal: return "SynchroGoal";
-    case SemanticTag::AggroTarget: return "AggroTarget";
-    case SemanticTag::QuestPickup: return "QuestPickup";
-    case SemanticTag::SafeZone:    return "SafeZone";
-    case SemanticTag::TargetMob:   return "TargetMob";
-    case SemanticTag::SkillGiver:  return "SkillGiver";
-    case SemanticTag::Escort:      return "Escort";
-    case SemanticTag::HtnName:     return "HtnName";
-    case SemanticTag::Room:        return "Room";
-    case SemanticTag::_Count:      return "Unknown";
-  }
-  return "Unknown";
-}
-
 }  // namespace companions

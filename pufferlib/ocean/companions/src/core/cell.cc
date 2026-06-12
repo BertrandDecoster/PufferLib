@@ -77,37 +77,4 @@ int Cell::GetColorCode() const {
   return CellProperties::Get(kind_).color_code;
 }
 
-// =============================================================================
-// Utility
-// =============================================================================
-std::string CellKindToString(CellKind kind) {
-  switch (kind) {
-    case CellKind::Floor:
-      return "Floor";
-    case CellKind::Wall:
-      return "Wall";
-    case CellKind::Hazard:
-      return "Hazard";
-    case CellKind::HealArea:
-      return "HealArea";
-    default:
-      return "Unknown";
-  }
-}
-
-std::string CellOriginToString(CellOrigin origin) {
-  switch (origin) {
-    case CellOrigin::Default:
-      return "Default";
-    case CellOrigin::Room:
-      return "Room";
-    case CellOrigin::Corridor:
-      return "Corridor";
-    case CellOrigin::Obstacle:
-      return "Obstacle";
-    default:
-      return "Unknown";
-  }
-}
-
 }  // namespace companions

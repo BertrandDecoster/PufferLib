@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "../core/agent_config.h"
+#include "../core/enum_strings.h"
 #include "../core/game_logger.h"
 
 namespace companions {

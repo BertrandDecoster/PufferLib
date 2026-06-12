@@ -192,10 +192,8 @@ class AnnotationStore {
   void RebuildCacheIfStale() const;
 };
 
-// =============================================================================
-// SemanticTagToString - stable string names (keep in sync with htn_bridge.py).
-// =============================================================================
-std::string SemanticTagToString(SemanticTag tag);
+// SemanticTag <-> string lives in enum_strings.h (stable names, keep in
+// sync with htn_bridge.py SEMANTIC_TAG_NAMES).
 
 }  // namespace companions
 

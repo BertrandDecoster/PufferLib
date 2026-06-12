@@ -223,27 +223,6 @@ NPCCompanion::NPCCompanion(ObjectId id, Position pos) : Companion(id, pos) {}
 // =============================================================================
 // Utility
 // =============================================================================
-std::string ObjectTypeToString(ObjectType type) {
-  switch (type) {
-    case ObjectType::Object:
-      return "Object";
-    case ObjectType::Actor:
-      return "Actor";
-    case ObjectType::Agent:
-      return "Agent";
-    case ObjectType::AgentFSM:
-      return "AgentFSM";
-    case ObjectType::Companion:
-      return "Companion";
-    case ObjectType::Player:
-      return "Player";
-    case ObjectType::NPCCompanion:
-      return "NPCCompanion";
-    default:
-      return "Unknown";
-  }
-}
-
 bool IsAgent(const Object* obj) {
   if (!obj) return false;
   ObjectType type = obj->GetType();
@@ -265,35 +244,6 @@ bool IsCompanion(const Object* obj) {
 bool IsAgentFSM(const Object* obj) {
   if (!obj) return false;
   return obj->GetType() == ObjectType::AgentFSM;
-}
-
-// =============================================================================
-// Status Effect Utilities
-// =============================================================================
-StatusType StatusTypeFromString(const std::string& name) {
-  // Case-insensitive comparison
-  std::string lower = name;
-  std::transform(lower.begin(), lower.end(), lower.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
-
-  if (lower == "stunned" || lower == "stun") return StatusType::Stunned;
-  if (lower == "slowed" || lower == "slow") return StatusType::Slowed;
-  if (lower == "marked" || lower == "mark") return StatusType::Marked;
-  return StatusType::None;
-}
-
-std::string StatusTypeToString(StatusType type) {
-  switch (type) {
-    case StatusType::Stunned:
-      return "stunned";
-    case StatusType::Slowed:
-      return "slowed";
-    case StatusType::Marked:
-      return "marked";
-    case StatusType::None:
-    default:
-      return "none";
-  }
 }
 
 }  // namespace companions

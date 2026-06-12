@@ -45,6 +45,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # Core module
 set(CORE_SOURCES
   src/core/types.cc
+  src/core/enum_strings.cc
+  src/core/csv_utils.cc
   src/core/cell.cc
   src/core/annotations.cc
   src/core/grid.cc
@@ -69,6 +71,8 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
   src/core/types.h
+  src/core/enum_strings.h
+  src/core/csv_utils.h
   src/core/cell.h
   src/core/annotations.h
   src/core/grid.h
@@ -258,6 +262,23 @@ add_executable(companions_npc_panel_test tests/test_npc_panel.cc)
 target_link_libraries(companions_npc_panel_test companions_viz companions_env companions_core)
 target_include_directories(companions_npc_panel_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_csv_utils_test tests/test_csv_utils.cc)
+target_link_libraries(companions_csv_utils_test companions_viz companions_env companions_core)
+target_include_directories(companions_csv_utils_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(companions_csv_utils_test PRIVATE
+  COMPANIONS_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
+add_executable(companions_enum_strings_test tests/test_enum_strings.cc)
+target_link_libraries(companions_enum_strings_test companions_viz companions_env companions_core)
+target_include_directories(companions_enum_strings_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# The round-trip test relies on exhaustive switches (no default) to make
+# "enum value added but converter table not updated" a compile error.
+if(MSVC)
+  target_compile_options(companions_enum_strings_test PRIVATE /we4062)
+else()
+  target_compile_options(companions_enum_strings_test PRIVATE -Werror=switch)
+endif()
+
 # =============================================================================
 # Demo executable (cross-platform)
 # =============================================================================
@@ -299,6 +320,8 @@ add_test(NAME companions_task_lens_test COMMAND companions_task_lens_test)
 add_test(NAME companions_annotations_test COMMAND companions_annotations_test)
 add_test(NAME companions_viz_test COMMAND companions_viz_test)
 add_test(NAME companions_npc_panel_test COMMAND companions_npc_panel_test)
+add_test(NAME companions_csv_utils_test COMMAND companions_csv_utils_test)
+add_test(NAME companions_enum_strings_test COMMAND companions_enum_strings_test)
 
 # =============================================================================
 # DLL (Dynamic library for external integration)

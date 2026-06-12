@@ -142,7 +142,7 @@ inline int ChebyshevDistance(const Position& a, const Position& b) {
 // Utility functions
 // =============================================================================
 std::string MovementActionToString(MovementAction action);
-std::string DirectionToString(Direction dir);
+// Direction <-> string lives in enum_strings.h.
 
 // Get the position resulting from applying a movement action
 Position ApplyMovement(const Position& pos, MovementAction action);
@@ -157,8 +157,7 @@ MovementAction DirectionToMovement(Direction dir);
 std::string ActionToString(Action action);
 std::optional<Action> StringToAction(const std::string& str);
 
-// Faction string conversion
-std::string FactionToString(Faction faction);
+// Faction <-> string lives in enum_strings.h.
 
 // InteractAction string conversion
 std::string InteractActionToString(InteractAction action);

@@ -86,8 +86,7 @@ class Cell {
 // =============================================================================
 // Utility
 // =============================================================================
-std::string CellKindToString(CellKind kind);
-std::string CellOriginToString(CellOrigin origin);
+// CellKind / CellOrigin <-> string live in enum_strings.h.
 
 }  // namespace companions
 

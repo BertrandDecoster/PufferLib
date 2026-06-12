@@ -374,7 +374,7 @@ class NPCCompanion : public Companion {
 // =============================================================================
 // Utility
 // =============================================================================
-std::string ObjectTypeToString(ObjectType type);
+// ObjectType / StatusType / ActorColor <-> string live in enum_strings.h.
 
 // Type checking helpers
 bool IsAgent(const Object* obj);
@@ -383,10 +383,6 @@ bool IsAgentFSM(const Object* obj);
 
 // Legacy alias for IsAgentFSM (deprecated, use IsAgentFSM)
 inline bool IsEnemy(const Object* obj) { return IsAgentFSM(obj); }
-
-// Parse status type from string (case-insensitive)
-StatusType StatusTypeFromString(const std::string& name);
-std::string StatusTypeToString(StatusType type);
 
 }  // namespace companions
 
