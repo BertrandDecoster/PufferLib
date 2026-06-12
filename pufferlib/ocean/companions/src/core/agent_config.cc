@@ -10,6 +10,7 @@
 #include <unordered_map>
 
 #include "csv_utils.h"
+#include "enum_strings.h"
 
 namespace companions {
 
@@ -68,24 +69,8 @@ std::vector<int> ParseCadence(const std::string& str) {
   return result;
 }
 
-// Parse faction string
-Faction ParseFaction(const std::string& str) {
-  std::string lower = str;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-  if (lower == "companion") return Faction::COMPANION;
-  if (lower == "neutral") return Faction::NEUTRAL;
-  return Faction::ENEMY;  // Default
-}
-
-// Parse target filter string
-TargetFilter ParseTargetFilter(const std::string& str) {
-  std::string lower = str;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-  if (lower == "all") return TargetFilter::All;
-  if (lower == "enemy") return TargetFilter::Enemy;
-  if (lower == "neutral") return TargetFilter::Neutral;
-  return TargetFilter::Companion;  // Default
-}
+// Faction / TargetFilter columns parse via the shared CSV-vocabulary
+// readers FactionFromCSV / TargetFilterFromCSV (enum_strings.h).
 
 // Parse bool string
 bool ParseBool(const std::string& str) {
@@ -147,7 +132,7 @@ bool AgentConfigRegistry::LoadFromCSV(const std::string& path) {
       // Required field
       config.type_name = get_val(row, "type_name");
       if (config.type_name.empty()) {
-        std::cerr << "Line " << line_num << ": missing type_name\n";
+        std::cerr << path << ": line " << line_num << ": missing type_name\n";
         continue;
       }
 
@@ -157,7 +142,7 @@ bool AgentConfigRegistry::LoadFromCSV(const std::string& path) {
 
       // Stats
       config.max_health = std::stoi(get_val(row, "max_health", "3"));
-      config.faction = ParseFaction(get_val(row, "faction", "enemy"));
+      config.faction = FactionFromCSV(get_val(row, "faction", "enemy"));
 
       // Movement
       config.cadence = ParseCadence(get_val(row, "cadence", ""));
@@ -186,13 +171,14 @@ bool AgentConfigRegistry::LoadFromCSV(const std::string& path) {
         config.attack.area.height =
             std::stoi(get_val(row, "attack_height", "1"));
         config.attack.filter =
-            ParseTargetFilter(get_val(row, "attack_filter", "companion"));
+            TargetFilterFromCSV(get_val(row, "attack_filter", "companion"));
       }
 
       RegisterConfig(std::move(config));
 
     } catch (const std::exception& e) {
-      std::cerr << "Line " << line_num << ": parse error: " << e.what() << "\n";
+      std::cerr << path << ": line " << line_num << ": parse error: "
+                << e.what() << "\n";
       continue;
     }
   }

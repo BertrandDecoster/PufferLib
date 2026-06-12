@@ -10,6 +10,7 @@
 
 #include "agent_config.h"  // For TargetFilter
 #include "csv_utils.h"
+#include "enum_strings.h"
 #include "object_manager.h"
 
 namespace companions {
@@ -214,23 +215,16 @@ std::vector<int> ParseArea(const std::string& area_str) {
   return result;
 }
 
-// Helper to parse TargetFilter
-TargetFilter ParseFilter(const std::string& filter_str) {
-  if (filter_str == "all") return TargetFilter::All;
-  if (filter_str == "companion") return TargetFilter::Companion;
-  if (filter_str == "enemy") return TargetFilter::Enemy;
-  if (filter_str == "neutral") return TargetFilter::Neutral;
-  return TargetFilter::All;  // Default
-}
-
-// Trim / ParseCSVLine / SplitOn come from csv_utils.h (shared with
-// agent_config.cc).
+// Trim / ParseCSVLine / SplitOn come from csv_utils.h, and the filter
+// column parses via the shared TargetFilterFromCSV (enum_strings.h) -
+// shared with agent_config.cc.
 
 }  // namespace
 
 bool EffectConfigRegistry::LoadFromCSV(const std::string& path) {
   std::ifstream file(path);
   if (!file.is_open()) {
+    std::cerr << "Failed to open config file: " << path << "\n";
     return false;
   }
 
@@ -238,6 +232,7 @@ bool EffectConfigRegistry::LoadFromCSV(const std::string& path) {
 
   // Skip header
   if (!std::getline(file, line)) {
+    std::cerr << "Empty config file: " << path << "\n";
     return false;
   }
 
@@ -252,7 +247,7 @@ bool EffectConfigRegistry::LoadFromCSV(const std::string& path) {
     // Expected columns:
     // name,telegraph,active,recovery,loop,area,filter,damage,push_dx,push_dy,push_dist,status,status_dur,visible
     if (tokens.size() < 14) {
-      std::cerr << "Line " << line_num << ": expected 14 columns, got "
+      std::cerr << path << ": line " << line_num << ": expected 14 columns, got "
                 << tokens.size() << "\n";
       continue;
     }
@@ -265,7 +260,7 @@ bool EffectConfigRegistry::LoadFromCSV(const std::string& path) {
       config.recovery_ticks = std::stoi(tokens[3]);
       config.loop = std::stoi(tokens[4]);
       config.area = ParseArea(tokens[5]);
-      config.filter = ParseFilter(tokens[6]);
+      config.filter = TargetFilterFromCSV(tokens[6]);
       config.damage = std::stoi(tokens[7]);
       config.push_dx = std::stoi(tokens[8]);
       config.push_dy = std::stoi(tokens[9]);
@@ -276,8 +271,8 @@ bool EffectConfigRegistry::LoadFromCSV(const std::string& path) {
 
       RegisterConfig(std::move(config));
     } catch (const std::exception& e) {
-      std::cerr << "Line " << line_num << ": parse error: " << e.what()
-                << "\n";
+      std::cerr << path << ": line " << line_num << ": parse error: "
+                << e.what() << "\n";
       continue;
     }
   }

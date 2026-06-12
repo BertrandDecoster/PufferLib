@@ -320,6 +320,66 @@ TEST(TestCellKindFromStringLegacyV1Fallback) {
   ASSERT_TRUE(CellKindFromString("garbage") == CellKind::Floor);
 }
 
+// =============================================================================
+// CSV-facing parsers (shared by agent_config.cc and effect_config.cc).
+// Case-insensitive, accept both the lowercase CSV vocabulary and the
+// uppercase wire names. One documented default each (with a cerr warning on
+// unknown input) - no current data/*.csv row hits the fallback, proven by
+// the registry pinning tests in test_csv_utils.cc.
+// =============================================================================
+
+TEST(TestTargetFilterFromCSV) {
+  struct Row { const char* input; TargetFilter expected; };
+  const std::vector<Row> table = {
+      // Lowercase CSV vocabulary (data/effects.csv, data/agents.csv).
+      {"all", TargetFilter::All},
+      {"companion", TargetFilter::Companion},
+      {"enemy", TargetFilter::Enemy},
+      {"neutral", TargetFilter::Neutral},
+      // Capitalized enum-name vocabulary (the old agents-vs-effects
+      // divergence: "Enemy" used to parse as Enemy in one loader and All in
+      // the other).
+      {"All", TargetFilter::All},
+      {"Companion", TargetFilter::Companion},
+      {"Enemy", TargetFilter::Enemy},
+      {"Neutral", TargetFilter::Neutral},
+      // Mixed case.
+      {"ENEMY", TargetFilter::Enemy},
+      {"cOmPaNiOn", TargetFilter::Companion},
+  };
+  for (const auto& row : table) {
+    ASSERT_TRUE(TargetFilterFromCSV(row.input) == row.expected);
+  }
+  // Documented unknown-input default (warns on cerr).
+  ASSERT_TRUE(TargetFilterFromCSV("garbage") == TargetFilter::All);
+  ASSERT_TRUE(TargetFilterFromCSV("") == TargetFilter::All);
+}
+
+TEST(TestFactionFromCSV) {
+  struct Row { const char* input; Faction expected; };
+  const std::vector<Row> table = {
+      // Lowercase CSV vocabulary (data/agents.csv faction column).
+      {"companion", Faction::COMPANION},
+      {"enemy", Faction::ENEMY},
+      {"neutral", Faction::NEUTRAL},
+      // Uppercase wire vocabulary (FactionToString output).
+      {"COMPANION", Faction::COMPANION},
+      {"ENEMY", Faction::ENEMY},
+      {"NEUTRAL", Faction::NEUTRAL},
+      // Mixed case.
+      {"Companion", Faction::COMPANION},
+      {"eNeMy", Faction::ENEMY},
+  };
+  for (const auto& row : table) {
+    ASSERT_TRUE(FactionFromCSV(row.input) == row.expected);
+  }
+  // Documented unknown-input default (warns on cerr). ENEMY, matching the
+  // old agent_config CSV parser; the strict JSON wire reader
+  // FactionFromString keeps its COMPANION fallback (pinned below).
+  ASSERT_TRUE(FactionFromCSV("garbage") == Faction::ENEMY);
+  ASSERT_TRUE(FactionFromCSV("") == Faction::ENEMY);
+}
+
 // Unknown-input fallbacks, pinned to the pre-consolidation reader behavior.
 TEST(TestFromStringFallbacks) {
   ASSERT_TRUE(DirectionFromString("garbage") == Direction::Up);

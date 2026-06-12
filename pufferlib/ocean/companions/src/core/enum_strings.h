@@ -15,6 +15,7 @@
 
 #include <string>
 
+#include "agent_config.h"  // TargetFilter
 #include "annotations.h"
 #include "cell.h"
 #include "fsm/fsm_state.h"
@@ -63,6 +64,26 @@ FSMStateType FSMStateTypeFromString(const std::string& str);
 // SEMANTIC_TAG_NAMES. FromString falls back to SynchroGoal on unknown input.
 std::string SemanticTagToString(SemanticTag tag);
 SemanticTag SemanticTagFromString(const std::string& str);
+
+// ---------------------------------------------------------------------------
+// CSV config vocabulary (data/agents.csv, data/effects.csv).
+//
+// These are deliberately SEPARATE from the JSON wire converters above: the
+// wire readers are strict (exact spelling, locked by the golden snapshot
+// fixtures), while the CSV readers below are shared by both config loaders,
+// case-insensitive, and accept both the lowercase CSV vocabulary ("enemy")
+// and the uppercase wire names ("ENEMY"). They warn on cerr and return the
+// documented default for unknown input. No current data/*.csv row hits a
+// fallback (pinned by tests/test_csv_utils.cc registry tests).
+// ---------------------------------------------------------------------------
+
+// Default on unknown input: TargetFilter::All (with a cerr warning).
+TargetFilter TargetFilterFromCSV(const std::string& str);
+
+// Default on unknown input: Faction::ENEMY (with a cerr warning) - the CSVs
+// define enemy archetypes. The strict JSON wire reader FactionFromString
+// keeps its separate COMPANION fallback; do not use it for CSV fields.
+Faction FactionFromCSV(const std::string& str);
 
 }  // namespace companions
 

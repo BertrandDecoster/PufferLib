@@ -9,8 +9,20 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iostream>
 
 namespace companions {
+
+namespace {
+
+std::string ToLowerCopy(const std::string& s) {
+  std::string lower = s;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return lower;
+}
+
+}  // namespace
 
 // =============================================================================
 // Direction
@@ -225,6 +237,33 @@ SemanticTag SemanticTagFromString(const std::string& str) {
   if (str == "HtnName")     return SemanticTag::HtnName;
   if (str == "Room")        return SemanticTag::Room;
   return SemanticTag::SynchroGoal;  // Fallback
+}
+
+// =============================================================================
+// CSV config vocabulary (see header). Case-insensitive, accepts both the
+// lowercase CSV spellings and the uppercase wire names; warns + documented
+// default on unknown input. NOT part of the JSON wire format.
+// =============================================================================
+
+TargetFilter TargetFilterFromCSV(const std::string& str) {
+  const std::string lower = ToLowerCopy(str);
+  if (lower == "all") return TargetFilter::All;
+  if (lower == "companion") return TargetFilter::Companion;
+  if (lower == "enemy") return TargetFilter::Enemy;
+  if (lower == "neutral") return TargetFilter::Neutral;
+  std::cerr << "Unknown TargetFilter \"" << str
+            << "\" in CSV config, defaulting to All\n";
+  return TargetFilter::All;
+}
+
+Faction FactionFromCSV(const std::string& str) {
+  const std::string lower = ToLowerCopy(str);
+  if (lower == "companion") return Faction::COMPANION;
+  if (lower == "enemy") return Faction::ENEMY;
+  if (lower == "neutral") return Faction::NEUTRAL;
+  std::cerr << "Unknown Faction \"" << str
+            << "\" in CSV config, defaulting to ENEMY\n";
+  return Faction::ENEMY;
 }
 
 }  // namespace companions

@@ -130,6 +130,19 @@ TEST(TestParseCSVLine) {
               (V{"x", "hello, world", "y"}));
 }
 
+// Dialect edge cases pinned to CURRENT behavior (see ParseCSVLine comment in
+// csv_utils.h). These document what the parser does today, not RFC 4180.
+TEST(TestParseCSVLineEdgeCases) {
+  using V = std::vector<std::string>;
+  // Unterminated quote: the rest of the line is one field (quote stripped).
+  ASSERT_TRUE(ParseCSVLine("\"a,b") == (V{"a,b"}));
+  // Doubled quote: BOTH quotes are consumed - "a""b" yields ab, NOT the
+  // RFC-4180 literal-quote escape a"b.
+  ASSERT_TRUE(ParseCSVLine("\"a\"\"b\"") == (V{"ab"}));
+  // Trailing \r (CRLF line read with getline) is trimmed off the last field.
+  ASSERT_TRUE(ParseCSVLine("a,b\r") == (V{"a", "b"}));
+}
+
 TEST(TestSplitOn) {
   using V = std::vector<std::string>;
   // getline semantics: empty input -> no tokens, trailing delim dropped.
