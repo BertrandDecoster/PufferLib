@@ -382,7 +382,7 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   // goal; lenses with no geometric goal (DodgeLens) return empty and the
   // feature is forced to 0.0 rather than a misleading 1.0 from an empty scan.
   if (task_lens_) {
-    std::vector<Position> goals = task_lens_->GetGoalCells(*this);
+    const std::vector<Position>& goals = task_lens_->GetGoalCells(*this);
     if (goals.empty()) {
       buffer[idx++] = 0.0f;
     } else {

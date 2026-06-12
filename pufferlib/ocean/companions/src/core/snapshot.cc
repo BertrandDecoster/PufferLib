@@ -235,14 +235,30 @@ class BinaryReader {
     p.col = ReadValue<int>(ptr_, end_);
   }
 
+  // Typed enums are range-checked at the wire boundary so consumers never
+  // see an out-of-range value. Downstream code defends too (nullptr FSM
+  // lookup, kTagCount guard in annotations), but the invariant belongs here:
+  // a payload carrying an impossible enum is corrupt, not merely odd.
   void operator()(const char*, FSMStateType& v, bool = false) {
-    v = static_cast<FSMStateType>(ReadValue<uint8_t>(ptr_, end_));
+    uint8_t raw = ReadValue<uint8_t>(ptr_, end_);
+    if (raw > static_cast<uint8_t>(FSMStateType::Recovery)) {
+      throw std::runtime_error("Snapshot buffer corrupt: invalid FSMStateType");
+    }
+    v = static_cast<FSMStateType>(raw);
   }
   void operator()(const char*, TargetFilter& v, bool = false) {
-    v = static_cast<TargetFilter>(ReadValue<int>(ptr_, end_));
+    int raw = ReadValue<int>(ptr_, end_);
+    if (raw < 0 || raw > static_cast<int>(TargetFilter::Neutral)) {
+      throw std::runtime_error("Snapshot buffer corrupt: invalid TargetFilter");
+    }
+    v = static_cast<TargetFilter>(raw);
   }
   void operator()(const char*, SemanticTag& v, bool = false) {
-    v = static_cast<SemanticTag>(ReadValue<uint16_t>(ptr_, end_));
+    uint16_t raw = ReadValue<uint16_t>(ptr_, end_);
+    if (raw >= static_cast<uint16_t>(SemanticTag::_Count)) {
+      throw std::runtime_error("Snapshot buffer corrupt: invalid SemanticTag");
+    }
+    v = static_cast<SemanticTag>(raw);
   }
 
   template <class E, class IntT>

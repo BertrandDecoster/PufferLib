@@ -151,7 +151,10 @@ class AnnotationStore {
   bool HasTag(AnnotationKey key, SemanticTag tag) const;
 
   // Tag-indexed lookups. Order is unspecified but stable between mutations.
-  std::vector<Position> FindCellsWithTag(SemanticTag tag) const;
+  // FindCellsWithTag returns a reference into the lazily-rebuilt cache —
+  // alloc-free for the per-agent observation hot path; valid until any
+  // mutating call on this store.
+  const std::vector<Position>& FindCellsWithTag(SemanticTag tag) const;
   std::vector<ObjectId> FindAgentsWithTag(SemanticTag tag) const;
 
   std::size_t Size() const { return entries_.size(); }

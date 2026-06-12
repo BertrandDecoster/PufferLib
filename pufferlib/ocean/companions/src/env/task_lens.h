@@ -114,9 +114,14 @@ class TaskLens {
   // no geometric goal (e.g. DodgeLens — survival) return empty, and the
   // distance-to-goal feature becomes explicit zero instead of an accidental
   // 1.0 from an empty SynchroGoal scan. See audit F15.
-  virtual std::vector<Position> GetGoalCells(const BaseEnv& env) const {
+  //
+  // Returns a reference because this runs per agent per step (observation
+  // feature 3): implementations forward AnnotationStore::FindCellsWithTag's
+  // cache reference, alloc-free. Valid until the next annotation mutation.
+  virtual const std::vector<Position>& GetGoalCells(const BaseEnv& env) const {
     (void)env;
-    return {};
+    static const std::vector<Position> kEmpty;
+    return kEmpty;
   }
 
   // ===========================================================================

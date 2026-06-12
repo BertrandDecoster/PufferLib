@@ -536,6 +536,84 @@ TEST(TestJsonOutOfRangeCellCoordinatesThrows) {
   }
 }
 
+// Hostile JSON grid dimensions -> throws before cells.assign. A negative
+// cols wraps to ~SIZE_MAX after the size_t cast and huge values overflow the
+// signed rows*cols multiply, so the reader must reject the dimensions before
+// sizing the allocation (mirror of the binary path's ReadVectorSize guard).
+TEST(TestJsonInvalidGridDimensionsThrows) {
+  for (auto [rows, cols] : {std::pair<int, int>{-1, 3},
+                            {2, -1},
+                            {0, 3},
+                            {2, 0},
+                            {2000, 2000},
+                            {1073741823, 2}}) {
+    nlohmann::json j =
+        nlohmann::json::parse(SnapshotToJson(MakeFilledSnapshot()));
+    j.at("grid").at("rows") = rows;
+    j.at("grid").at("cols") = cols;
+    bool threw = false;
+    std::string msg;
+    try {
+      SnapshotFromJson(j.dump());
+    } catch (const std::exception& e) {
+      threw = true;
+      msg = e.what();
+    }
+    ASSERT_TRUE(threw);
+    ASSERT_TRUE(msg.find("invalid grid dimensions") != std::string::npos);
+  }
+}
+
+// Out-of-range typed enums in a binary payload -> throws at the wire
+// boundary. Forged by writing impossible values through the struct (the
+// writer emits raw ints), so the test tracks the wire layout automatically.
+TEST(TestBinaryOutOfRangeEnumThrows) {
+  auto expect_throw = [](const Snapshot& snap, const char* needle) {
+    std::vector<uint8_t> buffer = snap.Serialize();
+    bool threw = false;
+    std::string msg;
+    try {
+      Snapshot::Deserialize(buffer);
+    } catch (const std::exception& e) {
+      threw = true;
+      msg = e.what();
+    }
+    ASSERT_TRUE(threw);
+    ASSERT_TRUE(msg.find(needle) != std::string::npos);
+  };
+
+  {
+    Snapshot snap = MakeFilledSnapshot();
+    ASSERT_TRUE(!snap.annotations.empty());
+    snap.annotations[0].tag = static_cast<SemanticTag>(999);
+    expect_throw(snap, "invalid SemanticTag");
+  }
+  {
+    Snapshot snap = MakeFilledSnapshot();
+    bool forged = false;
+    for (auto& agent : snap.agents) {
+      if (!agent.has_fsm) continue;
+      agent.fsm.state_type = static_cast<FSMStateType>(200);
+      forged = true;
+      break;
+    }
+    ASSERT_TRUE(forged);
+    expect_throw(snap, "invalid FSMStateType");
+  }
+  {
+    Snapshot snap = MakeFilledSnapshot();
+    bool forged = false;
+    for (auto& agent : snap.agents) {
+      if (!agent.has_fsm) continue;
+      agent.fsm.attack_filter = static_cast<TargetFilter>(99);
+      forged = true;
+      break;
+    }
+    ASSERT_TRUE(forged);
+    expect_throw(snap, "invalid TargetFilter");
+  }
+}
+
 // =============================================================================
 // Main
 // =============================================================================

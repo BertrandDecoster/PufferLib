@@ -630,3 +630,103 @@ def test_high_level_facts_to_snapshot_accepts_base_snapshot():
     base["annotations"] = [_htn_name_ann(5, "scout")]
     snap = bridge.facts_to_snapshot(["at(scout, main)"], "puzzle1", base_snapshot=base)
     assert any(a["id"] == 5 for a in snap["agents"])
+
+
+# =============================================================================
+# Game-emitted JSON enums — faction/status arrive as strings, not ints
+# =============================================================================
+
+
+def _golden_layout():
+    """One-room layout covering the golden fixture's 4x5 grid."""
+    return LevelLayout(
+        rows=4,
+        cols=5,
+        rooms={
+            "arena": RoomDef(
+                name="arena",
+                cells=[(r, c) for r in range(4) for c in range(5)],
+            )
+        },
+    )
+
+
+def test_snapshot_to_facts_reads_game_json_enums():
+    # Regression for the string-vs-int enum gap: snapshot_json.cc emits
+    # faction as "ENEMY" and statuses as {"status_type": "slowed"}; the
+    # bridge must fire isEnemy/hasTag facts on that wire form, not just on
+    # its own int-coded partial snapshots. The golden fixture is the ground
+    # truth for the game shape. (Agent 1 has no HtnName annotation, so the
+    # generic-name fallback warning is expected.)
+    import json
+
+    with open(_GOLDEN_SNAPSHOT) as f:
+        snapshot = json.load(f)
+    with pytest.warns(UserWarning):
+        facts = SnapshotToFacts(_golden_layout()).convert(snapshot)
+    assert "isEnemy(warden)" in facts
+    assert "hasTag(warden, slowed)" in facts
+    # Agent 1 (alive, stunned+marked) emits tags under its fallback name.
+    assert any("stunned" in f for f in facts if f.startswith("hasTag("))
+    assert any("marked" in f for f in facts if f.startswith("hasTag("))
+    # Agent 3 is dead and must contribute no facts.
+    assert not any("agent3" in f for f in facts)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("ENEMY", Faction.Enemy),
+        ("COMPANION", Faction.Companion),
+        ("NEUTRAL", Faction.Neutral),
+        (int(Faction.Enemy), Faction.Enemy),
+        ("DRAGONKIN", None),
+        (99, None),
+    ],
+)
+def test_parse_faction_accepts_both_wire_forms(value, expected):
+    assert bridge.parse_faction(value) == expected
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        ({"status_type": "stunned", "duration": 3}, "stunned"),
+        ({"status_type": "none", "duration": 0}, None),
+        ({"type": 1, "duration": -1}, "burning"),  # bridge-internal int vocab
+        ({"type": 99, "duration": -1}, None),
+        ({}, None),
+    ],
+)
+def test_status_tag_accepts_both_wire_forms(status, expected):
+    assert bridge.status_tag(status) == expected
+
+
+# =============================================================================
+# validate_snapshot — geometry value checks (not just key presence)
+# =============================================================================
+
+
+@pytest.mark.parametrize("bad", [0, -1, "3", 2.5, True])
+def test_validate_snapshot_rejects_non_positive_cols(bad):
+    snap = _empty_snapshot(3, 3)
+    snap["cols"] = bad
+    with pytest.raises(ValueError, match="cols"):
+        validate_snapshot(snap)
+
+
+def test_validate_snapshot_rejects_cells_length_mismatch():
+    snap = _empty_snapshot(3, 3)
+    snap["cells"] = snap["cells"][:-1]
+    with pytest.raises(ValueError, match="cells"):
+        validate_snapshot(snap)
+
+
+def test_convert_raises_clean_error_not_zerodivision_on_cols_zero():
+    # Before the geometry checks, cols=0 with non-empty cells reached
+    # `i // cols` in _cell_facts and crashed with ZeroDivisionError.
+    layout = get_puzzle1_layout()
+    snap = _empty_snapshot(3, 3)
+    snap["cols"] = 0
+    with pytest.raises(ValueError, match="cols"):
+        SnapshotToFacts(layout).convert(snap)

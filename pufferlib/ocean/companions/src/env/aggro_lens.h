@@ -20,7 +20,7 @@ class AggroLens : public TaskLens {
   double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
   bool IsGoalCell(const BaseEnv& env, Position pos) const override;
-  std::vector<Position> GetGoalCells(const BaseEnv& env) const override;
+  const std::vector<Position>& GetGoalCells(const BaseEnv& env) const override;
 
   // Aggro-specific vector observation tail (8 features), computed relative
   // to the passed agent (the same agent the base features describe):

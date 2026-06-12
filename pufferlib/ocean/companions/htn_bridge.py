@@ -53,6 +53,26 @@ class Faction(IntEnum):
     Neutral = 2
 
 
+# JSON wire spelling, mirrored in C++ FactionToString() (enum_strings.cc).
+# Game-emitted snapshots carry the string form; bridge-internal partial
+# snapshots (FactsToSnapshot) carry the int form. Readers accept both.
+FACTION_FROM_NAME: Dict[str, "Faction"] = {
+    "COMPANION": Faction.Companion,
+    "ENEMY": Faction.Enemy,
+    "NEUTRAL": Faction.Neutral,
+}
+
+
+def parse_faction(value: Any) -> Optional[Faction]:
+    """Parse a faction from either wire form; None if unrecognized."""
+    if isinstance(value, str):
+        return FACTION_FROM_NAME.get(value.upper())
+    try:
+        return Faction(value)
+    except ValueError:
+        return None
+
+
 class FSMStateType(IntEnum):
     """Maps to companions::FSMStateType"""
     NoState = 0
@@ -168,11 +188,14 @@ def _grid_scope(snapshot: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
 
 
 def validate_snapshot(snapshot: Any) -> None:
-    """Validate that `snapshot` has the keys the bridge consumes.
+    """Validate that `snapshot` has the keys and grid geometry the bridge consumes.
 
-    Raises ValueError naming the first missing key. Required:
+    Raises ValueError naming the first problem. Required:
     - grid geometry: "rows", "cols", "cells" (top-level, or nested under
-      "grid" as the game's snapshot_json.cc emits them)
+      "grid" as the game's snapshot_json.cc emits them), with rows/cols
+      positive ints and len(cells) == rows*cols (row-major full grid —
+      both snapshot_json.cc and FactsToSnapshot emit every cell, and
+      _cell_facts divides by cols to recover coordinates)
     - "agents"
     """
     if not isinstance(snapshot, dict):
@@ -183,6 +206,15 @@ def validate_snapshot(snapshot: Any) -> None:
             raise ValueError(f"snapshot missing required key: {prefix}{key}")
     if "agents" not in snapshot:
         raise ValueError("snapshot missing required key: agents")
+    rows, cols, cells = scope["rows"], scope["cols"], scope["cells"]
+    for key, value in (("rows", rows), ("cols", cols)):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(
+                f"snapshot {prefix}{key} must be a positive int, got {value!r}")
+    if not isinstance(cells, list) or len(cells) != rows * cols:
+        raise ValueError(
+            f"snapshot {prefix}cells must hold rows*cols={rows * cols} entries, "
+            f"got {len(cells) if isinstance(cells, list) else type(cells).__name__}")
 
 
 def _grid_info(snapshot: Dict[str, Any]) -> Tuple[int, int, List[Dict[str, Any]]]:
@@ -250,6 +282,24 @@ TAG_TO_STATUS_TYPE = {
 }
 
 STATUS_TYPE_TO_TAG = {v: k for k, v in TAG_TO_STATUS_TYPE.items()}
+
+
+def status_tag(status: Dict[str, Any]) -> Optional[str]:
+    """Return the HTN tag for one status entry, accepting both wire forms.
+
+    Game JSON (snapshot_json.cc) emits {"status_type": "<name>"} using the
+    enum_strings.cc vocabulary (stunned/slowed/marked); those names pass
+    through as tags directly. Bridge-internal partial snapshots
+    (FactsToSnapshot) emit {"type": <int>} using TAG_TO_STATUS_TYPE's
+    HTN-domain vocabulary. The two int numberings collide (game Stunned == 1
+    == bridge "burning"), so the key/type of the entry — not the number —
+    decides which vocabulary applies.
+    """
+    raw = status.get("status_type", status.get("type", 0))
+    if isinstance(raw, str):
+        name = raw.lower()
+        return name if name and name != "none" else None
+    return STATUS_TYPE_TO_TAG.get(raw)
 
 # Hazard types in HTN to CellKind
 HAZARD_TO_CELL_KIND = {
@@ -377,8 +427,7 @@ class SnapshotToFacts:
             position = agent.get("position", {})
             row = position.get("row", -1)
             col = position.get("col", -1)
-            # KNOWN GAP: game-emitted JSON serializes faction/status enums as strings ("ENEMY", "stunned") but this reader compares ints, so isEnemy facts don't fire on game JSON yet (pre-existing; tracked for HTN-bridge integration).
-            faction = agent.get("faction", 0)
+            faction = parse_faction(agent.get("faction", 0))
             alive = agent.get("alive", True)
 
             if not alive:
@@ -400,9 +449,8 @@ class SnapshotToFacts:
 
             # hasTag(?entity, ?tag) from statuses
             for status in agent.get("statuses", []):
-                status_type = status.get("type", 0)
-                if status_type in STATUS_TYPE_TO_TAG:
-                    tag = STATUS_TYPE_TO_TAG[status_type]
+                tag = status_tag(status)
+                if tag:
                     facts.append(format_fact("hasTag", [entity_name, tag]))
 
             # hasAggro(?enemy, ?target) from FSM

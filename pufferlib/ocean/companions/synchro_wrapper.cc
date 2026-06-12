@@ -146,8 +146,12 @@ void c_step(Synchro* env) {
     env->cumulative_reward += total_reward / env->num_agents;
     env->episode_steps++;
 
-    // Write observations directly to buffer (zero-copy)
-    write_observations(env);
+    // Write observations directly to buffer (zero-copy). Skipped on done:
+    // auto-reset below overwrites the same shared buffer before Python ever
+    // reads it, so the terminal-step write would be dead work.
+    if (!result.done) {
+        write_observations(env);
+    }
 
     // Set terminals (all agents share same done state)
     unsigned char done = result.done ? 1 : 0;

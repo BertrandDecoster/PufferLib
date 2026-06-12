@@ -103,9 +103,11 @@ bool AnnotationStore::HasTag(AnnotationKey key, SemanticTag tag) const {
   return std::find(agents.begin(), agents.end(), key.agent_id) != agents.end();
 }
 
-std::vector<Position> AnnotationStore::FindCellsWithTag(SemanticTag tag) const {
+const std::vector<Position>& AnnotationStore::FindCellsWithTag(
+    SemanticTag tag) const {
+  static const std::vector<Position> kEmpty;
   std::size_t idx = static_cast<std::size_t>(tag);
-  if (idx >= kTagCount) return {};
+  if (idx >= kTagCount) return kEmpty;
   RebuildCacheIfStale();
   return cells_by_tag_[idx];
 }

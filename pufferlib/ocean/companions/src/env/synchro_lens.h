@@ -25,7 +25,7 @@ class SynchroLens : public TaskLens {
   double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
   bool IsGoalCell(const BaseEnv& env, Position pos) const override;
-  std::vector<Position> GetGoalCells(const BaseEnv& env) const override;
+  const std::vector<Position>& GetGoalCells(const BaseEnv& env) const override;
 
   // Stamp Synchro cells at params.positions (overlaying base terrain).
   // These cells ARE the synchro goals until Deactivate restores the base.

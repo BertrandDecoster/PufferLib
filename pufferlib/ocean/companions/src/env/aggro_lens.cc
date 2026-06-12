@@ -95,12 +95,14 @@ bool AggroLens::IsGoalCell(const BaseEnv& env, Position pos) const {
       SemanticTag::AggroTarget);
 }
 
-std::vector<Position> AggroLens::GetGoalCells(const BaseEnv& env) const {
+const std::vector<Position>& AggroLens::GetGoalCells(
+    const BaseEnv& env) const {
   return env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
 }
 
 Position AggroLens::FindTargetCell(const BaseEnv& env) const {
-  auto targets = env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
+  const auto& targets =
+      env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
   if (!targets.empty()) {
     return targets.front();
   }

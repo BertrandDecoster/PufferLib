@@ -348,6 +348,17 @@ class JsonReader {
     if (!j) return;
     const int rows = root_.at("grid").at("rows").get<int>();
     const int cols = root_.at("grid").at("cols").get<int>();
+    // Adversarial-allocation guard, mirroring ReadVectorSize on the binary
+    // path: dimensions come from external payloads, and rows*cols sizes the
+    // allocation below. Negative values wrap to ~SIZE_MAX after the cast and
+    // huge ones overflow the signed multiply, so both must be rejected before
+    // cells.assign. kMaxGridDim is far above any real level (grids are 6-16).
+    constexpr int kMaxGridDim = 1024;
+    if (rows <= 0 || cols <= 0 || rows > kMaxGridDim || cols > kMaxGridDim) {
+      throw std::runtime_error(
+          "Snapshot JSON corrupt: invalid grid dimensions " +
+          std::to_string(rows) + "x" + std::to_string(cols));
+    }
     cells.assign(static_cast<size_t>(rows) * cols, CellSnapshot{});
     for (const auto& cell_json : *j) {
       int row = cell_json.at("row").get<int>();
