@@ -93,10 +93,11 @@ Task-specific behavior is separated from world state via composition:
 ```
 BaseEnv (physical reality)     TaskLens (mental construct)
 ├── grid_                      ├── CanOperateOn()
-├── objects_                   ├── IsDone()
-├── effects_                   ├── IsSuccess()
-├── tick_                      ├── ComputeReward()
-└── task_lens_ ────────────────└── MaskCell()
+├── objects_                   ├── IsDone(), IsSuccess()
+├── effects_                   ├── ComputeReward()
+├── annotations_               ├── IsGoalCell(), GetGoalCells()
+├── tick_                      ├── WriteVectorObs(), AdditionalVectorObsSize()
+└── task_lens_ ────────────────└── Activate(), Deactivate()
 ```
 
 **Key files:**
@@ -117,14 +118,15 @@ env.SetTaskLens(std::make_unique<DodgeLens>());
 ```
 
 **Validation:** Each lens validates via `CanOperateOn()`:
-- `SynchroLens`: requires synchro cells in grid
-- `AggroLens`: requires target cell + patrol path
+- `SynchroLens`: requires SynchroGoal-annotated cells
+- `AggroLens`: requires AggroTarget-annotated cell + patrol path
 - `DodgeLens`: accepts any env
 
-**Observation masking:** Each lens hides irrelevant cells:
-- `SynchroLens`: hides Target → Floor
-- `AggroLens`: hides Synchro → Floor
-- `DodgeLens`: hides both → Floor
+**Goal visibility:** Task-relevant cells are SemanticTag annotations
+(SynchroGoal, AggroTarget, ... in `src/core/annotations.h`), not CellKinds.
+The active lens decides what shows up in observation plane 2 via
+`IsGoalCell()` — each lens reports only its own tag, so other tasks' goals
+stay invisible to the policy without any cell rewriting/masking.
 
 ## Architecture Layers
 

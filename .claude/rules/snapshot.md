@@ -38,21 +38,25 @@ env.SetTaskLens(std::make_unique<AggroLens>());
 
 **TaskLens handles:**
 - Runtime task switching within same BaseEnv
-- Task-specific rewards, termination, observation masking
+- Task-specific rewards, termination, goal-plane contents + vector obs tail
 - No serialization overhead
 
 ### Architecture
 
 ```
 BaseEnv (physical world)        TaskLens (task interpretation)
-├── grid, agents, effects       ├── IsDone(), IsSuccess()
+├── grid, agents, effects       ├── CanOperateOn()
+├── annotations                 ├── IsDone(), IsSuccess()
 ├── SaveSnapshot()              ├── ComputeReward()
-├── LoadSnapshot()              └── MaskCell()
-└── SetTaskLens() ──────────────┘
+├── LoadSnapshot()              ├── IsGoalCell(), GetGoalCells()
+└── SetTaskLens() ──────────────├── WriteVectorObs(), AdditionalVectorObsSize()
+                                └── Activate(), Deactivate()
 ```
 
-Snapshots capture physical state only (grid, agents, effects, tick, RNG).
-TaskLens is stateless - computed on-demand from BaseEnv state.
+Snapshots capture physical state only (grid, agents, effects, annotations,
+tick, RNG). TaskLens is stateless - computed on-demand from BaseEnv state.
+Goal cells are SemanticTag annotations (e.g. SynchroGoal, AggroTarget) read
+via `IsGoalCell()`; there is no cell masking/rewriting.
 
 ## DLL API
 
@@ -78,8 +82,9 @@ companions_load_snapshot(env, buffer.data(), buffer.size());
 
 **Notes:**
 - Returns `false`/`0` on error, check `companions_get_error()`
-- Contains: grid, agents, effects, tick, RNG state (~2-5 KB)
-- Binary format: magic `0x534E4150` ("SNAP"), version 1
+- Contains: grid, agents, effects, annotations, tick, RNG state (~2-5 KB)
+- Binary format: magic `0x534E4150` ("SNAP"), version 2 (v2 adds annotations; v1 payloads still load via MigrateV1)
+- Format is locked by golden fixtures (`tests/data/golden_snapshot_v2.{bin,json}`, `test_snapshot_golden.cc`)
 
 ## JSON API
 
@@ -99,8 +104,11 @@ bool companions_load_snapshot_json_file(Companions_Env* env, const char* filepat
 **JSON Structure:**
 ```json
 {
+  "magic": "SNAP",
+  "version": 2,
   "grid": {"rows": 10, "cols": 10, "cells": [...]},
-  "agents": [{"id": 1, "agent_type": "Companion", "position": {"row": 3, "col": 5}, ...}],
+  "agents": [{"id": 1, "agent_type": "Player", "position": {"row": 3, "col": 5}, ...}],
+  "annotations": [{"target": "Cell", "pos": {"row": 2, "col": 4}, "tag": "SynchroGoal", "owner_lens_id": -1, "params": {...}}, ...],
   "effects": [...],
   "tick": 42,
   "horizon": 100,

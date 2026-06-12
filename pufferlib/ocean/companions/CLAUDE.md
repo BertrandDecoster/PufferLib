@@ -36,7 +36,8 @@ Only read it if you need to develop new environments so you can follow
 the spirit of the game.
 The companions is a multi agent cooperative env played on a 2D grid.
 All the dynamics are defined in BaseEnv. Task-specific behavior (rewards, termination,
-observation masking) is handled by **TaskLens** objects that can be swapped at runtime.
+goal-cell visibility, vector obs tail) is handled by **TaskLens** objects that can be
+swapped at runtime.
 
 
 
@@ -90,11 +91,16 @@ Location: `companions/src/core/fsm/`
 
 Each environment uses a **TaskLens** to define task-specific behavior:
 
-| Env | Lens | Goal | Masks |
-|-----|------|------|-------|
-| SynchroEnv | SynchroLens | All companions on synchro cells | Target→Floor |
-| AggroEnv | AggroLens | Lure enemy to target cell | Synchro→Floor |
-| DodgeEnv | DodgeLens | Survive until horizon | Both→Floor |
+| Env | Lens | Goal | Goal cells (obs plane 2, via `IsGoalCell`) |
+|-----|------|------|--------------------------------------------|
+| SynchroEnv | SynchroLens | All companions on synchro cells | SynchroGoal-annotated cells |
+| AggroEnv | AggroLens | Lure enemy to target cell | AggroTarget-annotated cell |
+| DodgeEnv | DodgeLens | Survive until horizon | none (survival task) |
+| GameEnv | any (swappable) | Game-serving shell: never done, success polled via `companions_is_success()` | active lens decides |
+
+Goal cells are SemanticTag annotations (`src/core/annotations.h`), not
+CellKinds; each lens reports only its own tag so other tasks' goals stay
+invisible — there is no cell masking/rewriting.
 
 **Runtime task switching** (no snapshot needed):
 ```cpp
