@@ -1,5 +1,14 @@
 // Copyright 2024
-// JSON serialization for Snapshot
+// JSON serialization for Snapshot.
+//
+// The JSON schema is produced by two generic visitors (JsonWriter /
+// JsonReader) driven by the single VisitFields list of each snapshot struct
+// (snapshot.h). The field list carries the JSON key names (dotted names
+// nest, e.g. "grid.rows"); structural differences from the binary format
+// (enums as strings, positions as {row,col} objects, the cells array with
+// explicit coordinates, the conditional annotation shape) are per-type
+// policies inside the visitors, never forks of the field list. The
+// golden-fixture test (tests/test_snapshot_golden.cc) locks the schema.
 
 #include "snapshot_json.h"
 
@@ -102,47 +111,6 @@ SemanticTag StringToSemanticTag(const std::string& str) {
   return SemanticTag::SynchroGoal;  // Fallback
 }
 
-// Position serialization
-json PositionToJson(const Position& pos) {
-  return json{{"row", pos.row}, {"col", pos.col}};
-}
-
-Position JsonToPosition(const json& j) {
-  return Position{j.at("row").get<int>(), j.at("col").get<int>()};
-}
-
-// CellSnapshot serialization
-json CellSnapshotToJson(const CellSnapshot& cell, int row, int col) {
-  return json{
-    {"row", row},
-    {"col", col},
-    {"cell_kind", CellKindToString(cell.kind)},
-    {"cell_origin", CellOriginToString(cell.origin)}
-  };
-}
-
-CellSnapshot JsonToCellSnapshot(const json& j) {
-  CellSnapshot cell;
-  cell.kind = StringToCellKind(j.at("cell_kind").get<std::string>());
-  cell.origin = StringToCellOrigin(j.at("cell_origin").get<std::string>());
-  return cell;
-}
-
-// StatusSnapshot serialization
-json StatusSnapshotToJson(const StatusSnapshot& status) {
-  return json{
-    {"status_type", StatusTypeToString(static_cast<StatusType>(status.type))},
-    {"duration", status.duration}
-  };
-}
-
-StatusSnapshot JsonToStatusSnapshot(const json& j) {
-  StatusSnapshot status;
-  status.type = static_cast<int>(StringToStatusType(j.at("status_type").get<std::string>()));
-  status.duration = j.at("duration").get<int>();
-  return status;
-}
-
 // FSMStateType to/from string
 std::string FSMStateTypeToString(FSMStateType type) {
   switch (type) {
@@ -166,175 +134,37 @@ FSMStateType StringToFSMStateType(const std::string& s) {
   return FSMStateType::None;
 }
 
-// FSMSnapshot serialization
-json FSMSnapshotToJson(const FSMSnapshot& fsm) {
-  json j{
-    {"state_type", FSMStateTypeToString(fsm.state_type)},
-    {"target_id", fsm.target_id},
-    {"patrol_index", fsm.patrol_index},
-    {"patrol_forward", fsm.patrol_forward},
-    {"detection_range", fsm.detection_range},
-    {"lose_target_range", fsm.lose_target_range},
-    {"rng_state", fsm.rng_state},
-    {"rng_inc", fsm.rng_inc},
-    {"attack_tick_counter", fsm.attack_tick_counter},
-    {"attack_target_position", PositionToJson(fsm.attack_target_position)},
-    {"attack_area_width", fsm.attack_area_width},
-    {"attack_area_height", fsm.attack_area_height},
-    {"attack_damage", fsm.attack_damage},
-    {"attack_filter", static_cast<int>(fsm.attack_filter)}
+// Position serialization
+json PositionToJson(const Position& pos) {
+  return json{{"row", pos.row}, {"col", pos.col}};
+}
+
+Position JsonToPosition(const json& j) {
+  return Position{j.at("row").get<int>(), j.at("col").get<int>()};
+}
+
+// CellSnapshot serialization. Hand-written: the JSON cell shape carries
+// explicit (row, col) coordinates that are not CellSnapshot fields.
+json CellSnapshotToJson(const CellSnapshot& cell, int row, int col) {
+  return json{
+    {"row", row},
+    {"col", col},
+    {"cell_kind", CellKindToString(cell.kind)},
+    {"cell_origin", CellOriginToString(cell.origin)}
   };
-
-  json patrol = json::array();
-  for (const auto& pos : fsm.patrol_path) {
-    patrol.push_back(PositionToJson(pos));
-  }
-  j["patrol_path"] = patrol;
-
-  return j;
 }
 
-FSMSnapshot JsonToFSMSnapshot(const json& j) {
-  FSMSnapshot fsm;
-  fsm.state_type = StringToFSMStateType(j.at("state_type").get<std::string>());
-  fsm.target_id = j.at("target_id").get<int>();
-  fsm.patrol_index = j.at("patrol_index").get<int>();
-  fsm.patrol_forward = j.at("patrol_forward").get<bool>();
-  fsm.detection_range = j.at("detection_range").get<int>();
-  fsm.lose_target_range = j.at("lose_target_range").get<int>();
-  fsm.rng_state = j.at("rng_state").get<uint64_t>();
-  fsm.rng_inc = j.at("rng_inc").get<uint64_t>();
-
-  for (const auto& pos_json : j.at("patrol_path")) {
-    fsm.patrol_path.push_back(JsonToPosition(pos_json));
-  }
-
-  // Attack runtime state
-  if (j.contains("attack_tick_counter")) {
-    fsm.attack_tick_counter = j.at("attack_tick_counter").get<int>();
-  }
-  if (j.contains("attack_target_position")) {
-    fsm.attack_target_position = JsonToPosition(j.at("attack_target_position"));
-  }
-  if (j.contains("attack_area_width")) {
-    fsm.attack_area_width = j.at("attack_area_width").get<int>();
-  }
-  if (j.contains("attack_area_height")) {
-    fsm.attack_area_height = j.at("attack_area_height").get<int>();
-  }
-  if (j.contains("attack_damage")) {
-    fsm.attack_damage = j.at("attack_damage").get<int>();
-  }
-  if (j.contains("attack_filter")) {
-    fsm.attack_filter = static_cast<TargetFilter>(j.at("attack_filter").get<int>());
-  }
-
-  return fsm;
+CellSnapshot JsonToCellSnapshot(const json& j) {
+  CellSnapshot cell;
+  cell.kind = StringToCellKind(j.at("cell_kind").get<std::string>());
+  cell.origin = StringToCellOrigin(j.at("cell_origin").get<std::string>());
+  return cell;
 }
 
-// AgentSnapshot serialization
-json AgentSnapshotToJson(const AgentSnapshot& agent) {
-  json j{
-    {"id", agent.id},
-    {"agent_type", ObjectTypeToString(static_cast<ObjectType>(agent.type))},
-    {"position", PositionToJson(agent.position)},
-    {"prev_position", PositionToJson(agent.prev_position)},
-    {"health", agent.health},
-    {"max_health", agent.max_health},
-    {"agent_index", agent.agent_index},
-    {"faction", FactionToString(static_cast<Faction>(agent.faction))},
-    {"direction", DirectionToString(static_cast<Direction>(agent.direction))},
-    {"color", ActorColorToString(static_cast<ActorColor>(agent.color))},
-    {"alive", agent.alive}
-  };
-
-  // Statuses
-  json statuses = json::array();
-  for (const auto& status : agent.statuses) {
-    statuses.push_back(StatusSnapshotToJson(status));
-  }
-  j["statuses"] = statuses;
-
-  // FSM (null if no FSM)
-  if (agent.has_fsm) {
-    j["fsm"] = FSMSnapshotToJson(agent.fsm);
-  } else {
-    j["fsm"] = nullptr;
-  }
-
-  // Cadence
-  j["cadence"] = agent.cadence;
-  j["tick"] = agent.tick;
-
-  return j;
-}
-
-AgentSnapshot JsonToAgentSnapshot(const json& j) {
-  AgentSnapshot agent;
-  agent.id = j.at("id").get<int>();
-  agent.type = static_cast<int>(StringToObjectType(j.at("agent_type").get<std::string>()));
-  agent.position = JsonToPosition(j.at("position"));
-  agent.prev_position = JsonToPosition(j.at("prev_position"));
-  agent.health = j.at("health").get<int>();
-  agent.max_health = j.at("max_health").get<int>();
-  agent.agent_index = j.at("agent_index").get<int>();
-  agent.faction = static_cast<int>(StringToFaction(j.at("faction").get<std::string>()));
-  agent.direction = static_cast<int>(StringToDirection(j.at("direction").get<std::string>()));
-  agent.color = static_cast<int>(StringToActorColor(j.at("color").get<std::string>()));
-  agent.alive = j.at("alive").get<bool>();
-
-  // Statuses
-  for (const auto& status_json : j.at("statuses")) {
-    agent.statuses.push_back(JsonToStatusSnapshot(status_json));
-  }
-
-  // FSM
-  if (j.at("fsm").is_null()) {
-    agent.has_fsm = false;
-  } else {
-    agent.has_fsm = true;
-    agent.fsm = JsonToFSMSnapshot(j.at("fsm"));
-  }
-
-  // Cadence
-  agent.cadence = j.at("cadence").get<std::vector<int>>();
-  agent.tick = j.at("tick").get<int>();
-
-  return agent;
-}
-
-// EffectSnapshot serialization
-json EffectSnapshotToJson(const EffectSnapshot& effect) {
-  json j{
-    {"effect_name", effect.effect_name},
-    {"target_type", effect.target_type},
-    {"target_cell", PositionToJson(effect.target_cell)},
-    {"target_actor_id", effect.target_actor_id},
-    {"target_actors", effect.target_actors},
-    {"direction", DirectionToString(static_cast<Direction>(effect.direction))},
-    {"ticks_remaining", effect.ticks_remaining},
-    {"in_telegraph", effect.in_telegraph},
-    {"loops_remaining", effect.loops_remaining},
-    {"source_id", effect.source_id}
-  };
-  return j;
-}
-
-EffectSnapshot JsonToEffectSnapshot(const json& j) {
-  EffectSnapshot effect;
-  effect.effect_name = j.at("effect_name").get<std::string>();
-  effect.target_type = j.at("target_type").get<int>();
-  effect.target_cell = JsonToPosition(j.at("target_cell"));
-  effect.target_actor_id = j.at("target_actor_id").get<int>();
-  effect.target_actors = j.at("target_actors").get<std::vector<int>>();
-  effect.direction = static_cast<int>(StringToDirection(j.at("direction").get<std::string>()));
-  effect.ticks_remaining = j.at("ticks_remaining").get<int>();
-  effect.in_telegraph = j.at("in_telegraph").get<bool>();
-  effect.loops_remaining = j.at("loops_remaining").get<int>();
-  effect.source_id = j.at("source_id").get<int>();
-  return effect;
-}
-
+// AnnotationSnapshot serialization. Hand-written corner (see the comment on
+// AnnotationSnapshot::VisitFields): the JSON shape is conditional — exactly
+// one of pos/agent_id is emitted depending on target_type, "target" is a
+// string, and params is a JSON object rather than a pair list.
 json AnnotationSnapshotToJson(const AnnotationSnapshot& a) {
   json params = json::object();
   for (const auto& kv : a.params) {
@@ -374,6 +204,297 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j) {
   return a;
 }
 
+// =============================================================================
+// JsonWriter - visitor producing the JSON schema
+// =============================================================================
+class JsonWriter {
+ public:
+  explicit JsonWriter(json& root) : root_(root) {}
+
+  // Serialize a visitable struct into a standalone JSON object.
+  template <class T>
+  static json Sub(const T& value) {
+    json sub = json::object();
+    JsonWriter writer(sub);
+    T::VisitFields(value, writer);
+    return sub;
+  }
+
+  // Scalars (int, bool, uint64_t, ...) and nested visitable structs.
+  template <class T>
+  void operator()(const char* name, const T& value, bool /*json_optional*/ = false) {
+    if constexpr (kHasVisitFields<T>) {
+      Slot(name) = Sub(value);
+    } else {
+      Slot(name) = value;
+    }
+  }
+
+  void operator()(const char* name, const std::string& s, bool = false) {
+    Slot(name) = s;
+  }
+
+  void operator()(const char* name, const Position& p, bool = false) {
+    Slot(name) = PositionToJson(p);
+  }
+
+  void operator()(const char* name, const FSMStateType& v, bool = false) {
+    Slot(name) = FSMStateTypeToString(v);
+  }
+  void operator()(const char* name, const TargetFilter& v, bool = false) {
+    Slot(name) = static_cast<int>(v);  // historical: int in JSON too
+  }
+
+  // EnumField JSON policy: one entry per enum, calling the existing
+  // converters. Binary keeps the raw int (BinaryWriter).
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<ObjectType, IntT> f, bool = false) {
+    Slot(name) = ObjectTypeToString(static_cast<ObjectType>(f.value));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<Faction, IntT> f, bool = false) {
+    Slot(name) = FactionToString(static_cast<Faction>(f.value));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<Direction, IntT> f, bool = false) {
+    Slot(name) = DirectionToString(static_cast<Direction>(f.value));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<ActorColor, IntT> f, bool = false) {
+    Slot(name) = ActorColorToString(static_cast<ActorColor>(f.value));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<StatusType, IntT> f, bool = false) {
+    Slot(name) = StatusTypeToString(static_cast<StatusType>(f.value));
+  }
+
+  // Guarded FSM: object when present, null otherwise (no "has_fsm" key).
+  template <class BoolT, class FsmT>
+  void operator()(const char* name, GuardedFsmRef<BoolT, FsmT> f, bool = false) {
+    if (f.has) {
+      Slot(name) = Sub(f.fsm);
+    } else {
+      Slot(name) = nullptr;
+    }
+  }
+
+  // Vectors: JSON arrays.
+  template <class T>
+  void operator()(const char* name, const std::vector<T>& vec, bool = false) {
+    json arr = json::array();
+    for (const T& item : vec) {
+      if constexpr (kHasVisitFields<T>) {
+        arr.push_back(Sub(item));
+      } else if constexpr (std::is_same_v<T, Position>) {
+        arr.push_back(PositionToJson(item));
+      } else {
+        arr.push_back(item);
+      }
+    }
+    Slot(name) = arr;
+  }
+
+  // Cells: objects with explicit (row, col), derived from grid.cols which
+  // the Snapshot field list visits before cells.
+  void operator()(const char* name, const std::vector<CellSnapshot>& cells,
+                  bool = false) {
+    const int cols = root_.at("grid").at("cols").get<int>();
+    json arr = json::array();
+    for (size_t idx = 0; idx < cells.size(); ++idx) {
+      const int r = cols > 0 ? static_cast<int>(idx) / cols : 0;
+      const int c = cols > 0 ? static_cast<int>(idx) % cols : 0;
+      arr.push_back(CellSnapshotToJson(cells[idx], r, c));
+    }
+    Slot(name) = arr;
+  }
+
+  // Annotations: hand-written conditional shape.
+  void operator()(const char* name, const std::vector<AnnotationSnapshot>& vec,
+                  bool = false) {
+    json arr = json::array();
+    for (const auto& a : vec) {
+      arr.push_back(AnnotationSnapshotToJson(a));
+    }
+    Slot(name) = arr;
+  }
+
+ private:
+  // Dotted name -> nested slot ("grid.rows" -> root["grid"]["rows"]).
+  json& Slot(const char* name) {
+    json* j = &root_;
+    std::string n(name);
+    size_t start = 0;
+    size_t dot;
+    while ((dot = n.find('.', start)) != std::string::npos) {
+      j = &((*j)[n.substr(start, dot - start)]);
+      start = dot + 1;
+    }
+    return (*j)[n.substr(start)];
+  }
+
+  json& root_;
+};
+
+// =============================================================================
+// JsonReader - visitor consuming the JSON schema
+// =============================================================================
+class JsonReader {
+ public:
+  explicit JsonReader(const json& root) : root_(root) {}
+
+  template <class T>
+  void operator()(const char* name, T& value, bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    if constexpr (kHasVisitFields<T>) {
+      JsonReader reader(*j);
+      T::VisitFields(value, reader);
+    } else {
+      value = j->get<T>();
+    }
+  }
+
+  void operator()(const char* name, Position& p, bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    p = JsonToPosition(*j);
+  }
+
+  void operator()(const char* name, FSMStateType& v, bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    v = StringToFSMStateType(j->get<std::string>());
+  }
+  void operator()(const char* name, TargetFilter& v, bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    v = static_cast<TargetFilter>(j->get<int>());
+  }
+
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<ObjectType, IntT> f,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    f.value = static_cast<int>(StringToObjectType(j->get<std::string>()));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<Faction, IntT> f,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    f.value = static_cast<int>(StringToFaction(j->get<std::string>()));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<Direction, IntT> f,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    f.value = static_cast<int>(StringToDirection(j->get<std::string>()));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<ActorColor, IntT> f,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    f.value = static_cast<int>(StringToActorColor(j->get<std::string>()));
+  }
+  template <class IntT>
+  void operator()(const char* name, EnumFieldRef<StatusType, IntT> f,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    f.value = static_cast<int>(StringToStatusType(j->get<std::string>()));
+  }
+
+  template <class BoolT, class FsmT>
+  void operator()(const char* name, GuardedFsmRef<BoolT, FsmT> f,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j || j->is_null()) {
+      f.has = false;
+      return;
+    }
+    f.has = true;
+    JsonReader reader(*j);
+    FSMSnapshot::VisitFields(f.fsm, reader);
+  }
+
+  template <class T>
+  void operator()(const char* name, std::vector<T>& vec,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    vec.clear();
+    vec.reserve(j->size());
+    for (const auto& item : *j) {
+      T elem{};
+      if constexpr (kHasVisitFields<T>) {
+        JsonReader reader(item);
+        T::VisitFields(elem, reader);
+      } else if constexpr (std::is_same_v<T, Position>) {
+        elem = JsonToPosition(item);
+      } else {
+        elem = item.template get<T>();
+      }
+      vec.push_back(std::move(elem));
+    }
+  }
+
+  // Cells: sized from grid dimensions, filled by each cell's (row, col).
+  void operator()(const char* name, std::vector<CellSnapshot>& cells,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j) return;
+    const int rows = root_.at("grid").at("rows").get<int>();
+    const int cols = root_.at("grid").at("cols").get<int>();
+    cells.assign(static_cast<size_t>(rows) * cols, CellSnapshot{});
+    for (const auto& cell_json : *j) {
+      int row = cell_json.at("row").get<int>();
+      int col = cell_json.at("col").get<int>();
+      int idx = row * cols + col;
+      cells[static_cast<size_t>(idx)] = JsonToCellSnapshot(cell_json);
+    }
+  }
+
+  // Annotations: hand-written conditional shape; tolerate non-array values
+  // (legacy behavior for v1-format JSON payloads).
+  void operator()(const char* name, std::vector<AnnotationSnapshot>& vec,
+                  bool json_optional = false) {
+    const json* j = Find(name, json_optional);
+    if (!j || !j->is_array()) return;
+    vec.clear();
+    vec.reserve(j->size());
+    for (const auto& a_json : *j) {
+      vec.push_back(JsonToAnnotationSnapshot(a_json));
+    }
+  }
+
+ private:
+  // Dotted-name lookup. Returns nullptr when an optional field is absent;
+  // throws (json::at semantics) when a required field is missing.
+  const json* Find(const char* name, bool json_optional) const {
+    const json* j = &root_;
+    std::string n(name);
+    size_t start = 0;
+    while (true) {
+      size_t dot = n.find('.', start);
+      std::string key = (dot == std::string::npos)
+                            ? n.substr(start)
+                            : n.substr(start, dot - start);
+      if (json_optional && (!j->is_object() || !j->contains(key))) {
+        return nullptr;
+      }
+      j = &j->at(key);
+      if (dot == std::string::npos) break;
+      start = dot + 1;
+    }
+    return j;
+  }
+
+  const json& root_;
+};
+
 }  // namespace
 
 // =============================================================================
@@ -392,58 +513,8 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
   j["magic"] = kJsonSnapshotMagic;
   j["version"] = kJsonSnapshotVersion;
 
-  // Grid
-  j["grid"]["rows"] = snapshot.rows;
-  j["grid"]["cols"] = snapshot.cols;
-
-  // Cells (row-major order with coordinates)
-  json cells = json::array();
-  for (int r = 0; r < snapshot.rows; ++r) {
-    for (int c = 0; c < snapshot.cols; ++c) {
-      int idx = r * snapshot.cols + c;
-      cells.push_back(CellSnapshotToJson(snapshot.cells[idx], r, c));
-    }
-  }
-  j["grid"]["cells"] = cells;
-
-  // Agents
-  json agents = json::array();
-  for (const auto& agent : snapshot.agents) {
-    agents.push_back(AgentSnapshotToJson(agent));
-  }
-  j["agents"] = agents;
-
-  // Effects
-  json effects = json::array();
-  for (const auto& effect : snapshot.effects) {
-    effects.push_back(EffectSnapshotToJson(effect));
-  }
-  j["effects"] = effects;
-
-  // Timing
-  j["tick"] = snapshot.tick;
-  j["horizon"] = snapshot.horizon;
-
-  // RNG state
-  j["rng_state"]["state"] = snapshot.rng_state;
-  j["rng_state"]["inc"] = snapshot.rng_inc;
-
-  // D4 transform
-  j["d4_value"] = snapshot.d4_transform;
-
-  // Patrol path
-  json patrol = json::array();
-  for (const auto& pos : snapshot.patrol_path) {
-    patrol.push_back(PositionToJson(pos));
-  }
-  j["patrol_path"] = patrol;
-
-  // Semantic annotations
-  json annotations = json::array();
-  for (const auto& a : snapshot.annotations) {
-    annotations.push_back(AnnotationSnapshotToJson(a));
-  }
-  j["annotations"] = annotations;
+  JsonWriter writer(j);
+  Snapshot::VisitFields(snapshot, writer);
 
   return j.dump(2);  // Pretty-print with 2-space indent
 }
@@ -468,55 +539,8 @@ Snapshot SnapshotFromJson(const std::string& json_str) {
   }
 
   Snapshot snapshot;
-
-  // Grid
-  snapshot.rows = j.at("grid").at("rows").get<int>();
-  snapshot.cols = j.at("grid").at("cols").get<int>();
-
-  // Pre-allocate cells
-  snapshot.cells.resize(snapshot.rows * snapshot.cols);
-
-  // Parse cells
-  for (const auto& cell_json : j.at("grid").at("cells")) {
-    int row = cell_json.at("row").get<int>();
-    int col = cell_json.at("col").get<int>();
-    int idx = row * snapshot.cols + col;
-    snapshot.cells[idx] = JsonToCellSnapshot(cell_json);
-  }
-
-  // Agents
-  for (const auto& agent_json : j.at("agents")) {
-    snapshot.agents.push_back(JsonToAgentSnapshot(agent_json));
-  }
-
-  // Effects
-  for (const auto& effect_json : j.at("effects")) {
-    snapshot.effects.push_back(JsonToEffectSnapshot(effect_json));
-  }
-
-  // Timing
-  snapshot.tick = j.at("tick").get<int>();
-  snapshot.horizon = j.at("horizon").get<int>();
-
-  // RNG state
-  snapshot.rng_state = j.at("rng_state").at("state").get<uint64_t>();
-  snapshot.rng_inc = j.at("rng_state").at("inc").get<uint64_t>();
-
-  // D4 transform
-  snapshot.d4_transform = j.at("d4_value").get<int>();
-
-  // Patrol path
-  for (const auto& pos_json : j.at("patrol_path")) {
-    snapshot.patrol_path.push_back(JsonToPosition(pos_json));
-  }
-
-  // Semantic annotations (optional: absent in v1-format JSON)
-  if (j.contains("annotations") && j.at("annotations").is_array()) {
-    for (const auto& a_json : j.at("annotations")) {
-      snapshot.annotations.push_back(JsonToAnnotationSnapshot(a_json));
-    }
-  }
-
+  JsonReader reader(j);
+  Snapshot::VisitFields(snapshot, reader);
   return snapshot;
 }
 

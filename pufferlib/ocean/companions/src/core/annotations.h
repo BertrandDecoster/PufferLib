@@ -99,6 +99,22 @@ struct AnnotationSnapshot {
   SemanticTag tag = SemanticTag::SynchroGoal;
   std::vector<std::pair<std::string, std::string>> params;
   int32_t owner_lens_id = -1;
+
+  // Single-source field list (see snapshot.h). Order is the v2 binary wire
+  // layout — do not reorder. The JSON form of annotations is hand-written
+  // (AnnotationSnapshotToJson in snapshot_json.cc) because its shape is
+  // conditional: "target" is a string, exactly one of pos/agent_id is
+  // emitted, and params is a JSON object. This list still drives the binary
+  // format and the introspection/round-trip tests.
+  template <class Self, class V>
+  static void VisitFields(Self& self, V&& v) {
+    v("target", self.target_type);  // uint8_t
+    v("pos", self.pos);
+    v("agent_id", self.agent_id);
+    v("tag", self.tag);             // binary: uint16_t
+    v("owner_lens_id", self.owner_lens_id);
+    v("params", self.params);
+  }
 };
 
 // =============================================================================

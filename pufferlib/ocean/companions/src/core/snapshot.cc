@@ -1,5 +1,10 @@
 // Copyright 2024
-// Snapshot implementation
+// Snapshot binary serialization.
+//
+// The wire format is produced by two generic visitors (BinaryWriter /
+// BinaryReader) driven by the single VisitFields list of each snapshot
+// struct (snapshot.h). Field order in VisitFields IS the byte layout; the
+// golden-fixture test (tests/test_snapshot_golden.cc) locks it.
 
 #include "snapshot.h"
 
@@ -51,10 +56,14 @@ int Snapshot::CountCells(CellKind kind) const {
 }
 
 // =============================================================================
-// Serialization helpers
+// Low-level buffer helpers
 // =============================================================================
 
 namespace {
+
+constexpr uint32_t kSnapshotMagic = 0x534E4150;  // "SNAP"
+constexpr uint32_t kSnapshotVersion = 2;         // v2 adds annotations
+constexpr uint32_t kMaxVectorSize = 10000000;
 
 // Write primitive types to buffer
 template <typename T>
@@ -68,16 +77,6 @@ void WriteString(std::vector<uint8_t>& buffer, const std::string& str) {
   uint32_t len = static_cast<uint32_t>(str.size());
   WriteValue(buffer, len);
   buffer.insert(buffer.end(), str.begin(), str.end());
-}
-
-// Write vector of primitives
-template <typename T>
-void WriteVector(std::vector<uint8_t>& buffer, const std::vector<T>& vec) {
-  uint32_t size = static_cast<uint32_t>(vec.size());
-  WriteValue(buffer, size);
-  for (const auto& item : vec) {
-    WriteValue(buffer, item);
-  }
 }
 
 // Read primitive types from buffer with bounds checking
@@ -103,53 +102,266 @@ std::string ReadString(const uint8_t*& ptr, const uint8_t* end) {
   return str;
 }
 
-// Read vector of primitives with bounds checking
-template <typename T>
-std::vector<T> ReadVector(const uint8_t*& ptr, const uint8_t* end) {
+uint32_t ReadVectorSize(const uint8_t*& ptr, const uint8_t* end) {
   uint32_t size = ReadValue<uint32_t>(ptr, end);
-  if (size > 10000000) {
+  if (size > kMaxVectorSize) {
     throw std::runtime_error("Snapshot buffer corrupt: unreasonable vector size");
   }
-  std::vector<T> vec(size);
-  for (uint32_t i = 0; i < size; ++i) {
-    vec[i] = ReadValue<T>(ptr, end);
-  }
-  return vec;
+  return size;
 }
 
-// Serialize Position
-void WritePosition(std::vector<uint8_t>& buffer, const Position& pos) {
-  WriteValue(buffer, pos.row);
-  WriteValue(buffer, pos.col);
-}
+// =============================================================================
+// BinaryWriter - visitor producing the v2 wire format
+// =============================================================================
+// Field names are ignored; only visitation order matters. Per-type width
+// policies (enum widths, guarded FSM block, cell pairs) reproduce the
+// historical layout exactly.
+class BinaryWriter {
+ public:
+  explicit BinaryWriter(std::vector<uint8_t>& buffer) : buffer_(buffer) {}
 
-Position ReadPosition(const uint8_t*& ptr, const uint8_t* end) {
-  Position pos;
-  pos.row = ReadValue<int>(ptr, end);
-  pos.col = ReadValue<int>(ptr, end);
-  return pos;
-}
+  // Scalars (int, bool, uint8_t, uint64_t, ...) and nested visitable structs.
+  template <class T>
+  void operator()(const char* name, const T& value, bool /*json_optional*/ = false) {
+    if constexpr (kHasVisitFields<T>) {
+      T::VisitFields(value, *this);
+    } else {
+      static_assert(std::is_arithmetic_v<T>,
+                    "BinaryWriter: add an explicit overload for this type");
+      (void)name;
+      WriteValue(buffer_, value);
+    }
+  }
 
-// Serialize vector of Positions
-void WritePositionVector(std::vector<uint8_t>& buffer,
-                         const std::vector<Position>& positions) {
-  uint32_t size = static_cast<uint32_t>(positions.size());
-  WriteValue(buffer, size);
-  for (const auto& pos : positions) {
-    WritePosition(buffer, pos);
+  void operator()(const char*, const std::string& s, bool = false) {
+    WriteString(buffer_, s);
   }
-}
 
-std::vector<Position> ReadPositionVector(const uint8_t*& ptr, const uint8_t* end) {
-  uint32_t size = ReadValue<uint32_t>(ptr, end);
-  if (size > 10000000) {
-    throw std::runtime_error("Snapshot buffer corrupt: unreasonable position vector size");
+  void operator()(const char*, const Position& p, bool = false) {
+    WriteValue(buffer_, p.row);
+    WriteValue(buffer_, p.col);
   }
-  std::vector<Position> positions(size);
-  for (uint32_t i = 0; i < size; ++i) {
-    positions[i] = ReadPosition(ptr, end);
+
+  // Enum wire widths (historical layout).
+  void operator()(const char*, const FSMStateType& v, bool = false) {
+    WriteValue(buffer_, static_cast<uint8_t>(v));
   }
-  return positions;
+  void operator()(const char*, const TargetFilter& v, bool = false) {
+    WriteValue(buffer_, static_cast<int>(v));
+  }
+  void operator()(const char*, const SemanticTag& v, bool = false) {
+    WriteValue(buffer_, static_cast<uint16_t>(v));
+  }
+
+  // EnumField: binary keeps the raw int (JSON is where the string lives).
+  template <class E, class IntT>
+  void operator()(const char*, EnumFieldRef<E, IntT> f, bool = false) {
+    WriteValue(buffer_, static_cast<int>(f.value));
+  }
+
+  // Guarded FSM block: bool, then the struct only if present.
+  template <class BoolT, class FsmT>
+  void operator()(const char*, GuardedFsmRef<BoolT, FsmT> f, bool = false) {
+    WriteValue(buffer_, static_cast<bool>(f.has));
+    if (f.has) {
+      FSMSnapshot::VisitFields(f.fsm, *this);
+    }
+  }
+
+  // Vectors: u32 count + elements (each dispatched through this visitor).
+  template <class T>
+  void operator()(const char* name, const std::vector<T>& vec, bool = false) {
+    WriteValue(buffer_, static_cast<uint32_t>(vec.size()));
+    for (const T& item : vec) {
+      (*this)(name, item);
+    }
+  }
+
+  // Cells: flat (kind, origin) int pairs — see CellSnapshot comment in
+  // snapshot.h for why this is a dedicated policy.
+  void operator()(const char*, const std::vector<CellSnapshot>& cells, bool = false) {
+    WriteValue(buffer_, static_cast<uint32_t>(cells.size()));
+    for (const auto& cell : cells) {
+      WriteValue(buffer_, static_cast<int>(cell.kind));
+      WriteValue(buffer_, static_cast<int>(cell.origin));
+    }
+  }
+
+  // Annotation params: count + (key, value) string pairs.
+  void operator()(const char*,
+                  const std::vector<std::pair<std::string, std::string>>& params,
+                  bool = false) {
+    WriteValue(buffer_, static_cast<uint32_t>(params.size()));
+    for (const auto& kv : params) {
+      WriteString(buffer_, kv.first);
+      WriteString(buffer_, kv.second);
+    }
+  }
+
+ private:
+  std::vector<uint8_t>& buffer_;
+};
+
+// =============================================================================
+// BinaryReader - visitor consuming v1/v2 wire format
+// =============================================================================
+class BinaryReader {
+ public:
+  BinaryReader(const uint8_t*& ptr, const uint8_t* end, uint32_t version)
+      : ptr_(ptr), end_(end), version_(version) {}
+
+  template <class T>
+  void operator()(const char* name, T& value, bool /*json_optional*/ = false) {
+    if constexpr (kHasVisitFields<T>) {
+      T::VisitFields(value, *this);
+    } else {
+      static_assert(std::is_arithmetic_v<T>,
+                    "BinaryReader: add an explicit overload for this type");
+      (void)name;
+      value = ReadValue<T>(ptr_, end_);
+    }
+  }
+
+  void operator()(const char*, std::string& s, bool = false) {
+    s = ReadString(ptr_, end_);
+  }
+
+  void operator()(const char*, Position& p, bool = false) {
+    p.row = ReadValue<int>(ptr_, end_);
+    p.col = ReadValue<int>(ptr_, end_);
+  }
+
+  void operator()(const char*, FSMStateType& v, bool = false) {
+    v = static_cast<FSMStateType>(ReadValue<uint8_t>(ptr_, end_));
+  }
+  void operator()(const char*, TargetFilter& v, bool = false) {
+    v = static_cast<TargetFilter>(ReadValue<int>(ptr_, end_));
+  }
+  void operator()(const char*, SemanticTag& v, bool = false) {
+    v = static_cast<SemanticTag>(ReadValue<uint16_t>(ptr_, end_));
+  }
+
+  template <class E, class IntT>
+  void operator()(const char*, EnumFieldRef<E, IntT> f, bool = false) {
+    f.value = ReadValue<int>(ptr_, end_);
+  }
+
+  template <class BoolT, class FsmT>
+  void operator()(const char*, GuardedFsmRef<BoolT, FsmT> f, bool = false) {
+    f.has = ReadValue<bool>(ptr_, end_);
+    if (f.has) {
+      FSMSnapshot::VisitFields(f.fsm, *this);
+    }
+  }
+
+  template <class T>
+  void operator()(const char* name, std::vector<T>& vec, bool = false) {
+    uint32_t size = ReadVectorSize(ptr_, end_);
+    vec.clear();
+    vec.resize(size);
+    for (uint32_t i = 0; i < size; ++i) {
+      (*this)(name, vec[i]);
+    }
+  }
+
+  void operator()(const char*, std::vector<CellSnapshot>& cells, bool = false) {
+    uint32_t size = ReadVectorSize(ptr_, end_);
+    cells.clear();
+    cells.resize(size);
+    for (uint32_t i = 0; i < size; ++i) {
+      // For v1 buffers the raw int may be an old-numbering CellKind; it is
+      // stored as-is and remapped afterwards by MigrateV1.
+      cells[i].kind = static_cast<CellKind>(ReadValue<int>(ptr_, end_));
+      cells[i].origin = static_cast<CellOrigin>(ReadValue<int>(ptr_, end_));
+    }
+  }
+
+  // Annotations block exists only from v2 on; v1 buffers end at patrol_path.
+  void operator()(const char* name, std::vector<AnnotationSnapshot>& annotations,
+                  bool = false) {
+    if (version_ < 2) {
+      annotations.clear();
+      return;
+    }
+    uint32_t size = ReadVectorSize(ptr_, end_);
+    annotations.clear();
+    annotations.resize(size);
+    for (uint32_t i = 0; i < size; ++i) {
+      AnnotationSnapshot::VisitFields(annotations[i], *this);
+    }
+    (void)name;
+  }
+
+  void operator()(const char*,
+                  std::vector<std::pair<std::string, std::string>>& params,
+                  bool = false) {
+    uint32_t size = ReadVectorSize(ptr_, end_);
+    params.clear();
+    params.reserve(size);
+    for (uint32_t i = 0; i < size; ++i) {
+      std::string k = ReadString(ptr_, end_);
+      std::string v = ReadString(ptr_, end_);
+      params.emplace_back(std::move(k), std::move(v));
+    }
+  }
+
+ private:
+  const uint8_t*& ptr_;
+  const uint8_t* end_;
+  uint32_t version_;
+};
+
+// =============================================================================
+// Version migrations
+// =============================================================================
+// Each MigrateN upgrades an in-memory Snapshot read from a version-N buffer
+// to version N+1 semantics. Future versions chain in Deserialize:
+//   if (version <= 1) MigrateV1(snap);
+//   if (version <= 2) MigrateV2(snap);  // when v3 exists
+//
+// v1 → v2: the old CellKind enum reserved values 3 (Synchro) and 5 (Target)
+// for task-semantic roles that now live in AnnotationStore, and HealArea was
+// at int 4 instead of 3. Remap and emit persistent annotations at the
+// former-semantic positions so downstream code still sees the task roles.
+// v1 buffers also carry no annotations block (BinaryReader leaves it empty).
+void MigrateV1(Snapshot& snap) {
+  std::vector<AnnotationSnapshot> migrated_annotations;
+  for (size_t i = 0; i < snap.cells.size(); ++i) {
+    const int kind_int = static_cast<int>(snap.cells[i].kind);
+    const int row = snap.cols > 0 ? static_cast<int>(i) / snap.cols : 0;
+    const int col = snap.cols > 0 ? static_cast<int>(i) % snap.cols : 0;
+    switch (kind_int) {
+      case 0: snap.cells[i].kind = CellKind::Floor; break;
+      case 1: snap.cells[i].kind = CellKind::Wall; break;
+      case 2: snap.cells[i].kind = CellKind::Hazard; break;
+      case 3: {  // Old Synchro → Floor + SynchroGoal annotation
+        snap.cells[i].kind = CellKind::Floor;
+        AnnotationSnapshot a;
+        a.target_type = 0;
+        a.pos = Position{row, col};
+        a.agent_id = kInvalidObjectId;
+        a.tag = SemanticTag::SynchroGoal;
+        a.owner_lens_id = -1;
+        migrated_annotations.push_back(std::move(a));
+        break;
+      }
+      case 4: snap.cells[i].kind = CellKind::HealArea; break;  // Old 4 → new 3
+      case 5: {  // Old Target → Floor + AggroTarget annotation
+        snap.cells[i].kind = CellKind::Floor;
+        AnnotationSnapshot a;
+        a.target_type = 0;
+        a.pos = Position{row, col};
+        a.agent_id = kInvalidObjectId;
+        a.tag = SemanticTag::AggroTarget;
+        a.owner_lens_id = -1;
+        migrated_annotations.push_back(std::move(a));
+        break;
+      }
+      default:
+        throw std::runtime_error("Snapshot v1: unknown CellKind value");
+    }
+  }
+  snap.annotations = std::move(migrated_annotations);
 }
 
 }  // namespace
@@ -162,108 +374,11 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   std::vector<uint8_t> buffer;
 
   // Magic number and version
-  WriteValue(buffer, static_cast<uint32_t>(0x534E4150));  // "SNAP"
-  WriteValue(buffer, static_cast<uint32_t>(2));           // Version 2 (adds annotations)
+  WriteValue(buffer, kSnapshotMagic);
+  WriteValue(buffer, kSnapshotVersion);
 
-  // Grid dimensions
-  WriteValue(buffer, rows);
-  WriteValue(buffer, cols);
-
-  // Cells
-  WriteValue(buffer, static_cast<uint32_t>(cells.size()));
-  for (const auto& cell : cells) {
-    WriteValue(buffer, static_cast<int>(cell.kind));
-    WriteValue(buffer, static_cast<int>(cell.origin));
-  }
-
-  // Agents
-  WriteValue(buffer, static_cast<uint32_t>(agents.size()));
-  for (const auto& agent : agents) {
-    WriteValue(buffer, agent.id);
-    WriteValue(buffer, agent.type);
-    WritePosition(buffer, agent.position);
-    WritePosition(buffer, agent.prev_position);
-    WriteValue(buffer, agent.health);
-    WriteValue(buffer, agent.max_health);
-    WriteValue(buffer, agent.agent_index);
-    WriteValue(buffer, agent.faction);
-    WriteValue(buffer, agent.direction);
-    WriteValue(buffer, agent.color);
-    WriteValue(buffer, agent.alive);
-
-    // Statuses
-    WriteValue(buffer, static_cast<uint32_t>(agent.statuses.size()));
-    for (const auto& status : agent.statuses) {
-      WriteValue(buffer, status.type);
-      WriteValue(buffer, status.duration);
-    }
-
-    // FSM
-    WriteValue(buffer, agent.has_fsm);
-    if (agent.has_fsm) {
-      WriteValue(buffer, static_cast<uint8_t>(agent.fsm.state_type));
-      WriteValue(buffer, agent.fsm.target_id);
-      WritePositionVector(buffer, agent.fsm.patrol_path);
-      WriteValue(buffer, agent.fsm.patrol_index);
-      WriteValue(buffer, agent.fsm.patrol_forward);
-      WriteValue(buffer, agent.fsm.detection_range);
-      WriteValue(buffer, agent.fsm.lose_target_range);
-      WriteValue(buffer, agent.fsm.rng_state);
-      WriteValue(buffer, agent.fsm.rng_inc);
-      // Attack runtime state
-      WriteValue(buffer, agent.fsm.attack_tick_counter);
-      WritePosition(buffer, agent.fsm.attack_target_position);
-      WriteValue(buffer, agent.fsm.attack_area_width);
-      WriteValue(buffer, agent.fsm.attack_area_height);
-      WriteValue(buffer, agent.fsm.attack_damage);
-      WriteValue(buffer, static_cast<int>(agent.fsm.attack_filter));
-    }
-
-    // Cadence
-    WriteVector(buffer, agent.cadence);
-    WriteValue(buffer, agent.tick);
-  }
-
-  // Effects
-  WriteValue(buffer, static_cast<uint32_t>(effects.size()));
-  for (const auto& effect : effects) {
-    WriteString(buffer, effect.effect_name);
-    WriteValue(buffer, effect.target_type);
-    WritePosition(buffer, effect.target_cell);
-    WriteValue(buffer, effect.target_actor_id);
-    WriteVector(buffer, effect.target_actors);
-    WriteValue(buffer, effect.direction);
-    WriteValue(buffer, effect.ticks_remaining);
-    WriteValue(buffer, effect.in_telegraph);
-    WriteValue(buffer, effect.loops_remaining);
-    WriteValue(buffer, effect.source_id);
-  }
-
-  // Timing and state
-  WriteValue(buffer, tick);
-  WriteValue(buffer, horizon);
-  WriteValue(buffer, rng_state);
-  WriteValue(buffer, rng_inc);
-  WriteValue(buffer, d4_transform);
-
-  // Patrol path (for AggroEnv without FSM agents)
-  WritePositionVector(buffer, patrol_path);
-
-  // Annotations (v2+)
-  WriteValue(buffer, static_cast<uint32_t>(annotations.size()));
-  for (const auto& a : annotations) {
-    WriteValue(buffer, a.target_type);
-    WritePosition(buffer, a.pos);
-    WriteValue(buffer, a.agent_id);
-    WriteValue(buffer, static_cast<uint16_t>(a.tag));
-    WriteValue(buffer, a.owner_lens_id);
-    WriteValue(buffer, static_cast<uint32_t>(a.params.size()));
-    for (const auto& kv : a.params) {
-      WriteString(buffer, kv.first);
-      WriteString(buffer, kv.second);
-    }
-  }
-
+  BinaryWriter writer(buffer);
+  Snapshot::VisitFields(*this, writer);
   return buffer;
 }
 
@@ -277,7 +392,7 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
 
   // Magic number and version
   uint32_t magic = ReadValue<uint32_t>(ptr, end);
-  if (magic != 0x534E4150) {
+  if (magic != kSnapshotMagic) {
     throw std::runtime_error("Invalid snapshot magic number");
   }
   uint32_t version = ReadValue<uint32_t>(ptr, end);
@@ -286,182 +401,11 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
   }
 
   Snapshot snap;
+  BinaryReader reader(ptr, end, version);
+  Snapshot::VisitFields(snap, reader);
 
-  // Grid dimensions
-  snap.rows = ReadValue<int>(ptr, end);
-  snap.cols = ReadValue<int>(ptr, end);
-
-  // Cells
-  uint32_t num_cells = ReadValue<uint32_t>(ptr, end);
-  if (num_cells > 10000000) {
-    throw std::runtime_error("Snapshot buffer corrupt: unreasonable cell count");
-  }
-  snap.cells.resize(num_cells);
-
-  // v1 → v2 CellKind migration. Old enum reserved values 3 (Synchro) and 5
-  // (Target) for task-semantic roles that now live in AnnotationStore, and
-  // HealArea was at int 4 instead of 3. Remap and emit persistent annotations
-  // at the former-semantic positions so downstream code still sees the task
-  // roles.  v2 snapshots fall through to a plain static_cast.
-  std::vector<AnnotationSnapshot> v1_migrated_annotations;
-  for (uint32_t i = 0; i < num_cells; ++i) {
-    int kind_int = ReadValue<int>(ptr, end);
-    int origin_int = ReadValue<int>(ptr, end);
-    if (version == 1) {
-      const int row = snap.cols > 0 ? static_cast<int>(i) / snap.cols : 0;
-      const int col = snap.cols > 0 ? static_cast<int>(i) % snap.cols : 0;
-      switch (kind_int) {
-        case 0: snap.cells[i].kind = CellKind::Floor; break;
-        case 1: snap.cells[i].kind = CellKind::Wall; break;
-        case 2: snap.cells[i].kind = CellKind::Hazard; break;
-        case 3: {  // Old Synchro → Floor + SynchroGoal annotation
-          snap.cells[i].kind = CellKind::Floor;
-          AnnotationSnapshot a;
-          a.target_type = 0;
-          a.pos = Position{row, col};
-          a.agent_id = kInvalidObjectId;
-          a.tag = SemanticTag::SynchroGoal;
-          a.owner_lens_id = -1;
-          v1_migrated_annotations.push_back(std::move(a));
-          break;
-        }
-        case 4: snap.cells[i].kind = CellKind::HealArea; break;  // Old 4 → new 3
-        case 5: {  // Old Target → Floor + AggroTarget annotation
-          snap.cells[i].kind = CellKind::Floor;
-          AnnotationSnapshot a;
-          a.target_type = 0;
-          a.pos = Position{row, col};
-          a.agent_id = kInvalidObjectId;
-          a.tag = SemanticTag::AggroTarget;
-          a.owner_lens_id = -1;
-          v1_migrated_annotations.push_back(std::move(a));
-          break;
-        }
-        default:
-          throw std::runtime_error("Snapshot v1: unknown CellKind value");
-      }
-    } else {
-      snap.cells[i].kind = static_cast<CellKind>(kind_int);
-    }
-    snap.cells[i].origin = static_cast<CellOrigin>(origin_int);
-  }
-
-  // Agents
-  uint32_t num_agents = ReadValue<uint32_t>(ptr, end);
-  if (num_agents > 10000) {
-    throw std::runtime_error("Snapshot buffer corrupt: unreasonable agent count");
-  }
-  snap.agents.resize(num_agents);
-  for (uint32_t i = 0; i < num_agents; ++i) {
-    auto& agent = snap.agents[i];
-    agent.id = ReadValue<int>(ptr, end);
-    agent.type = ReadValue<int>(ptr, end);
-    agent.position = ReadPosition(ptr, end);
-    agent.prev_position = ReadPosition(ptr, end);
-    agent.health = ReadValue<int>(ptr, end);
-    agent.max_health = ReadValue<int>(ptr, end);
-    agent.agent_index = ReadValue<int>(ptr, end);
-    agent.faction = ReadValue<int>(ptr, end);
-    agent.direction = ReadValue<int>(ptr, end);
-    agent.color = ReadValue<int>(ptr, end);
-    agent.alive = ReadValue<bool>(ptr, end);
-
-    // Statuses
-    uint32_t num_statuses = ReadValue<uint32_t>(ptr, end);
-    if (num_statuses > 1000) {
-      throw std::runtime_error("Snapshot buffer corrupt: unreasonable status count");
-    }
-    agent.statuses.resize(num_statuses);
-    for (uint32_t j = 0; j < num_statuses; ++j) {
-      agent.statuses[j].type = ReadValue<int>(ptr, end);
-      agent.statuses[j].duration = ReadValue<int>(ptr, end);
-    }
-
-    // FSM
-    agent.has_fsm = ReadValue<bool>(ptr, end);
-    if (agent.has_fsm) {
-      agent.fsm.state_type = static_cast<FSMStateType>(ReadValue<uint8_t>(ptr, end));
-      agent.fsm.target_id = ReadValue<int>(ptr, end);
-      agent.fsm.patrol_path = ReadPositionVector(ptr, end);
-      agent.fsm.patrol_index = ReadValue<int>(ptr, end);
-      agent.fsm.patrol_forward = ReadValue<bool>(ptr, end);
-      agent.fsm.detection_range = ReadValue<int>(ptr, end);
-      agent.fsm.lose_target_range = ReadValue<int>(ptr, end);
-      agent.fsm.rng_state = ReadValue<uint64_t>(ptr, end);
-      agent.fsm.rng_inc = ReadValue<uint64_t>(ptr, end);
-      // Attack runtime state
-      agent.fsm.attack_tick_counter = ReadValue<int>(ptr, end);
-      agent.fsm.attack_target_position = ReadPosition(ptr, end);
-      agent.fsm.attack_area_width = ReadValue<int>(ptr, end);
-      agent.fsm.attack_area_height = ReadValue<int>(ptr, end);
-      agent.fsm.attack_damage = ReadValue<int>(ptr, end);
-      agent.fsm.attack_filter = static_cast<TargetFilter>(ReadValue<int>(ptr, end));
-    }
-
-    // Cadence
-    agent.cadence = ReadVector<int>(ptr, end);
-    agent.tick = ReadValue<int>(ptr, end);
-  }
-
-  // Effects
-  uint32_t num_effects = ReadValue<uint32_t>(ptr, end);
-  if (num_effects > 10000) {
-    throw std::runtime_error("Snapshot buffer corrupt: unreasonable effect count");
-  }
-  snap.effects.resize(num_effects);
-  for (uint32_t i = 0; i < num_effects; ++i) {
-    auto& effect = snap.effects[i];
-    effect.effect_name = ReadString(ptr, end);
-    effect.target_type = ReadValue<int>(ptr, end);
-    effect.target_cell = ReadPosition(ptr, end);
-    effect.target_actor_id = ReadValue<int>(ptr, end);
-    effect.target_actors = ReadVector<int>(ptr, end);
-    effect.direction = ReadValue<int>(ptr, end);
-    effect.ticks_remaining = ReadValue<int>(ptr, end);
-    effect.in_telegraph = ReadValue<bool>(ptr, end);
-    effect.loops_remaining = ReadValue<int>(ptr, end);
-    effect.source_id = ReadValue<int>(ptr, end);
-  }
-
-  // Timing and state
-  snap.tick = ReadValue<int>(ptr, end);
-  snap.horizon = ReadValue<int>(ptr, end);
-  snap.rng_state = ReadValue<uint64_t>(ptr, end);
-  snap.rng_inc = ReadValue<uint64_t>(ptr, end);
-  snap.d4_transform = ReadValue<int>(ptr, end);
-
-  // Patrol path (for AggroEnv without FSM agents)
-  snap.patrol_path = ReadPositionVector(ptr, end);
-
-  // Annotations (v2+). v1 snapshots have no annotations block; the migrated
-  // annotations from the v1 cell remap are adopted below.
-  if (version >= 2) {
-    uint32_t num_annotations = ReadValue<uint32_t>(ptr, end);
-    if (num_annotations > 1000000) {
-      throw std::runtime_error("Snapshot buffer corrupt: unreasonable annotation count");
-    }
-    snap.annotations.resize(num_annotations);
-    for (uint32_t i = 0; i < num_annotations; ++i) {
-      auto& a = snap.annotations[i];
-      a.target_type = ReadValue<uint8_t>(ptr, end);
-      a.pos = ReadPosition(ptr, end);
-      a.agent_id = ReadValue<ObjectId>(ptr, end);
-      a.tag = static_cast<SemanticTag>(ReadValue<uint16_t>(ptr, end));
-      a.owner_lens_id = ReadValue<int32_t>(ptr, end);
-      uint32_t num_params = ReadValue<uint32_t>(ptr, end);
-      if (num_params > 1000) {
-        throw std::runtime_error("Snapshot buffer corrupt: unreasonable annotation param count");
-      }
-      a.params.reserve(num_params);
-      for (uint32_t j = 0; j < num_params; ++j) {
-        std::string k = ReadString(ptr, end);
-        std::string v = ReadString(ptr, end);
-        a.params.emplace_back(std::move(k), std::move(v));
-      }
-    }
-  } else {
-    snap.annotations = std::move(v1_migrated_annotations);
-  }
+  // Chain migrations oldest-first.
+  if (version <= 1) MigrateV1(snap);
 
   return snap;
 }
