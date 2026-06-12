@@ -28,10 +28,13 @@ endif()
 # =============================================================================
 # Version tracking for downstream consumers
 # =============================================================================
+# Generated into the BUILD tree (never the source tree) so it is not
+# committable and local edits cannot be silently overwritten. Consumers get
+# it via companions_core's PUBLIC include dirs; dist/ sync copies from here.
 string(TIMESTAMP COMPANIONS_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S")
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/companions_version.hpp.in"
-  "${CMAKE_CURRENT_SOURCE_DIR}/companions_version.hpp"
+  "${CMAKE_CURRENT_BINARY_DIR}/companions_version.hpp"
   @ONLY
 )
 
@@ -142,6 +145,7 @@ add_library(companions_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
 target_include_directories(companions_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src/core
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+  ${CMAKE_CURRENT_BINARY_DIR}  # generated companions_version.hpp
 )
 
 # Env library (depends on core)
@@ -175,10 +179,10 @@ foreach(lib companions_core companions_env companions_viz)
   )
 endforeach()
 
-# Sync version header and data files
+# Sync version header (generated in the build tree) and data files
 add_custom_command(TARGET companions_core POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${CMAKE_CURRENT_SOURCE_DIR}/companions_version.hpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/companions_version.hpp"
     "${COMPANIONS_DIST_DIR}/"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -378,7 +382,10 @@ if(BUILD_DLL)
   # API test executable
   add_executable(companions_api_test tests/test_api.cc)
   target_link_libraries(companions_api_test companions_api)
-  target_include_directories(companions_api_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/api)
+  target_include_directories(companions_api_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/api
+    ${CMAKE_CURRENT_BINARY_DIR}  # generated companions_version.hpp
+  )
   add_test(NAME companions_api_test COMMAND companions_api_test)
 
   # API parity test (verifies C API matches direct C++ API)
