@@ -369,7 +369,16 @@ typedef struct Companions_Env Companions_Env;
 // Lifecycle Functions
 // =============================================================================
 
-// Create a new SynchroEnv instance
+// Create a new game-serving environment (GameEnv).
+//
+// The created env generates a synchro-task level from `config` (same level
+// layout as previous versions) with a SynchroLens active, but has NO episode
+// semantics: companions_is_done() / the `done` field stay false forever — no
+// horizon termination, no success termination. The plan executor's signals
+// are companions_is_success() (lens-driven, latched once the active TaskLens
+// reports success; reset by companions_set_task_lens*) and game-level state
+// queries. `config->horizon` only feeds the steps-remaining observation
+// feature.
 COMPANIONS_API Companions_Env* companions_create(
     const Companions_EnvConfig* config);
 
@@ -419,6 +428,11 @@ COMPANIONS_API void companions_reset(Companions_Env* env,
 
 // Step environment with actions, returns full result with events
 // actions array must have env->agent_count elements
+//
+// Note on `out_result->state.done`: the field is kept for ABI stability and
+// reflects the env's IsDone(). For envs from companions_create (GameEnv) it
+// is therefore ALWAYS false — poll companions_is_success() instead. Envs from
+// companions_create_aggro (AggroEnv) retain episode semantics.
 COMPANIONS_API void companions_step(Companions_Env* env,
                                           const Companions_Action* actions,
                                           int32_t action_count,
@@ -459,8 +473,40 @@ COMPANIONS_API int32_t companions_get_cols(const Companions_Env* env);
 COMPANIONS_API int32_t
 companions_get_agent_count(const Companions_Env* env);
 COMPANIONS_API int32_t companions_get_tick(const Companions_Env* env);
+// For envs from companions_create (GameEnv) this is always false — the
+// in-game world never ends. See companions_create / companions_step docs.
 COMPANIONS_API bool companions_is_done(const Companions_Env* env);
 COMPANIONS_API bool companions_is_success(const Companions_Env* env);
+
+// =============================================================================
+// Observations (policy model input)
+// =============================================================================
+//
+// Per-agent observation in the exact layout training uses — written by the
+// same BaseEnv::WriteObservationTensor / WriteVectorObservation code path, so
+// serving and training produce identical bytes:
+//   [7 * rows * cols] tensor planes (floor, wall, lens goal, self, others,
+//                     telegraphed hazards, active hazards)
+// + [9]               base vector features
+// + [lens tail]       task-specific features from the active TaskLens
+//                     (Synchro 0, Aggro 8, Dodge 10)
+//
+// IMPORTANT: the total size depends on the ACTIVE lens (the tail differs per
+// task). Callers must re-query companions_observation_size() after any
+// companions_set_task_lens / companions_set_task_lens_with_params call.
+
+// Total floats needed per agent. Returns 0 on error.
+COMPANIONS_API int32_t companions_observation_size(const Companions_Env* env);
+
+// Writes exactly companions_observation_size() floats for agent_idx into buf.
+// agent_idx uses the same indexing as actions and the agent state queries
+// (ObjectManager::GetAllAgents() order, i.e. Companions_AgentState::agent_index).
+// buf_size is the capacity of buf in floats. Returns false on error (null
+// env/buf, bad agent_idx, buf_size too small) — check companions_get_error().
+COMPANIONS_API bool companions_write_observation(const Companions_Env* env,
+                                                 int32_t agent_idx,
+                                                 float* buf,
+                                                 int32_t buf_size);
 
 // =============================================================================
 // Semantic Annotations (task-specific tags on cells and agents)

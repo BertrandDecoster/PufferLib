@@ -23,7 +23,7 @@
 #include "../core/types.h"
 #include "../env/effect_system.h"
 #include "../env/aggro_env.h"
-#include "../env/synchro_env.h"
+#include "../env/game_env.h"
 #include "../env/task_lens.h"
 #include "../env/synchro_lens.h"
 #include "../env/aggro_lens.h"
@@ -396,7 +396,10 @@ COMPANIONS_API Companions_Env* companions_create(
   wrapper->config = *config;
 
   try {
-    wrapper->env = std::make_unique<companions::SynchroEnv>(
+    // GameEnv: same level generation as the former SynchroEnv (synchro task,
+    // SynchroLens active), but with game-shell episode semantics — IsDone()
+    // is always false; success is polled via companions_is_success().
+    wrapper->env = std::make_unique<companions::GameEnv>(
         config->rows,
         config->cols,
         config->num_companions,
@@ -795,6 +798,57 @@ COMPANIONS_API bool companions_is_done(const Companions_Env* env) {
 
 COMPANIONS_API bool companions_is_success(const Companions_Env* env) {
   return env ? env->success : false;
+}
+
+// =============================================================================
+// Observations
+// =============================================================================
+
+// Tensor floats per agent: planes * rows * cols. Mirrors the arithmetic in
+// the training wrapper (synchro_wrapper.cc) exactly.
+static int32_t TensorFloatCount(const companions::BaseEnv& env) {
+  std::vector<int> shape = env.ObservationShape();
+  int total = 1;
+  for (int dim : shape) total *= dim;
+  return static_cast<int32_t>(total);
+}
+
+COMPANIONS_API int32_t
+companions_observation_size(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  // Tensor planes + base vector features + active lens tail. Changes when
+  // the lens is swapped (the tail differs per task).
+  return TensorFloatCount(*env->env) +
+         static_cast<int32_t>(env->env->VectorObservationSize());
+}
+
+COMPANIONS_API bool companions_write_observation(const Companions_Env* env,
+                                                 int32_t agent_idx,
+                                                 float* buf,
+                                                 int32_t buf_size) {
+  if (!env || !env->env || !buf) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (agent_idx < 0 || agent_idx >= env->env->NumAgents()) {
+    SetError("Agent index out of range");
+    return false;
+  }
+  const int32_t tensor_size = TensorFloatCount(*env->env);
+  const int32_t total_size =
+      tensor_size + static_cast<int32_t>(env->env->VectorObservationSize());
+  if (buf_size < total_size) {
+    SetError("Buffer too small");
+    return false;
+  }
+  // Same write path training uses (see synchro_wrapper.cc write_observations)
+  // so serving and training produce identical bytes.
+  env->env->WriteObservationTensor(buf, agent_idx);
+  env->env->WriteVectorObservation(buf + tensor_size, agent_idx);
+  return true;
 }
 
 COMPANIONS_API int32_t companions_render_ascii(

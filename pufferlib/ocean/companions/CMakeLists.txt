@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.12)
+# 0.5.0: companions_create now returns the game-serving GameEnv (never done,
+# success polled via companions_is_success) instead of SynchroEnv, and the C
+# API grows an observation surface (companions_observation_size /
+# companions_write_observation) matching the training layout byte-for-byte.
 # 0.4.0: observation layout contract change - universal 7-plane tensor for all
 # tasks (adds telegraphed/active hazard planes) and lens-provided vector obs
 # tail. Models trained against 0.3.x observations are invalidated.
-project(companions VERSION 0.4.0 LANGUAGES CXX)
+project(companions VERSION 0.5.0 LANGUAGES CXX)
 
 # C++17 required
 set(CMAKE_CXX_STANDARD 17)
@@ -97,6 +101,7 @@ set(ENV_SOURCES
   src/env/synchro_env.cc
   src/env/aggro_env.cc
   src/env/dodge_env.cc
+  src/env/game_env.cc
   src/env/synchro_lens.cc
   src/env/aggro_lens.cc
   src/env/dodge_lens.cc
@@ -108,6 +113,7 @@ set(ENV_HEADERS
   src/env/synchro_env.h
   src/env/aggro_env.h
   src/env/dodge_env.h
+  src/env/game_env.h
   src/env/task_lens.h
   src/env/synchro_lens.h
   src/env/aggro_lens.h

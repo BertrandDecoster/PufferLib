@@ -334,37 +334,86 @@ TEST(TestStepGeneratesMovementEvents) {
 }
 
 // =============================================================================
-// Episode End Tests
+// Game Shell Semantics Tests
 // =============================================================================
-TEST(TestEpisodeEnd) {
-  // Small grid where it's easy to win
+// companions_create returns the game-serving GameEnv: the world never
+// terminates (no horizon done, no success done, no EpisodeEnd event). The
+// plan executor's signal is companions_is_success(); is_done stays false.
+// (This replaces the old TestEpisodeEnd, which verified horizon-driven done
+// for the former SynchroEnv-backed create path.)
+TEST(TestGameShellNeverDone) {
   Companions_EnvConfig config = MakeConfig(5, 5, 1, 1, 42);
-  config.horizon = 200;
+  config.horizon = 50;
   Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
   companions_reset(env, 42);
 
   Companions_Action actions[1] = {{Companions_Movement_Stay, Companions_Interact_None}};
   Companions_StepResult result = {};
 
-  // Step until done (either success or horizon)
-  int steps = 0;
-  while (!companions_is_done(env) && steps < 300) {
-    // Randomly move around to try to land on synchro
-    actions[0].movement = static_cast<Companions_MovementAction>((steps % 5));
+  // Step well past the horizon: done must never fire (horizon only feeds the
+  // steps-remaining observation feature), and the world keeps ticking.
+  for (int step = 0; step < 60; step++) {
     companions_step(env, actions, 1, &result);
-    steps++;
+    ASSERT_FALSE(companions_is_done(env));
+    ASSERT_FALSE(result.state.done);
   }
+  ASSERT_EQ(companions_get_tick(env), 60);
 
-  ASSERT_TRUE(companions_is_done(env));
+  companions_destroy(env);
+}
 
-  // Last step should have EpisodeEnd event
-  bool has_end_event = false;
-  for (int i = 0; i < result.event_count; i++) {
-    if (result.events[i].type == Companions_Event_EpisodeEnd) {
-      has_end_event = true;
+TEST(TestGameShellSuccessLatchesWithoutDone) {
+  // 5x5 complexity-0 map: empty interior, single companion, single synchro
+  // goal — walk the agent straight onto the goal and verify success latches
+  // while done stays false (success != done for the game shell).
+  Companions_EnvConfig config = MakeConfig(5, 5, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  companions_reset(env, 42);
+  ASSERT_FALSE(companions_is_success(env));
+
+  // Locate the synchro goal via the annotation layer (tag 0 = SynchroGoal).
+  const int32_t kSynchroGoalTag = 0;
+  int goal_row = -1, goal_col = -1;
+  for (int r = 0; r < 5 && goal_row < 0; r++) {
+    for (int c = 0; c < 5; c++) {
+      if (companions_has_tag_at(env, r, c, kSynchroGoalTag)) {
+        goal_row = r;
+        goal_col = c;
+        break;
+      }
     }
   }
-  ASSERT_TRUE(has_end_event);
+  ASSERT_TRUE(goal_row >= 0);
+
+  // Manhattan-walk the agent onto the goal (no obstacles on this map).
+  Companions_AgentState agent = {};
+  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &agent));
+  int guard = 0;
+  while ((agent.position.row != goal_row || agent.position.col != goal_col) &&
+         guard++ < 20) {
+    Companions_MovementAction mv = Companions_Movement_Stay;
+    if (agent.position.row < goal_row) {
+      mv = Companions_Movement_Down;
+    } else if (agent.position.row > goal_row) {
+      mv = Companions_Movement_Up;
+    } else if (agent.position.col < goal_col) {
+      mv = Companions_Movement_Right;
+    } else {
+      mv = Companions_Movement_Left;
+    }
+    Companions_Action action = {mv, Companions_Interact_None};
+    Companions_StepResult result = {};
+    companions_step(env, &action, 1, &result);
+    ASSERT_TRUE(companions_get_agent_by_index(env, 0, &agent));
+  }
+  ASSERT_EQ(agent.position.row, goal_row);
+  ASSERT_EQ(agent.position.col, goal_col);
+
+  // Task success latched, but the game world is NOT done.
+  ASSERT_TRUE(companions_is_success(env));
+  ASSERT_FALSE(companions_is_done(env));
 
   companions_destroy(env);
 }

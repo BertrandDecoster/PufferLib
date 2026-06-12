@@ -2,7 +2,10 @@
 // Parity test: Verify C API produces identical results to direct C++ API
 //
 // This test ensures the API wrapper (companions_api.h) doesn't introduce
-// any behavioral differences compared to directly calling SynchroEnv methods.
+// any behavioral differences compared to directly calling GameEnv methods.
+// companions_create returns a GameEnv (game shell: never done), so the
+// direct-C++ reference here is a GameEnv constructed with the same
+// config/seed — same generation path, identical level.
 
 #include <cmath>
 #include <cstring>
@@ -20,6 +23,8 @@
 #include "../src/core/pcg32.h"
 #include "../src/core/snapshot.h"
 #include "../src/core/types.h"
+#include "../src/env/dodge_lens.h"
+#include "../src/env/game_env.h"
 #include "../src/env/synchro_env.h"
 #include "../src/env/synchro_lens.h"
 
@@ -109,7 +114,7 @@ TEST(ParityTest_InitialState) {
   ASSERT_NOT_NULL(api_env);
 
   // Create direct C++ environment
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both with same seed
   companions_reset(api_env, seed);
@@ -151,7 +156,7 @@ TEST(ParityTest_SingleStep) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both
   companions_reset(api_env, seed);
@@ -203,7 +208,7 @@ TEST(ParityTest_MultiStep) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, env_seed);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, env_seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, env_seed, 0, 100);
 
   // Reset both
   companions_reset(api_env, env_seed);
@@ -211,9 +216,6 @@ TEST(ParityTest_MultiStep) {
 
   // Action RNG
   pcg32 action_rng(action_seed);
-
-  // Track resets for seed management
-  uint32_t current_seed = env_seed + 1;
 
   for (int step = 0; step < num_steps; step++) {
     // Generate identical actions for both APIs
@@ -233,8 +235,10 @@ TEST(ParityTest_MultiStep) {
     companions_step(api_env, api_actions.data(), agents, &api_result);
     StepResult cpp_result = cpp_env.Step(cpp_actions);
 
-    // Verify done flags match
+    // Verify done flags match. GameEnv has no episode semantics, so done
+    // must stay false on both sides for the entire run (even past horizon).
     ASSERT_EQ(api_result.state.done, cpp_result.done);
+    ASSERT_FALSE(cpp_result.done);
 
     // Verify rewards match
     for (int a = 0; a < agents; a++) {
@@ -247,21 +251,18 @@ TEST(ParityTest_MultiStep) {
       ASSERT_EQ(api_result.state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
       ASSERT_EQ(api_result.state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
     }
-
-    // Handle episode reset - reset both with same seed
-    if (cpp_result.done) {
-      companions_reset(api_env, current_seed);
-      cpp_env.Reset(current_seed);
-      current_seed++;
-    }
   }
 
   companions_destroy(api_env);
   std::cout << "  Completed " << num_steps << " steps with full parity" << std::endl;
 }
 
-// Test 4: Episode reset produces matching state
-TEST(ParityTest_EpisodeReset) {
+// Test 4: GameEnv never terminates (no horizon done) + explicit reset parity.
+// This test previously ran until the horizon fired `done` and reset on it;
+// companions_create now returns a GameEnv with no episode semantics, so the
+// (stronger) property to verify is: done NEVER fires, even well past the
+// horizon, and an explicit reset still produces matching state on both sides.
+TEST(ParityTest_NeverDoneAndExplicitReset) {
   const int rows = 6, cols = 6, agents = 1, synchro = 1;
   const uint32_t seed = 42;
   const int horizon = 50;
@@ -270,49 +271,48 @@ TEST(ParityTest_EpisodeReset) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed, horizon);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, horizon);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, horizon);
 
   // Reset both
   companions_reset(api_env, seed);
   cpp_env.Reset(seed);
 
-  // Run until episode ends
+  // Step well past the horizon: done must never fire on either side.
   std::vector<Companions_Action> api_actions(agents, {Companions_Movement_Stay, Companions_Interact_None});
   std::vector<Action> cpp_actions(agents, EncodeAction(MovementAction::Stay, InteractAction::None));
 
-  bool episode_ended = false;
-  for (int step = 0; step < horizon + 10 && !episode_ended; step++) {
+  for (int step = 0; step < horizon + 10; step++) {
     Companions_StepResult api_result = {};
     companions_step(api_env, api_actions.data(), agents, &api_result);
     StepResult cpp_result = cpp_env.Step(cpp_actions);
 
     ASSERT_EQ(api_result.state.done, cpp_result.done);
-
-    if (cpp_result.done) {
-      episode_ended = true;
-
-      // Reset both with new seed
-      uint32_t new_seed = seed + 100;
-      companions_reset(api_env, new_seed);
-      cpp_env.Reset(new_seed);
-
-      // Verify post-reset state matches
-      Companions_GameState api_state = {};
-      companions_get_state(api_env, &api_state);
-      auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
-
-      ASSERT_EQ(api_state.tick, 0);
-      ASSERT_EQ(cpp_env.GetTick(), 0);
-      ASSERT_FALSE(api_state.done);
-
-      for (int i = 0; i < agents; i++) {
-        ASSERT_EQ(api_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
-        ASSERT_EQ(api_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
-      }
-    }
+    ASSERT_FALSE(api_result.state.done);
+    ASSERT_FALSE(companions_is_done(api_env));
   }
 
-  ASSERT_TRUE(episode_ended);
+  // Tick advanced past horizon — the world just keeps going.
+  ASSERT_EQ(companions_get_tick(api_env), horizon + 10);
+  ASSERT_EQ(cpp_env.GetTick(), horizon + 10);
+
+  // Explicit reset with a new seed still produces matching state.
+  uint32_t new_seed = seed + 100;
+  companions_reset(api_env, new_seed);
+  cpp_env.Reset(new_seed);
+
+  Companions_GameState api_state = {};
+  companions_get_state(api_env, &api_state);
+  auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
+
+  ASSERT_EQ(api_state.tick, 0);
+  ASSERT_EQ(cpp_env.GetTick(), 0);
+  ASSERT_FALSE(api_state.done);
+
+  for (int i = 0; i < agents; i++) {
+    ASSERT_EQ(api_state.agents[i].position.row, cpp_agents[i]->GetPosition().row);
+    ASSERT_EQ(api_state.agents[i].position.col, cpp_agents[i]->GetPosition().col);
+  }
+
   companions_destroy(api_env);
 }
 
@@ -325,7 +325,7 @@ TEST(ParityTest_GridState) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both
   companions_reset(api_env, seed);
@@ -370,7 +370,7 @@ TEST(ParityTest_Movement) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Reset both
   companions_reset(api_env, seed);
@@ -417,7 +417,7 @@ TEST(ParityTest_DifferentSeeds) {
     Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
     Companions_Env* api_env = companions_create(&api_config);
     ASSERT_NOT_NULL(api_env);
-    SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+    GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
     // Reset both
     companions_reset(api_env, seed);
@@ -447,7 +447,7 @@ TEST(ParityTest_ConfigQueries) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed, horizon);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, horizon);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, horizon);
 
   // Reset both
   companions_reset(api_env, seed);
@@ -553,7 +553,7 @@ TEST(TestSnapshotParity_DLLSaveDirectLoad) {
   companions_get_state(api_env, &api_state);
 
   // Create direct C++ env and load the snapshot
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, 99999, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, 99999, 0, 100);
 
   // Deserialize and load
   Snapshot snap = Snapshot::Deserialize(buffer);
@@ -583,7 +583,7 @@ TEST(TestSnapshotParity_DirectSaveDLLLoad) {
   const uint32_t seed = 11111;
 
   // Create direct C++ env
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   // Run a few steps
   std::vector<Action> cpp_actions(agents);
@@ -653,7 +653,7 @@ TEST(ParityTest_Annotations) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   companions_reset(api_env, seed);
   cpp_env.Reset(seed);
@@ -695,7 +695,7 @@ TEST(ParityTest_Annotations_After_SetTaskLens_With_Params) {
   Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
   Companions_Env* api_env = companions_create(&api_config);
   ASSERT_NOT_NULL(api_env);
-  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
 
   companions_reset(api_env, seed);
   cpp_env.Reset(seed);
@@ -757,6 +757,264 @@ TEST(ParityTest_Annotations_After_SetTaskLens_With_Params) {
   }
 
   companions_destroy(api_env);
+}
+
+// =============================================================================
+// GameEnv vs SynchroEnv generation parity
+// =============================================================================
+
+// companions_create switched from SynchroEnv to GameEnv in 0.5.0 with the
+// contract "behavior identical except done": same seed/config must produce
+// the exact same level (grid, agent spawns, synchro goals) consumers got
+// before, because GameEnv::Reset reuses SynchroEnv's generation path.
+TEST(GameEnvMatchesSynchroEnvLevelGeneration) {
+  const int rows = 12, cols = 12, agents = 3, synchro = 3;
+
+  for (uint32_t seed = 1; seed <= 5; seed++) {
+    GameEnv game_env(rows, cols, agents, synchro, 2, seed, 0, 100);
+    SynchroEnv synchro_env(rows, cols, agents, synchro, 2, seed, 0, 100);
+
+    // Same grid
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
+        ASSERT_EQ(static_cast<int>(game_env.GetGrid().GetCell(r, c).GetKind()),
+                  static_cast<int>(synchro_env.GetGrid().GetCell(r, c).GetKind()));
+      }
+    }
+
+    // Same agent spawns
+    auto game_agents = game_env.GetObjectManager().GetAllAgents();
+    auto synchro_agents = synchro_env.GetObjectManager().GetAllAgents();
+    ASSERT_EQ(game_agents.size(), synchro_agents.size());
+    for (size_t i = 0; i < game_agents.size(); i++) {
+      ASSERT_EQ(game_agents[i]->GetPosition().row, synchro_agents[i]->GetPosition().row);
+      ASSERT_EQ(game_agents[i]->GetPosition().col, synchro_agents[i]->GetPosition().col);
+    }
+
+    // Same synchro goal cells (annotation layer)
+    std::set<std::pair<int, int>> game_goals, synchro_goals;
+    for (const Position& p :
+         game_env.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal)) {
+      game_goals.insert({p.row, p.col});
+    }
+    for (const Position& p :
+         synchro_env.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal)) {
+      synchro_goals.insert({p.row, p.col});
+    }
+    ASSERT_TRUE(game_goals == synchro_goals);
+    ASSERT_EQ(static_cast<int>(game_goals.size()), synchro);
+
+    // The one intended difference: episode semantics.
+    ASSERT_FALSE(game_env.IsDone());
+  }
+}
+
+// =============================================================================
+// Observation Parity Tests (DLL obs surface vs direct C++)
+// =============================================================================
+
+// Direct-C++ observation in the exact layout training uses
+// (synchro_wrapper.cc write_observations): tensor planes, then base vector
+// features, then the active lens's tail.
+static std::vector<float> DirectObservation(const BaseEnv& env, int agent_idx) {
+  std::vector<int> shape = env.ObservationShape();
+  int tensor_size = shape[0] * shape[1] * shape[2];
+  std::vector<float> obs(tensor_size + env.VectorObservationSize());
+  env.WriteObservationTensor(obs.data(), agent_idx);
+  env.WriteVectorObservation(obs.data() + tensor_size, agent_idx);
+  return obs;
+}
+
+// Observations crossing the DLL boundary must be byte-identical to direct
+// C++ calls — this is what lets Unreal feed trained policies.
+TEST(ObsParity_ByteIdenticalAcrossBoundary) {
+  const int rows = 12, cols = 12, agents = 3, synchro = 3;
+  const uint32_t seed = 42;
+
+  Companions_EnvConfig api_config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&api_config);
+  ASSERT_NOT_NULL(api_env);
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+
+  companions_reset(api_env, seed);
+  cpp_env.Reset(seed);
+
+  // Size: 7-plane tensor + 9 base vector features + lens tail (Synchro = 0).
+  int32_t api_size = companions_observation_size(api_env);
+  ASSERT_EQ(api_size,
+            BaseEnv::kNumObservationPlanes * rows * cols + 9 +
+                SynchroLens().AdditionalVectorObsSize());
+
+  std::vector<float> cpp_obs = DirectObservation(cpp_env, 0);
+  ASSERT_EQ(api_size, static_cast<int32_t>(cpp_obs.size()));
+
+  // Initial observations byte-identical for every agent.
+  std::vector<float> api_obs(api_size);
+  for (int a = 0; a < agents; ++a) {
+    ASSERT_TRUE(companions_write_observation(api_env, a, api_obs.data(), api_size));
+    cpp_obs = DirectObservation(cpp_env, a);
+    ASSERT_TRUE(std::memcmp(api_obs.data(), cpp_obs.data(),
+                            api_size * sizeof(float)) == 0);
+  }
+
+  // Step both with identical random actions; observations stay byte-identical.
+  pcg32 action_rng(777);
+  for (int step = 0; step < 50; ++step) {
+    std::vector<Companions_Action> api_actions(agents);
+    std::vector<Action> cpp_actions(agents);
+    for (int a = 0; a < agents; ++a) {
+      int mov = action_rng() % 5;
+      api_actions[a] = {static_cast<Companions_MovementAction>(mov),
+                        Companions_Interact_None};
+      cpp_actions[a] = EncodeAction(static_cast<MovementAction>(mov),
+                                    InteractAction::None);
+    }
+    Companions_StepResult api_result = {};
+    companions_step(api_env, api_actions.data(), agents, &api_result);
+    cpp_env.Step(cpp_actions);
+
+    for (int a = 0; a < agents; ++a) {
+      ASSERT_TRUE(companions_write_observation(api_env, a, api_obs.data(), api_size));
+      cpp_obs = DirectObservation(cpp_env, a);
+      ASSERT_TRUE(std::memcmp(api_obs.data(), cpp_obs.data(),
+                              api_size * sizeof(float)) == 0);
+    }
+  }
+
+  companions_destroy(api_env);
+}
+
+TEST(ObsAPI_ErrorHandling) {
+  // Null env
+  ASSERT_EQ(companions_observation_size(nullptr), 0);
+  float dummy = 0.0f;
+  ASSERT_FALSE(companions_write_observation(nullptr, 0, &dummy, 1));
+
+  Companions_EnvConfig config = MakeConfig(8, 8, 2, 2, 0, 7);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  int32_t size = companions_observation_size(env);
+  ASSERT_TRUE(size > 0);
+
+  std::vector<float> buf(size);
+  // Null buffer
+  ASSERT_FALSE(companions_write_observation(env, 0, nullptr, size));
+  // Bad agent index (2 agents -> valid indices 0..1)
+  ASSERT_FALSE(companions_write_observation(env, -1, buf.data(), size));
+  ASSERT_FALSE(companions_write_observation(env, 2, buf.data(), size));
+  // Buffer too small
+  ASSERT_FALSE(companions_write_observation(env, 0, buf.data(), size - 1));
+  // Happy path
+  ASSERT_TRUE(companions_write_observation(env, 0, buf.data(), size));
+
+  companions_destroy(env);
+}
+
+// =============================================================================
+// Lens Swap Tests (synchro world + DodgeLens)
+// =============================================================================
+//
+// Swapping the lens changes ONLY the interpretation layer of the observation:
+// the vector tail (Synchro 0 -> Dodge 10 floats), the goal plane (plane 2)
+// and the distance-to-goal feature (base feature 3) are lens-driven; every
+// physical plane and base feature is untouched, world dynamics are identical
+// to a never-swapped control env, and the swap produces no spurious done.
+TEST(LensSwap_DodgeObsTailDynamicsAndNoDone) {
+  const int rows = 10, cols = 10, agents = 2, synchro = 2;
+  const uint32_t seed = 1234;
+
+  Companions_EnvConfig config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  // Control: identical world, lens never swapped.
+  Companions_Env* control = companions_create(&config);
+  ASSERT_NOT_NULL(control);
+
+  const int plane_size = rows * cols;
+  const int tensor_size = BaseEnv::kNumObservationPlanes * plane_size;
+  const int kBaseVector = 9;
+
+  int32_t size_before = companions_observation_size(env);
+  ASSERT_EQ(size_before,
+            tensor_size + kBaseVector + SynchroLens().AdditionalVectorObsSize());
+
+  std::vector<float> before(size_before);
+  ASSERT_TRUE(companions_write_observation(env, 0, before.data(), size_before));
+
+  // Swap to DodgeLens (CanOperateOn accepts any env).
+  ASSERT_TRUE(companions_set_task_lens(env, Companions_Lens_Dodge));
+  ASSERT_EQ(companions_get_task_lens(env), Companions_Lens_Dodge);
+
+  // Obs size changed by exactly the tail delta — callers must re-query
+  // companions_observation_size after a lens swap.
+  int tail_delta = DodgeLens().AdditionalVectorObsSize() -
+                   SynchroLens().AdditionalVectorObsSize();
+  ASSERT_TRUE(tail_delta > 0);
+  int32_t size_after = companions_observation_size(env);
+  ASSERT_EQ(size_after, size_before + tail_delta);
+
+  std::vector<float> after(size_after);
+  ASSERT_TRUE(companions_write_observation(env, 0, after.data(), size_after));
+
+  // Physical planes (0=floor, 1=wall, 3=self, 4=others, 5/6=hazards) are
+  // unchanged for the same world state.
+  const int physical_planes[] = {0, 1, 3, 4, 5, 6};
+  for (int p : physical_planes) {
+    ASSERT_TRUE(std::memcmp(before.data() + p * plane_size,
+                            after.data() + p * plane_size,
+                            plane_size * sizeof(float)) == 0);
+  }
+
+  // Plane 2 (goal) is lens-driven: SynchroLens marked the synchro goals;
+  // DodgeLens has no geometric goals, so the plane is now all zeros.
+  float plane2_sum_before = 0.0f;
+  float plane2_sum_after = 0.0f;
+  for (int i = 0; i < plane_size; ++i) {
+    plane2_sum_before += before[2 * plane_size + i];
+    plane2_sum_after += after[2 * plane_size + i];
+  }
+  ASSERT_FLOAT_EQ(plane2_sum_before, static_cast<float>(synchro));
+  ASSERT_FLOAT_EQ(plane2_sum_after, 0.0f);
+
+  // Base vector features unchanged except feature 3 (distance to nearest
+  // goal — lens-driven, explicit 0 for DodgeLens which has no goals).
+  for (int f = 0; f < kBaseVector; ++f) {
+    if (f == 3) continue;
+    ASSERT_FLOAT_EQ(before[tensor_size + f], after[tensor_size + f]);
+  }
+  ASSERT_FLOAT_EQ(after[tensor_size + 3], 0.0f);
+
+  // No spurious done from the swap.
+  ASSERT_FALSE(companions_is_done(env));
+
+  // Dynamics identical: step swapped env and control with the same actions;
+  // world evolution (agent positions) matches and done stays false on both.
+  pcg32 action_rng(99);
+  for (int step = 0; step < 30; ++step) {
+    std::vector<Companions_Action> actions(agents);
+    for (int a = 0; a < agents; ++a) {
+      actions[a] = {static_cast<Companions_MovementAction>(action_rng() % 5),
+                    Companions_Interact_None};
+    }
+    Companions_StepResult res = {};
+    Companions_StepResult control_res = {};
+    companions_step(env, actions.data(), agents, &res);
+    companions_step(control, actions.data(), agents, &control_res);
+
+    ASSERT_FALSE(res.state.done);
+    ASSERT_FALSE(control_res.state.done);
+    for (int a = 0; a < agents; ++a) {
+      Companions_AgentState s = {};
+      Companions_AgentState cs = {};
+      ASSERT_TRUE(companions_get_agent_by_index(env, a, &s));
+      ASSERT_TRUE(companions_get_agent_by_index(control, a, &cs));
+      ASSERT_EQ(s.position.row, cs.position.row);
+      ASSERT_EQ(s.position.col, cs.position.col);
+    }
+  }
+
+  companions_destroy(control);
+  companions_destroy(env);
 }
 
 // =============================================================================
