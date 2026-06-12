@@ -98,6 +98,10 @@ class Synchro(pufferlib.PufferEnv):
                 horizon=horizon,
                 d4_transform=d4_transform,
                 overfit=int(overfit if isinstance(overfit, bool) else str(overfit).lower() in ('true', '1', 'yes')),
+                # Obs-size handshake: declare the per-agent buffer size this
+                # wrapper allocated. C++ init fails hard on mismatch instead
+                # of silently overrunning the numpy observation buffer.
+                expected_obs_size=obs_size,
             )
             c_envs.append(env_id)
 

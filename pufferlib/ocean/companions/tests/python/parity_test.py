@@ -177,6 +177,9 @@ def test_parity(reference_path: Path, verbose: bool = False):
         horizon=header.horizon,
         d4_transform=0,
         overfit=0,
+        # Obs-size handshake: declare the per-agent buffer size we allocated;
+        # C++ init fails hard on mismatch (see synchro_wrapper.cc).
+        expected_obs_size=header.obs_size,
     )
 
     # Initial reset with seed

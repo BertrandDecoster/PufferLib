@@ -90,7 +90,7 @@ class BaseEnv {
   // Universal observation layout, identical for every task. The model input
   // is f(world state, active lens): BaseEnv writes the physical planes and
   // base vector features; the active TaskLens contributes the goal plane
-  // (IsGoalCell) and the task-specific vector tail (AppendVectorObs).
+  // (IsGoalCell) and the task-specific vector tail (WriteVectorObs).
   //
   // Tensor: 7 planes [7 × rows × cols]:
   //   Plane 0: Floor cells (1.0 if walkable, including synchro cells)
@@ -114,8 +114,9 @@ class BaseEnv {
   //   - Distance to nearest goal cell (normalized)
   //   - Relative positions of other companions (dx, dy per companion)
   //   - Steps remaining (absolute / 100)
-  // Followed by the active lens's task-specific tail (AppendVectorObs /
-  // AdditionalVectorObsSize). Size = 9 + lens tail.
+  // Followed by the active lens's task-specific tail (WriteVectorObs /
+  // AdditionalVectorObsSize), describing the SAME agent
+  // (GetAllAgents()[player]) as the base features. Size = 9 + lens tail.
   void VectorObservation(std::vector<float>& values, int player = 0) const;
   int VectorObservationSize() const;
 

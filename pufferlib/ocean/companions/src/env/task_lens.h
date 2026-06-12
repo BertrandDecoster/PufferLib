@@ -12,6 +12,7 @@
 namespace companions {
 
 class BaseEnv;  // Forward declaration
+class Agent;    // Forward declaration
 
 // Parameters handed to a lens at activation time. Positions tell the lens
 // where to stamp objective cells (Synchro plates, TagApply markers, etc.).
@@ -121,24 +122,28 @@ class TaskLens {
   // ===========================================================================
   // Lens-specific vector observation features (the task's "extra information")
   // ===========================================================================
-  // Override to add features beyond BaseEnv's 9 base vector features.
-  // BaseEnv::WriteVectorObservation appends these after the base features, so
-  // the model input is always f(world state, active lens).
+  // Write exactly AdditionalVectorObsSize() floats describing the observation
+  // tail for `agent` — the SAME agent whose base features precede the tail.
+  // BaseEnv::WriteVectorObservation resolves the agent ONCE from the
+  // action/player index (GetAllAgents()[player]) and hands it to the lens, so
+  // base features and tail can never describe different agents. The buffer is
+  // zero-initialized by the caller; a lens that writes fewer floats leaves
+  // well-defined zeros, never garbage.
   //
   // Examples:
   //   - AggroLens: relative enemy position, FSM one-hot, target cell (8)
   //   - DodgeLens: survival progress, hazard danger per direction (10)
   //
-  // Default implementation adds no features.
-  virtual void AppendVectorObs(const BaseEnv& env, int agent_id,
-                               std::vector<float>& obs) const {
+  // Default implementation writes no features.
+  virtual void WriteVectorObs(const BaseEnv& env, const Agent& agent,
+                              float* buffer) const {
     (void)env;
-    (void)agent_id;
-    (void)obs;
+    (void)agent;
+    (void)buffer;
   }
 
-  // Return the number of additional features appended by AppendVectorObs.
-  // Must match the actual number of floats added.
+  // Return the number of additional features written by WriteVectorObs.
+  // Must match the actual number of floats written.
   virtual int AdditionalVectorObsSize() const { return 0; }
 
   // ===========================================================================

@@ -36,6 +36,10 @@ typedef struct {
     int horizon;
     int d4_transform;              // D4 symmetry (0-7), CCW convention
     int overfit;                   // If true, always reset to same seed (for equivariance testing)
+    int expected_obs_size;         // Per-agent obs size the Python caller allocated
+                                   // (NUM_CHANNELS*rows*cols + VECTOR_OBS_SIZE in
+                                   // synchro.py). synchro_init fails on mismatch so a
+                                   // drifted Python buffer can never be overrun.
     int tensor_obs_size;           // Size of tensor observation (planes * rows * cols)
     int vector_obs_size;           // Size of vector observation (appended to tensor)
 
@@ -51,7 +55,10 @@ typedef struct {
 } Synchro;
 
 // Lifecycle functions
-void synchro_init(Synchro* env);
+// Returns 0 on success, -1 if the caller-declared expected_obs_size does not
+// match the C++-computed observation size (tensor + base vector + lens tail).
+// On failure the env is cleaned up and must not be used.
+int synchro_init(Synchro* env);
 
 // RL interface (required by env_binding.h)
 void c_reset(Synchro* env);

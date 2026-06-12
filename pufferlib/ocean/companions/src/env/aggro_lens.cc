@@ -116,53 +116,45 @@ bool AggroLens::HasPatrolPath(const BaseEnv& env) const {
   return false;
 }
 
-void AggroLens::AppendVectorObs(const BaseEnv& env, int agent_id,
-                                std::vector<float>& obs) const {
-  // Get the companion for this agent_id
-  const ObjectManager& om = env.GetObjectManager();
-  std::vector<const Companion*> companions = om.GetAllCompanions();
-
-  if (agent_id < 0 || agent_id >= static_cast<int>(companions.size())) {
-    // Invalid agent_id, append zeros
-    for (int i = 0; i < 8; ++i) {
-      obs.push_back(0.0f);
-    }
-    return;
-  }
-
-  const Companion* companion = companions[agent_id];
-  Position companion_pos = companion->GetPosition();
+void AggroLens::WriteVectorObs(const BaseEnv& env, const Agent& agent,
+                               float* buffer) const {
+  // `agent` is the SAME agent whose base features precede this tail (BaseEnv
+  // resolves GetAllAgents()[player] once and passes it down), so the combined
+  // vector observation is always coherent — including in AggroEnv where the
+  // FSM enemy occupies agent slot 0.
+  Position agent_pos = agent.GetPosition();
   float rows = static_cast<float>(env.GetRows());
   float cols = static_cast<float>(env.GetCols());
+  int idx = 0;
 
   // Find the first FSM agent (enemy)
   const AgentFSM* enemy = nullptr;
-  for (const AgentFSM* fsm_agent : om.GetAllAgentFSMs()) {
+  for (const AgentFSM* fsm_agent : env.GetObjectManager().GetAllAgentFSMs()) {
     if (fsm_agent->HasFSM()) {
       enemy = fsm_agent;
       break;
     }
   }
 
-  // Features 0-1: Relative position to enemy (normalized)
+  // Features 0-1: Relative position to enemy (per-axis normalized)
   if (enemy && enemy->IsAlive()) {
     Position enemy_pos = enemy->GetPosition();
-    obs.push_back(static_cast<float>(enemy_pos.row - companion_pos.row) / rows);
-    obs.push_back(static_cast<float>(enemy_pos.col - companion_pos.col) / cols);
+    buffer[idx++] = static_cast<float>(enemy_pos.row - agent_pos.row) / rows;
+    buffer[idx++] = static_cast<float>(enemy_pos.col - agent_pos.col) / cols;
   } else {
-    obs.push_back(0.0f);
-    obs.push_back(0.0f);
+    buffer[idx++] = 0.0f;
+    buffer[idx++] = 0.0f;
   }
 
   // Feature 2: Distance to enemy (Manhattan, normalized)
   if (enemy && enemy->IsAlive()) {
     Position enemy_pos = enemy->GetPosition();
-    int manhattan = std::abs(enemy_pos.row - companion_pos.row) +
-                    std::abs(enemy_pos.col - companion_pos.col);
+    int manhattan = std::abs(enemy_pos.row - agent_pos.row) +
+                    std::abs(enemy_pos.col - agent_pos.col);
     float max_dist = rows + cols - 2.0f;
-    obs.push_back(static_cast<float>(manhattan) / max_dist);
+    buffer[idx++] = static_cast<float>(manhattan) / max_dist;
   } else {
-    obs.push_back(1.0f);  // Max distance if no enemy
+    buffer[idx++] = 1.0f;  // Max distance if no enemy
   }
 
   // Features 3-5: FSM state one-hot (patrol, aggro, returning)
@@ -173,29 +165,29 @@ void AggroLens::AppendVectorObs(const BaseEnv& env, int agent_id,
     FSMStateType state_type = state ? state->GetType() : FSMStateType::None;
 
     // Patrol state
-    obs.push_back(state_type == FSMStateType::Patrol ? 1.0f : 0.0f);
+    buffer[idx++] = state_type == FSMStateType::Patrol ? 1.0f : 0.0f;
     // Aggro state (includes Telegraph, Attack, Recovery as "aggressive")
     bool is_aggressive = (state_type == FSMStateType::Aggro ||
                           state_type == FSMStateType::Telegraph ||
                           state_type == FSMStateType::Attack ||
                           state_type == FSMStateType::Recovery);
-    obs.push_back(is_aggressive ? 1.0f : 0.0f);
+    buffer[idx++] = is_aggressive ? 1.0f : 0.0f;
     // Return to patrol state
-    obs.push_back(state_type == FSMStateType::ReturnToPatrol ? 1.0f : 0.0f);
+    buffer[idx++] = state_type == FSMStateType::ReturnToPatrol ? 1.0f : 0.0f;
   } else {
-    obs.push_back(0.0f);
-    obs.push_back(0.0f);
-    obs.push_back(0.0f);
+    buffer[idx++] = 0.0f;
+    buffer[idx++] = 0.0f;
+    buffer[idx++] = 0.0f;
   }
 
-  // Features 6-7: Relative position to target cell (normalized)
+  // Features 6-7: Relative position to target cell (per-axis normalized)
   Position target = FindTargetCell(env);
   if (target.row >= 0 && target.col >= 0) {
-    obs.push_back(static_cast<float>(target.row - companion_pos.row) / rows);
-    obs.push_back(static_cast<float>(target.col - companion_pos.col) / cols);
+    buffer[idx++] = static_cast<float>(target.row - agent_pos.row) / rows;
+    buffer[idx++] = static_cast<float>(target.col - agent_pos.col) / cols;
   } else {
-    obs.push_back(0.0f);
-    obs.push_back(0.0f);
+    buffer[idx++] = 0.0f;
+    buffer[idx++] = 0.0f;
   }
 }
 

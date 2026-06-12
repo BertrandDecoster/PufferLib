@@ -81,9 +81,21 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     UNPACK_INT(env->horizon, "horizon");
     UNPACK_INT(env->d4_transform, "d4_transform");
     UNPACK_INT(env->overfit, "overfit");
+    UNPACK_INT(env->expected_obs_size, "expected_obs_size");
     UNPACK_INT(env->seed, "seed");
 
-    synchro_init(env);
+    // synchro_init fails hard if the Python-declared expected_obs_size does
+    // not match the C++-computed observation size. env_init/shared checks
+    // PyErr_Occurred() after my_init, so the exception propagates to Python.
+    if (synchro_init(env) != 0) {
+        PyErr_Format(PyExc_ValueError,
+                     "Observation size contract violation: Python allocated "
+                     "%d floats per agent but the C++ env produces a "
+                     "different size (see stderr). Update NUM_CHANNELS / "
+                     "VECTOR_OBS_SIZE in synchro.py.",
+                     env->expected_obs_size);
+        return -1;
+    }
     return 0;
 }
 

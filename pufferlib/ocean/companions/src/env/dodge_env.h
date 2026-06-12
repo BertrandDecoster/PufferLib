@@ -52,7 +52,7 @@ class DodgeEnv : public BaseEnv {
   bool IsDone() const override;
 
   // Observations come from BaseEnv (universal 7-plane tensor + base vector
-  // features) plus DodgeLens::AppendVectorObs (10 dodge-specific features).
+  // features) plus DodgeLens::WriteVectorObs (10 dodge-specific features).
 
   // Accessors
   int GetNumCompanions() const { return num_companions_; }

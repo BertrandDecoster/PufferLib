@@ -280,7 +280,7 @@ void DodgeEnv::PostStep() {
 
 // Observation logic lives in BaseEnv + DodgeLens now:
 // - Hazard tensor planes 5/6 moved to BaseEnv::WriteObservationTensor.
-// - The 10 dodge-specific vector features moved to DodgeLens::AppendVectorObs.
+// - The 10 dodge-specific vector features moved to DodgeLens::WriteVectorObs.
 
 void DodgeEnv::ValidateSnapshot(const Snapshot& snapshot) const {
   // DodgeEnv has minimal requirements - just needs floor cells for movement

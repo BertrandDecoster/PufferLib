@@ -25,7 +25,7 @@ static void write_observations(Synchro* env) {
     }
 }
 
-void synchro_init(Synchro* env) {
+int synchro_init(Synchro* env) {
     // Initialize log to zero (required since we use env_init, not vec_init)
     std::memset(&env->log, 0, sizeof(Log));
 
@@ -53,17 +53,25 @@ void synchro_init(Synchro* env) {
     env->tensor_obs_size = obs_shape[0] * obs_shape[1] * obs_shape[2];
     env->vector_obs_size = cpp_env->VectorObservationSize();
 
-    // Validate the vector size against the lens-derived expectation. Python's
-    // synchro.py derives its buffer size from NUM_CHANNELS / VECTOR_OBS_SIZE,
-    // so any mismatch here means synchro.py must be updated too.
-    constexpr int kBaseVectorObsSize = 9;
-    const companions::TaskLens* lens = cpp_env->GetTaskLens();
-    int expected_vector_obs =
-        kBaseVectorObsSize + (lens ? lens->AdditionalVectorObsSize() : 0);
-    if (env->vector_obs_size != expected_vector_obs) {
-        std::fprintf(stderr, "ERROR: Vector obs size mismatch! C++=%d, expected=%d "
-                     "(base %d + lens tail). Update VECTOR_OBS_SIZE in synchro.py\n",
-                     env->vector_obs_size, expected_vector_obs, kBaseVectorObsSize);
+    // Obs-size handshake: the Python caller (synchro.py) declares the
+    // per-agent buffer size it allocated (NUM_CHANNELS*rows*cols +
+    // VECTOR_OBS_SIZE) via expected_obs_size. If it disagrees with the
+    // C++-computed size (tensor planes + 9 base features + lens tail),
+    // write_observations would silently overrun the numpy buffer — so this
+    // is a hard init failure, not a warning.
+    int actual_obs_size = env->tensor_obs_size + env->vector_obs_size;
+    if (env->expected_obs_size != actual_obs_size) {
+        std::fprintf(stderr,
+                     "ERROR: Observation size contract violation: Python "
+                     "allocated %d floats per agent but C++ produces %d "
+                     "(tensor %d + vector %d). Update NUM_CHANNELS / "
+                     "VECTOR_OBS_SIZE in synchro.py to match the C++ lens "
+                     "contract.\n",
+                     env->expected_obs_size, actual_obs_size,
+                     env->tensor_obs_size, env->vector_obs_size);
+        delete cpp_env;
+        env->cpp_env = nullptr;
+        return -1;
     }
 
     // Allocate render buffer dynamically based on grid size
@@ -73,6 +81,7 @@ void synchro_init(Synchro* env) {
     if (env->render_buffer) {
         env->render_buffer[0] = '\0';
     }
+    return 0;
 }
 
 void c_reset(Synchro* env) {

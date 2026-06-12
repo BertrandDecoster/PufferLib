@@ -65,7 +65,7 @@ class AggroEnv : public BaseEnv {
   double MaxUtility() const override { return kWinReward; }
 
   // Observations come from BaseEnv (universal 7-plane tensor + 9 base vector
-  // features) plus AggroLens::AppendVectorObs (8 aggro-specific features).
+  // features) plus AggroLens::WriteVectorObs (8 aggro-specific features).
 
   // Reward constants
   static constexpr double kWinReward = 1.0;

@@ -22,8 +22,14 @@ class AggroLens : public TaskLens {
   bool IsGoalCell(const BaseEnv& env, Position pos) const override;
   std::vector<Position> GetGoalCells(const BaseEnv& env) const override;
 
-  void AppendVectorObs(const BaseEnv& env, int agent_id,
-                       std::vector<float>& obs) const override;
+  // Aggro-specific vector observation tail (8 features), computed relative
+  // to the passed agent (the same agent the base features describe):
+  //   [0-1] Relative position to enemy (per-axis normalized)
+  //   [2]   Manhattan distance to enemy / (rows + cols - 2); 1.0 if no enemy
+  //   [3-5] Enemy FSM one-hot (patrol, aggressive, returning)
+  //   [6-7] Relative position to target cell (per-axis normalized)
+  void WriteVectorObs(const BaseEnv& env, const Agent& agent,
+                      float* buffer) const override;
   int AdditionalVectorObsSize() const override { return 8; }
 
  private:

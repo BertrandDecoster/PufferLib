@@ -49,31 +49,28 @@ std::string DodgeLens::GetObjectiveString(const BaseEnv& env) const {
   return ss.str();
 }
 
-void DodgeLens::AppendVectorObs(const BaseEnv& env, int agent_id,
-                                std::vector<float>& obs) const {
-  // Moved verbatim from the former DodgeEnv::VectorObservation tail so the
-  // model input becomes f(world state, active lens) for any BaseEnv.
-  auto agents = env.GetObjectManager().GetAllAgents();
-  if (agent_id < 0 || agent_id >= static_cast<int>(agents.size())) {
-    // Invalid agent: append zeros to keep the declared size.
-    for (int i = 0; i < AdditionalVectorObsSize(); ++i) {
-      obs.push_back(0.0f);
-    }
-    return;
-  }
-
-  const Agent* current_agent = agents[agent_id];
-  Position my_pos = current_agent->GetPosition();
+void DodgeLens::WriteVectorObs(const BaseEnv& env, const Agent& agent,
+                               float* buffer) const {
+  // `agent` is the SAME agent whose base features precede this tail (BaseEnv
+  // resolves GetAllAgents()[player] once and passes it down). Logic otherwise
+  // moved verbatim from the former DodgeEnv::VectorObservation tail so the
+  // model input is f(world state, active lens) for any BaseEnv.
+  Position my_pos = agent.GetPosition();
   float max_dim = static_cast<float>(std::max(env.GetRows(), env.GetCols()));
+  int idx = 0;
 
   // Feature: Survival progress (1)
-  int ticks_remaining = env.GetHorizon() - env.GetTick();
-  obs.push_back(static_cast<float>(ticks_remaining) / env.GetHorizon());
+  // horizon <= 0 means "no survival deadline", so progress is 0 (a
+  // horizonless world is never near its deadline) — also guards div-by-zero.
+  int horizon = env.GetHorizon();
+  buffer[idx++] = horizon > 0
+      ? static_cast<float>(horizon - env.GetTick()) / horizon
+      : 0.0f;
 
   // Feature: Number of active effects normalized (1)
   constexpr int kMaxEffects = 10;  // Normalization cap
-  obs.push_back(std::min(
-      1.0f, static_cast<float>(env.GetActiveEffects().size()) / kMaxEffects));
+  buffer[idx++] = std::min(
+      1.0f, static_cast<float>(env.GetActiveEffects().size()) / kMaxEffects);
 
   // Features: Danger in each direction (4) - how close is nearest ACTIVE hazard
   // Direction order: Up, Down, Left, Right
@@ -142,16 +139,16 @@ void DodgeLens::AppendVectorObs(const BaseEnv& env, int agent_id,
   }
 
   // Add danger features (inverted: 0 = far/safe, 1 = close/dangerous)
-  obs.push_back(1.0f - danger_up);
-  obs.push_back(1.0f - danger_down);
-  obs.push_back(1.0f - danger_left);
-  obs.push_back(1.0f - danger_right);
+  buffer[idx++] = 1.0f - danger_up;
+  buffer[idx++] = 1.0f - danger_down;
+  buffer[idx++] = 1.0f - danger_left;
+  buffer[idx++] = 1.0f - danger_right;
 
   // Add telegraph features
-  obs.push_back(1.0f - telegraph_up);
-  obs.push_back(1.0f - telegraph_down);
-  obs.push_back(1.0f - telegraph_left);
-  obs.push_back(1.0f - telegraph_right);
+  buffer[idx++] = 1.0f - telegraph_up;
+  buffer[idx++] = 1.0f - telegraph_down;
+  buffer[idx++] = 1.0f - telegraph_left;
+  buffer[idx++] = 1.0f - telegraph_right;
 }
 
 bool DodgeLens::AnyCompanionIncapacitated(const BaseEnv& env) const {

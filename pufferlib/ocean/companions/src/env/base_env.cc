@@ -424,18 +424,14 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   int steps_left = horizon_ - tick_;
   buffer[idx++] = static_cast<float>(steps_left) / 100.0f;
 
-  // Features 9+: Task-specific tail appended by the active lens.
-  if (task_lens_) {
-    int tail = task_lens_->AdditionalVectorObsSize();
-    if (tail > 0) {
-      std::vector<float> extra;
-      extra.reserve(tail);
-      task_lens_->AppendVectorObs(*this, player, extra);
-      assert(static_cast<int>(extra.size()) == tail &&
-             "Lens AppendVectorObs wrote a different feature count than "
-             "AdditionalVectorObsSize declares");
-      std::memcpy(buffer + idx, extra.data(), tail * sizeof(float));
-    }
+  // Features 9+: Task-specific tail written by the active lens, describing
+  // the SAME agent the base features above describe (resolved once from the
+  // action/player index). The whole buffer was zero-initialized at the top,
+  // so the tail region holds well-defined zeros if the lens writes less than
+  // AdditionalVectorObsSize() floats. Writing in place: no per-step heap
+  // allocation, and no out-of-bounds copy possible by construction.
+  if (task_lens_ && task_lens_->AdditionalVectorObsSize() > 0) {
+    task_lens_->WriteVectorObs(*this, *current_agent, buffer + idx);
   }
 }
 

@@ -25,7 +25,7 @@ The companions game differs from standard Ocean envs:
 Flattened tensor + vector: `[7*rows*cols + 9 + lens_tail]` floats.
 The layout is universal: BaseEnv owns the tensor planes and the 9 base vector
 features; the active TaskLens owns the goal plane contents and the vector tail
-(`AppendVectorObs`/`AdditionalVectorObsSize`). SynchroLens tail = 0,
+(`WriteVectorObs`/`AdditionalVectorObsSize`). SynchroLens tail = 0,
 AggroLens = 8, DodgeLens = 10.
 
 **Tensor (7 channels × rows × cols, `BaseEnv::kNumObservationPlanes`):**
@@ -47,7 +47,7 @@ AggroLens = 8, DodgeLens = 10.
 | 3 | Distance to goal (normalized) |
 | 4-7 | Relative positions to 2 other companions |
 | 8 | Steps left / 100 |
-| 9+ | Task-specific lens tail (`TaskLens::AppendVectorObs`) |
+| 9+ | Task-specific lens tail (`TaskLens::WriteVectorObs`) |
 
 ## Action Space
 

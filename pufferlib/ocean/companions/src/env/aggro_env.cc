@@ -306,7 +306,7 @@ bool AggroEnv::IsDone() const {
   return success_ || tick_ >= horizon_;
 }
 
-// Vector observation tail comes from AggroLens::AppendVectorObs (8 features),
+// Vector observation tail comes from AggroLens::WriteVectorObs (8 features),
 // wired in by BaseEnv::WriteVectorObservation. The former env-side override
 // was deleted in favor of the lens semantics (per-axis normalization,
 // FSMStateType-based one-hot, max-distance default with no enemy).

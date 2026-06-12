@@ -1,6 +1,8 @@
 // Copyright 2024
 // Test suite for TaskLens interface
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -144,7 +146,7 @@ TEST(TestTaskLensOptionalMethods) {
     std::string GetObjectiveString(const BaseEnv& env) const override {
       (void)env; return "minimal";
     }
-    // Note: NOT overriding AppendVectorObs or AdditionalVectorObsSize
+    // Note: NOT overriding WriteVectorObs or AdditionalVectorObsSize
   };
 
   MinimalLens lens;
@@ -152,9 +154,8 @@ TEST(TestTaskLensOptionalMethods) {
   // Defaults should be no-op and zero
   ASSERT_EQ(lens.AdditionalVectorObsSize(), 0);
 
-  // AppendVectorObs should not modify the vector (no-op default)
-  std::vector<float> obs = {1.0f, 2.0f, 3.0f};
-  // We can't call AppendVectorObs without a valid env, but the default is empty
+  // WriteVectorObs default is a no-op: with a 0-size tail it is never called
+  // by BaseEnv, and calling it must not touch the buffer.
 }
 
 TEST(TestBaseEnvSetTaskLens) {
@@ -276,15 +277,16 @@ TEST(TestAggroLensAdditionalObsSize) {
   ASSERT_EQ(lens.AdditionalVectorObsSize(), 8);
 }
 
-TEST(TestAggroLensAppendVectorObs) {
+TEST(TestAggroLensWriteVectorObs) {
   AggroEnv env(10, 1, EnemyType::Zombie, 42);
   AggroLens lens;
 
-  std::vector<float> obs;
-  lens.AppendVectorObs(env, 0, obs);
+  // Should declare 8 features
+  ASSERT_EQ(lens.AdditionalVectorObsSize(), 8);
 
-  // Should have 8 features
-  ASSERT_EQ(static_cast<int>(obs.size()), 8);
+  const Companion* companion = env.GetObjectManager().GetAllCompanions()[0];
+  std::vector<float> obs(lens.AdditionalVectorObsSize(), 0.0f);
+  lens.WriteVectorObs(env, *companion, obs.data());
 
   // All values should be in reasonable range [-1, 1] for normalized positions
   for (size_t i = 0; i < obs.size(); ++i) {
@@ -476,7 +478,7 @@ TEST(TestFullTaskSwitchingWorkflow) {
 // These tests pin the obs contract established by the lens-contract
 // remediation: the model input is f(world state, active lens). The tensor is
 // 7 planes for every task; the vector is BaseEnv's 9 features followed by the
-// active lens's AppendVectorObs tail.
+// active lens's WriteVectorObs tail, both describing GetAllAgents()[player].
 // =============================================================================
 
 namespace {
@@ -622,8 +624,10 @@ TEST(TestDodgeTensorHazardPlaneSemantics) {
 
 TEST(TestDodgeVectorObsLensTailMatchesEnvPath) {
   // Transitional parity check for the verbatim move of DodgeEnv's 10 extra
-  // vector features into DodgeLens::AppendVectorObs: the env's vector
-  // observation tail must equal the lens output exactly.
+  // vector features into DodgeLens::WriteVectorObs: the env's vector
+  // observation tail must equal the lens output exactly. (In DodgeEnv all
+  // agents are companions, so agent slot 0 is the same agent under both the
+  // old companion-indexed and the current agent-passing convention.)
   RegisterObsTestEffects();
   DodgeEnv env(9, 1, 100, 50, 42);
 
@@ -641,8 +645,9 @@ TEST(TestDodgeVectorObsLensTailMatchesEnvPath) {
   env.VectorObservation(env_path, 0);
   ASSERT_EQ(static_cast<int>(env_path.size()), 19);
 
-  std::vector<float> lens_tail;
-  lens.AppendVectorObs(env, 0, lens_tail);
+  const Agent* agent = env.GetObjectManager().GetAllAgents()[0];
+  std::vector<float> lens_tail(lens.AdditionalVectorObsSize(), 0.0f);
+  lens.WriteVectorObs(env, *agent, lens_tail.data());
   ASSERT_EQ(static_cast<int>(lens_tail.size()), 10);
 
   for (int i = 0; i < 10; ++i) {
@@ -656,7 +661,7 @@ TEST(TestDodgeVectorObsLensTailMatchesEnvPath) {
 }
 
 TEST(TestAggroVectorObsLensTailIsCanonical) {
-  // AggroLens::AppendVectorObs is the single vector-obs tail implementation.
+  // AggroLens::WriteVectorObs is the single vector-obs tail implementation.
   // Its semantics INTENTIONALLY differ from the deleted
   // AggroEnv::VectorObservation override:
   //   1. Relative positions normalize per-axis (dr/rows, dc/cols) instead of
@@ -669,20 +674,29 @@ TEST(TestAggroVectorObsLensTailIsCanonical) {
   //      Telegraph/Attack/Recovery into the "aggressive" bucket; the env
   //      version pointer-compared only the Patrol/Aggro/Return singletons and
   //      emitted an all-zero one-hot during attack phases (a bug).
-  //   5. agent_id indexes the companion list, not the raw agent list (which
-  //      in AggroEnv put the FSM enemy at index 0).
+  // NOTE: the transitional version of the lens indexed the companion list
+  // instead of the agent list. That was a BUG, not canon: it made the tail
+  // describe a different agent than the base features (the deleted env
+  // override correctly used GetAllAgents()[player]). The lens now receives
+  // the resolved Agent directly, so the tail describes the same agent as the
+  // base features by construction. See TestAggroVectorObsActionAgentCoherence.
   AggroEnv env(10, 1, EnemyType::Goblin, 42);
   AggroLens lens;
 
   ASSERT_EQ(env.VectorObservationSize(), 9 + 8);
 
+  // The companion is agent slot 1 in AggroEnv (the enemy spawns first).
+  auto agents = env.GetObjectManager().GetAllAgents();
+  const Companion* companion =
+      env.GetObjectManager().GetAllCompanions()[0];
+  ASSERT_EQ(agents[1], static_cast<const Agent*>(companion));
+
   std::vector<float> env_path;
-  env.VectorObservation(env_path, 0);
+  env.VectorObservation(env_path, 1);  // Player 1 = the companion
   ASSERT_EQ(static_cast<int>(env_path.size()), 17);
 
-  std::vector<float> lens_tail;
-  lens.AppendVectorObs(env, 0, lens_tail);
-  ASSERT_EQ(static_cast<int>(lens_tail.size()), 8);
+  std::vector<float> lens_tail(lens.AdditionalVectorObsSize(), 0.0f);
+  lens.WriteVectorObs(env, *companion, lens_tail.data());
 
   // The env's vector observation tail must be exactly the lens output.
   for (int i = 0; i < 8; ++i) {
@@ -690,8 +704,6 @@ TEST(TestAggroVectorObsLensTailIsCanonical) {
   }
 
   // Hand-check the lens semantics against world state.
-  const Companion* companion =
-      env.GetObjectManager().GetAllCompanions()[0];
   const AgentFSM* enemy = env.GetObjectManager().GetAllAgentFSMs()[0];
   Position cpos = companion->GetPosition();
   Position epos = enemy->GetPosition();
@@ -729,8 +741,9 @@ TEST(TestAggroLensFoldsAttackPhasesIntoAggressiveBucket) {
   AgentFSM* enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
   enemy->SetCurrentState(GetFSMStateByType(FSMStateType::Telegraph));
 
-  std::vector<float> tail;
-  lens.AppendVectorObs(env, 0, tail);
+  const Companion* companion = env.GetObjectManager().GetAllCompanions()[0];
+  std::vector<float> tail(lens.AdditionalVectorObsSize(), 0.0f);
+  lens.WriteVectorObs(env, *companion, tail.data());
   ASSERT_EQ(tail[3], 0.0f);  // Not patrol
   ASSERT_EQ(tail[4], 1.0f);  // Aggressive (Telegraph folded in)
   ASSERT_EQ(tail[5], 0.0f);  // Not returning
@@ -742,15 +755,79 @@ TEST(TestAggroLensNoEnemyDefaultsDistanceToMax) {
   SynchroEnv env(6, 6, 1, 1, 0, 42);
   AggroLens lens;
 
-  std::vector<float> tail;
-  lens.AppendVectorObs(env, 0, tail);
-  ASSERT_EQ(static_cast<int>(tail.size()), 8);
+  const Agent* agent = env.GetObjectManager().GetAllAgents()[0];
+  std::vector<float> tail(lens.AdditionalVectorObsSize(), 0.0f);
+  lens.WriteVectorObs(env, *agent, tail.data());
   ASSERT_EQ(tail[0], 0.0f);  // No relative position
   ASSERT_EQ(tail[1], 0.0f);
   ASSERT_EQ(tail[2], 1.0f);  // Max distance, not skipped-as-zero
   // No target cell annotation on a SynchroEnv either.
   ASSERT_EQ(tail[6], 0.0f);
   ASSERT_EQ(tail[7], 0.0f);
+}
+
+TEST(TestDodgeLensZeroHorizonSurvivalProgressIsZero) {
+  // A horizonless world (horizon <= 0) has no survival deadline: the
+  // survival-progress feature must be exactly 0, not a division by zero.
+  SynchroEnv env(6, 6, 1, 1, 0, 42, 0, /*horizon=*/0);
+  DodgeLens lens;
+
+  const Agent* agent = env.GetObjectManager().GetAllAgents()[0];
+  std::vector<float> tail(lens.AdditionalVectorObsSize(), -1.0f);
+  lens.WriteVectorObs(env, *agent, tail.data());
+  ASSERT_EQ(tail[0], 0.0f);
+}
+
+TEST(TestAggroVectorObsActionAgentCoherence) {
+  // Actions, base vector features, and the lens tail must all describe the
+  // SAME agent: GetAllAgents()[player] (the action-slot convention used by
+  // GatherIntentions). In AggroEnv the enemy is spawned before the
+  // companions, so it occupies agent slot 0 — the lens used to index the
+  // companion list instead, shifting every tail by one agent. This test pins
+  // action/obs/tail coherence permanently.
+  AggroEnv env(10, 2, EnemyType::Goblin, 42);  // enemy at slot 0 + 2 companions
+
+  auto agents = env.GetObjectManager().GetAllAgents();
+  ASSERT_EQ(static_cast<int>(agents.size()), 3);
+  // Sanity: the FSM enemy really is agent slot 0 (spawned first).
+  ASSERT_TRUE(dynamic_cast<const AgentFSM*>(agents[0]) != nullptr);
+
+  const AgentFSM* enemy = env.GetObjectManager().GetAllAgentFSMs()[0];
+  Position epos = enemy->GetPosition();
+  Position target = env.GetTargetPosition();
+  float max_dim = static_cast<float>(std::max(env.GetRows(), env.GetCols()));
+  float rows = static_cast<float>(env.GetRows());
+  float cols = static_cast<float>(env.GetCols());
+
+  for (int player = 0; player < env.NumAgents(); ++player) {
+    std::vector<float> obs;
+    env.VectorObservation(obs, player);
+    ASSERT_EQ(static_cast<int>(obs.size()), 9 + 8);
+    Position apos = agents[player]->GetPosition();
+
+    // Base features 0-1: THIS agent's own normalized position.
+    ASSERT_EQ(obs[0], static_cast<float>(apos.row) / max_dim);
+    ASSERT_EQ(obs[1], static_cast<float>(apos.col) / max_dim);
+
+    // Tail features 0-2: enemy-relative features computed from the SAME
+    // agent's position the base features describe.
+    ASSERT_EQ(obs[9], static_cast<float>(epos.row - apos.row) / rows);
+    ASSERT_EQ(obs[10], static_cast<float>(epos.col - apos.col) / cols);
+    float manhattan = static_cast<float>(std::abs(epos.row - apos.row) +
+                                         std::abs(epos.col - apos.col));
+    ASSERT_EQ(obs[11], manhattan / (rows + cols - 2.0f));
+
+    // Tail features 6-7: target cell relative to the same agent.
+    ASSERT_EQ(obs[15], static_cast<float>(target.row - apos.row) / rows);
+    ASSERT_EQ(obs[16], static_cast<float>(target.col - apos.col) / cols);
+  }
+
+  // The enemy slot itself: relative-to-self is exactly zero.
+  std::vector<float> obs0;
+  env.VectorObservation(obs0, 0);
+  ASSERT_EQ(obs0[9], 0.0f);
+  ASSERT_EQ(obs0[10], 0.0f);
+  ASSERT_EQ(obs0[11], 0.0f);
 }
 
 TEST(TestVectorObsSizeIsLensAware) {

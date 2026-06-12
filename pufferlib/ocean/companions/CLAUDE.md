@@ -125,7 +125,7 @@ Universal 7-plane tensor [7 × grid_size × grid_size], identical for all tasks
 - Plane 6: Active hazard zones
 
 Vector observation = 9 base features (BaseEnv) + the active lens's tail
-(TaskLens::AppendVectorObs / AdditionalVectorObsSize). SynchroLens adds 0,
+(TaskLens::WriteVectorObs / AdditionalVectorObsSize). SynchroLens adds 0,
 AggroLens 8, DodgeLens 10.
 
 ### Curriculum Learning
