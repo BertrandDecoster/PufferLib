@@ -63,7 +63,6 @@ namespace {
 
 constexpr uint32_t kSnapshotMagic = 0x534E4150;  // "SNAP"
 constexpr uint32_t kSnapshotVersion = 2;         // v2 adds annotations
-constexpr uint32_t kMaxVectorSize = 10000000;
 
 // Write primitive types to buffer
 template <typename T>
@@ -102,9 +101,14 @@ std::string ReadString(const uint8_t*& ptr, const uint8_t* end) {
   return str;
 }
 
+// Adversarial-allocation guard: every serialized element consumes at least
+// one wire byte, so a count larger than the remaining bytes is provably
+// corrupt. Rejecting it HERE (before the caller's vec.resize) means a
+// ~20-byte forged buffer cannot trigger a multi-GB transient allocation
+// inside the host process (companions_load_snapshot runs in Unreal).
 uint32_t ReadVectorSize(const uint8_t*& ptr, const uint8_t* end) {
   uint32_t size = ReadValue<uint32_t>(ptr, end);
-  if (size > kMaxVectorSize) {
+  if (size > static_cast<size_t>(end - ptr)) {
     throw std::runtime_error("Snapshot buffer corrupt: unreasonable vector size");
   }
   return size;

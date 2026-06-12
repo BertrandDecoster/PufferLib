@@ -452,8 +452,20 @@ class JsonReader {
     for (const auto& cell_json : *j) {
       int row = cell_json.at("row").get<int>();
       int col = cell_json.at("col").get<int>();
-      int idx = row * cols + col;
-      cells[static_cast<size_t>(idx)] = JsonToCellSnapshot(cell_json);
+      // Bounds check: coordinates come from external payloads (editors, HTN
+      // tools); without it a hostile cell entry is an out-of-bounds write.
+      if (row < 0 || row >= rows || col < 0 || col >= cols) {
+        throw std::runtime_error(
+            "Snapshot JSON corrupt: cell coordinates (" + std::to_string(row) +
+            ", " + std::to_string(col) + ") outside grid " +
+            std::to_string(rows) + "x" + std::to_string(cols));
+      }
+      size_t idx = static_cast<size_t>(row) * cols + col;
+      if (idx >= cells.size()) {
+        throw std::runtime_error(
+            "Snapshot JSON corrupt: cell index out of range");
+      }
+      cells[idx] = JsonToCellSnapshot(cell_json);
     }
   }
 

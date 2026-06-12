@@ -15,12 +15,16 @@
 // compare dumps: a forgotten read/write path FAILS NAMING THE FIELD (e.g.
 // "agents[1].fsm.attack_damage"), not just "snapshots differ".
 
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "../third_party/nlohmann/json.hpp"
 
 #include "../src/core/annotations.h"
 #include "../src/core/cell.h"
@@ -410,6 +414,126 @@ TEST(TestCrossFormatRoundTripPerField) {
   Snapshot via_bin = Snapshot::Deserialize(original.Serialize());
   Snapshot via_json = SnapshotFromJson(SnapshotToJson(via_bin));
   AssertDumpsEqual(Dump(original), Dump(via_json), "binary->JSON");
+}
+
+// =============================================================================
+// Negative-path tests: corrupt, truncated, or adversarial payloads must
+// throw a clean std::exception - never crash, never write out of bounds,
+// never make a huge transient allocation driven by an unvalidated count.
+// =============================================================================
+
+// (a) json_optional keys (FSM attack_* block, annotations) absent -> loads
+// with defaults. Pins the optionality contract of the JsonReader.
+TEST(TestJsonOptionalKeysAbsentAppliesDefaults) {
+  Snapshot original = MakeFilledSnapshot();
+  nlohmann::json j = nlohmann::json::parse(SnapshotToJson(original));
+
+  j.erase("annotations");
+  bool stripped_fsm = false;
+  for (auto& agent : j.at("agents")) {
+    if (!agent.at("fsm").is_object()) continue;
+    for (const char* key :
+         {"attack_tick_counter", "attack_target_position", "attack_area_width",
+          "attack_area_height", "attack_damage", "attack_filter"}) {
+      ASSERT_EQ(agent.at("fsm").erase(key), 1u);
+    }
+    stripped_fsm = true;
+  }
+  ASSERT_TRUE(stripped_fsm);
+
+  Snapshot restored = SnapshotFromJson(j.dump());
+  ASSERT_TRUE(restored.annotations.empty());
+  ASSERT_EQ(restored.agents.size(), original.agents.size());
+  bool checked_fsm = false;
+  for (const auto& agent : restored.agents) {
+    if (!agent.has_fsm) continue;
+    checked_fsm = true;
+    ASSERT_EQ(agent.fsm.attack_tick_counter, 0);
+    ASSERT_EQ(agent.fsm.attack_target_position.row, -1);
+    ASSERT_EQ(agent.fsm.attack_target_position.col, -1);
+    ASSERT_EQ(agent.fsm.attack_area_width, 1);
+    ASSERT_EQ(agent.fsm.attack_area_height, 1);
+    ASSERT_EQ(agent.fsm.attack_damage, 1);
+    ASSERT_TRUE(agent.fsm.attack_filter == TargetFilter::Companion);
+  }
+  ASSERT_TRUE(checked_fsm);
+}
+
+// (b) Required key missing -> throws (tick is NOT json_optional).
+TEST(TestJsonMissingRequiredKeyThrows) {
+  nlohmann::json j = nlohmann::json::parse(SnapshotToJson(MakeFilledSnapshot()));
+  ASSERT_EQ(j.erase("tick"), 1u);
+  bool threw = false;
+  try {
+    SnapshotFromJson(j.dump());
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+}
+
+// (c) Truncated binary buffers at several offsets -> throws, never crashes.
+TEST(TestBinaryTruncatedBufferThrows) {
+  std::vector<uint8_t> valid = MakeFilledSnapshot().Serialize();
+  ASSERT_TRUE(valid.size() > 100u);
+  for (double frac : {0.25, 0.50, 0.90}) {
+    std::vector<uint8_t> cut(
+        valid.begin(),
+        valid.begin() + static_cast<size_t>(valid.size() * frac));
+    bool threw = false;
+    try {
+      Snapshot::Deserialize(cut);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    ASSERT_TRUE(threw);
+  }
+}
+
+// (d) Forged vector count: valid header + a cells count of 9,000,000 with
+// nothing behind it. Each serialized element consumes at least one wire
+// byte, so any count above the remaining byte count is provably corrupt and
+// must be rejected BEFORE the resize - a ~20-byte buffer must not trigger a
+// multi-MB/GB transient allocation inside the host process.
+TEST(TestBinaryForgedHugeVectorCountThrows) {
+  std::vector<uint8_t> valid = MakeFilledSnapshot().Serialize();
+  // Layout: magic(4) + version(4) + rows(4) + cols(4), then cells count u32.
+  std::vector<uint8_t> forged(valid.begin(), valid.begin() + 16);
+  const uint32_t huge_count = 9000000;  // below the old constant 10M cap
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&huge_count);
+  forged.insert(forged.end(), p, p + sizeof(huge_count));
+
+  bool threw = false;
+  std::string msg;
+  try {
+    Snapshot::Deserialize(forged);
+  } catch (const std::exception& e) {
+    threw = true;
+    msg = e.what();
+  }
+  ASSERT_TRUE(threw);
+  // The remaining-bytes guard must fire (pre-allocation), not a later
+  // element-read underflow (post-allocation).
+  ASSERT_TRUE(msg.find("unreasonable vector size") != std::string::npos);
+}
+
+// Fix 3: hostile JSON cell coordinates outside the grid -> throws instead of
+// writing out of bounds (this path is fed by external editors/HTN tools).
+TEST(TestJsonOutOfRangeCellCoordinatesThrows) {
+  // Grid in MakeFilledSnapshot is 2x3.
+  for (auto [row, col] : {std::pair<int, int>{99, 0}, {0, 99}, {-1, 0}, {0, -1}}) {
+    nlohmann::json j =
+        nlohmann::json::parse(SnapshotToJson(MakeFilledSnapshot()));
+    j.at("grid").at("cells").at(0).at("row") = row;
+    j.at("grid").at("cells").at(0).at("col") = col;
+    bool threw = false;
+    try {
+      SnapshotFromJson(j.dump());
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    ASSERT_TRUE(threw);
+  }
 }
 
 // =============================================================================

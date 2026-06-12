@@ -106,6 +106,8 @@ struct AnnotationSnapshot {
   // conditional: "target" is a string, exactly one of pos/agent_id is
   // emitted, and params is a JSON object. This list still drives the binary
   // format and the introspection/round-trip tests.
+  // NOTE: COMPANIONS_SNAPSHOT_SIZE_GUARD(AnnotationSnapshot, ...) lives in
+  // snapshot.h - adding/removing a member here will trip that static_assert.
   template <class Self, class V>
   static void VisitFields(Self& self, V&& v) {
     v("target", self.target_type);  // uint8_t
