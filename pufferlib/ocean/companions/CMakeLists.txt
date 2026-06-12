@@ -226,6 +226,12 @@ add_executable(companions_snapshot_json_test tests/test_snapshot_json.cc)
 target_link_libraries(companions_snapshot_json_test companions_viz companions_env companions_core)
 target_include_directories(companions_snapshot_json_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_snapshot_golden_test tests/test_snapshot_golden.cc)
+target_link_libraries(companions_snapshot_golden_test companions_viz companions_env companions_core)
+target_include_directories(companions_snapshot_golden_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(companions_snapshot_golden_test PRIVATE
+  TESTS_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+
 add_executable(companions_fsm_timing_test tests/test_fsm_timing.cc)
 target_link_libraries(companions_fsm_timing_test companions_viz companions_env companions_core)
 target_include_directories(companions_fsm_timing_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -282,6 +288,7 @@ add_test(NAME companions_map_generator_test COMMAND companions_map_generator_tes
 add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)
 add_test(NAME companions_snapshot_test COMMAND companions_snapshot_test)
 add_test(NAME companions_snapshot_json_test COMMAND companions_snapshot_json_test)
+add_test(NAME companions_snapshot_golden_test COMMAND companions_snapshot_golden_test)
 add_test(NAME companions_fsm_timing_test COMMAND companions_fsm_timing_test)
 add_test(NAME companions_task_lens_test COMMAND companions_task_lens_test)
 add_test(NAME companions_annotations_test COMMAND companions_annotations_test)

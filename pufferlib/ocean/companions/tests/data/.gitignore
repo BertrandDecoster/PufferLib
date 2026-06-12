@@ -1,0 +1,3 @@
+# Golden serialization fixtures are committed compatibility locks; re-include
+# them despite the repo-wide *.bin ignore rule.
+!golden_snapshot_v2.bin

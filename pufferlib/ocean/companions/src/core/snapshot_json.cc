@@ -79,9 +79,12 @@ Direction StringToDirection(const std::string& str) {
 }
 
 StatusType StringToStatusType(const std::string& str) {
-  if (str == "Stunned") return StatusType::Stunned;
-  if (str == "Slowed") return StatusType::Slowed;
-  if (str == "Marked") return StatusType::Marked;
+  // StatusTypeToString (object.cc) emits lowercase names; older code briefly
+  // matched only capitalized forms, silently dropping statuses on JSON load
+  // (caught by the golden-fixture round-trip test). Accept both.
+  if (str == "stunned" || str == "Stunned") return StatusType::Stunned;
+  if (str == "slowed" || str == "Slowed") return StatusType::Slowed;
+  if (str == "marked" || str == "Marked") return StatusType::Marked;
   return StatusType::None;
 }
 

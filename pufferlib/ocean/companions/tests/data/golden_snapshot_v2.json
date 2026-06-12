@@ -1,0 +1,347 @@
+{
+  "agents": [
+    {
+      "agent_index": 0,
+      "agent_type": "Player",
+      "alive": true,
+      "cadence": [],
+      "color": "Red",
+      "direction": "Right",
+      "faction": "COMPANION",
+      "fsm": null,
+      "health": 2,
+      "id": 1,
+      "max_health": 5,
+      "position": {
+        "col": 2,
+        "row": 1
+      },
+      "prev_position": {
+        "col": 1,
+        "row": 1
+      },
+      "statuses": [
+        {
+          "duration": 3,
+          "status_type": "stunned"
+        },
+        {
+          "duration": 7,
+          "status_type": "marked"
+        }
+      ],
+      "tick": 13
+    },
+    {
+      "agent_index": -1,
+      "agent_type": "AgentFSM",
+      "alive": true,
+      "cadence": [
+        1,
+        0,
+        1
+      ],
+      "color": "Green",
+      "direction": "Down",
+      "faction": "ENEMY",
+      "fsm": {
+        "attack_area_height": 2,
+        "attack_area_width": 3,
+        "attack_damage": 2,
+        "attack_filter": 1,
+        "attack_target_position": {
+          "col": 2,
+          "row": 1
+        },
+        "attack_tick_counter": 2,
+        "detection_range": 7,
+        "lose_target_range": 9,
+        "patrol_forward": false,
+        "patrol_index": 2,
+        "patrol_path": [
+          {
+            "col": 1,
+            "row": 2
+          },
+          {
+            "col": 3,
+            "row": 2
+          },
+          {
+            "col": 3,
+            "row": 3
+          }
+        ],
+        "rng_inc": 1234605616436508553,
+        "rng_state": 11651590505119483672,
+        "state_type": "Attack",
+        "target_id": 1
+      },
+      "health": 4,
+      "id": 2,
+      "max_health": 6,
+      "position": {
+        "col": 4,
+        "row": 3
+      },
+      "prev_position": {
+        "col": 3,
+        "row": 3
+      },
+      "statuses": [
+        {
+          "duration": 2,
+          "status_type": "slowed"
+        }
+      ],
+      "tick": 42
+    },
+    {
+      "agent_index": 1,
+      "agent_type": "Companion",
+      "alive": false,
+      "cadence": [
+        2
+      ],
+      "color": "Blue",
+      "direction": "Left",
+      "faction": "COMPANION",
+      "fsm": null,
+      "health": 0,
+      "id": 3,
+      "max_health": 3,
+      "position": {
+        "col": 0,
+        "row": 0
+      },
+      "prev_position": {
+        "col": 1,
+        "row": 0
+      },
+      "statuses": [],
+      "tick": 5
+    }
+  ],
+  "annotations": [
+    {
+      "owner_lens_id": -1,
+      "params": {
+        "alpha": "1",
+        "beta": "two"
+      },
+      "pos": {
+        "col": 4,
+        "row": 2
+      },
+      "tag": "SynchroGoal",
+      "target": "Cell"
+    },
+    {
+      "agent_id": 2,
+      "owner_lens_id": -1,
+      "params": {
+        "name": "warden"
+      },
+      "tag": "HtnName",
+      "target": "Agent"
+    },
+    {
+      "owner_lens_id": 7,
+      "params": {},
+      "pos": {
+        "col": 2,
+        "row": 0
+      },
+      "tag": "AggroTarget",
+      "target": "Cell"
+    }
+  ],
+  "d4_value": 5,
+  "effects": [
+    {
+      "direction": "Up",
+      "effect_name": "fire_burst",
+      "in_telegraph": true,
+      "loops_remaining": 1,
+      "source_id": 2,
+      "target_actor_id": -1,
+      "target_actors": [],
+      "target_cell": {
+        "col": 2,
+        "row": 2
+      },
+      "target_type": 0,
+      "ticks_remaining": 3
+    },
+    {
+      "direction": "Right",
+      "effect_name": "poison_cloud",
+      "in_telegraph": false,
+      "loops_remaining": 0,
+      "source_id": -1,
+      "target_actor_id": 1,
+      "target_actors": [
+        1,
+        3
+      ],
+      "target_cell": {
+        "col": 3,
+        "row": 0
+      },
+      "target_type": 1,
+      "ticks_remaining": 1
+    }
+  ],
+  "grid": {
+    "cells": [
+      {
+        "cell_kind": "Floor",
+        "cell_origin": "Default",
+        "col": 0,
+        "row": 0
+      },
+      {
+        "cell_kind": "Wall",
+        "cell_origin": "Default",
+        "col": 1,
+        "row": 0
+      },
+      {
+        "cell_kind": "Hazard",
+        "cell_origin": "Default",
+        "col": 2,
+        "row": 0
+      },
+      {
+        "cell_kind": "HealArea",
+        "cell_origin": "Default",
+        "col": 3,
+        "row": 0
+      },
+      {
+        "cell_kind": "Floor",
+        "cell_origin": "Default",
+        "col": 4,
+        "row": 0
+      },
+      {
+        "cell_kind": "Wall",
+        "cell_origin": "Room",
+        "col": 0,
+        "row": 1
+      },
+      {
+        "cell_kind": "Hazard",
+        "cell_origin": "Room",
+        "col": 1,
+        "row": 1
+      },
+      {
+        "cell_kind": "HealArea",
+        "cell_origin": "Room",
+        "col": 2,
+        "row": 1
+      },
+      {
+        "cell_kind": "Floor",
+        "cell_origin": "Room",
+        "col": 3,
+        "row": 1
+      },
+      {
+        "cell_kind": "Wall",
+        "cell_origin": "Room",
+        "col": 4,
+        "row": 1
+      },
+      {
+        "cell_kind": "Hazard",
+        "cell_origin": "Corridor",
+        "col": 0,
+        "row": 2
+      },
+      {
+        "cell_kind": "HealArea",
+        "cell_origin": "Corridor",
+        "col": 1,
+        "row": 2
+      },
+      {
+        "cell_kind": "Floor",
+        "cell_origin": "Corridor",
+        "col": 2,
+        "row": 2
+      },
+      {
+        "cell_kind": "Wall",
+        "cell_origin": "Corridor",
+        "col": 3,
+        "row": 2
+      },
+      {
+        "cell_kind": "Hazard",
+        "cell_origin": "Corridor",
+        "col": 4,
+        "row": 2
+      },
+      {
+        "cell_kind": "HealArea",
+        "cell_origin": "Obstacle",
+        "col": 0,
+        "row": 3
+      },
+      {
+        "cell_kind": "Floor",
+        "cell_origin": "Obstacle",
+        "col": 1,
+        "row": 3
+      },
+      {
+        "cell_kind": "Wall",
+        "cell_origin": "Obstacle",
+        "col": 2,
+        "row": 3
+      },
+      {
+        "cell_kind": "Hazard",
+        "cell_origin": "Obstacle",
+        "col": 3,
+        "row": 3
+      },
+      {
+        "cell_kind": "HealArea",
+        "cell_origin": "Obstacle",
+        "col": 4,
+        "row": 3
+      }
+    ],
+    "cols": 5,
+    "rows": 4
+  },
+  "horizon": 250,
+  "magic": "SNAP",
+  "patrol_path": [
+    {
+      "col": 1,
+      "row": 1
+    },
+    {
+      "col": 3,
+      "row": 1
+    },
+    {
+      "col": 3,
+      "row": 3
+    },
+    {
+      "col": 1,
+      "row": 3
+    }
+  ],
+  "rng_state": {
+    "inc": 1147797409030816545,
+    "state": 1311768467463790320
+  },
+  "tick": 77,
+  "version": 2
+}
