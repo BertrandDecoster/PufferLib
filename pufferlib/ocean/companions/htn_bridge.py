@@ -377,6 +377,7 @@ class SnapshotToFacts:
             position = agent.get("position", {})
             row = position.get("row", -1)
             col = position.get("col", -1)
+            # KNOWN GAP: game-emitted JSON serializes faction/status enums as strings ("ENEMY", "stunned") but this reader compares ints, so isEnemy facts don't fire on game JSON yet (pre-existing; tracked for HTN-bridge integration).
             faction = agent.get("faction", 0)
             alive = agent.get("alive", True)
 

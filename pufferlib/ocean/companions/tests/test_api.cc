@@ -420,6 +420,20 @@ TEST(TestGameShellSuccessLatchesWithoutDone) {
   ASSERT_TRUE(companions_is_success(env));
   ASSERT_FALSE(companions_is_done(env));
 
+  // In-game executor sequence: succeed task A -> swap lens to task B -> poll
+  // success for B. The lens swap must clear task A's latched success.
+  ASSERT_TRUE(companions_set_task_lens(env, Companions_Lens_Dodge));
+  ASSERT_FALSE(companions_is_success(env));
+
+  // DodgeLens success requires surviving until the horizon (tick >= horizon,
+  // dodge_lens.cc IsSuccess); we are only a handful of ticks into a
+  // 100-tick horizon, so one Stay step cannot legitimately succeed. A stale
+  // latch from task A resurfacing through companions_step would trip this.
+  Companions_Action stay = {Companions_Movement_Stay, Companions_Interact_None};
+  Companions_StepResult step_result = {};
+  companions_step(env, &stay, 1, &step_result);
+  ASSERT_FALSE(companions_is_success(env));
+
   companions_destroy(env);
 }
 
