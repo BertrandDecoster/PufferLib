@@ -418,6 +418,141 @@ TEST(TestGameShellSuccessLatchesWithoutDone) {
   companions_destroy(env);
 }
 
+TEST(TestSuccessClearedBySnapshotLoad) {
+  // Snapshots capture physical state only — they do not serialize the latched
+  // success flag. Loading a snapshot taken BEFORE success must therefore
+  // clear any latched success, including one step later (the wrapper caches
+  // success=false on load, but companions_step re-reads the latch from the
+  // C++ env — a stale latch would resurface there and lie to the plan
+  // executor).
+  Companions_EnvConfig config = MakeConfig(5, 5, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  companions_reset(env, 42);
+  ASSERT_FALSE(companions_is_success(env));
+
+  // Save a snapshot of the pre-success state.
+  int32_t snap_size = companions_get_snapshot_size(env);
+  ASSERT_TRUE(snap_size > 0);
+  std::vector<uint8_t> snapshot(snap_size);
+  ASSERT_TRUE(companions_save_snapshot(env, snapshot.data(), snap_size));
+
+  // Locate the synchro goal via the annotation layer (tag 0 = SynchroGoal).
+  const int32_t kSynchroGoalTag = 0;
+  int goal_row = -1, goal_col = -1;
+  for (int r = 0; r < 5 && goal_row < 0; r++) {
+    for (int c = 0; c < 5; c++) {
+      if (companions_has_tag_at(env, r, c, kSynchroGoalTag)) {
+        goal_row = r;
+        goal_col = c;
+        break;
+      }
+    }
+  }
+  ASSERT_TRUE(goal_row >= 0);
+
+  // Manhattan-walk the agent onto the goal to latch success.
+  Companions_AgentState agent = {};
+  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &agent));
+  int guard = 0;
+  while ((agent.position.row != goal_row || agent.position.col != goal_col) &&
+         guard++ < 20) {
+    Companions_MovementAction mv = Companions_Movement_Stay;
+    if (agent.position.row < goal_row) {
+      mv = Companions_Movement_Down;
+    } else if (agent.position.row > goal_row) {
+      mv = Companions_Movement_Up;
+    } else if (agent.position.col < goal_col) {
+      mv = Companions_Movement_Right;
+    } else {
+      mv = Companions_Movement_Left;
+    }
+    Companions_Action action = {mv, Companions_Interact_None};
+    Companions_StepResult result = {};
+    companions_step(env, &action, 1, &result);
+    ASSERT_TRUE(companions_get_agent_by_index(env, 0, &agent));
+  }
+  ASSERT_TRUE(companions_is_success(env));
+
+  // Load the pre-success snapshot: success must clear immediately...
+  ASSERT_TRUE(companions_load_snapshot(env, snapshot.data(), snap_size));
+  ASSERT_FALSE(companions_is_success(env));
+
+  // ...and STAY cleared after the next step (the agent is back at its spawn,
+  // off the goal — only a stale latch could report success here).
+  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &agent));
+  ASSERT_TRUE(agent.position.row != goal_row || agent.position.col != goal_col);
+  Companions_Action stay = {Companions_Movement_Stay, Companions_Interact_None};
+  Companions_StepResult result = {};
+  companions_step(env, &stay, 1, &result);
+  ASSERT_FALSE(companions_is_success(env));
+
+  companions_destroy(env);
+}
+
+// =============================================================================
+// Episode End Event Tests (AggroEnv — the env with episode semantics)
+// =============================================================================
+// GameEnv never reports done, so the EpisodeEnd emission block in
+// companions_step is only reachable via companions_create_aggro. This test
+// restores the coverage the old TestEpisodeEnd provided before
+// companions_create switched to GameEnv.
+TEST(TestAggroEpisodeEndEvent) {
+  Companions_AggroEnvConfig config = {};
+  config.rows = 10;
+  config.cols = 10;
+  config.num_companions = 1;
+  config.patrol_square_size = 3;
+  config.horizon = 10;  // Short horizon: timeout-driven done
+  config.d4_transform = 0;
+  config.seed = 42;
+  config.enemy_type = Companions_Enemy_Zombie;
+  config.map_complexity = 0;
+
+  Companions_Env* env = companions_create_aggro(&config);
+  ASSERT_NOT_NULL(env);
+  companions_reset(env, 42);
+
+  // AggroEnv agents = companions + 1 enemy (enemy slot is FSM-driven; its
+  // action is ignored but a slot must be supplied).
+  const int num_agents = 2;
+  std::vector<Companions_Action> actions(
+      num_agents, {Companions_Movement_Stay, Companions_Interact_None});
+
+  bool saw_done = false;
+  int episode_end_events = 0;
+  Companions_StepResult result = {};
+  for (int step = 0; step < config.horizon + 5 && !saw_done; step++) {
+    companions_step(env, actions.data(), num_agents, &result);
+    if (result.state.done) {
+      saw_done = true;
+      for (int i = 0; i < result.event_count; i++) {
+        if (result.events[i].type == Companions_Event_EpisodeEnd) {
+          episode_end_events++;
+          ASSERT_EQ(result.events[i].episode_steps, companions_get_tick(env));
+          ASSERT_EQ(result.events[i].episode_success,
+                    companions_is_success(env));
+        }
+      }
+    } else {
+      // EpisodeEnd must only fire on the done step.
+      for (int i = 0; i < result.event_count; i++) {
+        ASSERT_NE(result.events[i].type, Companions_Event_EpisodeEnd);
+      }
+    }
+  }
+
+  // Done fires at the horizon (idle agents never aggro-complete earlier),
+  // with exactly one EpisodeEnd event carrying the episode stats.
+  ASSERT_TRUE(saw_done);
+  ASSERT_EQ(companions_get_tick(env), config.horizon);
+  ASSERT_EQ(episode_end_events, 1);
+  // With everyone idle the aggro task cannot succeed: timeout failure.
+  ASSERT_FALSE(companions_is_success(env));
+
+  companions_destroy(env);
+}
+
 // =============================================================================
 // Special Cells Tests
 // =============================================================================

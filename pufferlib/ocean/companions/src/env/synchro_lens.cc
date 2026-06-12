@@ -21,7 +21,12 @@ bool SynchroLens::IsDone(const BaseEnv& env) const {
 }
 
 bool SynchroLens::IsSuccess(const BaseEnv& env) const {
-  return CountAgentsOnSynchroCells(env) >= CountSynchroCells(env);
+  // A world with zero synchro goals is not a (vacuously) solved task — it is
+  // a world this lens cannot succeed on, consistent with CanOperateOn
+  // requiring > 0 goals. This matters in-game: GameEnv accepts arbitrary
+  // snapshots, and a goal-less one must not latch spurious success.
+  int num_goals = CountSynchroCells(env);
+  return num_goals > 0 && CountAgentsOnSynchroCells(env) >= num_goals;
 }
 
 double SynchroLens::ComputeReward(const BaseEnv& env, int agent_id) const {

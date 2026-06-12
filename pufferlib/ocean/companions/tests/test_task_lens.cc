@@ -199,6 +199,21 @@ TEST(TestSynchroLensCanOperateOn) {
   ASSERT_TRUE(lens.CanOperateOn(env));
 }
 
+TEST(TestSynchroLensIsSuccessFalseWithZeroGoals) {
+  // A world with zero SynchroGoal annotations must NOT report success:
+  // "0 agents on 0 goals" is vacuous, not victory. This matters in-game,
+  // where GameEnv accepts arbitrary snapshots (e.g. an aggro level) while
+  // SynchroLens is active — a vacuous true would latch spurious success.
+  // Consistent with CanOperateOn, which requires > 0 goals.
+  DodgeEnv env(9, 1, 100, 50, 42);  // No synchro goals anywhere
+  SynchroLens lens;
+  ASSERT_EQ(static_cast<int>(
+                env.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal).size()),
+            0);
+  ASSERT_FALSE(lens.CanOperateOn(env));
+  ASSERT_FALSE(lens.IsSuccess(env));
+}
+
 TEST(TestSynchroLensIsDoneTimeout) {
   // Create env with horizon=10
   SynchroEnv env(6, 6, 1, 1, 0, 42, 0, 10);

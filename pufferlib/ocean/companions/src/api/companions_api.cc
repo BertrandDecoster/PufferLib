@@ -502,8 +502,10 @@ COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_Len
       SetError("Lens incompatible with current environment state");
       return false;
     }
-    // Refresh cached done/success with new lens's evaluation
-    // (Player may already be on goal cell for the new lens)
+    // Refresh the cached flags. SetTaskLens just reset the latched success,
+    // so the cached success is always false here — the new lens re-evaluates
+    // (and may re-latch) success on the next companions_step. done is re-read
+    // because lens-driven termination may differ under the new lens.
     env->done = env->env->IsDone();
     env->success = env->env->IsSuccess();
     return true;

@@ -7,6 +7,7 @@
 // direct-C++ reference here is a GameEnv constructed with the same
 // config/seed — same generation path, identical level.
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -634,6 +635,46 @@ TEST(TestSnapshotParity_DirectSaveDLLLoad) {
     ASSERT_EQ(api_state.agents[i].position.row, cpp_positions[i].row);
     ASSERT_EQ(api_state.agents[i].position.col, cpp_positions[i].col);
   }
+
+  companions_destroy(api_env);
+}
+
+// Test: loading a snapshot with ZERO SynchroGoal annotations while the
+// default SynchroLens is active must NOT latch success. GameEnv accepts any
+// snapshot (no ValidateSnapshot override) — this is the in-game path where a
+// plan executor loads e.g. an aggro-task snapshot before swapping lenses. A
+// vacuous "0 agents on 0 goals" success here would lie to the executor, and
+// silently so if its follow-up lens swap is rejected by CanOperateOn.
+TEST(TestSnapshotParity_ZeroGoalSnapshotNoVacuousSuccess) {
+  const int rows = 8, cols = 8, agents = 2, synchro = 2;
+  const uint32_t seed = 42;
+
+  // Build a snapshot with no SynchroGoal annotations from a direct C++ env.
+  GameEnv cpp_env(rows, cols, agents, synchro, 0, seed, 0, 100);
+  Snapshot snap = cpp_env.SaveSnapshot();
+  snap.annotations.erase(
+      std::remove_if(snap.annotations.begin(), snap.annotations.end(),
+                     [](const AnnotationSnapshot& a) {
+                       return a.tag == SemanticTag::SynchroGoal;
+                     }),
+      snap.annotations.end());
+  std::vector<uint8_t> buffer = snap.Serialize();
+
+  // Load it into a C API env (GameEnv, SynchroLens active by default).
+  Companions_EnvConfig config = MakeConfig(rows, cols, agents, synchro, 0, seed);
+  Companions_Env* api_env = companions_create(&config);
+  ASSERT_NOT_NULL(api_env);
+  ASSERT_TRUE(companions_load_snapshot(api_env, buffer.data(),
+                                       static_cast<int32_t>(buffer.size())));
+  ASSERT_FALSE(companions_is_success(api_env));
+
+  // The first step re-evaluates the lens: with 0 goals, success must stay
+  // false instead of latching vacuously.
+  std::vector<Companions_Action> actions(
+      agents, {Companions_Movement_Stay, Companions_Interact_None});
+  Companions_StepResult result = {};
+  companions_step(api_env, actions.data(), agents, &result);
+  ASSERT_FALSE(companions_is_success(api_env));
 
   companions_destroy(api_env);
 }

@@ -999,6 +999,13 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   // Restore semantic annotations (present in v2+ snapshots; empty vector in v1).
   annotations_.Deserialize(snapshot.annotations);
 
+  // Snapshots capture physical state only and do not serialize the latched
+  // success flag, so clearing it is the only round-trip-consistent behavior:
+  // the lens re-evaluates success against the freshly loaded world on the
+  // next step. Without this, success latched before the load would resurface
+  // through IsSuccess() and lie to the plan executor.
+  ResetSuccess();
+
   // Apply D4 symmetry transformation if specified
   // (Snapshot contains pre-transform positions, so we apply transform after loading)
   if (d4_transform_ != 0) {
