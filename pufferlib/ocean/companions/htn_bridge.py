@@ -24,6 +24,7 @@ Fact-to-Snapshot Mapping (hardcoded for initial implementation):
 
 import json
 import re
+import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -34,13 +35,15 @@ from enum import IntEnum
 # =============================================================================
 
 class CellKind(IntEnum):
-    """Maps to companions::CellKind"""
+    """Maps to companions::CellKind (cell.h).
+
+    Task-semantic roles (SynchroGoal, AggroTarget, ...) are NOT CellKinds;
+    they live in the annotation layer (see SemanticTag below).
+    """
     Floor = 0
     Wall = 1
     Hazard = 2
-    Synchro = 3
-    HealArea = 4
-    Target = 5
+    HealArea = 3
 
 
 class Faction(IntEnum):
@@ -143,6 +146,49 @@ def cell_room_name(snapshot: Dict[str, Any], row: int, col: int) -> Optional[str
         if pos.get("row") == row and pos.get("col") == col:
             return (ann.get("params", {}) or {}).get("room")
     return None
+
+
+# =============================================================================
+# Snapshot schema validation
+# =============================================================================
+
+def _grid_scope(snapshot: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    """Return (dict holding rows/cols/cells, key prefix for error messages).
+
+    The game's JSON snapshots (snapshot_json.cc, see
+    tests/data/golden_snapshot_v2.json) nest the grid under a "grid" key:
+    {"grid": {"rows": ..., "cols": ..., "cells": [...]}, "agents": [...]}.
+    The bridge's own partial snapshots (FactsToSnapshot) keep rows/cols/cells
+    at the top level. Both shapes are accepted.
+    """
+    grid = snapshot.get("grid")
+    if isinstance(grid, dict):
+        return grid, "grid."
+    return snapshot, ""
+
+
+def validate_snapshot(snapshot: Any) -> None:
+    """Validate that `snapshot` has the keys the bridge consumes.
+
+    Raises ValueError naming the first missing key. Required:
+    - grid geometry: "rows", "cols", "cells" (top-level, or nested under
+      "grid" as the game's snapshot_json.cc emits them)
+    - "agents"
+    """
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"snapshot must be a dict, got {type(snapshot).__name__}")
+    scope, prefix = _grid_scope(snapshot)
+    for key in ("rows", "cols", "cells"):
+        if key not in scope:
+            raise ValueError(f"snapshot missing required key: {prefix}{key}")
+    if "agents" not in snapshot:
+        raise ValueError("snapshot missing required key: agents")
+
+
+def _grid_info(snapshot: Dict[str, Any]) -> Tuple[int, int, List[Dict[str, Any]]]:
+    """Return (rows, cols, cells) from either accepted snapshot shape."""
+    scope, _ = _grid_scope(snapshot)
+    return scope.get("rows", 0), scope.get("cols", 0), scope.get("cells", [])
 
 
 # =============================================================================
@@ -281,7 +327,13 @@ class SnapshotToFacts:
 
         Returns:
             List of fact strings like ["at(player, main)", "isEnemy(guard1)"]
+
+        Raises:
+            ValueError: if the snapshot is missing required keys
+                (rows/cols/cells/agents), see validate_snapshot().
         """
+        validate_snapshot(snapshot)
+
         facts = []
 
         # Extract room connections from layout
@@ -375,9 +427,7 @@ class SnapshotToFacts:
     def _cell_facts(self, snapshot: Dict[str, Any]) -> List[str]:
         """Generate facts from grid cells."""
         facts = []
-        cells = snapshot.get("cells", [])
-        rows = snapshot.get("rows", 0)
-        cols = snapshot.get("cols", 0)
+        _, cols, cells = _grid_info(snapshot)
 
         # Track which rooms have which hazards from actual cells
         room_hazards: Dict[str, Set[str]] = {}
@@ -401,26 +451,25 @@ class SnapshotToFacts:
         """
         Map agent ID to HTN entity name.
 
-        Prefers the HtnName annotation on the agent (params["name"]) when the
-        snapshot carries one. Falls back to the legacy hardcoded mapping.
+        Uses the HtnName annotation on the agent (params["name"]). Snapshots
+        without HtnName annotations get a generic "agent<id>" name and a
+        warning - levels should emit HtnName annotations on spawn so entity
+        identity lives in data, not in code.
         """
+        del agent_type  # retained for call-site compatibility; unused
         if snapshot is not None:
             name = agent_htn_name(snapshot, agent_id)
             if name:
                 return name
 
-        # Fallback: legacy hardcoded mapping for old snapshots that lack
-        # HtnName annotations. New levels should emit HtnName on spawn.
-        if agent_id == 0:
-            return "player"
-        elif agent_id == 1:
-            return "warden"
-        elif agent_id == 2:
-            return "guard1"
-        elif agent_id == 3:
-            return "guard2"
-        else:
-            return f"agent{agent_id}"
+        warnings.warn(
+            f"Snapshot lacks an HtnName annotation for agent {agent_id}; "
+            f"using generic name 'agent{agent_id}'. Levels should emit "
+            "HtnName annotations (SemanticTag.HtnName, params={'name': ...}) "
+            "on spawn.",
+            stacklevel=2,
+        )
+        return f"agent{agent_id}"
 
 
 # =============================================================================
@@ -434,16 +483,43 @@ class FactsToSnapshot:
     This is useful for:
     - Validating expected state matches actual state
     - Generating initial game state from HTN level definition
+
+    Entity name -> agent id mapping comes from the `base_snapshot`'s HtnName
+    annotations when one is provided. Without a base snapshot there is no
+    data source for ids, so a LEGACY hardcoded mapping is used (and warned
+    about) purely to keep old fact-only flows alive.
     """
 
-    def __init__(self, layout: LevelLayout):
+    # LEGACY: hardcoded entity->id mapping, used ONLY when no base snapshot
+    # with HtnName annotations is available. Kept for fact-only conversion
+    # flows (e.g. generating an initial snapshot purely from HTN facts).
+    # New code should pass base_snapshot so the mapping lives in data.
+    LEGACY_ENTITY_TO_ID: Dict[str, int] = {
+        "player": 0,
+        "warden": 1,
+        "guard1": 2,
+        "guard2": 3,
+    }
+
+    def __init__(self, layout: LevelLayout,
+                 base_snapshot: Optional[Dict[str, Any]] = None):
         self.layout = layout
-        self.entity_to_id: Dict[str, int] = {
-            "player": 0,
-            "warden": 1,
-            "guard1": 2,
-            "guard2": 3,
-        }
+        if base_snapshot is not None:
+            validate_snapshot(base_snapshot)
+            self.entity_to_id: Dict[str, int] = {}
+            for aid, params in agents_with_tag(base_snapshot, SemanticTag.HtnName):
+                name = params.get("name")
+                if name:
+                    self.entity_to_id[name] = aid
+        else:
+            warnings.warn(
+                "FactsToSnapshot created without a base snapshot; falling "
+                "back to the LEGACY hardcoded entity->id mapping "
+                "(player/warden/guard1/guard2). Pass a snapshot carrying "
+                "HtnName annotations to derive the mapping from data.",
+                stacklevel=2,
+            )
+            self.entity_to_id = dict(self.LEGACY_ENTITY_TO_ID)
 
     def convert(self, facts: List[str]) -> Dict[str, Any]:
         """
@@ -695,13 +771,17 @@ def snapshot_to_facts(snapshot: Dict[str, Any], level_name: str) -> List[str]:
     return converter.convert(snapshot)
 
 
-def facts_to_snapshot(facts: List[str], level_name: str) -> Dict[str, Any]:
+def facts_to_snapshot(facts: List[str], level_name: str,
+                      base_snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Convert HTN facts to a Companions snapshot.
 
     Args:
         facts: List of HTN fact strings
         level_name: Name of the level (for layout lookup)
+        base_snapshot: Optional snapshot whose HtnName annotations provide
+            the entity->id mapping. Without it a legacy hardcoded mapping
+            is used (and warned about).
 
     Returns:
         Partial snapshot dictionary
@@ -710,7 +790,7 @@ def facts_to_snapshot(facts: List[str], level_name: str) -> Dict[str, Any]:
     if not layout:
         raise ValueError(f"Unknown level: {level_name}")
 
-    converter = FactsToSnapshot(layout)
+    converter = FactsToSnapshot(layout, base_snapshot=base_snapshot)
     return converter.convert(facts)
 
 

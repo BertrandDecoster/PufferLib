@@ -10,6 +10,7 @@ Run from repo root:
 """
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,10 @@ from htn_bridge import (  # noqa: E402
     format_fact,
     get_puzzle1_layout,
     parse_fact,
+    validate_snapshot,
 )
+
+_GOLDEN_SNAPSHOT = _COMPANIONS_ROOT / "tests" / "data" / "golden_snapshot_v2.json"
 
 
 # =============================================================================
@@ -139,6 +143,24 @@ def _empty_snapshot(rows, cols):
     }
 
 
+def _htn_name_ann(agent_id, name):
+    """HtnName annotation dict mapping an agent id to its HTN entity name."""
+    return {
+        "target": "Agent",
+        "agent_id": agent_id,
+        "tag": SEMANTIC_TAG_NAMES[SemanticTag.HtnName],
+        "owner_lens_id": -1,
+        "params": {"name": name},
+    }
+
+
+def _legacy_facts_to_snapshot(layout):
+    """Construct FactsToSnapshot on the legacy (no base snapshot) path,
+    asserting it warns about the hardcoded entity->id mapping."""
+    with pytest.warns(UserWarning, match="LEGACY"):
+        return FactsToSnapshot(layout)
+
+
 def _agent(
     *,
     agent_id,
@@ -188,6 +210,7 @@ def test_snapshot_to_facts_emits_at_and_isEnemy_from_layout():
         _agent(agent_id=0, row=main_center[0], col=main_center[1]),
         _agent(agent_id=2, row=storage_center[0], col=storage_center[1], faction=Faction.Enemy),
     ]
+    snap["annotations"] = [_htn_name_ann(0, "player"), _htn_name_ann(2, "guard1")]
     facts = SnapshotToFacts(layout).convert(snap)
     assert "at(player, main)" in facts
     assert "at(guard1, storage)" in facts
@@ -218,6 +241,7 @@ def test_snapshot_to_facts_emits_hasTag_from_statuses():
             statuses=[{"type": 1, "duration": 3}],  # 1 == burning
         )
     ]
+    snap["annotations"] = [_htn_name_ann(2, "guard1")]
     facts = SnapshotToFacts(layout).convert(snap)
     assert "hasTag(guard1, burning)" in facts
 
@@ -238,6 +262,7 @@ def test_snapshot_to_facts_emits_hasAggro_from_fsm():
             fsm_target=0,  # targets player (id=0)
         ),
     ]
+    snap["annotations"] = [_htn_name_ann(0, "player"), _htn_name_ann(2, "guard1")]
     facts = SnapshotToFacts(layout).convert(snap)
     assert "hasAggro(guard1, player)" in facts
 
@@ -376,7 +401,7 @@ def test_facts_to_snapshot_populates_agents():
         "hasTag(guard1, burning)",
         "hasAggro(guard1, player)",
     ]
-    snap = FactsToSnapshot(layout).convert(facts)
+    snap = _legacy_facts_to_snapshot(layout).convert(facts)
     by_name = {a["id"]: a for a in snap["agents"]}
     assert 0 in by_name and 2 in by_name
     player = by_name[0]
@@ -394,7 +419,9 @@ def test_facts_to_snapshot_populates_agents():
 
 def test_facts_to_snapshot_emits_htn_name_annotations():
     layout = get_puzzle1_layout()
-    snap = FactsToSnapshot(layout).convert(["at(player, main)", "at(guard1, storage)"])
+    snap = _legacy_facts_to_snapshot(layout).convert(
+        ["at(player, main)", "at(guard1, storage)"]
+    )
     names = {}
     for ann in snap["annotations"]:
         if ann["tag"] == SEMANTIC_TAG_NAMES[SemanticTag.HtnName]:
@@ -405,7 +432,7 @@ def test_facts_to_snapshot_emits_htn_name_annotations():
 
 def test_facts_to_snapshot_emits_room_annotations_for_every_room_cell():
     layout = get_puzzle1_layout()
-    snap = FactsToSnapshot(layout).convert([])
+    snap = _legacy_facts_to_snapshot(layout).convert([])
     # Every cell that belongs to a room in the layout should have a Room
     # annotation. This is what lets SnapshotToFacts shed the LevelLayout.
     room_ann_positions = {
@@ -426,7 +453,7 @@ def test_facts_snapshot_facts_roundtrip():
         "isEnemy(guard1)",
         "hasTag(guard1, burning)",
     ]
-    snap = FactsToSnapshot(layout).convert(initial)
+    snap = _legacy_facts_to_snapshot(layout).convert(initial)
     recovered = SnapshotToFacts(layout).convert(snap)
     # The initial facts must all reappear; connected/roomHasHazard also emerge
     # from the layout, which is fine.
@@ -469,6 +496,7 @@ def test_high_level_snapshot_to_facts_honours_layout_registry():
     snap = _empty_snapshot(layout.rows, layout.cols)
     main_center = layout.get_room_center("main")
     snap["agents"] = [_agent(agent_id=0, row=main_center[0], col=main_center[1])]
+    snap["annotations"] = [_htn_name_ann(0, "player")]
     facts = bridge.snapshot_to_facts(snap, "puzzle1")
     assert "at(player, main)" in facts
 
@@ -476,3 +504,129 @@ def test_high_level_snapshot_to_facts_honours_layout_registry():
 def test_high_level_unknown_level_raises():
     with pytest.raises(ValueError):
         bridge.snapshot_to_facts({}, "not_a_level")
+
+
+# =============================================================================
+# validate_snapshot — schema checks
+# =============================================================================
+
+
+def test_validate_snapshot_accepts_flat_bridge_shape():
+    validate_snapshot(_empty_snapshot(3, 3))  # must not raise
+
+
+def test_validate_snapshot_accepts_real_game_json_shape():
+    # The C++ serializer (snapshot_json.cc) nests rows/cols/cells under
+    # "grid" — the golden fixture is the ground truth for that shape.
+    import json
+
+    with open(_GOLDEN_SNAPSHOT) as f:
+        snapshot = json.load(f)
+    validate_snapshot(snapshot)  # must not raise
+
+
+@pytest.mark.parametrize("missing", ["rows", "cols", "cells", "agents"])
+def test_validate_snapshot_names_missing_flat_key(missing):
+    snap = _empty_snapshot(3, 3)
+    del snap[missing]
+    with pytest.raises(ValueError, match=missing):
+        validate_snapshot(snap)
+
+
+@pytest.mark.parametrize("missing", ["rows", "cols", "cells"])
+def test_validate_snapshot_names_missing_nested_grid_key(missing):
+    snap = {
+        "grid": {"rows": 3, "cols": 3, "cells": []},
+        "agents": [],
+    }
+    del snap["grid"][missing]
+    with pytest.raises(ValueError, match=rf"grid\.{missing}"):
+        validate_snapshot(snap)
+
+
+def test_validate_snapshot_rejects_non_dict():
+    with pytest.raises(ValueError, match="dict"):
+        validate_snapshot(["not", "a", "snapshot"])
+
+
+def test_snapshot_to_facts_rejects_invalid_snapshot():
+    layout = get_puzzle1_layout()
+    with pytest.raises(ValueError, match="rows"):
+        SnapshotToFacts(layout).convert({})
+
+
+# =============================================================================
+# HtnName fallback — generic names + warning instead of hardcoded ids
+# =============================================================================
+
+
+def test_agent_without_htn_name_falls_back_to_generic_name_and_warns():
+    layout = get_puzzle1_layout()
+    snap = _empty_snapshot(layout.rows, layout.cols)
+    main_center = layout.get_room_center("main")
+    # Agent id 0 used to silently become "player" via a hardcoded mapping.
+    snap["agents"] = [_agent(agent_id=0, row=main_center[0], col=main_center[1])]
+    with pytest.warns(UserWarning, match="HtnName"):
+        facts = SnapshotToFacts(layout).convert(snap)
+    assert "at(agent0, main)" in facts
+    assert not any("player" in f for f in facts)
+
+
+def test_annotated_agents_produce_no_fallback_warning():
+    layout = get_puzzle1_layout()
+    snap = _empty_snapshot(layout.rows, layout.cols)
+    main_center = layout.get_room_center("main")
+    snap["agents"] = [_agent(agent_id=0, row=main_center[0], col=main_center[1])]
+    snap["annotations"] = [_htn_name_ann(0, "player")]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        facts = SnapshotToFacts(layout).convert(snap)
+    assert "at(player, main)" in facts
+
+
+# =============================================================================
+# FactsToSnapshot — entity ids from base snapshot annotations
+# =============================================================================
+
+
+def test_facts_to_snapshot_derives_ids_from_base_snapshot():
+    layout = get_puzzle1_layout()
+    base = _empty_snapshot(layout.rows, layout.cols)
+    base["annotations"] = [
+        _htn_name_ann(11, "hero"),
+        _htn_name_ann(37, "ogre"),
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # data-driven path must not warn
+        converter = FactsToSnapshot(layout, base_snapshot=base)
+    assert converter.entity_to_id == {"hero": 11, "ogre": 37}
+
+    snap = converter.convert(
+        ["at(hero, main)", "at(ogre, storage)", "isEnemy(ogre)", "hasAggro(ogre, hero)"]
+    )
+    by_id = {a["id"]: a for a in snap["agents"]}
+    assert 11 in by_id and 37 in by_id
+    assert by_id[37]["fsm"]["target_id"] == 11  # aggro target resolved via annotations
+
+
+def test_facts_to_snapshot_base_snapshot_is_validated():
+    layout = get_puzzle1_layout()
+    with pytest.raises(ValueError, match="agents"):
+        FactsToSnapshot(layout, base_snapshot={"rows": 3, "cols": 3, "cells": []})
+
+
+def test_facts_to_snapshot_without_base_snapshot_warns_legacy():
+    layout = get_puzzle1_layout()
+    with pytest.warns(UserWarning, match="LEGACY"):
+        converter = FactsToSnapshot(layout)
+    # The legacy mapping is preserved for fact-only flows.
+    assert converter.entity_to_id["player"] == 0
+    assert converter.entity_to_id["guard1"] == 2
+
+
+def test_high_level_facts_to_snapshot_accepts_base_snapshot():
+    layout = get_puzzle1_layout()
+    base = _empty_snapshot(layout.rows, layout.cols)
+    base["annotations"] = [_htn_name_ann(5, "scout")]
+    snap = bridge.facts_to_snapshot(["at(scout, main)"], "puzzle1", base_snapshot=base)
+    assert any(a["id"] == 5 for a in snap["agents"])
