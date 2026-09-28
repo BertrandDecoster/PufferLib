@@ -275,6 +275,67 @@ TEST(TestAnEnemyDropsATargetItDowned) {
 }
 
 // =============================================================================
+// The team's downs: the level is lost (TeamDown) at max_downs, or when every
+// companion is down at once
+// =============================================================================
+static Companion* AsCompanion(Agent* a) { return dynamic_cast<Companion*>(a); }
+
+TEST(TestTheThirdDownLosesTheLevel) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_EQ(env.GetMaxDowns(), 3);
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Place(env, 1, {5, 5});
+  a->TakeDamage(a->GetHealth());                // Down 1
+  a->RestoreDowns(false, a->GetTimesDowned());  // Stands in for a revive (phase 2)
+  a->RestoreHealth(1);
+  a->TakeDamage(1);                             // Down 2
+  ASSERT_EQ(env.GetDowns(), 2);
+  ASSERT_FALSE(env.IsTeamDown());
+  a->RestoreDowns(false, a->GetTimesDowned());
+  a->RestoreHealth(1);
+  a->TakeDamage(1);                             // Down 3
+  ASSERT_EQ(env.GetDowns(), 3);
+  ASSERT_TRUE(env.IsTeamDown());
+  env.Step({kStay, kStay});
+  ASSERT_TRUE(env.IsDone());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
+}
+
+TEST(TestEveryCompanionDownLosesTheLevel) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  DownCompanion(env, 0);
+  ASSERT_FALSE(env.IsTeamDown());
+  DownCompanion(env, 1);  // 2 downs < 3, but nobody is left
+  ASSERT_TRUE(env.IsTeamDown());
+  ASSERT_TRUE(env.IsDone());
+}
+
+TEST(TestMaxDownsIsLevelData) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_FALSE(env.SetMaxDowns(0));
+  ASSERT_TRUE(env.SetMaxDowns(1));
+  DownCompanion(env, 0);
+  ASSERT_TRUE(env.IsTeamDown());
+  auto copy = env.Clone();  // Copied with the env, kept across Reset
+  ASSERT_EQ(copy->GetMaxDowns(), 1);
+  env.Reset(42);
+  ASSERT_EQ(env.GetMaxDowns(), 1);
+}
+
+TEST(TestResetClearsTheDowns) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  DownCompanion(env, 0);
+  DownCompanion(env, 1);
+  env.Reset(42);
+  ASSERT_EQ(env.GetDowns(), 0);
+  ASSERT_FALSE(env.IsDone());
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

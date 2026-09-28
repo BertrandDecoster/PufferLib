@@ -51,7 +51,6 @@ class AggroEnv : public BaseEnv {
   // RL interface
   void Reset() override;
   void Reset(unsigned int seed) override;
-  bool IsDone() const override;
 
 
   // Accessors
@@ -94,6 +93,7 @@ class AggroEnv : public BaseEnv {
   void LoadSnapshot(const Snapshot& snapshot) override;
 
  protected:
+  bool IsEnvDone() const override;  // Success, horizon, or IsDoneWithoutHorizon
   // Under the Aggro lens: its latched failure or no living enemy
   bool IsDoneWithoutHorizon() const override;
 

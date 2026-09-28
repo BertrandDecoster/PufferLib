@@ -51,7 +51,8 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       skills_(other.skills_),
       last_skill_uses_(other.last_skill_uses_),
       last_tags_applied_(other.last_tags_applied_),
-      cell_tags_(other.cell_tags_) {
+      cell_tags_(other.cell_tags_),
+      max_downs_(other.max_downs_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -76,6 +77,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     last_skill_uses_ = other.last_skill_uses_;
     last_tags_applied_ = other.last_tags_applied_;
     cell_tags_ = other.cell_tags_;
+    max_downs_ = other.max_downs_;
   }
   return *this;
 }
@@ -169,6 +171,32 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   return result;
 }
 
+int BaseEnv::GetDowns() const {
+  int downs = 0;
+  for (const Companion* c : object_manager_->GetAllCompanions()) downs += c->GetTimesDowned();
+  return downs;
+}
+
+bool BaseEnv::SetMaxDowns(int max_downs) {
+  if (max_downs < 1) return false;
+  max_downs_ = max_downs;
+  return true;
+}
+
+bool BaseEnv::IsTeamDown() const {
+  // One pass (IsDone reads it several times a step): the downs, and whether
+  // anyone still stands (a dead companion does not)
+  const auto companions = object_manager_->GetAllCompanions();
+  if (companions.empty()) return false;
+  int downs = 0;
+  bool anyone_standing = false;
+  for (const Companion* c : companions) {
+    downs += c->GetTimesDowned();
+    if (c->IsAffectable()) anyone_standing = true;
+  }
+  return downs >= max_downs_ || !anyone_standing;
+}
+
 EndReason BaseEnv::GetEndReason() const {
   if (!IsDone()) return EndReason::None;
   if (end_reason_ != EndReason::None) return end_reason_;
@@ -177,8 +205,9 @@ EndReason BaseEnv::GetEndReason() const {
 
 EndReason BaseEnv::ComputeEndReason() const {
   if (IsSuccess()) return EndReason::Success;
+  if (IsTeamDown()) return EndReason::TeamDown;
   // Done even without the horizon: a failure ended the episode, latched or by
-  // the env's own rule. A latched failure the env's IsDone ignores did not.
+  // the env's own rule. A latched failure the env's IsEnvDone ignores did not.
   if (IsDoneWithoutHorizon()) return EndReason::TaskFailed;
   if (tick_ >= horizon_) return EndReason::Horizon;
   return EndReason::TaskFailed;  // An env's end rule it does not describe

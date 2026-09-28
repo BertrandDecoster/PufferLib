@@ -44,7 +44,6 @@ class SynchroEnv : public BaseEnv {
   // RL interface
   void Reset() override;
   void Reset(unsigned int seed) override;  // Reset with specific seed
-  bool IsDone() const override;
 
 
   // Get synchro cell positions
@@ -72,6 +71,9 @@ class SynchroEnv : public BaseEnv {
 
   // Snapshot validation - SynchroEnv requires synchro cells
   void ValidateSnapshot(const Snapshot& snapshot) const override;
+
+ protected:
+  bool IsEnvDone() const override;  // Success or horizon
 
  private:
   void SetupGrid();

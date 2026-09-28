@@ -235,7 +235,7 @@ void DodgeEnv::SpawnHazard() {
   SpawnEffect(effect_name, EffectTarget::AtCell(spawn_pos), dir);
 }
 
-bool DodgeEnv::IsDone() const {
+bool DodgeEnv::IsEnvDone() const {
   // Done if survived all ticks, or if any companion died
   return tick_ >= horizon_ || IsDoneWithoutHorizon();
 }

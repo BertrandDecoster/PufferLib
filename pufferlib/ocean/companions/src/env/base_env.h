@@ -57,6 +57,7 @@ enum class EndReason : int {
   Success = 1,     // The latched success
   Horizon = 2,     // The horizon was reached without an outcome
   TaskFailed = 3,  // The task can no longer succeed (e.g. Aggro's enemy is dead)
+  TeamDown = 4,    // The team is down: max_downs reached, or every companion down at once (the level is lost)
 };
 
 // =============================================================================
@@ -78,7 +79,20 @@ class BaseEnv {
   virtual void Reset() = 0;
   virtual void Reset(unsigned int seed) = 0;
   virtual StepResult Step(const std::vector<Action>& actions);
-  virtual bool IsDone() const = 0;
+  // Done: the team is down (whatever the env), or the env's own rule
+  // (IsEnvDone: success, horizon, a failure it honours)
+  bool IsDone() const { return IsTeamDown() || IsEnvDone(); }
+
+  // Downs. Every companion going down counts (revived or not); the level is
+  // lost (EndReason::TeamDown) once the count reaches max_downs, or when every
+  // companion is down at once. max_downs is level data (default 3, >= 1),
+  // kept across Reset.
+  static constexpr int kDefaultMaxDowns = 3;
+  int GetDowns() const;
+  int GetMaxDowns() const { return max_downs_; }
+  bool SetMaxDowns(int max_downs);  // False below 1
+  bool IsTeamDown() const;
+
   // Latched success flag. BaseEnv::Step sets it once the active TaskLens
   // reports IsSuccess; it stays set until ResetSuccess is called (e.g. by
   // SetTaskLens). Subclasses normally should not override.
@@ -95,12 +109,13 @@ class BaseEnv {
     end_reason_ = EndReason::None;
   }
   // Why the episode is done, i.e. what ended it: None while IsDone() is
-  // false, else Success (the latched success), else TaskFailed when the env
-  // is done even without the horizon (IsDoneWithoutHorizon: a latched failure
-  // the env's IsDone honours, as AggroEnv's under the Aggro lens, or the
-  // env's own end rule: a Dodge companion died, an Aggro enemy killed between
-  // steps), else Horizon (tick >= horizon). A latched failure the env's
-  // IsDone ignores (a Dodge lens on SynchroEnv / AggroEnv) did not end the
+  // false, else Success (the latched success), else TeamDown (IsTeamDown),
+  // else TaskFailed when the env is done even without the horizon
+  // (IsDoneWithoutHorizon: a latched failure the env's IsEnvDone honours, as
+  // AggroEnv's under the Aggro lens, or the env's own end rule: a Dodge
+  // companion died, an Aggro enemy killed between steps), else Horizon
+  // (tick >= horizon). A latched failure the env's
+  // IsEnvDone ignores (a Dodge lens on SynchroEnv / AggroEnv) did not end the
   // episode: it ends at the horizon, as Horizon. Hosts that keep playing
   // past a task failure tell it from a time out with this.
   // The reason is fixed when done first becomes true (latched by Step,
@@ -319,11 +334,15 @@ class BaseEnv {
   // Update all agents with FSM AI (called in PreStep)
   void UpdateAgentFSM();
 
-  // IsDone()'s terms other than the latched success and the horizon: true
+  // The env's own end rule (IsDone's other term, besides IsTeamDown): the
+  // latched success, the horizon, a failure it honours
+  virtual bool IsEnvDone() const = 0;
+
+  // IsEnvDone()'s terms other than the latched success and the horizon: true
   // when the env is done even without the horizon (a latched failure its
-  // IsDone honours, or its own end rule). GetEndReason reports TaskFailed
-  // then. An env whose IsDone is only success || horizon (SynchroEnv) keeps
-  // the default; the others build IsDone on their override so both agree.
+  // IsEnvDone honours, or its own end rule). GetEndReason reports TaskFailed
+  // then. An env whose IsEnvDone is only success || horizon (SynchroEnv) keeps
+  // the default; the others build IsEnvDone on their override so both agree.
   virtual bool IsDoneWithoutHorizon() const { return false; }
 
   // GetEndReason's rules, for a done env
@@ -420,6 +439,9 @@ class BaseEnv {
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;
+
+ private:
+  int max_downs_ = kDefaultMaxDowns;  // Level data (SetMaxDowns)
 };
 
 }  // namespace companions

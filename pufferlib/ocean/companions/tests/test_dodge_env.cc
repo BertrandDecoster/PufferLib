@@ -140,15 +140,17 @@ TEST(TestDodgeEnvDeath) {
   std::vector<Action> actions = {EncodeAction(MovementAction::Stay)};
   env.Step(actions);
 
-  // Should be done but not successful: the death ended it
+  // Should be done but not successful: the lone companion is down, so the
+  // whole team is (TeamDown comes before the env's own failure)
   ASSERT_TRUE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());
-  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
 }
 
 // A companion that goes down fails the Dodge task (DodgeLens::IsFailed), even
 // on the horizon step: the episode ends as TaskFailed, not Horizon. The
-// rewards and done are those of any death.
+// rewards and done are those of any death. Two companions: one down is not
+// the team down (TeamDown would name the end).
 TEST(TestDodgeEnvDownOnTheHorizonStepIsATaskFailure) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfig lethal;
@@ -160,8 +162,8 @@ TEST(TestDodgeEnvDownOnTheHorizonStepIsATaskFailure) {
   lethal.damage = 100;
   EffectConfigRegistry::Instance().RegisterConfig(lethal);
 
-  DodgeEnv env(7, 1, 100, 2, 42);  // Horizon 2, no hazards
-  const std::vector<Action> stay = {EncodeAction(MovementAction::Stay)};
+  DodgeEnv env(7, 2, 100, 2, 42);  // Horizon 2, no hazards
+  const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
   StepResult first = env.Step(stay);
   ASSERT_FALSE(first.done);
   ASSERT_TRUE(env.GetEndReason() == EndReason::None);
@@ -170,6 +172,7 @@ TEST(TestDodgeEnvDownOnTheHorizonStepIsATaskFailure) {
 
   StepResult last = env.Step(stay);
   ASSERT_TRUE(companion->IsDowned());
+  ASSERT_FALSE(env.IsTeamDown());
   ASSERT_EQ(env.GetTick(), 2);
   ASSERT_TRUE(last.done);
   ASSERT_FALSE(env.IsSuccess());

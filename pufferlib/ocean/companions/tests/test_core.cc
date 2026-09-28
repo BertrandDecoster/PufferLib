@@ -567,7 +567,7 @@ class CollisionTestEnv : public BaseEnv {
     // Seed not used in collision tests
   }
 
-  bool IsDone() const override {
+  bool IsEnvDone() const override {
     return false;
   }
 

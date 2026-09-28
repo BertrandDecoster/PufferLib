@@ -49,7 +49,6 @@ class DodgeEnv : public BaseEnv {
   // RL interface
   void Reset() override;
   void Reset(unsigned int seed) override;
-  bool IsDone() const override;
 
   // Observation with hazard zones
   void ObservationTensor(std::vector<float>& values, int player = 0) const override;
@@ -85,6 +84,7 @@ class DodgeEnv : public BaseEnv {
   void ValidateSnapshot(const Snapshot& snapshot) const override;
 
  protected:
+  bool IsEnvDone() const override;  // Horizon, or a companion died
   void PreStep() override;
   void PostStep() override;
   // A companion died

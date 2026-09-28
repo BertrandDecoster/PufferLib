@@ -956,17 +956,20 @@ TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
   ASSERT_FALSE(env.IsDone());
 }
 
+// Two companions: one down is not the team down.
 TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
-  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 3);
+  AggroEnv env(12, 2, EnemyType::Goblin, 7777, 0, 3);
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
   Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
   companion->TakeDamage(companion->GetHealth());
   ASSERT_TRUE(companion->IsDowned());
+  ASSERT_FALSE(env.IsTeamDown());
   ASSERT_TRUE(env.GetTaskLens()->IsDone(env));  // The lens alone would say done
   ASSERT_FALSE(env.IsDone());
-  const Action stay = EncodeAction(MovementAction::Stay);
+  const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()),
+                                 EncodeAction(MovementAction::Stay));  // The enemy's too
   for (int i = 0; i < 2; ++i) {
-    StepResult result = env.Step({stay, stay});
+    StepResult result = env.Step(stay);
     ASSERT_FALSE(result.done);
     ASSERT_FALSE(env.IsDone());
     // The Dodge task did fail (latched): the episode ends so at the horizon
@@ -974,7 +977,7 @@ TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
     ASSERT_TRUE(env.GetEndReason() == EndReason::None);
   }
   // The horizon ended it, not the failure AggroEnv ignores
-  ASSERT_TRUE(env.Step({stay, stay}).done);
+  ASSERT_TRUE(env.Step(stay).done);
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
 }
 

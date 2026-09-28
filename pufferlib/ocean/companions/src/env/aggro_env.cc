@@ -306,7 +306,7 @@ void AggroEnv::SpawnCompanions() {
 }
 
 
-bool AggroEnv::IsDone() const {
+bool AggroEnv::IsEnvDone() const {
   return success_ || tick_ >= horizon_ || IsDoneWithoutHorizon();
 }
 
