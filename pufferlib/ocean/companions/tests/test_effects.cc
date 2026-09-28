@@ -1594,6 +1594,57 @@ TEST(TestLoadedEffectKeepsItsSource) {
   ASSERT_EQ(loaded.GetActiveEffects()[0].source_id, kInvalidObjectId);
 }
 
+// Actor targets follow their agents through the saved ids too: an Actor
+// target naming no saved agent loads as none (the effect falls back to its
+// cell), and an ActorList drops such entries.
+TEST(TestLoadedEffectKeepsItsActorTargets) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
+  EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
+  EffectConfig cfg;
+  cfg.name = "wind_up";
+  cfg.telegraph_ticks = 2;
+  cfg.active_ticks = 1;
+  cfg.damage = 1;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Companion;
+  registry.RegisterConfig(cfg);
+
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  ObjectManager& om = env.GetMutableObjectManager();
+  const ObjectId companion = om.GetAllAgents()[0]->GetId();
+  om.UpdatePosition(companion, {3, 3});
+  const ObjectId gap = om.CreateActor<Agent>({5, 5})->GetId();
+  const ObjectId tower = om.CreateActor<Agent>({3, 4})->GetId();
+  om.RemoveObject(gap);
+  env.SpawnEffect("wind_up", EffectTarget::OnActor(tower));
+  env.SpawnEffect("wind_up", EffectTarget::OnActors({tower, companion}));
+  Snapshot snap = env.SaveSnapshot();
+  ASSERT_EQ(snap.effects.size(), 2u);
+  ASSERT_EQ(snap.effects[0].target_actor_id, tower);
+  ASSERT_TRUE(snap.effects[1].target_actors == (std::vector<int>{tower, companion}));
+  snap.effects[1].target_actors.insert(snap.effects[1].target_actors.begin(), 42);
+
+  SynchroEnv loaded(8, 8, 1, 1, 0, 42);
+  loaded.LoadSnapshot(snap);
+  const ObjectManager& lom = loaded.GetObjectManager();
+  const ObjectId loaded_tower = lom.GetActorAt({3, 4})->GetId();
+  const ObjectId loaded_companion = lom.GetActorAt({3, 3})->GetId();
+  ASSERT_TRUE(loaded_tower != tower);  // Re-issued without the gap
+  const auto& effects = loaded.GetActiveEffects();
+  ASSERT_EQ(effects.size(), 2u);
+  ASSERT_TRUE(effects[0].target.type == EffectTarget::Type::Actor);
+  ASSERT_EQ(effects[0].target.actor_id, loaded_tower);
+  ASSERT_TRUE(effects[1].target.type == EffectTarget::Type::ActorList);
+  ASSERT_TRUE(effects[1].target.actors ==
+              (std::vector<ObjectId>{loaded_tower, loaded_companion}));
+  ASSERT_TRUE(effects[1].GetCenter(lom) == (Position{3, 4}));  // Its first actor's cell
+
+  snap.effects[0].target_actor_id = 42;  // No saved agent
+  loaded.LoadSnapshot(snap);
+  ASSERT_EQ(loaded.GetActiveEffects()[0].target.actor_id, kInvalidObjectId);
+}
+
 // =============================================================================
 // Main
 // =============================================================================

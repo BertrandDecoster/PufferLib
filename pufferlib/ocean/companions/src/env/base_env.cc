@@ -46,6 +46,7 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       annotations_(other.annotations_),
       success_(other.success_),
       failed_(other.failed_),
+      end_reason_(other.end_reason_),
       tags_(other.tags_),
       skills_(other.skills_),
       last_skill_uses_(other.last_skill_uses_),
@@ -69,6 +70,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     annotations_ = other.annotations_;
     success_ = other.success_;
     failed_ = other.failed_;
+    end_reason_ = other.end_reason_;
     tags_ = other.tags_;
     skills_ = other.skills_;
     last_skill_uses_ = other.last_skill_uses_;
@@ -166,16 +168,30 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
 
   // Check termination
   result.done = IsDone();
+  LatchEndReason();
 
   return result;
 }
 
 EndReason BaseEnv::GetEndReason() const {
   if (!IsDone()) return EndReason::None;
+  if (end_reason_ != EndReason::None) return end_reason_;
+  return ComputeEndReason();
+}
+
+EndReason BaseEnv::ComputeEndReason() const {
   if (IsSuccess()) return EndReason::Success;
   if (failed_) return EndReason::TaskFailed;
   if (tick_ >= horizon_) return EndReason::Horizon;
   return EndReason::TaskFailed;  // Done by the env's own rule, not latched
+}
+
+void BaseEnv::LatchEndReason() {
+  if (!IsDone()) {
+    end_reason_ = EndReason::None;
+  } else if (end_reason_ == EndReason::None) {
+    end_reason_ = ComputeEndReason();
+  }
 }
 
 void BaseEnv::PreStep() {
@@ -1317,9 +1333,11 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
 
   // Load agents. They get new ids (0, 1, ... in the saved order), which may
   // differ from the saved ones (gaps left by removed objects, hand-authored
-  // levels): references to agents (effect sources and targets, FSM targets)
-  // are mapped through the saved ids below. The first agent wins a
-  // duplicated saved id; an id naming no saved agent maps to kInvalidObjectId.
+  // levels): references to agents (effect sources and targets, FSM targets
+  // and agent annotations) are mapped through the saved ids below. The first
+  // agent wins a duplicated saved id; an id naming no saved agent maps to
+  // kInvalidObjectId (an ActorList entry or an agent annotation naming none is
+  // dropped).
   std::unordered_map<int, ObjectId> saved_to_new;
   auto remap = [&saved_to_new](int saved) {
     auto it = saved_to_new.find(saved);
@@ -1459,7 +1477,8 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     target.cell = es.target_cell;
     target.actor_id = remap(es.target_actor_id);
     for (int id : es.target_actors) {
-      target.actors.push_back(remap(id));
+      const ObjectId actor = remap(id);
+      if (actor != kInvalidObjectId) target.actors.push_back(actor);
     }
 
     ActiveEffect effect;
@@ -1483,8 +1502,18 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   // generated Reset goes through here too.
   ResetOutcome();
 
-  // Restore semantic annotations (present in v2+ snapshots; empty vector in v1).
-  annotations_.Deserialize(snapshot.annotations);
+  // Restore semantic annotations (present in v2+ snapshots; empty vector in
+  // v1). Agent annotations name saved ids: mapped like the effect targets.
+  std::vector<AnnotationSnapshot> annotations;
+  annotations.reserve(snapshot.annotations.size());
+  for (AnnotationSnapshot a : snapshot.annotations) {
+    if (a.target_type == static_cast<uint8_t>(AnnotationTarget::Agent)) {
+      a.agent_id = remap(a.agent_id);
+      if (a.agent_id == kInvalidObjectId) continue;
+    }
+    annotations.push_back(std::move(a));
+  }
+  annotations_.Deserialize(annotations);
 
   // Restore zones (v4+), in the snapshot's frame like the cells and cell
   // annotations: ApplyD4Transform below moves all three together.
@@ -1522,6 +1551,7 @@ bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
   task_lens_ = std::move(lens);
   // Reset the outcome so the new lens evaluates its task from scratch
   ResetOutcome();
+  LatchEndReason();  // A lens change can end the episode
   return true;
 }
 
@@ -1557,6 +1587,7 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
   }
   task_lens_ = std::move(lens);
   ResetOutcome();
+  LatchEndReason();  // A lens change can end the episode
   return true;
 }
 

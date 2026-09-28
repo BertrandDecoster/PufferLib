@@ -841,6 +841,54 @@ TEST(TestTheFailurePenaltyIsPaidOnce) {
   ASSERT_TRUE(env.IsTaskFailed());
 }
 
+// The first outcome is final: a kill after a latched success is no failure.
+// A host that keeps playing is rewarded as after any success with the enemy
+// off the target (kTimePenalty), never FailurePenalty.
+TEST(TestAKillAfterASuccessPaysNoFailurePenalty) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 100);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 1);
+  env.GetMutableObjectManager().UpdatePosition(goblin->GetId(), env.GetTargetPosition());
+  const Action stay = EncodeAction(MovementAction::Stay);
+  StepResult win = env.Step({stay, stay});
+  ASSERT_TRUE(win.done);
+  ASSERT_TRUE(env.IsSuccess());
+  for (double r : win.rewards) ASSERT_EQ(r, AggroLens::kWinReward);
+
+  goblin->TakeDamage(goblin->GetHealth());
+  ASSERT_FALSE(goblin->IsAlive());
+  while (env.GetTick() < 10) {
+    StepResult r = env.Step({stay, stay});
+    ASSERT_TRUE(r.done);
+    for (double reward : r.rewards) ASSERT_EQ(reward, AggroLens::kTimePenalty);
+  }
+  ASSERT_TRUE(env.IsSuccess());
+  ASSERT_FALSE(env.IsTaskFailed());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
+}
+
+// The end reason is fixed when done first becomes true: a kill after the
+// horizon latches the failure, but the episode still ended at the horizon.
+TEST(TestAKillAfterTheHorizonKeepsTheHorizonEndReason) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 3);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 1);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  for (int i = 0; i < 2; ++i) {
+    env.Step({stay, stay});
+    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  }
+  ASSERT_TRUE(env.Step({stay, stay}).done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  AttackRight(env);
+  ASSERT_FALSE(goblin->IsAlive());
+  ASSERT_TRUE(env.IsTaskFailed());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  env.Step({stay, stay});
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  // A new episode starts over
+  env.Reset();
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+}
+
 // Only the Aggro task ends on a dead enemy: under another lens, AggroEnv is
 // done on a latched success or at the horizon, whatever that lens says.
 TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
@@ -865,6 +913,9 @@ TEST(TestADeadCompanionDoesNotEndAggroEnvUnderDodgeLens) {
                                 EncodeAction(MovementAction::Stay)});
   ASSERT_FALSE(result.done);
   ASSERT_FALSE(env.IsDone());
+  // The Dodge task did fail (latched): the episode ends so at the horizon
+  ASSERT_TRUE(env.IsTaskFailed());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
 }
 
 TEST(TestSynchroLensSwappedOntoGoalsIsNotDoneBeforeAStep) {
@@ -895,6 +946,42 @@ TEST(TestLoadSnapshotMapsTheFSMTargetThroughSavedIds) {
   env.LoadSnapshot(snap);
   ASSERT_EQ(env.GetObjectManager().GetAllAgentFSMs()[0]->GetFSMContext().target_id,
             kInvalidObjectId);
+}
+
+// Agent annotations are keyed by id: LoadSnapshot maps them through the saved
+// ids like the FSM targets, and drops one naming no saved agent.
+TEST(TestLoadSnapshotMapsAgentAnnotationsThroughSavedIds) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  Snapshot snap = env.SaveSnapshot();
+  ASSERT_EQ(snap.agents.size(), 2u);
+  for (const AnnotationSnapshot& a : snap.annotations) ASSERT_EQ(a.target_type, 0);
+  const size_t cell_annotations = snap.annotations.size();
+  snap.agents[0].id = 7;  // The goblin
+  snap.agents[1].id = 9;  // The companion
+  AnnotationSnapshot mob;
+  mob.target_type = 1;
+  mob.agent_id = 7;
+  mob.tag = SemanticTag::TargetMob;
+  AnnotationSnapshot escort = mob;
+  escort.agent_id = 9;
+  escort.tag = SemanticTag::Escort;
+  AnnotationSnapshot ghost = mob;
+  ghost.agent_id = 8;  // No such agent
+  ghost.tag = SemanticTag::SkillGiver;
+  snap.annotations.push_back(mob);
+  snap.annotations.push_back(ghost);
+  snap.annotations.push_back(escort);
+
+  env.LoadSnapshot(snap);
+  const ObjectManager& om = env.GetObjectManager();
+  const AnnotationStore& store = env.GetAnnotations();
+  ASSERT_TRUE(store.FindAgentsWithTag(SemanticTag::TargetMob) ==
+              std::vector<ObjectId>{om.GetAllAgentFSMs()[0]->GetId()});
+  ASSERT_TRUE(store.FindAgentsWithTag(SemanticTag::Escort) ==
+              std::vector<ObjectId>{om.GetAllCompanions()[0]->GetId()});
+  ASSERT_TRUE(store.FindAgentsWithTag(SemanticTag::SkillGiver).empty());
+  ASSERT_EQ(store.Size(), cell_annotations + 2);
+  ASSERT_EQ(store.FindCellsWithTag(SemanticTag::AggroTarget).size(), 1u);  // Kept
 }
 
 // =============================================================================

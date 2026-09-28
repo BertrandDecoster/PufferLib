@@ -906,13 +906,13 @@ TEST(TestAnnotationsSurviveSnapshotRoundTrip) {
 // =============================================================================
 // Companion cast + host-driven changes
 // =============================================================================
-static Companions_Env* MakeAggroZombieEnv() {
+static Companions_Env* MakeAggroZombieEnv(int horizon = 100) {
   Companions_AggroEnvConfig config = {};
   config.rows = 10;
   config.cols = 10;
   config.num_companions = 1;
   config.patrol_square_size = 3;
-  config.horizon = 100;
+  config.horizon = horizon;
   config.d4_transform = 0;
   config.seed = 42;
   config.enemy_type = Companions_Enemy_Zombie;
@@ -1579,6 +1579,65 @@ TEST(TestEndReasonAggroEnemyDead) {
   companions_reset(env, 42);
   ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
   ASSERT_EQ(companions_get_end_reason(nullptr), Companions_End_None);
+  companions_destroy(env);
+}
+
+// A lens change can end the episode (companions_set_task_lens refreshes done):
+// the reason is set then, and the next step reports EpisodeEnd with it.
+TEST(TestEndReasonSetByALensChange) {
+  Companions_Env* env = MakeAggroZombieEnv();
+  const int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
+  ASSERT_TRUE(zi >= 0);
+  ASSERT_TRUE(companions_set_task_lens(env, Companions_Lens_Dodge));
+  Companions_AgentState z = AgentAt(env, zi);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", z.position.row, z.position.col,
+                                      Companions_Direction_Up, -1));
+  const int32_t n = companions_get_agent_count(env);
+  std::vector<Companions_Action> stay(n, {Companions_Movement_Stay, Companions_Interact_None});
+  Companions_StepResult result = {};
+  companions_step(env, stay.data(), n, &result);
+  ASSERT_FALSE(AgentAt(env, zi).alive);
+  ASSERT_FALSE(companions_is_done(env));  // Dodge does not end on a dead enemy
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+
+  ASSERT_TRUE(companions_set_task_lens(env, Companions_Lens_Aggro));
+  ASSERT_TRUE(companions_is_done(env));
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_TaskFailed);
+  companions_step(env, stay.data(), n, &result);
+  ExpectEnd(env, result, Companions_End_TaskFailed);
+  ASSERT_EQ(CountEpisodeEnds(result), 1);
+  companions_step(env, stay.data(), n, &result);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_TaskFailed);
+  companions_destroy(env);
+}
+
+// The reason is fixed when the episode ends: a kill after the horizon (a host
+// playing on) leaves it Horizon.
+TEST(TestEndReasonKeepsHorizonAfterAKill) {
+  Companions_Env* env = MakeAggroZombieEnv(3);
+  const int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
+  ASSERT_TRUE(zi >= 0);
+  const int32_t n = companions_get_agent_count(env);
+  std::vector<Companions_Action> stay(n, {Companions_Movement_Stay, Companions_Interact_None});
+  Companions_StepResult result = {};
+  for (int i = 0; i < 2; ++i) {
+    companions_step(env, stay.data(), n, &result);
+    ASSERT_FALSE(companions_is_done(env));
+  }
+  companions_step(env, stay.data(), n, &result);
+  ExpectEnd(env, result, Companions_End_Horizon);
+
+  Companions_AgentState z = AgentAt(env, zi);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", z.position.row, z.position.col,
+                                      Companions_Direction_Up, -1));
+  for (int i = 0; i < 2; ++i) {
+    companions_step(env, stay.data(), n, &result);
+    ASSERT_FALSE(AgentAt(env, zi).alive);
+    ASSERT_TRUE(companions_is_done(env));
+    ASSERT_EQ(CountEpisodeEnds(result), 0);
+    ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
+  }
   companions_destroy(env);
 }
 

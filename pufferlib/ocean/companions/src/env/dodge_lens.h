@@ -18,6 +18,12 @@ class DodgeLens : public TaskLens {
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;
   bool IsSuccess(const BaseEnv& env) const override;
+  // Any companion incapacitated: the survival task can no longer succeed.
+  // BaseEnv latches it, so a death on the horizon step ends the episode as
+  // TaskFailed, not Horizon. The rewards do not depend on the latch: every
+  // step with a companion down pays kDeathPenalty (DodgeEnv is done from the
+  // first one on).
+  bool IsFailed(const BaseEnv& env) const override { return AnyCompanionIncapacitated(env); }
   double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
 

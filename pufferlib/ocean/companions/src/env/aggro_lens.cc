@@ -59,7 +59,11 @@ double AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   if (IsFailed(env)) {
     // Terminal: paid once, on the step of the kill (BaseEnv latches the
     // failure after the rewards), and it covers the rest of the episode.
-    return env.IsTaskFailed() ? 0.0 : FailurePenalty(env.GetHorizon(), env.GetTick());
+    if (env.IsTaskFailed()) return 0.0;
+    // A kill after a latched success is no failure (the first outcome is
+    // final): the enemy is just off the target, as after any success.
+    if (env.IsSuccess()) return kTimePenalty;
+    return FailurePenalty(env.GetHorizon(), env.GetTick());
   }
   return kTimePenalty;
 }

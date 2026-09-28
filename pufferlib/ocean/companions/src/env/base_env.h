@@ -92,12 +92,16 @@ class BaseEnv {
   void ResetOutcome() {
     ResetSuccess();
     failed_ = false;
+    end_reason_ = EndReason::None;
   }
   // Why the episode is done: None while IsDone() is false, else Success (the
   // latched success), else TaskFailed (the latched failure), else Horizon
   // (tick >= horizon), else TaskFailed (an env's own end rule: a Dodge
   // companion died, an Aggro enemy killed between steps). Hosts that keep
   // playing past a task failure tell it from a time out with this.
+  // The reason is fixed when done first becomes true (latched by Step and
+  // SetTaskLens*): a kill after the horizon keeps Horizon. Between those
+  // calls (e.g. a kill between steps) it is evaluated live.
   virtual EndReason GetEndReason() const;
 
   // Task lens management
@@ -309,6 +313,11 @@ class BaseEnv {
   // Update all agents with FSM AI (called in PreStep)
   void UpdateAgentFSM();
 
+  // GetEndReason's rules, for a done env
+  EndReason ComputeEndReason() const;
+  // Fixes the end reason once done becomes true; None while not done
+  void LatchEndReason();
+
   // D4 symmetry transform - call at end of Reset() in subclasses
   // Transforms grid cells, actor positions, cell annotations and zones
   // according to d4_transform_
@@ -382,6 +391,9 @@ class BaseEnv {
   bool success_ = false;
   // Latched once the active lens reports IsFailed. Reset via ResetOutcome.
   bool failed_ = false;
+  // Latched when done first becomes true (LatchEndReason). Reset via
+  // ResetOutcome.
+  EndReason end_reason_ = EndReason::None;
   TagTable tags_;
   SkillBook skills_;
   std::vector<SkillUse> last_skill_uses_;

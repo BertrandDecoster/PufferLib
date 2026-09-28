@@ -305,10 +305,11 @@ void AggroEnv::SpawnCompanions() {
 bool AggroEnv::IsDone() const {
   // The Aggro task also ends, as a failure, once no living enemy remains
   // (latched by Step, or a kill between steps). Other lenses' own verdicts
-  // are not consulted.
+  // are not consulted, their latched failures included (a Dodge companion's
+  // death): those episodes end at the horizon.
   const bool aggro_task = task_lens_ && task_lens_->GetKind() == TaskLens::kAggro;
-  return success_ || failed_ || tick_ >= horizon_ ||
-         (aggro_task && !AggroLens::HasLivingEnemy(*this));
+  return success_ || tick_ >= horizon_ ||
+         (aggro_task && (failed_ || !AggroLens::HasLivingEnemy(*this)));
 }
 
 // =============================================================================
