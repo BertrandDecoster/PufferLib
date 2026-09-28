@@ -27,7 +27,8 @@ Actor::Actor(ObjectId id, Position pos) : Object(id), pos_(pos) {}
 Agent::Agent(ObjectId id, Position pos) : Actor(id, pos) {}
 
 void Agent::TakeDamage(int amount) {
-  if (IsDowned()) return;  // Untouched
+  // Untouched when dead or downed: 0 HP has its consequence once per life
+  if (!IsAffectable()) return;
   // Marked targets take bonus damage
   if (HasStatus(StatusType::Marked)) {
     amount = static_cast<int>(amount * kMarkedDamageMultiplier);
@@ -38,7 +39,7 @@ void Agent::TakeDamage(int amount) {
 }
 
 void Agent::Heal(int amount) {
-  if (IsDowned()) return;  // Untouched (reviving is not healing)
+  if (!IsAffectable()) return;  // Untouched (reviving is not healing)
   health_ += amount;
   if (health_ > max_health_) health_ = max_health_;
 }
@@ -264,7 +265,9 @@ void Companion::TickTimers() {
 
 void Companion::OnZeroHealth() {
   // A companion goes down: it stays alive, and its statuses go (a stun or a
-  // root would otherwise outlive the down); its tags and skills stay.
+  // root would otherwise outlive the down); its tags and skills stay. Its
+  // timers keep running (EndStep ticks living agents): its tags expire and
+  // its cooldowns recover while it is down.
   ClearAllStatuses();
   downed_ = true;
   ++times_downed_;

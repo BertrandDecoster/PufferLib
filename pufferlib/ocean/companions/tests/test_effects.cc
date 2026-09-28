@@ -1356,7 +1356,7 @@ TEST(TestHealScenario_NegativeDamageHeals) {
   ASSERT_EQ(player->GetHealth(), 7);  // 5 + 2 = 7
 }
 
-TEST(TestEffectOnDeadAgentIsNoOp) {
+TEST(TestEffectOnDownedCompanionIsNoOp) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
 
@@ -1377,21 +1377,49 @@ TEST(TestEffectOnDeadAgentIsNoOp) {
   Agent* target = agents[0];
   int initial_hp = target->GetHealth();
 
-  // Down the agent (a companion: it goes down instead of dying)
+  // Down the companion
   target->TakeDamage(initial_hp + 100);
   ASSERT_TRUE(target->IsDowned());
-  int dead_hp = target->GetHealth();
+  int downed_hp = target->GetHealth();
 
-  // Spawn damage effect targeting dead agent's position
-  Position dead_pos = target->GetPosition();
-  env.SpawnEffect("test_damage", EffectTarget::AtCell(dead_pos), Direction::Up, 0);
+  // Spawn damage effect targeting the downed companion's position
+  Position downed_pos = target->GetPosition();
+  env.SpawnEffect("test_damage", EffectTarget::AtCell(downed_pos), Direction::Up, 0);
 
   // Tick effect system via step (need 2 actions for 2 agents)
   env.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Stay)});
 
   // Health should remain unchanged (a downed agent takes no further damage)
-  ASSERT_EQ(target->GetHealth(), dead_hp);
+  ASSERT_EQ(target->GetHealth(), downed_hp);
   ASSERT_TRUE(target->IsDowned());
+}
+
+// The effect system skips the dead: nothing of an effect lands on them (the
+// status would, ApplyStatus alone does not refuse the dead).
+TEST(TestEffectOnDeadEnemyIsNoOp) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
+  EffectConfig cfg;
+  cfg.name = "test_mark";
+  cfg.damage = 1;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Enemy;
+  cfg.status_applied = "marked";
+  cfg.status_duration = 3;
+  EffectConfigRegistry::Instance().RegisterConfig(cfg);
+
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  Agent* enemy = env.GetMutableObjectManager().CreateActor<Agent>({3, 4});
+  enemy->SetFaction(Faction::ENEMY);
+  enemy->SetMaxHealth(1);
+  enemy->TakeDamage(1);
+  ASSERT_FALSE(enemy->IsAlive());
+
+  env.SpawnEffect("test_mark", EffectTarget::AtCell({3, 4}), Direction::Up, 0);
+  env.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Stay)});
+  ASSERT_EQ(enemy->GetHealth(), 0);
+  ASSERT_FALSE(enemy->IsAlive());
+  ASSERT_TRUE(enemy->GetStatuses().empty());
 }
 
 // =============================================================================

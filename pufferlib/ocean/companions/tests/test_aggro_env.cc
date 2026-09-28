@@ -956,7 +956,7 @@ TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
   ASSERT_FALSE(env.IsDone());
 }
 
-TEST(TestADeadCompanionDoesNotEndAggroEnvUnderDodgeLens) {
+TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
   AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 3);
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
   Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];

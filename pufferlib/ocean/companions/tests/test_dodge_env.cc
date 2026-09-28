@@ -149,7 +149,7 @@ TEST(TestDodgeEnvDeath) {
 // A companion that goes down fails the Dodge task (DodgeLens::IsFailed), even
 // on the horizon step: the episode ends as TaskFailed, not Horizon. The
 // rewards and done are those of any death.
-TEST(TestDodgeEnvDeathOnTheHorizonStepIsATaskFailure) {
+TEST(TestDodgeEnvDownOnTheHorizonStepIsATaskFailure) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfig lethal;
   lethal.name = "delayed_death";
