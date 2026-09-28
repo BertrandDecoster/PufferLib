@@ -283,6 +283,35 @@ class BaseEnv {
   // companion that cannot act and for a slot out of range)
   bool IsContextSkill(const Companion& comp, int slot) const;
 
+  // What `caster` using its slot `slot` aimed `aim` would do NOW, before the
+  // step: a pure query (nothing moves, no tag lands, no damage, no revive,
+  // nothing is interned). The skill is the slot's effective one
+  // (EffectiveSkill, context rules included); its centre, landing and
+  // affected agents come from the same code as the step's UseSkill
+  // (ResolveSkillTargets), so the preview and the use cannot drift.
+  // The step itself may differ: it resolves movement first (everyone's
+  // walks, the enemies' included), then the skills one caster at a time in
+  // agent-index order, so an earlier caster's push / pull / damage / revive
+  // (or a walk into the line) changes what a later one reaches. A use whose
+  // movement is Stay keeps the caster's facing: preview it with that facing.
+  // The preview says whom the skill affects, not where a push / pull then
+  // moves them.
+  struct SkillPreview {
+    // The step would use it: a caster that is not stunned (GatherIntentions
+    // makes it stay) and CanUseSkill (not cooling down, not rooted for a
+    // skill that moves its caster, an affectable caster, an enabled slot)
+    bool usable = false;
+    // The effective skill ("" for a slot outside [0, kMaxSkillSlots)). When
+    // it is not in the book, the rest describes no use (centre and landing =
+    // the caster's cell, nobody affected).
+    std::string skill;
+    Position centre;                  // Its SkillUse::target
+    std::vector<ObjectId> affected;   // Its SkillUse::affected, same order
+    Position caster_landing;          // Where a dash / teleport puts the caster, else its cell
+  };
+  // Computed whatever `usable` says (what the skill would do if it could).
+  SkillPreview PreviewSkill(const Companion& caster, int slot, Direction aim) const;
+
   // Host primitives: land / remove a tag outside of a step. `duration` is a
   // positive step count or kPermanentTag; ApplyTagTo returns false for 0 or
   // anything below kPermanentTag, for an empty tag or one longer than
@@ -297,6 +326,14 @@ class BaseEnv {
     std::string skill;
     Position target;  // The skill's centre: landing cell for Self skills
     int slot = 0;     // The caster's slot it was used from (0-based)
+    // The agents it affected, in the order it processed them: those on its
+    // area (cell order: the centre, then up, right, down, left for a Cross),
+    // then those on a tag_path dash's path. Each got its tags, damage and
+    // revive (the caster, affected with friendly fire, only those its self_*
+    // flags allow; tags and revives only on the affectable / downed, as
+    // LandTag and Revive say). The same list PreviewSkill gives before the
+    // step (ResolveSkillTargets).
+    std::vector<ObjectId> affected;
   };
   struct TagApplication {
     ObjectId agent = kInvalidObjectId;
@@ -450,9 +487,24 @@ class BaseEnv {
   // slot's cooldown only for an equipped skill. The SkillUse reports the
   // effective skill's name.
   void ResolveSkills();         // After movement, in agent-index order
+  // Where a skill use lands and whom it affects: steps 1-2 of UseSkill, the
+  // one implementation of targeting (UseSkill and PreviewSkill both use it).
+  struct SkillTargets {
+    Position landing;                // The caster's cell after its own motion
+    Position centre;                 // By the skill's targeting
+    std::vector<ObjectId> affected;  // On the area (cell order), then on a tag_path dash's path
+    size_t on_area = 0;              // affected[0, on_area) are on the area
+  };
+  // Pure: reads the world as it is, with the caster already on its landing
+  // cell (AgentAfterMotion), for `aim` (UseSkill passes the caster's facing).
+  SkillTargets ResolveSkillTargets(const Companion& caster, const SkillConfig& skill,
+                                   Direction aim) const;
+  // The living agent on `p` once `caster` moved from its cell to `landing`
+  // (nullptr for none, or for a non-agent actor)
+  const Agent* AgentAfterMotion(Position p, const Agent& caster, Position landing) const;
   // Resolves one skill (caster motion, area, tags, damage, revive, root, area
-  // motion); returns its centre.
-  Position UseSkill(Companion& caster, const SkillConfig& skill);
+  // motion); returns its targets (centre and affected, for the SkillUse).
+  SkillTargets UseSkill(Companion& caster, const SkillConfig& skill);
   // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for Cross.
   std::vector<Position> AreaCells(Position centre, SkillArea area) const;
   // The one definition of "affected": a standing agent (alive, not downed),
@@ -461,9 +513,11 @@ class BaseEnv {
   // caster). With friendly fire the caster itself can be affected; each
   // effect then checks its self_* flag.
   bool Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const;
-  // Appends the agents on `cells` the skill affects, each once, in cell order.
+  // Appends the agents on `cells` the skill affects (with the caster on
+  // `landing`, see AgentAfterMotion), each once, in cell order.
   void CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
-                       const Agent& caster, std::vector<Agent*>& affected);
+                       const Agent& caster, Position landing,
+                       std::vector<ObjectId>& affected) const;
   void LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                const std::string& cause);
   void LandTag(Agent& agent, const std::string& tag, int duration,

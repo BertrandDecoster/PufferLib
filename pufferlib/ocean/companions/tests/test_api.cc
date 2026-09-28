@@ -2239,6 +2239,150 @@ TEST(TestSkillQueriesRejectBadArguments) {
 }
 
 // =============================================================================
+// Skill previews and the last step's skill uses (1.4)
+// =============================================================================
+
+// A fireball previewed, then used: the preview is what the step reports (its
+// SkillUsed position, its skill use's affected agents), and the preview
+// changes nothing.
+TEST(TestPreviewSkillMatchesTheStepThroughTheApi) {
+  Companions_Env* env = LoadLevel({{3, 1, ",\"skills\":[\"fireball\"]"}, {3, 4, ""}, {2, 4, ""}});
+  const Companions_AgentState a = AgentAt(env, 0);
+  const Companions_AgentState b = AgentAt(env, 1);
+  const Companions_AgentState c = AgentAt(env, 2);
+  std::vector<uint8_t> before(static_cast<size_t>(companions_get_snapshot_size(env)));
+  ASSERT_TRUE(companions_save_snapshot(env, before.data(), static_cast<int32_t>(before.size())));
+
+  Companions_SkillPreview p = {};
+  ASSERT_TRUE(companions_preview_skill(env, a.id, 0, Companions_Direction_Right, &p));
+  ASSERT_TRUE(p.usable);
+  ASSERT_EQ(std::string(p.skill), std::string("fireball"));
+  ASSERT_EQ(p.centre.row, 3);
+  ASSERT_EQ(p.centre.col, 4);
+  ASSERT_EQ(p.caster_landing.row, 3);
+  ASSERT_EQ(p.caster_landing.col, 1);
+  ASSERT_EQ(p.affected_count, 2);
+  ASSERT_EQ(p.affected[0], b.id);  // The centre, then up
+  ASSERT_EQ(p.affected[1], c.id);
+
+  std::vector<uint8_t> after(static_cast<size_t>(companions_get_snapshot_size(env)));
+  ASSERT_TRUE(companions_save_snapshot(env, after.data(), static_cast<int32_t>(after.size())));
+  ASSERT_TRUE(before == after);
+  ASSERT_EQ(companions_get_last_skill_use_count(env), 0);
+
+  Companions_Action act[3] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                              {Companions_Movement_Stay, Companions_Interact_None},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, act, 3, &result);
+  const Companions_Event* used = FindEvent(result, Companions_Event_SkillUsed, a.id);
+  ASSERT_NOT_NULL(used);
+  ASSERT_EQ(used->position.row, p.centre.row);
+  ASSERT_EQ(used->position.col, p.centre.col);
+
+  ASSERT_EQ(companions_get_last_skill_use_count(env), 1);
+  Companions_SkillUseInfo use = {};
+  ASSERT_TRUE(companions_get_last_skill_use(env, 0, &use));
+  ASSERT_EQ(use.caster, a.id);
+  ASSERT_EQ(std::string(use.skill), std::string("fireball"));
+  ASSERT_EQ(use.slot, 0);
+  ASSERT_EQ(use.centre.row, 3);
+  ASSERT_EQ(use.centre.col, 4);
+  ASSERT_EQ(use.affected_count, p.affected_count);
+  ASSERT_EQ(use.affected[0], p.affected[0]);
+  ASSERT_EQ(use.affected[1], p.affected[1]);
+
+  // Cooling down: previewed, not usable. The next step empties the uses.
+  ASSERT_TRUE(companions_preview_skill(env, a.id, 0, Companions_Direction_Right, &p));
+  ASSERT_FALSE(p.usable);
+  act[0] = {Companions_Movement_Stay, Companions_Interact_None};
+  companions_step(env, act, 3, &result);
+  ASSERT_EQ(companions_get_last_skill_use_count(env), 0);
+  companions_destroy(env);
+}
+
+// The context revive, previewed and used: the downed ally is whom it affects.
+TEST(TestPreviewTheContextReviveThroughTheApi) {
+  Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"fireball\"]"}, {3, 4, ""}});
+  const Companions_AgentState a = AgentAt(env, 0);
+  const Companions_AgentState b = AgentAt(env, 1);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", b.position.row, b.position.col,
+                                      Companions_Direction_Up, -1));
+  Companions_SkillPreview p = {};
+  ASSERT_TRUE(companions_preview_skill(env, a.id, 0, Companions_Direction_Right, &p));
+  ASSERT_TRUE(p.usable);
+  ASSERT_EQ(std::string(p.skill), std::string("revive"));
+  ASSERT_EQ(p.affected_count, 1);
+  ASSERT_EQ(p.affected[0], b.id);
+  // The downed ally cannot use anything
+  ASSERT_TRUE(companions_preview_skill(env, b.id, 0, Companions_Direction_Left, &p));
+  ASSERT_FALSE(p.usable);
+
+  Companions_Action act[2] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, act, 2, &result);
+  Companions_SkillUseInfo use = {};
+  ASSERT_TRUE(companions_get_last_skill_use(env, 0, &use));
+  ASSERT_EQ(std::string(use.skill), std::string("revive"));
+  ASSERT_EQ(use.affected_count, 1);
+  ASSERT_EQ(use.affected[0], b.id);
+  ASSERT_FALSE(result.state.agents[1].downed);
+  companions_destroy(env);
+}
+
+TEST(TestSkillPreviewAndUseRejectBadArguments) {
+  Companions_Env* env = MakeAggroZombieEnv();
+  const int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
+  const int32_t ci = FindAgentIndex(env, Companions_Faction_Companion);
+  ASSERT_TRUE(zi >= 0 && ci >= 0);
+  const Companions_ObjectId zombie = AgentAt(env, zi).id;
+  const Companions_ObjectId comp = AgentAt(env, ci).id;
+  Companions_SkillPreview out = {};
+  std::memset(&out, 0x5A, sizeof(out));
+  const Companions_SkillPreview before = out;
+  auto untouched = [&]() { return std::memcmp(&out, &before, sizeof(out)) == 0; };
+  auto rejects = [&](const Companions_Env* e, Companions_ObjectId id, int32_t slot, int aim,
+                     const char* error) {
+    SetErrorProbe();
+    ASSERT_FALSE(companions_preview_skill(e, id, slot, static_cast<Companions_Direction>(aim), &out));
+    ASSERT_EQ(std::string(companions_get_error()), std::string(error));
+    ASSERT_TRUE(untouched());
+  };
+  rejects(env, 999, 0, Companions_Direction_Up, "Agent not found");
+  rejects(env, zombie, 0, Companions_Direction_Up, "Not a companion");
+  rejects(env, comp, -1, Companions_Direction_Up, "Skill slot out of range");
+  rejects(env, comp, Companions_MAX_SKILL_SLOTS, Companions_Direction_Up,
+          "Skill slot out of range");
+  rejects(env, comp, 0, 4, "Invalid direction");
+  rejects(env, comp, 0, -1, "Invalid direction");
+  rejects(nullptr, comp, 0, Companions_Direction_Up, "Invalid arguments");
+  ASSERT_FALSE(companions_preview_skill(env, comp, 0, Companions_Direction_Up, nullptr));
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid arguments"));
+  // Slot 1: previewed (its equipped skill), not usable yet
+  ASSERT_TRUE(companions_preview_skill(env, comp, 1, Companions_Direction_Up, &out));
+  ASSERT_FALSE(out.usable);
+  ASSERT_EQ(std::string(out.skill), std::string("attack"));
+
+  Companions_SkillUseInfo use = {};
+  std::memset(&use, 0x5A, sizeof(use));
+  const Companions_SkillUseInfo use_before = use;
+  SetErrorProbe();
+  ASSERT_EQ(companions_get_last_skill_use_count(nullptr), 0);
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid environment"));
+  for (int32_t bad : {-1, 0, 3}) {
+    SetErrorProbe();
+    ASSERT_FALSE(companions_get_last_skill_use(env, bad, &use));
+    ASSERT_EQ(std::string(companions_get_error()), std::string("Skill use index out of range"));
+  }
+  ASSERT_FALSE(companions_get_last_skill_use(nullptr, 0, &use));
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid arguments"));
+  ASSERT_FALSE(companions_get_last_skill_use(env, 0, nullptr));
+  ASSERT_TRUE(std::memcmp(&use, &use_before, sizeof(use)) == 0);
+  companions_destroy(env);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {

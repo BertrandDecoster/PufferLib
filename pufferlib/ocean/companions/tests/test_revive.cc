@@ -959,6 +959,95 @@ TEST(TestAFailedResetKeepsTheRules) {
 }
 
 // =============================================================================
+// Previews (PreviewSkill) of skills around the downed
+// =============================================================================
+
+// Preview of agent 0's slot 0 aimed `aim`, then the step of that use (the
+// others stay), which must match: its SkillUse's skill, centre, affected.
+static BaseEnv::SkillPreview PreviewThenStep(SynchroEnv& env, Direction aim, size_t n) {
+  Companion& caster = *AsCompanion(env.GetMutableObjectManager().GetAllAgents()[0]);
+  const std::vector<uint8_t> before = env.SaveSnapshot().Serialize();
+  BaseEnv::SkillPreview p = env.PreviewSkill(caster, 0, aim);
+  ASSERT_TRUE(env.SaveSnapshot().Serialize() == before);  // Pure
+  std::vector<Action> actions(n, kStay);
+  actions[0] = Use(DirectionToMovement(aim));
+  env.Step(actions);
+  ASSERT_TRUE(p.usable);
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, p.skill);
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == p.centre);
+  ASSERT_TRUE(env.GetLastSkillUses()[0].affected == p.affected);
+  return p;
+}
+
+// A projectile passes over a downed ally; the context revive reaches it.
+TEST(TestPreviewPassesOverTheDownedAndTheContextReviveReachesThem) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig bolt;
+  bolt.name = "bolt";
+  bolt.range = 3;
+  bolt.tags = {{"zapped", kPermanentTag}};
+  env.GetMutableSkillBook().Define(bolt);
+  Agent* a = Place(env, 0, {3, 1});
+  Agent* down = Place(env, 1, {4, 1});
+  Agent* standing = Place(env, 2, {6, 1});
+  DownCompanion(env, 1);
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "bolt"));
+  env.Step({kStay, kStay, kStay});  // Reports the down
+
+  // Next to a downed ally, slot 0 is revive: the preview says so
+  BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(a), 0, Direction::Down);
+  ASSERT_EQ(p.skill, std::string("revive"));
+  ASSERT_TRUE(p.usable);
+  ASSERT_TRUE(p.centre == (Position{4, 1}));
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{down->GetId()}));
+
+  // Without the context rule, the bolt flies over the downed ally
+  ASSERT_TRUE(env.SetContextSkills({}));
+  p = PreviewThenStep(env, Direction::Down, 3);
+  ASSERT_EQ(p.skill, std::string("bolt"));
+  ASSERT_TRUE(p.centre == (Position{6, 1}));
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{standing->GetId()}));
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].agent, standing->GetId());
+}
+
+// A revive retuned to range 2 reaches a downed ally past a standing one, and
+// the step revives exactly whom the preview said.
+TEST(TestPreviewRetunedReviveReachesPastAStandingAlly) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig revive = *env.GetSkillBook().Find("revive");
+  revive.range = 2;
+  env.GetMutableSkillBook().Define(revive);
+  Agent* a = Place(env, 0, {3, 1});
+  Place(env, 1, {3, 2});
+  Agent* down = Place(env, 2, {3, 3});
+  DownCompanion(env, 2);
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "revive"));
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 3);
+  ASSERT_TRUE(p.centre == (Position{3, 3}));
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{down->GetId()}));
+  ASSERT_FALSE(down->IsDowned());
+  ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastRevives()[0].revived, down->GetId());
+}
+
+// A downed companion can use nothing: its equipped skill, not usable.
+TEST(TestPreviewOfADownedCasterIsNotUsable) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 1});
+  Place(env, 1, {3, 2});
+  Agent* a = DownCompanion(env, 0);
+  DownCompanion(env, 1);
+  BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(a), 0, Direction::Right);
+  ASSERT_FALSE(p.usable);
+  ASSERT_EQ(p.skill, std::string(kDefaultSkill));  // No context while downed
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

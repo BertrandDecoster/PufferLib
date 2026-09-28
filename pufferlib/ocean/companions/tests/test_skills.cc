@@ -1997,6 +1997,227 @@ TEST(TestLegalActionsOfNonCompanionsAndTheDeadListNoSkill) {
 }
 
 // =============================================================================
+// Skill previews (PreviewSkill: the step's own targeting, before the step)
+// =============================================================================
+
+// Everything a preview could change: the world (a snapshot), the interned
+// tags and the step's reports.
+struct EnvPrint {
+  std::vector<uint8_t> world;
+  int tags = 0;
+  size_t uses = 0, landed = 0, revives = 0;
+  bool operator==(const EnvPrint& o) const {
+    return world == o.world && tags == o.tags && uses == o.uses && landed == o.landed &&
+           revives == o.revives;
+  }
+};
+static EnvPrint Print(const BaseEnv& env) {
+  return {env.SaveSnapshot().Serialize(), env.GetTagTable().Size(), env.GetLastSkillUses().size(),
+          env.GetLastTagsApplied().size(), env.GetLastRevives().size()};
+}
+
+// Previews agent 0's slot 0 aimed `aim` (checking it leaves the env as it
+// was), steps that use (everyone else stays: `n` actions), and checks the step
+// did what the preview said: the SkillUse's skill, centre and affected agents
+// (each test checks the landing: an area motion may move the caster after).
+// Returns the preview.
+static BaseEnv::SkillPreview PreviewThenStep(SynchroEnv& env, Direction aim, size_t n) {
+  Agent* caster = env.GetMutableObjectManager().GetAllAgents()[0];
+  const EnvPrint before = Print(env);
+  BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(caster), 0, aim);
+  ASSERT_TRUE(Print(env) == before);  // Pure
+  std::vector<Action> actions(n, kStay);
+  actions[0] = Use(DirectionToMovement(aim));
+  env.Step(actions);
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(p.usable ? 1 : 0));
+  if (p.usable) {
+    const BaseEnv::SkillUse& use = env.GetLastSkillUses()[0];
+    ASSERT_EQ(use.skill, p.skill);
+    ASSERT_TRUE(use.target == p.centre);
+    ASSERT_TRUE(use.affected == p.affected);
+  }
+  return p;
+}
+
+// The agents that got a tag from the step's skill, in landing order.
+static std::vector<ObjectId> TaggedBySkill(const BaseEnv& env) {
+  std::vector<ObjectId> ids;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    if (t.cause != "zone") ids.push_back(t.agent);
+  }
+  return ids;
+}
+
+TEST(TestPreviewFireballMatchesTheStep) {
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* center = Place(env, 1, {3, 4});
+  Agent* up = Place(env, 2, {2, 4});
+  Place(env, 3, {3, 6});  // 2 from the centre: untouched
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 4);
+  ASSERT_TRUE(p.usable);
+  ASSERT_EQ(p.skill, std::string("fireball"));
+  ASSERT_TRUE(p.centre == (Position{3, 4}));
+  ASSERT_TRUE(p.caster_landing == (Position{3, 1}));
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{center->GetId(), up->GetId()}));
+  ASSERT_TRUE(TaggedBySkill(env) == p.affected);  // Burning, in that order
+}
+
+TEST(TestPreviewLightningStepLandsAndTagsThePath) {
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* crossed = Place(env, 1, {3, 3});  // Dashed through
+  Agent* beside = Place(env, 2, {2, 5});   // Above the landing cell (3,5)
+  Place(env, 3, {5, 5});
+  env.SetCompanionSkill(caster->GetId(), 0, "lightningStep");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 4);
+  ASSERT_TRUE(p.caster_landing == (Position{3, 5}));
+  ASSERT_TRUE(p.centre == (Position{3, 5}));
+  // The caster on its own centre (friendly fire; self_tags spares it), its
+  // ring, then the path
+  ASSERT_TRUE(p.affected ==
+              (std::vector<ObjectId>{caster->GetId(), beside->GetId(), crossed->GetId()}));
+  ASSERT_TRUE(caster->GetPosition() == p.caster_landing);
+  ASSERT_TRUE(TaggedBySkill(env) == (std::vector<ObjectId>{beside->GetId(), crossed->GetId()}));
+}
+
+TEST(TestPreviewTeleportLanding) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 3}, CellKind::Wall);  // Jumped over
+  Agent* caster = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(caster->GetId(), 0, "teleport");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 1);
+  ASSERT_TRUE(p.caster_landing == (Position{3, 4}));
+  ASSERT_TRUE(p.centre == (Position{3, 4}));
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{caster->GetId()}));  // Friendly fire: its own area
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 4}));
+}
+
+TEST(TestPreviewVortexSaysWhomItAffectsNotWhereTheyGo) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* above = Place(env, 1, {2, 4});
+  Agent* left = Place(env, 2, {3, 3});
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 3);
+  ASSERT_TRUE(p.centre == (Position{3, 4}));
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{above->GetId(), left->GetId()}));
+  ASSERT_TRUE(above->GetPosition() == (Position{3, 4}));  // Pulled in by the step
+  ASSERT_TRUE(above->HasStatus(StatusType::Rooted));
+  ASSERT_TRUE(left->HasStatus(StatusType::Rooted));
+}
+
+// The default attack: no friendly fire, so an ally in front is passed and
+// nobody is struck; an enemy there is, and loses its damage.
+TEST(TestPreviewAttackSparesAnAllyStrikesAnEnemy) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 1});
+  Place(env, 1, {3, 2});
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 2);
+  ASSERT_EQ(p.skill, std::string(kDefaultSkill));
+  ASSERT_TRUE(p.centre == (Position{3, 2}));  // The last cell reached
+  ASSERT_TRUE(p.affected.empty());
+
+  Agent* enemy = AddAgent(env, {4, 1}, Faction::ENEMY);
+  const int health = enemy->GetHealth();
+  p = PreviewThenStep(env, Direction::Down, 3);
+  ASSERT_TRUE(p.centre == (Position{4, 1}));
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{enemy->GetId()}));
+  ASSERT_EQ(enemy->GetHealth(), health - 1);
+}
+
+// A neutral agent: a skill filtered to enemies passes it, one for all
+// affects it.
+TEST(TestPreviewNeutralAgentAndFilters) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig bolt;
+  bolt.name = "bolt";
+  bolt.range = 5;
+  bolt.filter = TargetFilter::Enemy;
+  bolt.tags = {{"zapped", kPermanentTag}};
+  env.GetMutableSkillBook().Define(bolt);
+  Place(env, 0, {3, 1});
+  Agent* neutral = AddAgent(env, {3, 3}, Faction::NEUTRAL);
+  Agent* enemy = AddAgent(env, {3, 5}, Faction::ENEMY);
+  env.SetCompanionSkill(env.GetObjectManager().GetAllAgents()[0]->GetId(), 0, "bolt");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 3);
+  ASSERT_TRUE(p.centre == (Position{3, 5}));  // Past the neutral
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{enemy->GetId()}));
+  ASSERT_TRUE(TaggedBySkill(env) == p.affected);
+
+  bolt.filter = TargetFilter::All;
+  env.GetMutableSkillBook().Define(bolt);
+  p = PreviewThenStep(env, Direction::Right, 3);
+  ASSERT_TRUE(p.centre == (Position{3, 3}));  // Stopped by the neutral
+  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{neutral->GetId()}));
+  ASSERT_TRUE(TaggedBySkill(env) == p.affected);
+}
+
+TEST(TestPreviewUsableFollowsTheStep) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Companion& c = *AsCompanion(caster);
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  ASSERT_TRUE(env.PreviewSkill(c, 0, Direction::Right).usable);
+  env.Step({Use(MovementAction::Right)});
+  // Cooling down: not usable, still previewed (what it would do)
+  BaseEnv::SkillPreview p = env.PreviewSkill(c, 0, Direction::Right);
+  ASSERT_FALSE(p.usable);
+  ASSERT_EQ(p.skill, std::string("fireball"));
+  ASSERT_TRUE(p.centre == (Position{3, 4}));
+  PreviewThenStep(env, Direction::Right, 1);  // Dropped: no use, it walks to (3,2)
+
+  // Rooted: a dash is not usable, a strike is
+  env.SetCompanionSkill(caster->GetId(), 0, "lightningStep");
+  c.ApplyStatus(StatusType::Rooted, 2);
+  p = env.PreviewSkill(c, 0, Direction::Right);
+  ASSERT_FALSE(p.usable);
+  ASSERT_TRUE(p.caster_landing == (Position{3, 6}));
+  env.SetCompanionSkill(caster->GetId(), 0, "");
+  ASSERT_TRUE(env.PreviewSkill(c, 0, Direction::Right).usable);
+  // Stunned: the step makes it stay
+  c.ApplyStatus(StatusType::Stunned, 2);
+  ASSERT_FALSE(env.PreviewSkill(c, 0, Direction::Right).usable);
+  PreviewThenStep(env, Direction::Right, 1);  // No use
+
+  // Slot 1 is not enabled yet; a slot out of range has no skill
+  p = env.PreviewSkill(c, 1, Direction::Right);
+  ASSERT_FALSE(p.usable);
+  ASSERT_EQ(p.skill, std::string(kDefaultSkill));
+  p = env.PreviewSkill(c, 2, Direction::Right);
+  ASSERT_FALSE(p.usable);
+  ASSERT_EQ(p.skill, std::string(""));
+  ASSERT_TRUE(p.centre == c.GetPosition() && p.caster_landing == c.GetPosition());
+  ASSERT_TRUE(p.affected.empty());
+}
+
+// The step's SkillUse lists whom it affected: a later caster reaches what an
+// earlier one left (not what a preview before the step saw).
+TEST(TestSkillUseAffectedIsTheStepsOwn) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});   // vortex right: centre (3,4)
+  Agent* b = Place(env, 1, {2, 4});   // above the centre: pulled in first
+  env.SetCompanionSkill(a->GetId(), 0, "vortex");
+  env.SetCompanionSkill(b->GetId(), 0, "fireball");
+  const BaseEnv::SkillPreview before = env.PreviewSkill(*AsCompanion(b), 0, Direction::Down);
+  ASSERT_TRUE(before.centre == (Position{5, 4}));  // From (2,4), before the pull
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Down)});
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].affected == (std::vector<ObjectId>{b->GetId()}));
+  ASSERT_TRUE(env.GetLastSkillUses()[1].target == (Position{6, 4}));  // From (3,4)
+  ASSERT_TRUE(env.GetLastSkillUses()[1].affected.empty());
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

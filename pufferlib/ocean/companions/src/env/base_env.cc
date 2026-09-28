@@ -1142,39 +1142,74 @@ void BaseEnv::ResolveSkills() {
     if (!found) continue;
     // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
     const SkillConfig skill = *found;
-    Position target = UseSkill(*comp, skill);
+    SkillTargets targets = UseSkill(*comp, skill);
     // Cooldowns belong to the equipped skill: a context skill does not spend it
     if (rule < 0) comp->SetCooldown(slot, skill.cooldown);
-    last_skill_uses_.push_back({comp->GetId(), skill.name, target, slot});
+    last_skill_uses_.push_back(
+        {comp->GetId(), skill.name, targets.centre, slot, std::move(targets.affected)});
   }
 }
 
-Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
+BaseEnv::SkillPreview BaseEnv::PreviewSkill(const Companion& caster, int slot,
+                                            Direction aim) const {
+  SkillPreview preview;
+  preview.centre = preview.caster_landing = caster.GetPosition();
+  preview.skill = EffectiveSkill(caster, slot);  // "" out of range
+  // As the step decides: GatherIntentions makes the stunned stay, then keeps
+  // a use CanUseSkill allows
+  preview.usable = !caster.IsStunned() && CanUseSkill(caster, slot);
+  const SkillConfig* skill = preview.skill.empty() ? nullptr : skills_.Find(preview.skill);
+  if (!skill) return preview;
+  SkillTargets targets = ResolveSkillTargets(caster, *skill, aim);
+  preview.centre = targets.centre;
+  preview.caster_landing = targets.landing;
+  preview.affected = std::move(targets.affected);
+  return preview;
+}
+
+const Agent* BaseEnv::AgentAfterMotion(Position p, const Agent& caster, Position landing) const {
+  const Position from = caster.GetPosition();
+  if (landing != from) {
+    // Landing needs a cell free of living actors (CanLand), and a corpse
+    // never takes a cell from the living: once there, the caster is what
+    // GetActorAt gives. The cell it left then holds nobody (a corpse under
+    // it was taken off the grid when it walked over it).
+    if (p == landing) return &caster;
+    if (p == from) return nullptr;
+  }
+  return dynamic_cast<const Agent*>(object_manager_->GetActorAt(p));
+}
+
+BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
+                                                   const SkillConfig& skill,
+                                                   Direction aim) const {
   int dr = 0, dc = 0;
-  DirectionDelta(caster.GetDirection(), dr, dc);
+  DirectionDelta(aim, dr, dc);
   const Position from = caster.GetPosition();
   std::vector<Position> path;  // Cells crossed by a dash (tag_path)
+  SkillTargets t;
 
   // 1. The caster's own motion, and the skill's centre.
   switch (skill.motion) {
     case SkillMotion::Dash:
-      MoveActor(caster, ResolveDash(*grid_, *object_manager_, from, dr, dc,
-                                    skill.motion_distance, caster.GetId(), &path));
+      t.landing = ResolveDash(*grid_, *object_manager_, from, dr, dc, skill.motion_distance,
+                              caster.GetId(), &path);
       break;
     case SkillMotion::Teleport:
-      MoveActor(caster, ResolveTeleport(*grid_, *object_manager_, from, dr, dc,
-                                        skill.motion_distance, caster.GetId()));
+      t.landing = ResolveTeleport(*grid_, *object_manager_, from, dr, dc,
+                                  skill.motion_distance, caster.GetId());
       break;
     default:
+      t.landing = from;
       break;
   }
-  Position centre = from;
+  t.centre = from;
   switch (skill.targeting) {
     case SkillTargeting::Self:
-      centre = caster.GetPosition();
+      t.centre = t.landing;
       break;
     case SkillTargeting::Ground:
-      centre = ResolveGroundTarget(*grid_, from, dr, dc, skill.range);
+      t.centre = ResolveGroundTarget(*grid_, from, dr, dc, skill.range);
       break;
     case SkillTargeting::Projectile: {
       // Line rule, but the first agent the skill affects stops it (a downed
@@ -1184,19 +1219,37 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
         Position next{cur.row + dr, cur.col + dc};
         if (!grid_->IsInBounds(next) || !grid_->IsPathable(next)) break;
         cur = next;
-        auto* hit = dynamic_cast<Agent*>(object_manager_->GetActorAt(cur));
+        const Agent* hit = AgentAfterMotion(cur, caster, t.landing);
         if (hit && hit != &caster && Affects(skill, caster, *hit)) break;
       }
-      centre = cur;
+      t.centre = cur;
       break;
     }
   }
 
   // 2. Affected agents: on the area, then (tag_path) on the dash path.
+  CollectAffected(AreaCells(t.centre, skill.area), skill, caster, t.landing, t.affected);
+  t.on_area = t.affected.size();
+  if (skill.tag_path) CollectAffected(path, skill, caster, t.landing, t.affected);
+  return t;
+}
+
+BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
+  // 1-2. The caster's landing, the centre and the affected agents, as
+  // PreviewSkill sees them (the one implementation of targeting), then the
+  // caster's own motion (it lands its cell's zone tag, which no targeting
+  // reads).
+  SkillTargets targets = ResolveSkillTargets(caster, skill, caster.GetDirection());
+  MoveActor(caster, targets.landing);
+  const Position centre = targets.centre;
   std::vector<Agent*> affected;
-  CollectAffected(AreaCells(centre, skill.area), skill, caster, affected);
-  const std::vector<Agent*> on_area = affected;
-  if (skill.tag_path) CollectAffected(path, skill, caster, affected);
+  affected.reserve(targets.affected.size());
+  for (ObjectId id : targets.affected) {
+    affected.push_back(dynamic_cast<Agent*>(object_manager_->GetActor(id)));
+    assert(affected.back() && "ResolveSkillTargets gives agents");
+  }
+  const std::vector<Agent*> on_area(affected.begin(),
+                                    affected.begin() + static_cast<std::ptrdiff_t>(targets.on_area));
 
   // 3. Tags land on who was there at impact (area and path).
   for (Agent* a : affected) {
@@ -1231,7 +1284,7 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
 
   // 6. Root (the area only) and area motions; the dead and the downed are neither.
   AreaMotion(skill, centre, caster, on_area);
-  return centre;
+  return targets;
 }
 
 bool BaseEnv::Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const {
@@ -1243,11 +1296,14 @@ bool BaseEnv::Affects(const SkillConfig& skill, const Agent& caster, const Agent
 }
 
 void BaseEnv::CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
-                              const Agent& caster, std::vector<Agent*>& affected) {
+                              const Agent& caster, Position landing,
+                              std::vector<ObjectId>& affected) const {
   for (const Position& p : cells) {
-    auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
+    const Agent* a = AgentAfterMotion(p, caster, landing);
     if (!a || !Affects(skill, caster, *a)) continue;
-    if (std::find(affected.begin(), affected.end(), a) == affected.end()) affected.push_back(a);
+    if (std::find(affected.begin(), affected.end(), a->GetId()) == affected.end()) {
+      affected.push_back(a->GetId());
+    }
   }
 }
 

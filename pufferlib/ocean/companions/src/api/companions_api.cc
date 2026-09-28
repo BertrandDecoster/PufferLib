@@ -50,7 +50,11 @@
 // effective skills, equipped_skills = the equipped ones,
 // Companions_Event_AgentRevived); struct layouts changed (consumers must
 // rebuild). Amended before release (additive): the skill book query
-// (companions_get_skill_count / _get_skill / _find_skill, Companions_SkillInfo).
+// (companions_get_skill_count / _get_skill / _find_skill, Companions_SkillInfo),
+// the skill use preview (companions_preview_skill, Companions_SkillPreview)
+// and the last step's skill uses with whom they affected
+// (companions_get_last_skill_use_count / _get_last_skill_use,
+// Companions_SkillUseInfo).
 #define COMPANIONS_VERSION "1.4.0"
 
 // =============================================================================
@@ -1223,6 +1227,85 @@ COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char*
     return false;
   }
   ToAPISkillInfo(*skill, out);
+  return true;
+}
+
+// Up to Companions_MAX_AGENTS ids into a fixed array; returns the count written.
+static int32_t CopyIds(const std::vector<companions::ObjectId>& ids,
+                       Companions_ObjectId (&out)[Companions_MAX_AGENTS]) {
+  const size_t n = std::min(ids.size(), static_cast<size_t>(Companions_MAX_AGENTS));
+  for (size_t i = 0; i < n; ++i) out[i] = ids[i];
+  return static_cast<int32_t>(n);
+}
+
+COMPANIONS_API bool companions_preview_skill(const Companions_Env* env, Companions_ObjectId agent,
+                                             int32_t slot, Companions_Direction aim,
+                                             Companions_SkillPreview* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const companions::Actor* actor = env->env->GetObjectManager().GetActor(agent);
+  if (!dynamic_cast<const companions::Agent*>(actor)) {
+    SetError("Agent not found");
+    return false;
+  }
+  const auto* comp = dynamic_cast<const companions::Companion*>(actor);
+  if (!comp) {
+    SetError("Not a companion");
+    return false;
+  }
+  if (slot < 0 || slot >= Companions_MAX_SKILL_SLOTS) {
+    SetError("Skill slot out of range");
+    return false;
+  }
+  companions::Direction dir = companions::Direction::Up;
+  switch (aim) {
+    case Companions_Direction_Up: dir = companions::Direction::Up; break;
+    case Companions_Direction_Down: dir = companions::Direction::Down; break;
+    case Companions_Direction_Left: dir = companions::Direction::Left; break;
+    case Companions_Direction_Right: dir = companions::Direction::Right; break;
+    default:
+      SetError("Invalid direction");
+      return false;
+  }
+  const companions::BaseEnv::SkillPreview p = env->env->PreviewSkill(*comp, slot, dir);
+  // Zeroed first, padding included, like Companions_SkillInfo
+  std::memset(out, 0, sizeof(*out));
+  out->usable = p.usable;
+  CopyName(out->skill, p.skill);
+  out->centre = ToAPIPosition(p.centre);
+  out->caster_landing = ToAPIPosition(p.caster_landing);
+  out->affected_count = CopyIds(p.affected, out->affected);
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_last_skill_use_count(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  return static_cast<int32_t>(env->env->GetLastSkillUses().size());
+}
+
+COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int32_t index,
+                                                  Companions_SkillUseInfo* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const auto& uses = env->env->GetLastSkillUses();
+  if (index < 0 || static_cast<size_t>(index) >= uses.size()) {
+    SetError("Skill use index out of range");
+    return false;
+  }
+  const companions::BaseEnv::SkillUse& use = uses[static_cast<size_t>(index)];
+  std::memset(out, 0, sizeof(*out));
+  out->caster = use.caster;
+  CopyName(out->skill, use.skill);
+  out->slot = use.slot;
+  out->centre = ToAPIPosition(use.target);
+  out->affected_count = CopyIds(use.affected, out->affected);
   return true;
 }
 

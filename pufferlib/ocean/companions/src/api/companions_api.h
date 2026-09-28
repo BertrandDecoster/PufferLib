@@ -42,6 +42,12 @@
 // skill (the builtins, "attack" and "revive" included, and the level's own or
 // retuned ones), so a host reads the env's skills instead of copying them. A
 // skill lands at most Companions_MAX_SKILL_TAGS tags (the env refuses more).
+// Also amended in: companions_preview_skill says where a slot's skill would
+// land and whom it would affect now, by the step's own targeting code, and
+// companions_get_last_skill_use_count / companions_get_last_skill_use say
+// whom each of the last step's skill uses affected. 1.4.0 was amended in
+// place before its release: an app built against the amended header refuses
+// an earlier 1.4.0 DLL at load (the DLL lacks these exports).
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -785,6 +791,69 @@ COMPANIONS_API bool companions_get_skill(const Companions_Env* env, int32_t inde
 // `out` untouched.
 COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char* name,
                                           Companions_SkillInfo* out);
+
+// A skill use previewed (since 1.4): what a companion using the skill in a
+// slot, aimed one way, would do NOW, before the next step. The env answers
+// with the same code the step uses (its targeting), so a host previews
+// without copying the env's rules. Nothing changes: no motion, tag, damage
+// or revive.
+typedef struct {
+  // The step would use it (Companions_Interact_Skill1 for slot 0): an
+  // enabled slot, a companion that can act (not downed, dead or stunned), a
+  // skill not cooling down, and a rooted companion only for a skill that
+  // does not move it
+  bool usable;
+  // The slot's effective skill (Companions_AgentState.skills: a context
+  // rule's, e.g. "revive" next to a downed ally, else the equipped one)
+  char skill[Companions_SKILL_NAME_LEN];
+  Companions_Position centre;          // The SkillUsed event's position
+  Companions_Position caster_landing;  // Where a dash / teleport puts the caster, else its cell
+  // The agents it would affect (tags, damage, revive; the caster only as its
+  // self_* flags allow), in the order the step processes them: its area
+  // (the centre, then up, right, down, left), then a tag_path dash's path.
+  // The first Companions_MAX_AGENTS of them.
+  Companions_ObjectId affected[Companions_MAX_AGENTS];
+  int32_t affected_count;
+} Companions_SkillPreview;
+
+// Preview companion `agent`'s slot `slot` (0-based, below
+// Companions_MAX_SKILL_SLOTS) aimed `aim`, as the next step would resolve it
+// were it the step's only change. The step may differ: it moves everyone
+// first (the enemies too), then resolves the skills one caster at a time in
+// agent order, so an earlier caster's push, pull, damage or revive changes
+// what a later one reaches; a use whose movement is Stay keeps the
+// companion's facing (preview it with Companions_AgentState.facing). The
+// preview is filled whatever `usable` says (what the skill would do if it
+// could). False, `out` untouched, for a null env or `out` ("Invalid
+// arguments"), an unknown agent ("Agent not found"), an agent that is not a
+// companion ("Not a companion"), a slot out of range ("Skill slot out of
+// range") or an aim outside Up..Right ("Invalid direction").
+COMPANIONS_API bool companions_preview_skill(const Companions_Env* env, Companions_ObjectId agent,
+                                             int32_t slot, Companions_Direction aim,
+                                             Companions_SkillPreview* out);
+
+// The last step's skill uses (since 1.4), in resolution order (the order of
+// its SkillUsed events), with whom each affected: what the step did, as the
+// preview says it before the step. Kept until the next step; a reset or a
+// snapshot load empties it.
+typedef struct {
+  Companions_ObjectId caster;
+  char skill[Companions_SKILL_NAME_LEN];
+  int32_t slot;                  // 0-based
+  Companions_Position centre;    // The SkillUsed event's position
+  // The agents it affected, in the order it processed them (as
+  // Companions_SkillPreview.affected); the first Companions_MAX_AGENTS
+  Companions_ObjectId affected[Companions_MAX_AGENTS];
+  int32_t affected_count;
+} Companions_SkillUseInfo;
+
+// Number of skill uses of the last step; 0 for a null env ("Invalid environment").
+COMPANIONS_API int32_t companions_get_last_skill_use_count(const Companions_Env* env);
+// The last step's skill use at `index` (0-based). False, `out` untouched, for
+// a null env or `out` ("Invalid arguments") or an index out of range
+// ("Skill use index out of range").
+COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int32_t index,
+                                                  Companions_SkillUseInfo* out);
 
 // =============================================================================
 // Configuration Queries
