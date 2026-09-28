@@ -239,21 +239,32 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 | `GetLastSkillUses()` | caster, skill, target (centre; landing cell for a self skill), slot | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill) |
 | `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
+| `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health, position = its cell after the step) |
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
-- Event order in a step: AgentMoved, AgentBlocked, AgentDowned, SkillUsed, TagApplied,
-  EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped`
-  counts the rest. Movement and down events (at most one each per agent) always fit: only
-  SkillUsed / TagApplied can be dropped
-- C API (`src/api/companions_api.h`, version 1.3.0: 1.2 removed the legacy cast,
+- Event order in a step: AgentMoved, AgentBlocked, AgentDowned, AgentRevived, SkillUsed,
+  TagApplied, EpisodeEnd (grouped by kind, not in time order: a companion revived then
+  downed again in one step has its second AgentDowned before its AgentRevived); at most
+  `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest.
+  The state changes (movement, down, revive) come first, so SkillUsed / TagApplied are cut
+  first. They always fit when no companion is revived twice in the step (per agent: one
+  movement, one revive, two downs = 4 events; fits for up to 15 agents). Reviving the same
+  companion twice in a step needs a skill downing it between the two revives; only then
+  can state-change events be dropped
+- C API (`src/api/companions_api.h`, version 1.4.0: 1.2 removed the legacy cast,
   1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
   `Companions_GameState.downs` / `max_downs` / `team_down`, `Companions_End_TeamDown` (4),
-  `Companions_Event_AgentDowned` (17); struct layouts changed, consumers rebuild):
-  `companions_set_agent_skill` (`""` / NULL = `attack`), `companions_apply_tag` /
-  `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`, `companions_get_tag_name` /
-  `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;
-  name buffers are 32 bytes (31 + NUL)
+  `Companions_Event_AgentDowned` (17); 1.4 added revives and context skills:
+  `Companions_AgentState.skills` = the effective skills (`EffectiveSkill`),
+  `equipped_skills` = the slots' own (`GetSkill`), `skill_cooldowns` = the equipped skills',
+  `Companions_Event_AgentRevived` (18); 1.3 and 1.4 changed struct layouts, consumers
+  rebuild): `companions_set_agent_skill` (`""` / NULL = `attack`; sets the equipped skill),
+  `companions_apply_tag` / `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`,
+  `companions_get_tag_name` / `find_tag`; `Companions_AgentState` carries tags (first 8),
+  2 skill slots (effective and equipped) and cooldowns; name buffers are 32 bytes
+  (31 + NUL). The context rules themselves are not exposed (a host reads their effect in
+  `skills`; level tools read them in the snapshot JSON)
 
 **Levels** bring their skills, zones, slots, downs and context skills through snapshot
 JSON v6 (`core/snapshot_json.cc`; versions 2..6 load, binary snapshots follow the same

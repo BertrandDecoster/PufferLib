@@ -768,7 +768,9 @@ TEST(ParityTest_Annotations_After_SetTaskLens_With_Params) {
 // its SkillUsed / TagApplied events match the C++ env step for step. Tags are
 // compared by name (each env has its own TagTable). A host "kill" downs a
 // companion on both sides at fixed steps, so downed / downs / AgentDowned are
-// compared with downs in them.
+// compared with downs in them; a companion whose slot 0 is revive (next to a
+// downed ally) uses it on that ally, so effective vs equipped skills and
+// AgentRevived are compared with revives in them.
 TEST(ParityTest_SkillsTagsZones) {
   const int rows = 8, cols = 8, agents = 3, synchro = 1;
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, 7, 0, 100);
@@ -787,6 +789,7 @@ TEST(ParityTest_SkillsTagsZones) {
   }
   std::vector<uint8_t> bytes = cpp_env.SaveSnapshot().Serialize();
   cpp_env.LoadSnapshot(Snapshot::Deserialize(bytes));  // Both sides start from a load
+  cpp_agents = cpp_env.GetObjectManager().GetAllAgents();  // The load re-created them
 
   Companions_EnvConfig config = MakeConfig(rows, cols, agents, synchro, 0, 99);
   Companions_Env* api_env = companions_create(&config);
@@ -799,7 +802,7 @@ TEST(ParityTest_SkillsTagsZones) {
   };
 
   pcg32 rng(2024);
-  int skill_events = 0, tag_events = 0, down_events = 0;
+  int skill_events = 0, tag_events = 0, down_events = 0, revive_events = 0, context_slots = 0;
   for (int step = 0; step < 60; ++step) {
     if (step == 10 || step == 20) {  // A host kill between steps: companion 0, then 1
       const Position cell = cpp_agents[step / 10 - 1]->GetPosition();
@@ -812,6 +815,24 @@ TEST(ParityTest_SkillsTagsZones) {
     for (int a = 0; a < agents; ++a) {
       int mov = rng() % 5;
       int interact = rng() % 3;  // Skill2 is None (slot 2 not enabled)
+      // Slot 0 is revive (a downed ally next to it): aim at that ally
+      const auto* comp = dynamic_cast<const Companion*>(cpp_agents[a]);
+      ASSERT_NOT_NULL(comp);
+      if (comp->IsAffectable() && cpp_env.EffectiveSkill(*comp, 0) == "revive") {
+        const Position at = comp->GetPosition();
+        const int dr[] = {-1, 1, 0, 0}, dc[] = {0, 0, -1, 1};  // Up, Down, Left, Right
+        for (int d = 0; d < 4; ++d) {
+          const Position p{at.row + dr[d], at.col + dc[d]};
+          if (p.row < 0 || p.row >= rows || p.col < 0 || p.col >= cols) continue;
+          const auto* other =
+              dynamic_cast<const Agent*>(cpp_env.GetObjectManager().GetActorAt(p));
+          if (other && other->IsDowned()) {
+            mov = d + 1;
+            interact = 1;
+            break;
+          }
+        }
+      }
       api_actions[a] = {static_cast<Companions_MovementAction>(mov),
                         static_cast<Companions_InteractAction>(interact)};
       cpp_actions[a] = EncodeAction(static_cast<MovementAction>(mov),
@@ -837,8 +858,10 @@ TEST(ParityTest_SkillsTagsZones) {
       ASSERT_EQ(s.alive, c->IsAlive());
       ASSERT_EQ(s.downed, c->IsDowned());
       for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
-        ASSERT_EQ(std::string(s.skills[slot]), c->GetSkill(slot));
+        ASSERT_EQ(std::string(s.skills[slot]), cpp_env.EffectiveSkill(*c, slot));
+        ASSERT_EQ(std::string(s.equipped_skills[slot]), c->GetSkill(slot));
         ASSERT_EQ(s.skill_cooldowns[slot], c->GetCooldown(slot));
+        context_slots += cpp_env.IsContextSkill(*c, slot);
       }
       ASSERT_EQ(s.tag_count, static_cast<int>(c->GetTags().size()));
       for (int t = 0; t < s.tag_count; ++t) {
@@ -853,11 +876,12 @@ TEST(ParityTest_SkillsTagsZones) {
       }
     }
 
-    std::vector<const Companions_Event*> used, landed, downed;
+    std::vector<const Companions_Event*> used, landed, downed, revived;
     for (int e = 0; e < r.event_count; ++e) {
       if (r.events[e].type == Companions_Event_SkillUsed) used.push_back(&r.events[e]);
       if (r.events[e].type == Companions_Event_TagApplied) landed.push_back(&r.events[e]);
       if (r.events[e].type == Companions_Event_AgentDowned) downed.push_back(&r.events[e]);
+      if (r.events[e].type == Companions_Event_AgentRevived) revived.push_back(&r.events[e]);
     }
     const auto& uses = cpp_env.GetLastSkillUses();
     ASSERT_EQ(used.size(), uses.size());
@@ -886,16 +910,30 @@ TEST(ParityTest_SkillsTagsZones) {
       ASSERT_EQ(downed[k]->position.row, at.row);
       ASSERT_EQ(downed[k]->position.col, at.col);
     }
+    const auto& revives = cpp_env.GetLastRevives();
+    ASSERT_EQ(revived.size(), revives.size());
+    for (size_t k = 0; k < revives.size(); ++k) {
+      ASSERT_EQ(revived[k]->subject_id, revives[k].revived);
+      ASSERT_EQ(revived[k]->health_source_id, revives[k].reviver);
+      ASSERT_EQ(revived[k]->health_new, revives[k].health);
+      const Position at = cpp_env.GetObjectManager().GetActor(revives[k].revived)->GetPosition();
+      ASSERT_EQ(revived[k]->position.row, at.row);
+      ASSERT_EQ(revived[k]->position.col, at.col);
+    }
     skill_events += static_cast<int>(used.size());
     tag_events += static_cast<int>(landed.size());
     down_events += static_cast<int>(downed.size());
+    revive_events += static_cast<int>(revived.size());
     if (cpp_result.done) break;
   }
   ASSERT_TRUE(skill_events > 0);
   ASSERT_TRUE(tag_events > 0);
   ASSERT_TRUE(down_events > 0);
+  ASSERT_TRUE(revive_events > 0);
+  ASSERT_TRUE(context_slots > 0);
   std::cout << "  " << skill_events << " skill uses, " << tag_events << " tag landings, "
-            << down_events << " downs" << std::endl;
+            << down_events << " downs, " << revive_events << " revives, " << context_slots
+            << " context slots" << std::endl;
   companions_destroy(api_env);
 }
 

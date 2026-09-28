@@ -6,7 +6,7 @@
 // =============================================================================
 // Versioning
 // =============================================================================
-// companions_version() is "1.3.0". 1.1 changed struct layouts
+// companions_version() is "1.4.0". 1.1 changed struct layouts
 // (Companions_AgentState, Companions_Event, Companions_StepResult): consumers
 // must be rebuilt against this header, never mixed with a 1.0 DLL or header.
 // 1.2 removed the legacy generic companion cast (its on/off setter and
@@ -28,6 +28,15 @@
 // downs and Companions_GameState.team_down says the team is down now;
 // Companions_End_TeamDown (the level is lost) and
 // Companions_Event_AgentDowned.
+// 1.4 added revives and context skills, and changed struct layouts
+// (Companions_AgentState): consumers must rebuild against this header.
+// Companions_AgentState.skills now holds the EFFECTIVE skills (what Skill1 /
+// Skill2 use now: a level's context rule may replace the equipped skill, by
+// default "revive" in slot 0 next to a downed ally); the new equipped_skills
+// holds what 1.3's skills did (what companions_set_agent_skill or the level
+// put there); skill_cooldowns stay the equipped skills'. The builtin
+// "revive" gets a downed companion up; Companions_Event_AgentRevived reports
+// it.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -66,6 +75,15 @@
 //   untouchable): subject_id = the companion, position = its cell. One per
 //   down; a down between two steps (a host effect, companions_spawn_effect)
 //   is reported by the next step. Since 1.3.
+// - Companions_Event_AgentRevived: a downed companion got up (a skill that
+//   revives, such as "revive", reported as a SkillUsed too): subject_id = the
+//   revived companion, health_source_id = the reviver (the skill's caster),
+//   health_new = the HP it got up with, position = its cell after the step
+//   (a later skill may push it). One per revive, in resolution order. A
+//   companion revived and downed again in the same step (by a later skill or
+//   an effect) has its AgentRevived here and its second AgentDowned among the
+//   downs above: within a step the events are grouped by kind, not in time
+//   order. Since 1.4.
 // - Companions_Event_SkillUsed: a companion used the skill in a slot:
 //   subject_id = caster, position = the skill's centre (the landing cell for
 //   a self-targeted skill such as teleport), effect_id = the slot (0-based),
@@ -84,10 +102,19 @@
 // A step reports at most Companions_MAX_EVENTS events, in the order above.
 // When there are more, the ones past the cap are dropped, except EpisodeEnd:
 // a step that ends the episode always reports it, as the last event (the
-// others are then cut to Companions_MAX_EVENTS - 1). The movement and down
-// events (at most one of each per agent) always fit: only skill and tag
-// events can be dropped. events_dropped counts the events not reported. The
-// state itself (agents' tags, skills, statuses) is always complete.
+// others are then cut to Companions_MAX_EVENTS - 1). events_dropped counts
+// the events not reported. The state itself (agents' tags, skills,
+// statuses, downed, health, downs) is always complete.
+// The state-change events (moved / blocked, downed, revived) come first, so
+// skill and tag events are dropped before them. They always fit when no
+// companion is revived twice in the step: an agent then has at most one
+// movement event, one revive and two downs (down between two steps, revived,
+// down again), 4 events, so with up to 15 agents (states report at most
+// Companions_MAX_AGENTS = 8) they fit next to EpisodeEnd. Reviving the same
+// companion twice in a step takes a skill downing it between two revives
+// (skills resolve one caster at a time); each such extra revive adds one
+// revive and one down, and in such a step the last state-change events may
+// be dropped too.
 //
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
@@ -163,8 +190,9 @@ typedef enum {
   Companions_Movement_Right = 4,
 } Companions_MovementAction;
 
-// Skill1 / Skill2 use the skill in slot 0 / 1 (see companions_set_agent_skill):
-// the companion stays put and its movement only aims. A slot is never empty:
+// Skill1 / Skill2 use the skill in slot 0 / 1, the effective one
+// (Companions_AgentState.skills; see companions_set_agent_skill): the
+// companion stays put and its movement only aims. A slot is never empty:
 // without another skill it holds "attack" (1 damage to the agent on the faced
 // cell, allies spared), so every companion strikes on Skill1, RL envs'
 // included. A skill that cannot be used (unknown skill, cooldown, slot not
@@ -300,9 +328,22 @@ typedef struct {
 
   // Skill slots (companions only, never "": "attack" when nothing else is
   // there; all "" / 0 for other agents). Names always fit: the env refuses
-  // longer ones.
+  // longer ones. Since 1.4 a slot has two skills:
+  // - skills: the EFFECTIVE skill, the one Skill1 / Skill2 use now. A level's
+  //   context rules may replace the equipped skill while their condition
+  //   holds (by default: next to a downed ally, slot 0 is "revive"); computed
+  //   for the state as it is now, so it can change between two steps (a host
+  //   effect downing an ally).
+  // - equipped_skills: what companions_set_agent_skill, a snapshot or a level
+  //   put in the slot (what skills held before 1.4). Equal to skills when
+  //   no rule applies.
   char skills[Companions_MAX_SKILL_SLOTS][Companions_SKILL_NAME_LEN];
-  int32_t skill_cooldowns[Companions_MAX_SKILL_SLOTS];  // Next steps it stays unusable, 0 = ready
+  char equipped_skills[Companions_MAX_SKILL_SLOTS][Companions_SKILL_NAME_LEN];
+  // The EQUIPPED skills' cooldowns: next steps it stays unusable, 0 = ready.
+  // A skill a context rule gives has no cooldown and neither reads nor
+  // spends this one: while a rule applies, the slot is usable whatever its
+  // cooldown, and the cooldown keeps ticking.
+  int32_t skill_cooldowns[Companions_MAX_SKILL_SLOTS];
 
   // Actions - intent (before collision resolution) vs actual (after)
   Companions_Action action_intent;   // What the agent wanted to do
@@ -357,6 +398,7 @@ typedef enum {
   Companions_Event_SkillUsed = 15,   // See "Event System" at the top
   Companions_Event_TagApplied = 16,  // See "Event System" at the top
   Companions_Event_AgentDowned = 17,  // A companion went down (subject_id, position; see "Event System")
+  Companions_Event_AgentRevived = 18,  // A downed companion got up (see "Event System")
 } Companions_EventType;
 
 // Why an episode ended (companions_get_end_reason, EpisodeEnd's effect_id)
@@ -383,7 +425,8 @@ typedef struct {
   Companions_Position to_pos;
   Companions_MovementAction move_action;
 
-  // For AgentDamaged/AgentHealed:
+  // For AgentDamaged/AgentHealed (and AgentRevived: health_new = the HP it
+  // got up with, health_source_id = the reviver):
   int32_t health_amount;
   int32_t health_new;
   Companions_ObjectId health_source_id;
@@ -640,9 +683,11 @@ COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_
 // Skill slots (0-based). "" or NULL puts the default "attack" back; false for
 // an unknown skill/slot/agent.
 // Puts `skill` (a builtin: "attack", "fireball", "lightningStep", "teleport",
-// "vortex", or one a JSON snapshot defines) in a companion's slot and makes it
-// ready (cooldown 0). Only slot 0 is usable today (Companions_Interact_Skill1);
-// slot 1 can be filled but Skill2 is ignored.
+// "vortex", "revive", or one a JSON snapshot defines) in a companion's slot
+// (its equipped skill: Companions_AgentState.equipped_skills; a context rule
+// may still make another the effective one) and makes it ready (cooldown 0).
+// Only slot 0 is usable today (Companions_Interact_Skill1); slot 1 can be
+// filled but Skill2 is ignored.
 COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_ObjectId agent, int32_t slot, const char* skill);
 
 // =============================================================================

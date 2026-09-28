@@ -1219,7 +1219,9 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
       auto* comp = dynamic_cast<Companion*>(a);
       if (!comp || !comp->IsDowned()) continue;
       const int health = (comp->GetMaxHealth() * skill.revive_percent + 99) / 100;
-      if (comp->Revive(health)) last_revives_.push_back({caster.GetId(), comp->GetId()});
+      if (comp->Revive(health)) {
+        last_revives_.push_back({caster.GetId(), comp->GetId(), comp->GetHealth()});
+      }
     }
   }
 

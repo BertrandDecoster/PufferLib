@@ -313,6 +313,7 @@ TEST(TestReviveInAStep) {
   ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastRevives()[0].reviver, a->GetId());
   ASSERT_EQ(env.GetLastRevives()[0].revived, b->GetId());
+  ASSERT_EQ(env.GetLastRevives()[0].health, 3);  // The HP it got up with
   ASSERT_EQ(dynamic_cast<Companion*>(a)->GetCooldown(0), 0);  // No cooldown
 
   // It acts from the next step; the reports are per step

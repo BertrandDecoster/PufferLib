@@ -88,8 +88,9 @@ TEST(TestVersion) {
   ASSERT_NOT_NULL(version);
   // 1.2 removed the companion cast; 1.2.1 added companions_get_end_reason;
   // 1.2.2 made every timer tick at the end of a step; 1.3 added downs
+  // (struct layouts changed); 1.4 added equipped_skills and AgentRevived
   // (struct layouts changed)
-  ASSERT_EQ(std::string(version), std::string("1.3.0"));
+  ASSERT_EQ(std::string(version), std::string("1.4.0"));
   std::cout << "  Version: " << version << std::endl;
 }
 
@@ -1866,6 +1867,126 @@ TEST(TestTeamDownIsLiveAfterTheHorizon) {
     ASSERT_EQ(CountEpisodeEnds(result), 0);
     ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
   }
+  companions_destroy(env);
+}
+
+// The index of the first event of `type` about `subject`, or -1.
+static int EventIndex(const Companions_StepResult& r, Companions_EventType type,
+                      Companions_ObjectId subject) {
+  for (int32_t i = 0; i < r.event_count; ++i) {
+    if (r.events[i].type == type && r.events[i].subject_id == subject) return i;
+  }
+  return -1;
+}
+
+// A slot reports its effective skill (skills: what Skill1 uses now) and its
+// equipped one (equipped_skills: what companions_set_agent_skill wrote): next
+// to a downed ally, slot 0 is revive; away from it, the equipped skill. The
+// cooldowns stay the equipped skills'.
+TEST(TestEffectiveAndEquippedSkills) {
+  // A (3,3) next to B (3,4); C (6,1) away from both
+  Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"fireball\",\"teleport\"]"},
+                                   {3, 4, ""},
+                                   {6, 1, ""}});
+  Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_EQ(std::string(a.skills[0]), std::string("fireball"));
+  ASSERT_EQ(std::string(a.equipped_skills[0]), std::string("fireball"));
+  ASSERT_EQ(std::string(a.skills[1]), std::string("teleport"));
+  ASSERT_EQ(std::string(a.equipped_skills[1]), std::string("teleport"));
+
+  const Companions_AgentState b = AgentAt(env, 1);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", b.position.row, b.position.col,
+                                      Companions_Direction_Up, -1));
+  ASSERT_TRUE(AgentAt(env, 1).downed);
+  // Between steps already: slot 0 is revive, slot 1 keeps its skill
+  a = AgentAt(env, 0);
+  ASSERT_EQ(std::string(a.skills[0]), std::string("revive"));
+  ASSERT_EQ(std::string(a.equipped_skills[0]), std::string("fireball"));
+  ASSERT_EQ(std::string(a.skills[1]), std::string("teleport"));
+  ASSERT_EQ(std::string(a.equipped_skills[1]), std::string("teleport"));
+  // Away from the downed: the equipped skill
+  const Companions_AgentState c = AgentAt(env, 2);
+  ASSERT_EQ(std::string(c.skills[0]), std::string("attack"));
+  ASSERT_EQ(std::string(c.equipped_skills[0]), std::string("attack"));
+
+  // The cooldown is the equipped skill's: A casts fireball away from B, then
+  // comes back next to it; the cooldown shows while slot 0 is revive
+  Companions_Action act[3] = {{Companions_Movement_Left, Companions_Interact_None},
+                              {Companions_Movement_Stay, Companions_Interact_None},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, act, 3, &result);  // A walks away to (3,2)
+  a = result.state.agents[0];
+  ASSERT_EQ(a.position.col, 2);
+  ASSERT_EQ(std::string(a.skills[0]), std::string("fireball"));
+  act[0] = {Companions_Movement_Up, Companions_Interact_Skill1};
+  companions_step(env, act, 3, &result);  // Fireball, up
+  ASSERT_NOT_NULL(FindEvent(result, Companions_Event_SkillUsed, a.id));
+  const int32_t cooldown = result.state.agents[0].skill_cooldowns[0];
+  ASSERT_TRUE(cooldown > 1);
+  act[0] = {Companions_Movement_Right, Companions_Interact_None};
+  companions_step(env, act, 3, &result);  // Back next to B
+  a = result.state.agents[0];
+  ASSERT_EQ(a.position.col, 3);
+  ASSERT_EQ(std::string(a.skills[0]), std::string("revive"));
+  ASSERT_EQ(std::string(a.equipped_skills[0]), std::string("fireball"));
+  ASSERT_EQ(a.skill_cooldowns[0], cooldown - 1);
+
+  // Other agents: "" (no slots)
+  Companions_Env* aggro = MakeAggroZombieEnv();
+  Companions_AgentState z = {};
+  ASSERT_TRUE(companions_get_agent_by_index(
+      aggro, FindAgentIndex(aggro, Companions_Faction_Enemy), &z));
+  ASSERT_EQ(std::string(z.skills[0]), std::string(""));
+  ASSERT_EQ(std::string(z.equipped_skills[0]), std::string(""));
+  companions_destroy(aggro);
+  companions_destroy(env);
+}
+
+// Reviving through the API: Skill1 next to a downed ally uses revive. The
+// step reports the ally's down (between steps), then AgentRevived (subject =
+// the revived, health_source_id = the reviver, health_new = the HP it came
+// back with, position = its cell), then the SkillUsed; the state has it
+// standing, at half its max HP rounded up.
+TEST(TestReviveThroughTheApi) {
+  Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"fireball\"]"}, {3, 4, ""}});
+  const Companions_AgentState a = AgentAt(env, 0);
+  const Companions_AgentState b = AgentAt(env, 1);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", b.position.row, b.position.col,
+                                      Companions_Direction_Up, -1));
+  Companions_Action act[2] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, act, 2, &result);
+
+  const int downed = EventIndex(result, Companions_Event_AgentDowned, b.id);
+  const int revived = EventIndex(result, Companions_Event_AgentRevived, b.id);
+  const int used = EventIndex(result, Companions_Event_SkillUsed, a.id);
+  ASSERT_TRUE(downed >= 0);
+  ASSERT_TRUE(revived > downed);
+  ASSERT_TRUE(used > revived);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentRevived), 1);
+  const Companions_Event& e = result.events[revived];
+  ASSERT_EQ(e.health_source_id, a.id);
+  ASSERT_EQ(e.health_new, 2);  // ceil(3 * 50%)
+  ASSERT_EQ(e.position.row, 3);
+  ASSERT_EQ(e.position.col, 4);
+  ASSERT_EQ(e.tick, 1);
+  ASSERT_EQ(std::string(result.events[used].effect_name), std::string("revive"));
+  ASSERT_EQ(result.events[used].effect_id, 0);
+
+  const Companions_AgentState& rb = result.state.agents[1];
+  ASSERT_FALSE(rb.downed);
+  ASSERT_TRUE(rb.alive);
+  ASSERT_EQ(rb.health, 2);
+  ASSERT_EQ(result.state.downs, 1);  // A revive does not undo the down
+  // No downed ally left: A's slot 0 is its fireball again, still ready
+  ASSERT_EQ(std::string(result.state.agents[0].skills[0]), std::string("fireball"));
+  ASSERT_EQ(result.state.agents[0].skill_cooldowns[0], 0);
+
+  act[0] = {Companions_Movement_Stay, Companions_Interact_None};
+  companions_step(env, act, 2, &result);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentRevived), 0);
   companions_destroy(env);
 }
 

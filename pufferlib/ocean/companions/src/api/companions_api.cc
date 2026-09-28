@@ -45,7 +45,11 @@
 // 1.3.0: downs (Companions_AgentState.downed, Companions_GameState.downs /
 // max_downs / team_down, Companions_End_TeamDown, Companions_Event_AgentDowned); struct
 // layouts changed (consumers must rebuild).
-#define COMPANIONS_VERSION "1.3.0"
+// 1.4.0: revives and context skills (Companions_AgentState.skills = the
+// effective skills, equipped_skills = the equipped ones,
+// Companions_Event_AgentRevived); struct layouts changed (consumers must
+// rebuild).
+#define COMPANIONS_VERSION "1.4.0"
 
 // =============================================================================
 // Thread-local error message
@@ -255,8 +259,9 @@ static Companions_FSMStateType ToAPIFSMState(const companions::FSMState* state) 
   return Companions_FSMState_None;
 }
 
-// Extract agent state from C++ Agent
-static void ExtractAgentState(const companions::Agent* agent,
+// Extract agent state from C++ Agent (`env` computes the effective skills)
+static void ExtractAgentState(const companions::BaseEnv& env,
+                              const companions::Agent* agent,
                               Companions_AgentState* out,
                               companions::Position prev_pos) {
   out->id = agent->GetId();
@@ -309,10 +314,13 @@ static void ExtractAgentState(const companions::Agent* agent,
   }
 
   // Skill slots: companions only (never "": "attack" by default), "" / 0 for
-  // everyone else
+  // everyone else. skills = effective (a context rule's, else the equipped
+  // one), equipped_skills = the slot's own; the cooldowns are the equipped
+  // skills'.
   const auto* slots = dynamic_cast<const companions::Companion*>(agent);
   for (int slot = 0; slot < Companions_MAX_SKILL_SLOTS; slot++) {
-    CopyName(out->skills[slot], slots ? slots->GetSkill(slot) : std::string());
+    CopyName(out->skills[slot], slots ? env.EffectiveSkill(*slots, slot) : std::string());
+    CopyName(out->equipped_skills[slot], slots ? slots->GetSkill(slot) : std::string());
     out->skill_cooldowns[slot] = slots ? slots->GetCooldown(slot) : 0;
   }
 
@@ -353,7 +361,7 @@ static void ExtractGameState(const Companions_Env* wrapper,
     if (i < static_cast<int>(wrapper->prev_positions.size())) {
       prev_pos = wrapper->prev_positions[i];
     }
-    ExtractAgentState(agents[i], &out->agents[i], prev_pos);
+    ExtractAgentState(*env, agents[i], &out->agents[i], prev_pos);
   }
 
   // Extract special cells (non-Floor)
@@ -504,6 +512,24 @@ static void AddDownEvents(Companions_Env* wrapper) {
     evt.subject_id = id;
     const companions::Actor* actor = env->GetObjectManager().GetActor(id);
     evt.position = actor ? ToAPIPosition(actor->GetPosition()) : Companions_Position{-1, -1};
+    wrapper->events.push_back(evt);
+  }
+}
+
+// One AgentRevived event per revive of this step, in resolution order
+// (subject = the revived companion, at its cell; health_source_id = the
+// reviver; health_new = the HP it got up with).
+static void AddReviveEvents(Companions_Env* wrapper) {
+  const companions::BaseEnv* env = wrapper->env.get();
+  for (const companions::BaseEnv::Revival& revival : env->GetLastRevives()) {
+    Companions_Event evt = {};
+    evt.type = Companions_Event_AgentRevived;
+    evt.tick = env->GetTick();
+    evt.subject_id = revival.revived;
+    const companions::Actor* actor = env->GetObjectManager().GetActor(revival.revived);
+    evt.position = actor ? ToAPIPosition(actor->GetPosition()) : Companions_Position{-1, -1};
+    evt.health_source_id = revival.reviver;
+    evt.health_new = revival.health;
     wrapper->events.push_back(evt);
   }
 }
@@ -820,11 +846,13 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->end_reason = CurrentEndReason(*env);
   env->last_rewards = result.rewards;
 
-  // Generate movement, down, skill and tag events. The downs come before the
-  // skills and tags, which can overflow Companions_MAX_EVENTS: a down is
-  // always reported.
+  // Generate movement, down, revive, skill and tag events. The state changes
+  // (movements, downs, revives) come before the skills and tags, which can
+  // overflow Companions_MAX_EVENTS, so the cap cuts those first (see "Event
+  // System" in companions_api.h for when the state changes always fit).
   AddMovementEvents(env);
   AddDownEvents(env);
+  AddReviveEvents(env);
   AddSkillAndTagEvents(env);
 
   // Add the episode end event on the step that ends the episode
@@ -880,7 +908,7 @@ COMPANIONS_API bool companions_get_agent(const Companions_Env* env,
       if (i < env->prev_positions.size()) {
         prev = env->prev_positions[i];
       }
-      ExtractAgentState(agents[i], out_agent, prev);
+      ExtractAgentState(*env->env, agents[i], out_agent, prev);
       return true;
     }
   }
@@ -908,7 +936,7 @@ COMPANIONS_API bool companions_get_agent_by_index(
   if (static_cast<size_t>(index) < env->prev_positions.size()) {
     prev = env->prev_positions[index];
   }
-  ExtractAgentState(agents[index], out_agent, prev);
+  ExtractAgentState(*env->env, agents[index], out_agent, prev);
   return true;
 }
 

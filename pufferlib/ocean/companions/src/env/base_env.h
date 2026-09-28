@@ -309,6 +309,7 @@ class BaseEnv {
   struct Revival {
     ObjectId reviver = kInvalidObjectId;  // The skill's caster
     ObjectId revived = kInvalidObjectId;
+    int health = 0;  // The HP it got up with (it may lose them later in the step)
   };
   // What the last Step did (cleared at the start of every Step, and by
   // LoadSnapshot, hence by every Reset).
