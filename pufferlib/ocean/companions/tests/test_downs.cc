@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/core/fsm/fsm_state.h"
 #include "../src/core/object.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/synchro_env.h"
@@ -218,6 +219,19 @@ TEST(TestNothingLandsOnADownedCompanion) {
   for (const auto& landed : env.GetLastTagsApplied()) ASSERT_TRUE(landed.agent != down->GetId());
 }
 
+// Puts the companion on a free walkable neighbour of the enemy.
+static bool PlaceNextTo(AggroEnv& env, Companion* comp, const AgentFSM* enemy) {
+  const Position e = enemy->GetPosition();
+  for (Position p : {Position{e.row, e.col - 1}, Position{e.row, e.col + 1},
+                     Position{e.row - 1, e.col}, Position{e.row + 1, e.col}}) {
+    if (env.GetGrid().IsWalkable(p) && !env.GetObjectManager().GetActorAt(p)) {
+      env.GetMutableObjectManager().UpdatePosition(comp->GetId(), p);
+      return true;
+    }
+  }
+  return false;
+}
+
 // Enemies ignore the downed: an Aggro enemy next to a downed companion does
 // not target it, and it takes no further damage.
 TEST(TestEnemiesIgnoreADownedCompanion) {
@@ -225,18 +239,7 @@ TEST(TestEnemiesIgnoreADownedCompanion) {
   env.Reset(42);
   Companion* comp = env.GetMutableObjectManager().GetAllCompanions()[0];
   AgentFSM* enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
-  // Next to the enemy, on any walkable neighbour
-  const Position e = enemy->GetPosition();
-  bool placed = false;
-  for (Position p : {Position{e.row, e.col - 1}, Position{e.row, e.col + 1},
-                     Position{e.row - 1, e.col}, Position{e.row + 1, e.col}}) {
-    if (env.GetGrid().IsWalkable(p) && !env.GetObjectManager().GetActorAt(p)) {
-      env.GetMutableObjectManager().UpdatePosition(comp->GetId(), p);
-      placed = true;
-      break;
-    }
-  }
-  ASSERT_TRUE(placed);
+  ASSERT_TRUE(PlaceNextTo(env, comp, enemy));
   comp->TakeDamage(comp->GetHealth());
   ASSERT_TRUE(comp->IsDowned());
   const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()), kStay);  // The enemy's too
@@ -246,6 +249,29 @@ TEST(TestEnemiesIgnoreADownedCompanion) {
     ASSERT_TRUE(enemy->GetFSMContext().target_id != comp->GetId());
   }
   ASSERT_EQ(comp->GetTimesDowned(), 1);
+}
+
+// An enemy whose strike downs its target drops it once its attack sequence
+// ends: it no longer reports the downed companion as its target.
+TEST(TestAnEnemyDropsATargetItDowned) {
+  AggroEnv env(10, 1, EnemyType::Goblin, 42, 0, 100);
+  env.Reset(42);
+  Companion* comp = env.GetMutableObjectManager().GetAllCompanions()[0];
+  AgentFSM* enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
+  enemy->GetFSMContext().has_attack = true;
+  enemy->GetFSMContext().attack_effect_name = "goblin_attack";  // A builtin
+  ASSERT_TRUE(PlaceNextTo(env, comp, enemy));
+  comp->RestoreHealth(1);
+  const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()), kStay);
+  for (int i = 0; i < 20 && !comp->IsDowned(); ++i) env.Step(stay);
+  ASSERT_TRUE(comp->IsDowned());
+  auto striking = [&] {
+    const std::string s = enemy->GetCurrentState()->GetName();
+    return s == "Telegraph" || s == "Attack" || s == "Recovery";
+  };
+  for (int i = 0; i < 20 && striking(); ++i) env.Step(stay);
+  ASSERT_FALSE(striking());
+  ASSERT_TRUE(enemy->GetFSMContext().target_id != comp->GetId());
 }
 
 // =============================================================================

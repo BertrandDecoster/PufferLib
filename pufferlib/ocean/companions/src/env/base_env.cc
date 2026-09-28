@@ -909,7 +909,7 @@ bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
 
 void BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                       const std::string& cause) {
-  if (duration == 0 || agent.IsDowned()) return;  // Lands nothing, so reports nothing
+  if (duration == 0 || !agent.IsAffectable()) return;  // Lands nothing, so reports nothing
   bool fresh = !agent.HasTag(tag);
   agent.ApplyTag(tag, duration);
   last_tags_applied_.push_back({agent.GetId(), tag, duration, source, cause, fresh});
@@ -917,7 +917,7 @@ void BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
 
 void BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration,
                       ObjectId source, const std::string& cause) {
-  if (duration == 0) return;  // Lands nothing, so interns nothing
+  if (duration == 0 || !agent.IsAffectable()) return;  // Lands nothing, so interns nothing
   LandTag(agent, tags_.Intern(tag), duration, source, cause);
 }
 
@@ -1027,7 +1027,8 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
       centre = ResolveGroundTarget(*grid_, from, dr, dc, skill.range);
       break;
     case SkillTargeting::Projectile: {
-      // Line rule, but the first living agent passing the filter stops it.
+      // Line rule, but the first affectable agent passing the filter stops it
+      // (a downed one is passed over).
       Position cur = from;
       for (int i = 0; i < skill.range; ++i) {
         Position next{cur.row + dr, cur.col + dc};

@@ -84,9 +84,11 @@ int FindNearestPatrolIndex(const Position& pos,
   return best_idx;
 }
 
-// Returns next state after losing target based on patrol path position
+// Returns next state after losing target based on patrol path position, and
+// drops the target (a downed one included: it is no longer reported).
 // Used when transitioning out of AggroState or RecoveryState
 const FSMState* TransitionAfterLostTarget(FSMContext& ctx, Position agent_pos) {
+  ctx.target_id = kInvalidObjectId;
   if (ctx.patrol_path.empty()) {
     return &PatrolState::Instance();
   }
@@ -175,7 +177,6 @@ const FSMState* AggroState::Update(FSMContext& ctx, AgentFSM& agent,
 
   if (!target_valid || target_dist > ctx.lose_target_range) {
     // Lost target - transition based on patrol path position
-    ctx.target_id = kInvalidObjectId;
     return TransitionAfterLostTarget(ctx, agent_pos);
   }
 
