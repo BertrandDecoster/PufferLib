@@ -762,6 +762,151 @@ TEST(TestJsonRejectsInvalidSkillsTagsZones) {
   }
 }
 
+// =============================================================================
+// Level JSON errors: a hand-authored level gets a message that says where
+// =============================================================================
+
+namespace {
+
+// A valid 8x8 snapshot as JSON with an extra skill "frost" (last in "skills"),
+// a zone and an agent tag, for the tests below to break.
+json LevelJson() {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.range = 2;
+  frost.tags = {{"chilled", 2}};
+  env.GetMutableSkillBook().Define(frost);
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
+  env.ApplyTagTo(a->GetId(), "burning", 3);
+  env.SetCellTag({2, 2}, "wet", kPermanentTag);
+  return json::parse(SnapshotToJson(env.SaveSnapshot()));
+}
+
+json& Frost(json& j) { return j.at("skills").at(j.at("skills").size() - 1); }
+
+std::string FrostSection(const json& j) {
+  return "skills[" + std::to_string(j.at("skills").size() - 1) + "] ('frost')";
+}
+
+// SnapshotFromJson(j) must throw a std::runtime_error (not a raw nlohmann
+// exception) whose message contains every one of `needles`.
+void AssertJsonErrorMentions(const json& j, const std::vector<std::string>& needles) {
+  std::string what;
+  bool caught = false;
+  try {
+    SnapshotFromJson(j.dump());
+  } catch (const std::runtime_error& e) {
+    caught = true;
+    what = e.what();
+  }
+  if (!caught) throw std::runtime_error("expected a std::runtime_error mentioning " + needles[0]);
+  for (const std::string& needle : needles) {
+    if (what.find(needle) == std::string::npos) {
+      throw std::runtime_error("error \"" + what + "\" does not mention \"" + needle + "\"");
+    }
+  }
+}
+
+}  // namespace
+
+TEST(TestJsonLevelHelperLoads) { SnapshotFromJson(LevelJson().dump()); }
+
+TEST(TestJsonRejectsNegativeSkillNumbers) {
+  const char* fields[][2] = {{"cooldown", "cooldown"}, {"range", "range"},
+                             {"distance", "motion_distance"}, {"root_steps", "root_steps"}};
+  for (const auto& f : fields) {
+    json j = LevelJson();
+    Frost(j)[f[0]] = -1;
+    AssertJsonErrorMentions(j, {"skill 'frost': " + std::string(f[1]) + " must be >= 0 (got -1)"});
+  }
+}
+
+TEST(TestJsonErrorsNameTheSection) {
+  json j = LevelJson();
+  j.at("cell_tags").at(0).erase("tag");
+  AssertJsonErrorMentions(j, {"cell_tags[0]: key 'tag' not found"});
+
+  j = LevelJson();
+  Frost(j)["tags"] = "burning";
+  AssertJsonErrorMentions(j, {FrostSection(j) + ": tags: type must be array, but is string"});
+
+  j = LevelJson();
+  Frost(j)["range"] = "3";
+  AssertJsonErrorMentions(j, {FrostSection(j) + ": range: type must be number, but is string"});
+
+  j = LevelJson();
+  j["skills"] = json::array({nullptr});
+  AssertJsonErrorMentions(j, {"skills[0]", "null"});
+
+  j = LevelJson();
+  j.at("skills").at(1)["name"] = 7;
+  AssertJsonErrorMentions(j, {"skills[1]: name: type must be string, but is number"});
+
+  j = LevelJson();
+  Frost(j).at("tags").at(0).erase("tag");
+  AssertJsonErrorMentions(j, {FrostSection(j) + ": tags[0]: key 'tag' not found"});
+
+  j = LevelJson();
+  j.at("agents").at(0).at("tags").at(0)["duration"] = "3";
+  AssertJsonErrorMentions(j, {"agents[0].tags[0]: duration: type must be number, but is string"});
+
+  j = LevelJson();
+  j.at("agents").at(0).erase("health");
+  AssertJsonErrorMentions(j, {"agents[0]", "key 'health' not found"});
+
+  j = LevelJson();
+  j.at("grid")["rows"] = "8";
+  AssertJsonErrorMentions(j, {"grid", "type must be number, but is string"});
+
+  AssertJsonErrorMentions(json("not an object"), {"type must be object"});
+  ASSERT_THROW(SnapshotFromJson("{ not json"), std::runtime_error);
+}
+
+TEST(TestJsonRejectsUnknownKeys) {
+  json j = LevelJson();
+  Frost(j)["motion_distance"] = 2;
+  AssertJsonErrorMentions(
+      j, {"skill 'frost': unknown key 'motion_distance' (did you mean 'distance'?)"});
+
+  j = LevelJson();
+  Frost(j)["colour"] = "blue";
+  AssertJsonErrorMentions(j, {"skill 'frost': unknown key 'colour'"});
+  bool hinted = false;
+  try {
+    SnapshotFromJson(j.dump());
+  } catch (const std::runtime_error& e) {
+    hinted = std::string(e.what()).find("did you mean") != std::string::npos;
+  }
+  ASSERT_FALSE(hinted);
+
+  j = LevelJson();
+  j.at("cell_tags").at(0)["ticks"] = 2;
+  AssertJsonErrorMentions(j, {"cell_tags[0]: unknown key 'ticks'"});
+
+  j = LevelJson();
+  Frost(j).at("tags").at(0)["ticks"] = 2;
+  AssertJsonErrorMentions(j, {"skill 'frost': tags[0]: unknown key 'ticks'"});
+
+  j = LevelJson();
+  j.at("agents").at(0).at("tags").at(0)["ticks"] = 2;
+  AssertJsonErrorMentions(j, {"agents[0].tags[0]: unknown key 'ticks'"});
+}
+
+TEST(TestJsonRejectsUnknownStatus) {
+  json j = LevelJson();
+  j.at("agents").at(0)["statuses"] =
+      json::array({json{{"status_type", "frozen"}, {"duration", 2}}});
+  AssertJsonErrorMentions(j, {"agents[0].statuses[0]", "'frozen'"});
+
+  j.at("agents").at(0)["statuses"] =
+      json::array({json{{"status_type", "None"}, {"duration", 0}},
+                   json{{"status_type", "STUNNED"}, {"duration", 2}}});
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_EQ(s.agents[0].statuses.size(), 2u);
+  ASSERT_EQ(s.agents[0].statuses[1].type, static_cast<int>(StatusType::Stunned));
+}
+
 int main() {
   int passed = 0;
   int failed = 0;

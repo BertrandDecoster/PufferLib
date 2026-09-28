@@ -121,4 +121,65 @@ SkillMotion SkillMotionFromString(const std::string& s) {
   throw std::runtime_error("Unknown skill motion: " + s);
 }
 
+std::string TargetFilterToString(TargetFilter f) {
+  switch (f) {
+    case TargetFilter::All: return "all";
+    case TargetFilter::Companion: return "companion";
+    case TargetFilter::Enemy: return "enemy";
+    case TargetFilter::Neutral: return "neutral";
+  }
+  return "all";
+}
+
+TargetFilter TargetFilterFromString(const std::string& s) {
+  if (s == "all") return TargetFilter::All;
+  if (s == "companion") return TargetFilter::Companion;
+  if (s == "enemy") return TargetFilter::Enemy;
+  if (s == "neutral") return TargetFilter::Neutral;
+  throw std::runtime_error("Unknown skill filter: " + s);
+}
+
+namespace {
+
+template <typename E>
+bool EnumInRange(E value, E last) {
+  const int v = static_cast<int>(value);
+  return v >= 0 && v <= static_cast<int>(last);
+}
+
+}  // namespace
+
+void ValidateSkillConfig(const SkillConfig& s) {
+  if (s.name.empty()) throw std::runtime_error("skill without a name");
+  const std::string where = "skill '" + s.name + "': ";
+  auto check_enum = [&](bool ok, const char* field, int value) {
+    if (!ok) {
+      throw std::runtime_error(where + field + " has an unknown value " + std::to_string(value));
+    }
+  };
+  check_enum(EnumInRange(s.targeting, SkillTargeting::Projectile), "targeting",
+             static_cast<int>(s.targeting));
+  check_enum(EnumInRange(s.filter, TargetFilter::Neutral), "filter", static_cast<int>(s.filter));
+  check_enum(EnumInRange(s.area, SkillArea::Cross), "area", static_cast<int>(s.area));
+  check_enum(EnumInRange(s.motion, SkillMotion::PullIn), "motion", static_cast<int>(s.motion));
+  auto check_non_negative = [&](const char* field, int value) {
+    if (value < 0) {
+      throw std::runtime_error(where + field + " must be >= 0 (got " + std::to_string(value) + ")");
+    }
+  };
+  check_non_negative("range", s.range);
+  check_non_negative("motion_distance", s.motion_distance);
+  check_non_negative("root_steps", s.root_steps);
+  check_non_negative("cooldown", s.cooldown);
+  for (size_t i = 0; i < s.tags.size(); ++i) {
+    const SkillTagSpec& t = s.tags[i];
+    const std::string tag_where = where + "tags[" + std::to_string(i) + "]";
+    if (t.tag.empty()) throw std::runtime_error(tag_where + ": empty tag name");
+    if (t.duration != kPermanentTag && t.duration <= 0) {
+      throw std::runtime_error(tag_where + " ('" + t.tag + "'): duration must be -1 or > 0 (got " +
+                               std::to_string(t.duration) + ")");
+    }
+  }
+}
+
 }  // namespace companions

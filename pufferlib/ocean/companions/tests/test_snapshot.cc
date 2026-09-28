@@ -1023,6 +1023,129 @@ TEST(TestLoadSnapshotRejectsInvalidSkillsTagsZones) {
   }
 }
 
+namespace {
+
+// `fn` must throw a std::runtime_error whose message contains `needle`.
+template <typename F>
+void AssertThrowsMentioning(F fn, const std::string& needle) {
+  std::string what;
+  bool caught = false;
+  try {
+    fn();
+  } catch (const std::runtime_error& e) {
+    caught = true;
+    what = e.what();
+  }
+  if (!caught) throw std::runtime_error("expected a std::runtime_error mentioning " + needle);
+  if (what.find(needle) == std::string::npos) {
+    throw std::runtime_error("error \"" + what + "\" does not mention \"" + needle + "\"");
+  }
+}
+
+// LoadSnapshot and a binary round trip must both reject `s` with `needle`.
+void AssertSnapshotRejected(const Snapshot& s, const std::string& needle) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  AssertThrowsMentioning([&] { env.LoadSnapshot(s); }, needle);
+  std::vector<uint8_t> bytes = s.Serialize();
+  AssertThrowsMentioning([&] { Snapshot::Deserialize(bytes); }, needle);
+}
+
+}  // namespace
+
+TEST(TestSnapshotRejectsNegativeSkillNumbers) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  SkillConfig frost;
+  frost.name = "frost";
+  for (int field = 0; field < 4; ++field) {
+    Snapshot s = good;
+    SkillConfig bad = frost;
+    const char* name = "";
+    switch (field) {
+      case 0: bad.cooldown = -1; name = "cooldown"; break;
+      case 1: bad.range = -1; name = "range"; break;
+      case 2: bad.motion_distance = -1; name = "motion_distance"; break;
+      case 3: bad.root_steps = -1; name = "root_steps"; break;
+    }
+    s.skills.push_back(bad);
+    AssertSnapshotRejected(s, "skill 'frost': " + std::string(name) + " must be >= 0 (got -1)");
+  }
+}
+
+TEST(TestValidateSkillConfig) {
+  SkillConfig s;
+  s.name = "frost";
+  ValidateSkillConfig(s);  // Defaults are valid
+  for (const SkillConfig& b : EverySkillShape()) ValidateSkillConfig(b);
+
+  SkillConfig bad = s;
+  bad.name = "";
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "name");
+  bad = s;
+  bad.tags = {{"", 2}};
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "skill 'frost': tags[0]");
+  bad = s;
+  bad.tags = {{"chilled", 3}, {"burning", 0}};
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "skill 'frost': tags[1] ('burning')");
+  bad = s;
+  bad.area = static_cast<SkillArea>(7);
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "skill 'frost': area");
+  bad = s;
+  bad.motion = static_cast<SkillMotion>(-1);
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "skill 'frost': motion");
+}
+
+TEST(TestSnapshotValidationErrorsSayWhere) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const std::string agent0 = "agent #0 (id " + std::to_string(good.agents[0].id) + ")";
+
+  Snapshot s = good;
+  s.cell_tags = {{Position{8, 3}, "wet", 2}};
+  AssertSnapshotRejected(s, "(8, 3)");
+  s = good;
+  s.cell_tags = {{Position{2, 3}, "wet", 0}};
+  AssertSnapshotRejected(s, "(2, 3)");
+
+  s = good;
+  s.agents[0].skills = {"", "", ""};
+  AssertSnapshotRejected(s, agent0);
+  AssertSnapshotRejected(s, "at most " + std::to_string(kMaxSkillSlots));
+  s = good;
+  s.agents[0].cooldowns = {0, 0, 0};
+  AssertSnapshotRejected(s, agent0);
+  s = good;
+  s.agents[0].cooldowns = {0, -1};
+  AssertSnapshotRejected(s, agent0);
+  AssertSnapshotRejected(s, "(got -1)");
+  s = good;
+  s.agents[0].tags = {{"burning", 0}};
+  AssertSnapshotRejected(s, agent0);
+}
+
+TEST(TestDeserializeRejectsOversizedV4Counts) {
+  // Nothing in the snapshot after the skill book: the buffer ends with the
+  // skill count, then the zone count.
+  Snapshot s = MinimalSnapshot();
+  std::vector<uint8_t> bytes = s.Serialize();
+  const size_t zones_at = bytes.size() - 4;
+  const size_t skills_at = bytes.size() - 8;
+
+  std::vector<uint8_t> bad = bytes;
+  uint32_t huge = 9000000;  // Under the sanity cap, far over the bytes left
+  std::memcpy(bad.data() + zones_at, &huge, sizeof(huge));
+  AssertThrowsMentioning([&] { Snapshot::Deserialize(bad); }, "zone count");
+
+  bad = bytes;
+  huge = 90000;
+  std::memcpy(bad.data() + skills_at, &huge, sizeof(huge));
+  AssertThrowsMentioning([&] { Snapshot::Deserialize(bad); }, "skill count");
+
+  // Counts that fit the remaining bytes still get the usual underflow error.
+  bad = bytes;
+  uint32_t one = 1;
+  std::memcpy(bad.data() + zones_at, &one, sizeof(one));
+  ASSERT_THROW(Snapshot::Deserialize(bad), std::runtime_error);
+}
+
 TEST(TestZoneSaveLoadRoundTripAtIdentity) {
   SynchroEnv env(6, 9, 1, 1, 0, 42, 0);
   ASSERT_TRUE(env.SetCellTag({1, 7}, "wet", 3));

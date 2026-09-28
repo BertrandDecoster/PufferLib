@@ -88,6 +88,16 @@ std::string SkillAreaToString(SkillArea a);
 SkillArea SkillAreaFromString(const std::string& s);            // Throws on unknown
 std::string SkillMotionToString(SkillMotion m);
 SkillMotion SkillMotionFromString(const std::string& s);        // Throws on unknown
+// A skill's filter: "all" / "companion" / "enemy" / "neutral" (strict: an
+// unknown string throws, unlike ParseTargetFilter).
+std::string TargetFilterToString(TargetFilter f);
+TargetFilter TargetFilterFromString(const std::string& s);      // Throws on unknown
+
+// Throws std::runtime_error naming the skill and the field unless `s` is
+// usable: non-empty name; range, motion_distance, root_steps and cooldown
+// >= 0; tag names non-empty with a duration of kPermanentTag or > 0; enums in
+// range.
+void ValidateSkillConfig(const SkillConfig& s);
 
 }  // namespace companions
 

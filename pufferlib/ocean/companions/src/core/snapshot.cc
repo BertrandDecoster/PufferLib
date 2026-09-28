@@ -56,50 +56,55 @@ bool IsValidTagDuration(int duration) {
   return duration == kPermanentTag || duration > 0;
 }
 
-void CheckTag(const std::string& tag, int duration, const char* what) {
+// `what` names the tag's owner, e.g. "zone at (2, 3)".
+void CheckTag(const std::string& tag, int duration, const std::string& what) {
   if (tag.empty()) {
-    throw std::runtime_error(std::string("Snapshot: ") + what + " with an empty tag name");
+    throw std::runtime_error("Snapshot: " + what + " has an empty tag name");
   }
   if (!IsValidTagDuration(duration)) {
-    throw std::runtime_error(std::string("Snapshot: ") + what + " \"" + tag +
-                             "\" has an invalid duration " + std::to_string(duration) +
-                             " (positive or -1)");
+    throw std::runtime_error("Snapshot: " + what + " tag \"" + tag + "\" has an invalid duration " +
+                             std::to_string(duration) + " (positive or -1)");
   }
 }
 
-template <typename E>
-bool EnumInRange(E value, E last) {
-  const int v = static_cast<int>(value);
-  return v >= 0 && v <= static_cast<int>(last);
+std::string CellText(const Position& p) {
+  return "(" + std::to_string(p.row) + ", " + std::to_string(p.col) + ")";
 }
 
 }  // namespace
 
 void Snapshot::ValidateSkillsTagsZones() const {
   for (const SkillConfig& skill : skills) {
-    if (skill.name.empty()) throw std::runtime_error("Snapshot: skill without a name");
-    if (!EnumInRange(skill.targeting, SkillTargeting::Projectile) ||
-        !EnumInRange(skill.filter, TargetFilter::Neutral) ||
-        !EnumInRange(skill.area, SkillArea::Cross) ||
-        !EnumInRange(skill.motion, SkillMotion::PullIn)) {
-      throw std::runtime_error("Snapshot: skill \"" + skill.name + "\" has an unknown enum value");
+    try {
+      ValidateSkillConfig(skill);
+    } catch (const std::runtime_error& e) {
+      throw std::runtime_error(std::string("Snapshot: ") + e.what());
     }
-    for (const SkillTagSpec& t : skill.tags) CheckTag(t.tag, t.duration, "skill tag");
   }
-  for (const AgentSnapshot& agent : agents) {
-    for (const TagSnapshot& t : agent.tags) CheckTag(t.tag, t.duration, "agent tag");
+  for (size_t i = 0; i < agents.size(); ++i) {
+    const AgentSnapshot& agent = agents[i];
+    const std::string who = "agent #" + std::to_string(i) + " (id " + std::to_string(agent.id) + ")";
+    for (const TagSnapshot& t : agent.tags) CheckTag(t.tag, t.duration, who);
     if (agent.skills.size() > static_cast<size_t>(kMaxSkillSlots) ||
         agent.cooldowns.size() > static_cast<size_t>(kMaxSkillSlots)) {
-      throw std::runtime_error("Snapshot: more than kMaxSkillSlots skill slots / cooldowns");
+      throw std::runtime_error("Snapshot: " + who + " has " + std::to_string(agent.skills.size()) +
+                               " skill slots and " + std::to_string(agent.cooldowns.size()) +
+                               " cooldowns, at most " + std::to_string(kMaxSkillSlots) + " each");
     }
-    for (int cooldown : agent.cooldowns) {
-      if (cooldown < 0) throw std::runtime_error("Snapshot: negative skill cooldown");
+    for (size_t slot = 0; slot < agent.cooldowns.size(); ++slot) {
+      if (agent.cooldowns[slot] < 0) {
+        throw std::runtime_error("Snapshot: " + who + ": cooldowns[" + std::to_string(slot) +
+                                 "] must be >= 0 (got " + std::to_string(agent.cooldowns[slot]) +
+                                 ")");
+      }
     }
   }
   for (const CellTagSnapshot& z : cell_tags) {
-    CheckTag(z.tag, z.duration, "zone");
+    CheckTag(z.tag, z.duration, "zone at " + CellText(z.cell));
     if (z.cell.row < 0 || z.cell.row >= rows || z.cell.col < 0 || z.cell.col >= cols) {
-      throw std::runtime_error("Snapshot: zone outside the grid");
+      throw std::runtime_error("Snapshot: zone \"" + z.tag + "\" at " + CellText(z.cell) +
+                               " is outside the " + std::to_string(rows) + "x" +
+                               std::to_string(cols) + " grid");
     }
   }
 }
@@ -169,6 +174,19 @@ std::vector<T> ReadVector(const uint8_t*& ptr, const uint8_t* end) {
     vec[i] = ReadValue<T>(ptr, end);
   }
   return vec;
+}
+
+// A count read from the buffer must fit in what is left of it, each item
+// taking at least `min_item_bytes`: a corrupt count then fails here instead of
+// allocating for it.
+void CheckCountFits(uint32_t count, size_t min_item_bytes, const uint8_t* ptr,
+                    const uint8_t* end, const char* what) {
+  const size_t left = static_cast<size_t>(end - ptr);
+  if (count > left / min_item_bytes) {
+    throw std::runtime_error(std::string("Snapshot buffer corrupt: ") + what + " " +
+                             std::to_string(count) + " exceeds the " + std::to_string(left) +
+                             " bytes left");
+  }
 }
 
 // Serialize Position
@@ -637,12 +655,18 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     if (num_skills > 100000) {
       throw std::runtime_error("Snapshot buffer corrupt: unreasonable skill count");
     }
+    // name length, 8 ints (targeting .. cooldown), tag_path, tag count
+    CheckCountFits(num_skills, sizeof(uint32_t) + 8 * sizeof(int) + sizeof(bool) + sizeof(uint32_t),
+                   ptr, end, "skill count");
     snap.skills.reserve(num_skills);
     for (uint32_t i = 0; i < num_skills; ++i) snap.skills.push_back(ReadSkill(ptr, end));
     uint32_t num_zones = ReadValue<uint32_t>(ptr, end);
     if (num_zones > 10000000) {
       throw std::runtime_error("Snapshot buffer corrupt: unreasonable zone count");
     }
+    // cell, tag name length, duration
+    CheckCountFits(num_zones, 2 * sizeof(int) + sizeof(uint32_t) + sizeof(int), ptr, end,
+                   "zone count");
     snap.cell_tags.resize(num_zones);
     for (CellTagSnapshot& z : snap.cell_tags) {
       z.cell = ReadPosition(ptr, end);

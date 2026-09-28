@@ -1250,7 +1250,7 @@ TEST(TestSetCellTagRejectsOutOfBoundsAndBadDurations) {
   ASSERT_EQ(env.GetTagTable().Find("oil"), kInvalidTag);  // Not interned either
 }
 
-TEST(TestResetClearsCellTags) {
+TEST(TestResetAndLoadReplaceZonesWithSnapshots) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   env.SetCellTag({3, 2}, "wet", kPermanentTag);

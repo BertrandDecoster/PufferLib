@@ -3,7 +3,10 @@
 
 #include "snapshot_json.h"
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
+#include <initializer_list>
 #include <stdexcept>
 
 #include "../../third_party/nlohmann/json.hpp"
@@ -22,6 +25,86 @@ namespace companions {
 // =============================================================================
 
 namespace {
+
+// -----------------------------------------------------------------------------
+// Reading with context: every error names the section being read, e.g.
+// "cell_tags[3]: key 'tag' not found". nlohmann exceptions become
+// std::runtime_error; our own runtime_errors already say where.
+// -----------------------------------------------------------------------------
+
+// nlohmann's message without its "[json.exception.type_error.302] " prefix.
+std::string JsonErrorText(const json::exception& e) {
+  const std::string what = e.what();
+  if (what.rfind("[json.exception.", 0) == 0) {
+    const size_t close = what.find("] ");
+    if (close != std::string::npos) return what.substr(close + 2);
+  }
+  return what;
+}
+
+template <typename F>
+auto InSection(const std::string& section, F&& read) -> decltype(read()) {
+  try {
+    return read();
+  } catch (const json::exception& e) {
+    throw std::runtime_error(section + ": " + JsonErrorText(e));
+  }
+}
+
+void RequireObject(const json& j, const std::string& section) {
+  if (!j.is_object()) {
+    throw std::runtime_error(section + ": type must be object, but is " + j.type_name());
+  }
+}
+
+const json& Key(const json& j, const char* key, const std::string& section) {
+  RequireObject(j, section);
+  auto it = j.find(key);
+  if (it == j.end()) throw std::runtime_error(section + ": key '" + key + "' not found");
+  return *it;
+}
+
+template <typename T>
+T Get(const json& j, const char* key, const std::string& section) {
+  const json& v = Key(j, key, section);
+  return InSection(section + ": " + key, [&] { return v.get<T>(); });
+}
+
+template <typename T>
+T GetOr(const json& j, const char* key, T fallback, const std::string& section) {
+  return j.contains(key) ? Get<T>(j, key, section) : fallback;
+}
+
+const json& GetArray(const json& j, const char* key, const std::string& section) {
+  const json& v = Key(j, key, section);
+  if (!v.is_array()) {
+    throw std::runtime_error(section + ": " + key + ": type must be array, but is " +
+                             v.type_name());
+  }
+  return v;
+}
+
+std::string Indexed(const std::string& section, size_t i) {
+  return section + "[" + std::to_string(i) + "]";
+}
+
+// Throws on a key of `j` (an object) not in `allowed`; `owner` names the
+// object. No aliases: "motion_distance" only gets a hint towards "distance".
+void CheckKeys(const json& j, std::initializer_list<const char*> allowed,
+               const std::string& owner) {
+  for (auto it = j.begin(); it != j.end(); ++it) {
+    bool known = false;
+    bool has_distance = false;
+    for (const char* key : allowed) {
+      known = known || it.key() == key;
+      has_distance = has_distance || std::string(key) == "distance";
+    }
+    if (known) continue;
+    std::string message = owner + ": unknown key '" + it.key() + "'";
+    if (has_distance && it.key() == "motion_distance") message += " (did you mean 'distance'?)";
+    throw std::runtime_error(message);
+  }
+}
 
 std::string ActorColorToString(ActorColor color) {
   switch (color) {
@@ -93,26 +176,6 @@ SemanticTag StringToSemanticTag(const std::string& str) {
   return SemanticTag::SynchroGoal;  // Fallback
 }
 
-// TargetFilter of a skill: "all" / "companion" / "enemy" / "neutral"
-// (strict: an unknown string is an error, unlike ParseTargetFilter).
-std::string TargetFilterToString(TargetFilter f) {
-  switch (f) {
-    case TargetFilter::All: return "all";
-    case TargetFilter::Companion: return "companion";
-    case TargetFilter::Enemy: return "enemy";
-    case TargetFilter::Neutral: return "neutral";
-  }
-  return "all";
-}
-
-TargetFilter TargetFilterFromString(const std::string& s) {
-  if (s == "all") return TargetFilter::All;
-  if (s == "companion") return TargetFilter::Companion;
-  if (s == "enemy") return TargetFilter::Enemy;
-  if (s == "neutral") return TargetFilter::Neutral;
-  throw std::runtime_error("Unknown skill filter: " + s);
-}
-
 // Position serialization
 json PositionToJson(const Position& pos) {
   return json{{"row", pos.row}, {"col", pos.col}};
@@ -147,11 +210,20 @@ json StatusSnapshotToJson(const StatusSnapshot& status) {
   };
 }
 
-StatusSnapshot JsonToStatusSnapshot(const json& j) {
+// Status names are case-insensitive; one StatusTypeFromString does not know
+// (anything but "none") is an error.
+StatusSnapshot JsonToStatusSnapshot(const json& j, const std::string& section) {
   StatusSnapshot status;
-  status.type = static_cast<int>(
-      StatusTypeFromString(j.at("status_type").get<std::string>()));  // Case-insensitive
-  status.duration = j.at("duration").get<int>();
+  const std::string name = Get<std::string>(j, "status_type", section);
+  const StatusType type = StatusTypeFromString(name);
+  std::string lower = name;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (type == StatusType::None && lower != "none") {
+    throw std::runtime_error(section + ": unknown status '" + name + "'");
+  }
+  status.type = static_cast<int>(type);
+  status.duration = Get<int>(j, "duration", section);
   return status;
 }
 
@@ -262,8 +334,12 @@ json TagToJson(const std::string& tag, int duration) {
   return json{{"tag", tag}, {"duration", duration}};
 }
 
-std::string JsonTagName(const json& j) { return j.at("tag").get<std::string>(); }
-int JsonTagDuration(const json& j) { return j.value("duration", kPermanentTag); }
+// `section` prefixes JSON errors, `owner` an unknown key.
+TagSnapshot JsonToTag(const json& j, const std::string& section, const std::string& owner) {
+  RequireObject(j, section);
+  CheckKeys(j, {"tag", "duration"}, owner);
+  return {Get<std::string>(j, "tag", section), GetOr<int>(j, "duration", kPermanentTag, section)};
+}
 
 // SkillConfig: every field but "name" is optional and takes the SkillConfig
 // default when absent (so "filter" defaults to "all"). "distance" is
@@ -286,24 +362,43 @@ json SkillConfigToJson(const SkillConfig& s) {
   };
 }
 
-SkillConfig JsonToSkillConfig(const json& j) {
-  if (!j.contains("name")) throw std::runtime_error("Snapshot: skill without a name");
+// `section` is "skills[i]". JSON errors read "skills[i] ('frost'): range: ...",
+// the others "skill 'frost': ...". Values are checked by ValidateSkillConfig.
+SkillConfig JsonToSkillConfig(const json& j, const std::string& section) {
+  RequireObject(j, section);
   SkillConfig s;
-  s.name = j.at("name").get<std::string>();
-  if (j.contains("targeting")) {
-    s.targeting = SkillTargetingFromString(j.at("targeting").get<std::string>());
-  }
-  s.range = j.value("range", s.range);
-  if (j.contains("filter")) s.filter = TargetFilterFromString(j.at("filter").get<std::string>());
-  if (j.contains("area")) s.area = SkillAreaFromString(j.at("area").get<std::string>());
-  if (j.contains("motion")) s.motion = SkillMotionFromString(j.at("motion").get<std::string>());
-  s.motion_distance = j.value("distance", s.motion_distance);
-  s.tag_path = j.value("tag_path", s.tag_path);
+  s.name = Get<std::string>(j, "name", section);
+  const std::string sec = section + " ('" + s.name + "')";
+  const std::string owner = "skill '" + s.name + "'";
+  CheckKeys(j, {"name", "targeting", "range", "filter", "area", "motion", "distance", "tag_path",
+                "tags", "root_steps", "cooldown"},
+            owner);
+  // An enum field, parsed by `from_string` (which throws on an unknown value).
+  auto enum_field = [&](const char* key, auto& field, auto from_string) {
+    if (!j.contains(key)) return;
+    const std::string value = Get<std::string>(j, key, sec);
+    try {
+      field = from_string(value);
+    } catch (const std::runtime_error& e) {
+      throw std::runtime_error(owner + ": " + e.what());
+    }
+  };
+  enum_field("targeting", s.targeting, SkillTargetingFromString);
+  s.range = GetOr<int>(j, "range", s.range, sec);
+  enum_field("filter", s.filter, TargetFilterFromString);
+  enum_field("area", s.area, SkillAreaFromString);
+  enum_field("motion", s.motion, SkillMotionFromString);
+  s.motion_distance = GetOr<int>(j, "distance", s.motion_distance, sec);
+  s.tag_path = GetOr<bool>(j, "tag_path", s.tag_path, sec);
   if (j.contains("tags")) {
-    for (const json& t : j.at("tags")) s.tags.push_back({JsonTagName(t), JsonTagDuration(t)});
+    const json& tags = GetArray(j, "tags", sec);
+    for (size_t i = 0; i < tags.size(); ++i) {
+      TagSnapshot t = JsonToTag(tags[i], Indexed(sec + ": tags", i), Indexed(owner + ": tags", i));
+      s.tags.push_back({t.tag, t.duration});
+    }
   }
-  s.root_steps = j.value("root_steps", s.root_steps);
-  s.cooldown = j.value("cooldown", s.cooldown);
+  s.root_steps = GetOr<int>(j, "root_steps", s.root_steps, sec);
+  s.cooldown = GetOr<int>(j, "cooldown", s.cooldown, sec);
   return s;
 }
 
@@ -354,7 +449,8 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
   return j;
 }
 
-AgentSnapshot JsonToAgentSnapshot(const json& j) {
+// `section` is "agents[i]"; the caller turns other JSON errors into it.
+AgentSnapshot JsonToAgentSnapshot(const json& j, const std::string& section) {
   AgentSnapshot agent;
   agent.id = j.at("id").get<int>();
   agent.type = static_cast<int>(StringToObjectType(j.at("agent_type").get<std::string>()));
@@ -370,8 +466,9 @@ AgentSnapshot JsonToAgentSnapshot(const json& j) {
   agent.kind = j.value("kind", std::string());
 
   // Statuses
-  for (const auto& status_json : j.at("statuses")) {
-    agent.statuses.push_back(JsonToStatusSnapshot(status_json));
+  const json& statuses = GetArray(j, "statuses", section);
+  for (size_t i = 0; i < statuses.size(); ++i) {
+    agent.statuses.push_back(JsonToStatusSnapshot(statuses[i], Indexed(section + ".statuses", i)));
   }
 
   // FSM
@@ -388,10 +485,14 @@ AgentSnapshot JsonToAgentSnapshot(const json& j) {
 
   // Tags, skill slots and cooldowns (v4; absent = none / empty / 0)
   if (j.contains("tags")) {
-    for (const json& t : j.at("tags")) agent.tags.push_back({JsonTagName(t), JsonTagDuration(t)});
+    const json& tags = GetArray(j, "tags", section);
+    for (size_t i = 0; i < tags.size(); ++i) {
+      const std::string tag_section = Indexed(section + ".tags", i);
+      agent.tags.push_back(JsonToTag(tags[i], tag_section, tag_section));
+    }
   }
-  if (j.contains("skills")) agent.skills = j.at("skills").get<std::vector<std::string>>();
-  if (j.contains("cooldowns")) agent.cooldowns = j.at("cooldowns").get<std::vector<int>>();
+  if (j.contains("skills")) agent.skills = Get<std::vector<std::string>>(j, "skills", section);
+  if (j.contains("cooldowns")) agent.cooldowns = Get<std::vector<int>>(j, "cooldowns", section);
 
   return agent;
 }
@@ -556,8 +657,10 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
   return j.dump(2);  // Pretty-print with 2-space indent
 }
 
-Snapshot SnapshotFromJson(const std::string& json_str) {
-  json j = json::parse(json_str);
+namespace {
+
+Snapshot ReadSnapshot(const json& j) {
+  RequireObject(j, "snapshot");
 
   // Schema validation — magic + version. Payloads saved prior to the F4
   // audit fix won't have either; accept them once but reject future drift.
@@ -568,7 +671,7 @@ Snapshot SnapshotFromJson(const std::string& json_str) {
     }
   }
   if (j.contains("version")) {
-    int version = j.at("version").get<int>();
+    int version = Get<int>(j, "version", "snapshot");
     if (version < kMinJsonSnapshotVersion || version > kJsonSnapshotVersion) {
       throw std::runtime_error(
           "Unsupported snapshot version: " + std::to_string(version));
@@ -578,68 +681,107 @@ Snapshot SnapshotFromJson(const std::string& json_str) {
   Snapshot snapshot;
 
   // Grid
-  snapshot.rows = j.at("grid").at("rows").get<int>();
-  snapshot.cols = j.at("grid").at("cols").get<int>();
+  InSection("grid", [&] {
+    snapshot.rows = j.at("grid").at("rows").get<int>();
+    snapshot.cols = j.at("grid").at("cols").get<int>();
+  });
 
   // Pre-allocate cells
   snapshot.cells.resize(snapshot.rows * snapshot.cols);
 
   // Parse cells
-  for (const auto& cell_json : j.at("grid").at("cells")) {
-    int row = cell_json.at("row").get<int>();
-    int col = cell_json.at("col").get<int>();
-    int idx = row * snapshot.cols + col;
-    snapshot.cells[idx] = JsonToCellSnapshot(cell_json);
+  const json& cells = InSection("grid", [&]() -> const json& { return j.at("grid").at("cells"); });
+  for (size_t i = 0; i < cells.size(); ++i) {
+    InSection(Indexed("grid.cells", i), [&] {
+      const json& cell_json = cells[i];
+      int row = cell_json.at("row").get<int>();
+      int col = cell_json.at("col").get<int>();
+      int idx = row * snapshot.cols + col;
+      snapshot.cells[idx] = JsonToCellSnapshot(cell_json);
+    });
   }
 
   // Agents
-  for (const auto& agent_json : j.at("agents")) {
-    snapshot.agents.push_back(JsonToAgentSnapshot(agent_json));
+  const json& agents = GetArray(j, "agents", "snapshot");
+  for (size_t i = 0; i < agents.size(); ++i) {
+    const std::string section = Indexed("agents", i);
+    snapshot.agents.push_back(
+        InSection(section, [&] { return JsonToAgentSnapshot(agents[i], section); }));
   }
 
   // Effects
-  for (const auto& effect_json : j.at("effects")) {
-    snapshot.effects.push_back(JsonToEffectSnapshot(effect_json));
+  const json& effects = GetArray(j, "effects", "snapshot");
+  for (size_t i = 0; i < effects.size(); ++i) {
+    snapshot.effects.push_back(
+        InSection(Indexed("effects", i), [&] { return JsonToEffectSnapshot(effects[i]); }));
   }
 
   // Timing
-  snapshot.tick = j.at("tick").get<int>();
-  snapshot.horizon = j.at("horizon").get<int>();
+  snapshot.tick = Get<int>(j, "tick", "snapshot");
+  snapshot.horizon = Get<int>(j, "horizon", "snapshot");
 
   // RNG state
-  snapshot.rng_state = j.at("rng_state").at("state").get<uint64_t>();
-  snapshot.rng_inc = j.at("rng_state").at("inc").get<uint64_t>();
+  InSection("rng_state", [&] {
+    snapshot.rng_state = j.at("rng_state").at("state").get<uint64_t>();
+    snapshot.rng_inc = j.at("rng_state").at("inc").get<uint64_t>();
+  });
 
   // D4 transform
-  snapshot.d4_transform = j.at("d4_value").get<int>();
+  snapshot.d4_transform = Get<int>(j, "d4_value", "snapshot");
 
   // Patrol path
-  for (const auto& pos_json : j.at("patrol_path")) {
-    snapshot.patrol_path.push_back(JsonToPosition(pos_json));
+  const json& patrol = GetArray(j, "patrol_path", "snapshot");
+  for (size_t i = 0; i < patrol.size(); ++i) {
+    snapshot.patrol_path.push_back(
+        InSection(Indexed("patrol_path", i), [&] { return JsonToPosition(patrol[i]); }));
   }
 
   // Semantic annotations (optional: absent in v1-format JSON)
   if (j.contains("annotations") && j.at("annotations").is_array()) {
-    for (const auto& a_json : j.at("annotations")) {
-      snapshot.annotations.push_back(JsonToAnnotationSnapshot(a_json));
+    const json& annotations = j.at("annotations");
+    for (size_t i = 0; i < annotations.size(); ++i) {
+      snapshot.annotations.push_back(InSection(
+          Indexed("annotations", i), [&] { return JsonToAnnotationSnapshot(annotations[i]); }));
     }
   }
 
   // Skill book and zones (v4; absent = builtins only / no zones)
   if (j.contains("skills")) {
-    for (const json& skill_json : j.at("skills")) {
-      snapshot.skills.push_back(JsonToSkillConfig(skill_json));
+    const json& skills = GetArray(j, "skills", "snapshot");
+    for (size_t i = 0; i < skills.size(); ++i) {
+      snapshot.skills.push_back(JsonToSkillConfig(skills[i], Indexed("skills", i)));
     }
   }
   if (j.contains("cell_tags")) {
-    for (const json& z : j.at("cell_tags")) {
-      snapshot.cell_tags.push_back({Position{z.at("row").get<int>(), z.at("col").get<int>()},
-                                    JsonTagName(z), JsonTagDuration(z)});
+    const json& zones = GetArray(j, "cell_tags", "snapshot");
+    for (size_t i = 0; i < zones.size(); ++i) {
+      const std::string section = Indexed("cell_tags", i);
+      const json& z = zones[i];
+      RequireObject(z, section);
+      CheckKeys(z, {"row", "col", "tag", "duration"}, section);
+      CellTagSnapshot zone;
+      zone.cell = Position{Get<int>(z, "row", section), Get<int>(z, "col", section)};
+      zone.tag = Get<std::string>(z, "tag", section);
+      zone.duration = GetOr<int>(z, "duration", kPermanentTag, section);
+      snapshot.cell_tags.push_back(zone);
     }
   }
 
   snapshot.ValidateSkillsTagsZones();
   return snapshot;
+}
+
+}  // namespace
+
+Snapshot SnapshotFromJson(const std::string& json_str) {
+  json j;
+  try {
+    j = json::parse(json_str);
+  } catch (const json::exception& e) {
+    throw std::runtime_error("invalid JSON: " + JsonErrorText(e));
+  }
+  // Every read names its section; this only catches what slipped through.
+  return InSection("snapshot", [&] { return ReadSnapshot(j); });
 }
 
 bool SaveSnapshotToJsonFile(const Snapshot& snapshot, const std::string& filepath) {

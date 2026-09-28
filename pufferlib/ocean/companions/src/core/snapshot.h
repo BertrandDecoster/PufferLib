@@ -204,11 +204,12 @@ struct Snapshot {
   // Count cells of a given kind
   int CountCells(CellKind kind) const;
 
-  // Throws std::runtime_error unless the v4 data is loadable: tag durations
-  // positive or kPermanentTag, tag and skill names non-empty, skill enums in
-  // range, zones inside the grid, at most kMaxSkillSlots slots / cooldowns per
-  // agent, cooldowns >= 0. Slot names are not checked against `skills`: an
-  // undefined skill loads and is simply unusable.
+  // Throws std::runtime_error unless the v4 data is loadable: every skill
+  // passes ValidateSkillConfig; agent and zone tag names non-empty with a
+  // duration positive or kPermanentTag; zones inside the grid; at most
+  // kMaxSkillSlots slots / cooldowns per agent, cooldowns >= 0. Messages name
+  // the skill, agent (index and id) or zone cell. Slot names are not checked
+  // against `skills`: an undefined skill loads and is simply unusable.
   void ValidateSkillsTagsZones() const;
 
   // ==========================================================================
