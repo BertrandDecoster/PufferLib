@@ -1343,9 +1343,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     if (Companion* comp = dynamic_cast<Companion*>(agent)) {
       comp->SetDirection(static_cast<Direction>(as.direction));
       comp->SetColor(static_cast<ActorColor>(as.color));
-      // Slots as saved, without checking the book: a skill the book lacks
-      // stays in its slot and is simply unusable (CanUseSkill). An empty
-      // ("" in older files) or missing slot is kDefaultSkill (SetSkill).
+      // Slots as saved: ValidateSkillsTagsZones checked each names a skill of
+      // the book built above. An empty ("" in older files) or missing slot is
+      // kDefaultSkill (SetSkill).
       for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
         const size_t i = static_cast<size_t>(slot);
         comp->SetSkill(slot, i < as.skills.size() ? as.skills[i] : std::string());

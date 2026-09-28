@@ -727,20 +727,6 @@ TEST(TestJsonMissingSkillsResetsBookToBuiltins) {
   ASSERT_EQ(other.GetSkillBook().Find("fireball")->range, 3);
 }
 
-TEST(TestJsonUndefinedSkillNameStillLoads) {
-  SynchroEnv env(8, 8, 1, 1, 0, 42);
-  json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
-  j.at("agents").at(0)["skills"] = json({"meteor", ""});
-  env.LoadSnapshot(SnapshotFromJson(j.dump()));
-  Companion* c = FirstCompanion(env);
-  ASSERT_EQ(c->GetSkill(0), std::string("meteor"));
-  // Not usable: the step drops the skill and the movement applies.
-  Position before = c->GetPosition();
-  env.Step({EncodeAction(MovementAction::Stay, InteractAction::Skill1)});
-  ASSERT_TRUE(env.GetLastSkillUses().empty());
-  ASSERT_TRUE(c->GetPosition() == before);
-}
-
 TEST(TestJsonRejectsInvalidSkillsTagsZones) {
   SynchroEnv env(8, 8, 1, 1, 0, 42);
   Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
@@ -837,6 +823,33 @@ void AssertJsonErrorMentions(const json& j, const std::vector<std::string>& need
 }
 
 }  // namespace
+
+// Slots always hold a real skill: a slot naming a skill that is neither a
+// builtin nor one of the snapshot's skills is rejected ("" still means attack).
+TEST(TestJsonUnknownSlotSkillIsRejected) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  const json good = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  json j = good;
+  j.at("agents").at(0)["skills"] = json({"", "meteor"});
+  AssertJsonErrorMentions(j, {"agent #0", "skills[1]", "\"meteor\"", "unknown skill"});
+
+  // The struct path too (LoadSnapshot validates before any change)
+  Snapshot snap = env.SaveSnapshot();
+  snap.agents[0].skills = {"meteor"};
+  ASSERT_THROW(env.LoadSnapshot(snap), std::runtime_error);
+  ASSERT_EQ(FirstCompanion(env)->GetSkill(0), std::string(kDefaultSkill));
+
+  // Builtins, the explicit default and the snapshot's own skills all load
+  j = good;
+  j["skills"] = json::array({json{{"name", "meteor"}}});
+  j.at("agents").at(0)["skills"] = json({"meteor", "fireball"});
+  env.LoadSnapshot(SnapshotFromJson(j.dump()));
+  ASSERT_EQ(FirstCompanion(env)->GetSkill(0), std::string("meteor"));
+  ASSERT_EQ(FirstCompanion(env)->GetSkill(1), std::string("fireball"));
+  j.at("agents").at(0)["skills"] = json({kDefaultSkill, ""});
+  env.LoadSnapshot(SnapshotFromJson(j.dump()));
+  ASSERT_EQ(FirstCompanion(env)->GetSkill(1), std::string(kDefaultSkill));
+}
 
 TEST(TestJsonLevelHelperLoads) { SnapshotFromJson(LevelJson().dump()); }
 

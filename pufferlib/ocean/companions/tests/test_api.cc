@@ -1418,6 +1418,23 @@ TEST(TestOverlongNamesAreRejected) {
 // A step reports at most Companions_MAX_EVENTS events and counts the others
 // in events_dropped; the EpisodeEnd of a step that ends the episode is always
 // reported, as the last event.
+// A slot naming a skill neither builtin nor in the level is refused, with a
+// message naming the agent and the skill.
+TEST(TestSnapshotUnknownSlotSkillIsRejected) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  SetErrorProbe();
+  ASSERT_FALSE(companions_load_snapshot_json(
+      env, LevelJson({{3, 1, ",\"skills\":[\"meteor\"]"}}).c_str()));
+  const std::string error = companions_get_error();
+  ASSERT_TRUE(error.find("agent #0") != std::string::npos);
+  ASSERT_TRUE(error.find("meteor") != std::string::npos);
+  ASSERT_TRUE(companions_load_snapshot_json(
+      env, LevelJson({{3, 1, ",\"skills\":[\"meteor\"]"}}, "[{\"name\":\"meteor\"}]").c_str()));
+  companions_destroy(env);
+}
+
 TEST(TestEventCapKeepsEpisodeEnd) {
   // "splash" lands 20 tags on each of the 4 agents around its caster (spared:
   // self_tags off): 80 TagApplied + 1 SkillUsed per step (+ EpisodeEnd on

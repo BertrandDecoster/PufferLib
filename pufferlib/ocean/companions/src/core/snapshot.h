@@ -211,9 +211,10 @@ struct Snapshot {
   // the removed Slowed, is rejected); agent and zone tag names non-empty with a
   // duration positive or kPermanentTag; tag and slot names of at most
   // kMaxNameLength bytes; zones inside the grid; at most kMaxSkillSlots slots /
-  // cooldowns per agent, cooldowns >= 0. Messages name the skill, agent (index
-  // and id) or zone cell. Slot names are not checked against `skills`: an
-  // undefined skill loads and is simply unusable.
+  // cooldowns per agent, cooldowns >= 0; every non-empty slot names a builtin
+  // or one of `skills` (the book LoadSnapshot builds), so slots always hold a
+  // real skill ("" is kDefaultSkill). Messages name the skill, agent (index
+  // and id) or zone cell.
   void ValidateSkillsTagsZones() const;
 
   // ==========================================================================

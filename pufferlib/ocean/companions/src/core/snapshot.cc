@@ -93,12 +93,15 @@ std::string CellText(const Position& p) {
 }  // namespace
 
 void Snapshot::ValidateSkillsTagsZones() const {
+  // The book LoadSnapshot will build: the builtins, then these skills
+  SkillBook book;
   for (size_t i = 0; i < skills.size(); ++i) {
     try {
       if (skills[i].name == kDefaultSkill) {
         throw std::runtime_error(std::string("'") + kDefaultSkill + "' is the fixed default skill");
       }
       ValidateSkillConfig(skills[i]);
+      book.Define(skills[i]);
     } catch (const std::runtime_error& e) {
       // The index says which skill when it has no name.
       throw std::runtime_error("Snapshot: skills[" + std::to_string(i) + "]: " + e.what());
@@ -127,6 +130,12 @@ void Snapshot::ValidateSkillsTagsZones() const {
         throw std::runtime_error("Snapshot: " + who + ": skills[" + std::to_string(slot) + "] \"" +
                                  name + "\" is " + std::to_string(name.size()) +
                                  " bytes, at most " + std::to_string(kMaxNameLength));
+      }
+      // Slots always hold a real skill ("" is kDefaultSkill)
+      if (!name.empty() && book.Find(name) == nullptr) {
+        throw std::runtime_error("Snapshot: " + who + ": skills[" + std::to_string(slot) + "] \"" +
+                                 name + "\" is an unknown skill (neither a builtin nor in the "
+                                 "snapshot's skills)");
       }
     }
     for (size_t slot = 0; slot < agent.cooldowns.size(); ++slot) {

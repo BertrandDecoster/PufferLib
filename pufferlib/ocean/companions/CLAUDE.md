@@ -226,8 +226,10 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   `attack`), `"cooldowns"`;
   statuses as `"status_type": "stunned" | "marked" | "rooted"`
 - Unknown keys in a skill / tag / zone are rejected; `Snapshot::ValidateSkillsTagsZones`
-  runs before any change. Slot names are not checked against the book (an undefined
-  skill loads and is simply unusable)
+  runs before any change (and when JSON / binary snapshots are parsed)
+- Slots always hold a real skill: a non-empty slot naming neither a builtin nor one of
+  the snapshot's `skills` is rejected (`LoadSnapshot` throws, the C API returns false;
+  the message names the agent, the slot and the skill). `""` still means `attack`
 - `LoadSnapshot` resets the SkillBook to the builtins, then defines the snapshot's skills
   (they may retune builtins, but not `attack`), so a level's skills never leak into
   the next load. `SaveSnapshot` writes the whole book, builtins included, but `attack`
