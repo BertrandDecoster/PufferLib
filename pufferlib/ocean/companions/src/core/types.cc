@@ -127,6 +127,8 @@ std::string InteractActionToString(InteractAction action) {
       return "None";
     case InteractAction::Attack:
       return "Attack";
+    case InteractAction::Skill2:
+      return "Skill2";
     default:
       return "Unknown";
   }

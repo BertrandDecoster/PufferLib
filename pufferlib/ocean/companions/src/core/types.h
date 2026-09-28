@@ -81,15 +81,26 @@ enum class MovementAction {
 constexpr int kNumMovementActions = 5;
 
 // =============================================================================
-// Interact Actions (combat, abilities, etc.)
+// Interact Actions: use the skill in a companion's slot
 // =============================================================================
 enum class InteractAction {
   None = 0,
-  Attack = 1,
-  // Future: Spell, Ability, Use, etc.
+  Skill1 = 1,
+  Skill2 = 2,
+  Attack = Skill1,  // Historical name of slot 1
 };
 
-constexpr int kNumInteractActions = 2;  // None, Attack (expand as needed)
+constexpr int kMaxSkillSlots = 2;
+// Slots the flat action space exposes. Slot 2 exists everywhere else (data,
+// snapshots, C API) but is not trainable yet: set to 2 to enable it (the
+// action space grows from 10 to 15).
+constexpr int kEnabledSkillSlots = 1;
+constexpr int kNumInteractActions = 1 + kEnabledSkillSlots;
+
+// Slot index used by an interact action (-1 for None).
+inline int SkillSlotOf(InteractAction action) {
+  return static_cast<int>(action) - 1;
+}
 
 // =============================================================================
 // Action encoding/decoding

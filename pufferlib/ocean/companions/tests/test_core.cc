@@ -107,6 +107,20 @@ TEST(TestActionEncoding) {
   }
 }
 
+TEST(TestSkillSlotEncoding) {
+  ASSERT_EQ(kMaxSkillSlots, 2);
+  ASSERT_EQ(kEnabledSkillSlots, 1);
+  ASSERT_EQ(kNumInteractActions, 2);  // None + Skill1: slot 2 not trainable yet
+  ASSERT_EQ(kNumActions, 10);
+  ASSERT_TRUE(InteractAction::Attack == InteractAction::Skill1);
+  ASSERT_EQ(SkillSlotOf(InteractAction::None), -1);
+  ASSERT_EQ(SkillSlotOf(InteractAction::Skill1), 0);
+  ASSERT_EQ(SkillSlotOf(InteractAction::Skill2), 1);
+  DecodedAction d = DecodeAction(EncodeAction(MovementAction::Up, InteractAction::Skill1));
+  ASSERT_TRUE(d.movement == MovementAction::Up);
+  ASSERT_TRUE(d.interact == InteractAction::Skill1);
+}
+
 TEST(TestDirection) {
   // Test MovementToDirection conversion
   auto up = MovementToDirection(MovementAction::Up);
