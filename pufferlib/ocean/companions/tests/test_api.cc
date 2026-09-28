@@ -1053,6 +1053,341 @@ TEST(TestSnapshotJsonKeepsEnemyKindAndAttack) {
 }
 
 // =============================================================================
+// Skills, tags, zones
+// =============================================================================
+
+// A companion of LevelJson: its cell, and `extra` spliced into its JSON
+// object (e.g. ",\"skills\":[\"blink\",\"\"]").
+struct LevelAgent {
+  int row;
+  int col;
+  std::string extra;
+};
+
+// An 8x8 snapshot (walls on the border, floor inside) with one companion per
+// entry, a SynchroGoal on (6, 6), and `skills` as the snapshot's skill list.
+static std::string LevelJson(const std::vector<LevelAgent>& agents,
+                             const std::string& skills = "[]") {
+  std::ostringstream j;
+  j << "{\"magic\":\"SNAP\",\"version\":4,\"grid\":{\"rows\":8,\"cols\":8,\"cells\":[";
+  bool first = true;
+  for (int r = 0; r < 8; ++r) {
+    for (int c = 0; c < 8; ++c) {
+      if (r != 0 && r != 7 && c != 0 && c != 7) continue;
+      j << (first ? "" : ",") << "{\"row\":" << r << ",\"col\":" << c
+        << ",\"cell_kind\":\"Wall\",\"cell_origin\":\"Default\"}";
+      first = false;
+    }
+  }
+  j << "]},\"agents\":[";
+  for (size_t i = 0; i < agents.size(); ++i) {
+    const LevelAgent& a = agents[i];
+    const std::string pos = "{\"row\":" + std::to_string(a.row) + ",\"col\":" +
+                            std::to_string(a.col) + "}";
+    j << (i ? "," : "") << "{\"id\":" << i << ",\"agent_type\":\"Player\",\"position\":" << pos
+      << ",\"prev_position\":" << pos << ",\"health\":3,\"max_health\":3,\"agent_index\":" << i
+      << ",\"faction\":\"COMPANION\",\"direction\":\"Down\",\"color\":\"Red\",\"alive\":true,"
+      << "\"statuses\":[],\"fsm\":null,\"cadence\":[],\"tick\":0" << a.extra << "}";
+  }
+  j << "],\"effects\":[],\"tick\":0,\"horizon\":100,\"rng_state\":{\"state\":0,\"inc\":0},"
+    << "\"d4_value\":0,\"patrol_path\":[],\"annotations\":[{\"target\":\"Cell\","
+    << "\"pos\":{\"row\":6,\"col\":6},\"tag\":\"SynchroGoal\",\"owner_lens_id\":-1,"
+    << "\"params\":{}}],\"skills\":" << skills << ",\"cell_tags\":[]}";
+  return j.str();
+}
+
+static Companions_Env* LoadLevel(const std::vector<LevelAgent>& agents,
+                                 const std::string& skills = "[]") {
+  Companions_EnvConfig config = MakeConfig(8, 8, static_cast<int>(agents.size()), 1, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  if (!companions_load_snapshot_json(env, LevelJson(agents, skills).c_str())) {
+    throw std::runtime_error(std::string("LevelJson did not load: ") + companions_get_error());
+  }
+  return env;
+}
+
+static Companions_AgentState AgentAt(Companions_Env* env, int32_t index) {
+  Companions_AgentState a = {};
+  ASSERT_TRUE(companions_get_agent_by_index(env, index, &a));
+  return a;
+}
+
+// The first event of `type` about `subject` (any subject if -2), or null.
+static const Companions_Event* FindEvent(const Companions_StepResult& r,
+                                         Companions_EventType type,
+                                         Companions_ObjectId subject = -2) {
+  for (int32_t i = 0; i < r.event_count; ++i) {
+    const Companions_Event& e = r.events[i];
+    if (e.type == type && (subject == -2 || e.subject_id == subject)) return &e;
+  }
+  return nullptr;
+}
+
+static bool HasStatus(const Companions_AgentState& a, Companions_StatusType type) {
+  for (int32_t s = 0; s < a.status_count; ++s) {
+    if (a.statuses[s].type == type) return true;
+  }
+  return false;
+}
+
+TEST(TestSkill1TeleportsAndReportsSkillUsed) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}});
+  Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_EQ(std::string(a.skills[0]), std::string(""));
+  ASSERT_TRUE(companions_set_agent_skill(env, a.id, 0, "teleport"));
+  a = AgentAt(env, 0);
+  ASSERT_EQ(std::string(a.skills[0]), std::string("teleport"));
+  ASSERT_EQ(a.skill_cooldowns[0], 0);
+
+  Companions_Action action = {Companions_Movement_Right, Companions_Interact_Skill1};
+  Companions_StepResult result = {};
+  companions_step(env, &action, 1, &result);
+
+  Companions_AgentState after = AgentAt(env, 0);
+  ASSERT_EQ(after.position.row, 3);
+  ASSERT_EQ(after.position.col, 4);  // Teleported 3 cells
+  ASSERT_EQ(std::string(after.skills[0]), std::string("teleport"));
+  ASSERT_EQ(std::string(after.skills[1]), std::string(""));
+  ASSERT_EQ(after.skill_cooldowns[0], 4);
+  ASSERT_EQ(after.skill_cooldowns[1], 0);
+  ASSERT_EQ(result.state.agents[0].skill_cooldowns[0], 4);
+
+  const Companions_Event* used = FindEvent(result, Companions_Event_SkillUsed, a.id);
+  ASSERT_NOT_NULL(used);
+  ASSERT_EQ(std::string(used->effect_name), std::string("teleport"));
+  ASSERT_EQ(used->position.row, 3);
+  ASSERT_EQ(used->position.col, 4);
+  ASSERT_EQ(used->tick, result.state.tick);
+  const Companions_Event* moved = FindEvent(result, Companions_Event_AgentMoved, a.id);
+  ASSERT_NOT_NULL(moved);
+  ASSERT_EQ(moved->to_pos.col, 4);
+  companions_destroy(env);
+}
+
+TEST(TestApplyAndRemoveTagThroughApi) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}});
+  const Companions_ObjectId id = AgentAt(env, 0).id;
+  ASSERT_EQ(companions_find_tag(env, "never_seen"), -1);
+  ASSERT_EQ(companions_find_tag(env, nullptr), -1);
+  ASSERT_EQ(companions_find_tag(nullptr, "burning"), -1);
+
+  ASSERT_TRUE(companions_apply_tag(env, id, "burning", -1));
+  const int32_t burning = companions_find_tag(env, "burning");
+  ASSERT_TRUE(burning >= 0);
+  Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_EQ(a.tag_count, 1);
+  ASSERT_EQ(a.tags[0].tag_id, burning);
+  ASSERT_EQ(a.tags[0].duration, -1);
+  const char* name = companions_get_tag_name(env, burning);
+  ASSERT_NOT_NULL(name);
+  ASSERT_EQ(std::string(name), std::string("burning"));
+
+  ASSERT_TRUE(companions_remove_tag(env, id, "burning"));
+  ASSERT_EQ(AgentAt(env, 0).tag_count, 0);
+  ASSERT_TRUE(companions_remove_tag(env, id, "burning"));  // Not carried: still fine
+  ASSERT_FALSE(companions_remove_tag(env, 999, "burning"));
+  ASSERT_FALSE(companions_remove_tag(env, id, nullptr));
+  ASSERT_FALSE(companions_remove_tag(nullptr, id, "burning"));
+
+  ASSERT_FALSE(companions_apply_tag(env, id, "burning", 0));
+  ASSERT_FALSE(companions_apply_tag(env, id, "burning", -2));
+  ASSERT_FALSE(companions_apply_tag(env, id, "", 3));
+  ASSERT_FALSE(companions_apply_tag(env, id, nullptr, 3));
+  ASSERT_FALSE(companions_apply_tag(env, 999, "burning", 3));
+  ASSERT_FALSE(companions_apply_tag(nullptr, id, "burning", 3));
+  ASSERT_EQ(AgentAt(env, 0).tag_count, 0);
+
+  ASSERT_TRUE(companions_get_tag_name(env, 9999) == nullptr);
+  ASSERT_TRUE(companions_get_tag_name(env, -1) == nullptr);
+  ASSERT_TRUE(companions_get_tag_name(nullptr, burning) == nullptr);
+
+  // More tags than Companions_MAX_TAGS: the state shows the first ones. New
+  // names do not move the string an earlier companions_get_tag_name returned.
+  for (int i = 0; i < 40; ++i) {
+    ASSERT_TRUE(companions_apply_tag(env, id, ("t" + std::to_string(i)).c_str(), 5));
+  }
+  a = AgentAt(env, 0);
+  ASSERT_EQ(a.tag_count, Companions_MAX_TAGS);
+  ASSERT_EQ(std::string(companions_get_tag_name(env, a.tags[0].tag_id)), std::string("t0"));
+  ASSERT_EQ(a.tags[0].duration, 5);
+  ASSERT_TRUE(companions_get_tag_name(env, burning) == name);
+  ASSERT_EQ(std::string(name), std::string("burning"));
+
+  // Ids survive a reset.
+  companions_reset(env, 7);
+  ASSERT_EQ(companions_find_tag(env, "burning"), burning);
+  companions_destroy(env);
+}
+
+TEST(TestCellTagZoneLandsOnWalker) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}});
+  const Companions_ObjectId id = AgentAt(env, 0).id;
+  ASSERT_EQ(companions_get_cell_tag(env, 3, 2), -1);
+  ASSERT_TRUE(companions_set_cell_tag(env, 3, 2, "wet", -1));
+  const int32_t wet = companions_find_tag(env, "wet");
+  ASSERT_TRUE(wet >= 0);
+  ASSERT_EQ(companions_get_cell_tag(env, 3, 2), wet);
+  ASSERT_EQ(companions_get_cell_tag(env, 3, 3), -1);
+
+  Companions_Action action = {Companions_Movement_Right, Companions_Interact_None};
+  Companions_StepResult result = {};
+  companions_step(env, &action, 1, &result);
+  const Companions_Event* landed = FindEvent(result, Companions_Event_TagApplied, id);
+  ASSERT_NOT_NULL(landed);
+  ASSERT_EQ(std::string(landed->effect_name), std::string("wet"));
+  ASSERT_EQ(landed->health_source_id, -1);
+  ASSERT_TRUE(landed->tag_fresh);
+  ASSERT_EQ(landed->status_duration, -1);
+  ASSERT_EQ(landed->position.row, 3);
+  ASSERT_EQ(landed->position.col, 2);
+  Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_EQ(a.tag_count, 1);
+  ASSERT_EQ(a.tags[0].tag_id, wet);
+
+  // Standing on it: landed again, no longer fresh.
+  action.movement = Companions_Movement_Stay;
+  companions_step(env, &action, 1, &result);
+  landed = FindEvent(result, Companions_Event_TagApplied, id);
+  ASSERT_NOT_NULL(landed);
+  ASSERT_FALSE(landed->tag_fresh);
+
+  ASSERT_TRUE(companions_set_cell_tag(env, 3, 2, "", -1));
+  ASSERT_EQ(companions_get_cell_tag(env, 3, 2), -1);
+  ASSERT_TRUE(companions_set_cell_tag(env, 3, 2, "wet", 2));
+  ASSERT_EQ(companions_get_cell_tag(env, 3, 2), wet);
+  ASSERT_TRUE(companions_set_cell_tag(env, 3, 2, nullptr, -1));
+  ASSERT_EQ(companions_get_cell_tag(env, 3, 2), -1);
+  companions_step(env, &action, 1, &result);
+  ASSERT_TRUE(FindEvent(result, Companions_Event_TagApplied) == nullptr);
+
+  ASSERT_FALSE(companions_set_cell_tag(env, 8, 0, "wet", -1));
+  ASSERT_FALSE(companions_set_cell_tag(env, 0, -1, "wet", -1));
+  ASSERT_FALSE(companions_set_cell_tag(env, 3, 2, "wet", 0));
+  ASSERT_FALSE(companions_set_cell_tag(nullptr, 3, 2, "wet", -1));
+  ASSERT_EQ(companions_get_cell_tag(env, -1, 0), -1);
+  ASSERT_EQ(companions_get_cell_tag(env, 0, 8), -1);
+  ASSERT_EQ(companions_get_cell_tag(nullptr, 3, 2), -1);
+  companions_destroy(env);
+}
+
+TEST(TestVortexRootIsReportedAsRooted) {
+  // The caster at (3, 1) aims right: the vortex centre is (3, 4); the agent
+  // on (2, 4) is on its cross, rooted and pulled into the centre.
+  Companions_Env* env = LoadLevel({{3, 1, ""}, {2, 4, ""}});
+  const Companions_ObjectId caster = AgentAt(env, 0).id;
+  ASSERT_TRUE(companions_set_agent_skill(env, caster, 0, "vortex"));
+  Companions_Action actions[2] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                                  {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, actions, 2, &result);
+
+  Companions_AgentState target = AgentAt(env, 1);
+  ASSERT_EQ(target.position.row, 3);
+  ASSERT_EQ(target.position.col, 4);
+  ASSERT_TRUE(HasStatus(target, Companions_Status_Rooted));
+  ASSERT_FALSE(HasStatus(target, Companions_Status_None));
+  ASSERT_TRUE(HasStatus(result.state.agents[1], Companions_Status_Rooted));
+  const Companions_Event* used = FindEvent(result, Companions_Event_SkillUsed, caster);
+  ASSERT_NOT_NULL(used);
+  ASSERT_EQ(std::string(used->effect_name), std::string("vortex"));
+  ASSERT_EQ(used->position.col, 4);
+  companions_destroy(env);
+}
+
+// Slot 2 is not enabled yet: Skill2 (and anything above) is None, even with
+// both slots filled. A negative interact still refuses the step.
+TEST(TestSkill2IsIgnoredAndTheCompanionMoves) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}});
+  const Companions_ObjectId id = AgentAt(env, 0).id;
+  ASSERT_TRUE(companions_set_agent_skill(env, id, 0, "teleport"));
+  ASSERT_TRUE(companions_set_agent_skill(env, id, 1, "teleport"));
+  ASSERT_EQ(std::string(AgentAt(env, 0).skills[1]), std::string("teleport"));
+
+  Companions_Action action = {Companions_Movement_Right, Companions_Interact_Skill2};
+  Companions_StepResult result = {};
+  companions_step(env, &action, 1, &result);
+  ASSERT_EQ(result.state.tick, 1);
+  Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_EQ(a.position.col, 2);  // Walked one cell
+  ASSERT_EQ(a.skill_cooldowns[0], 0);
+  ASSERT_EQ(a.skill_cooldowns[1], 0);
+  ASSERT_TRUE(FindEvent(result, Companions_Event_SkillUsed) == nullptr);
+  ASSERT_NOT_NULL(FindEvent(result, Companions_Event_AgentMoved, id));
+
+  action.interact = static_cast<Companions_InteractAction>(7);
+  companions_step(env, &action, 1, &result);
+  ASSERT_EQ(result.state.tick, 2);
+  ASSERT_EQ(AgentAt(env, 0).position.col, 3);
+  ASSERT_TRUE(FindEvent(result, Companions_Event_SkillUsed) == nullptr);
+
+  action.interact = static_cast<Companions_InteractAction>(-1);
+  companions_step(env, &action, 1, &result);
+  ASSERT_EQ(companions_get_tick(env), 2);  // Refused
+  ASSERT_EQ(AgentAt(env, 0).position.col, 3);
+  companions_destroy(env);
+}
+
+TEST(TestSetAgentSkillRejectsUnknowns) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}});
+  const Companions_ObjectId id = AgentAt(env, 0).id;
+  ASSERT_FALSE(companions_set_agent_skill(env, id, 0, "nope"));
+  ASSERT_FALSE(companions_set_agent_skill(env, id, 5, "teleport"));
+  ASSERT_FALSE(companions_set_agent_skill(env, id, -1, "teleport"));
+  ASSERT_FALSE(companions_set_agent_skill(env, id, Companions_MAX_SKILL_SLOTS, "teleport"));
+  ASSERT_FALSE(companions_set_agent_skill(env, 999, 0, "teleport"));
+  ASSERT_FALSE(companions_set_agent_skill(env, id, 0, nullptr));
+  ASSERT_FALSE(companions_set_agent_skill(nullptr, id, 0, "teleport"));
+  ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string(""));
+
+  ASSERT_TRUE(companions_set_agent_skill(env, id, 0, "fireball"));
+  ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string("fireball"));
+  ASSERT_TRUE(companions_set_agent_skill(env, id, 0, ""));
+  ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string(""));
+  companions_destroy(env);
+
+  // Only companions have slots; other agents show empty ones.
+  env = MakeAggroZombieEnv();
+  Companions_AgentState z = AgentAt(env, FindAgentIndex(env, Companions_Faction_Enemy));
+  ASSERT_FALSE(companions_set_agent_skill(env, z.id, 0, "teleport"));
+  ASSERT_EQ(std::string(z.skills[0]), std::string(""));
+  ASSERT_EQ(std::string(z.skills[1]), std::string(""));
+  ASSERT_EQ(z.skill_cooldowns[0], 0);
+  ASSERT_EQ(z.tag_count, 0);
+  companions_destroy(env);
+}
+
+TEST(TestSnapshotSkillWorksThroughStep) {
+  const std::string long_name = "a_skill_name_well_past_thirty_one_bytes";  // 39 bytes
+  const std::string skills =
+      "[{\"name\":\"blink\",\"targeting\":\"self\",\"motion\":\"teleport\",\"distance\":2,"
+      "\"cooldown\":2},{\"name\":\"" + long_name + "\",\"targeting\":\"self\"}]";
+  Companions_Env* env = LoadLevel(
+      {{3, 1, ",\"skills\":[\"blink\",\"" + long_name + "\"],\"cooldowns\":[0,1],"
+              "\"tags\":[{\"tag\":\"wet\",\"duration\":3}]"}},
+      skills);
+  Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_EQ(std::string(a.skills[0]), std::string("blink"));
+  ASSERT_EQ(std::string(a.skills[1]), long_name.substr(0, Companions_SKILL_NAME_LEN - 1));
+  ASSERT_EQ(a.skill_cooldowns[1], 1);
+  ASSERT_EQ(a.tag_count, 1);
+  ASSERT_EQ(std::string(companions_get_tag_name(env, a.tags[0].tag_id)), std::string("wet"));
+  ASSERT_EQ(a.tags[0].duration, 3);
+
+  Companions_Action action = {Companions_Movement_Right, Companions_Interact_Skill1};
+  Companions_StepResult result = {};
+  companions_step(env, &action, 1, &result);
+  a = AgentAt(env, 0);
+  ASSERT_EQ(a.position.col, 3);  // blink: 2 cells
+  ASSERT_EQ(a.skill_cooldowns[0], 2);
+  const Companions_Event* used = FindEvent(result, Companions_Event_SkillUsed, a.id);
+  ASSERT_NOT_NULL(used);
+  ASSERT_EQ(std::string(used->effect_name), std::string("blink"));
+  ASSERT_EQ(used->position.col, 3);
+  companions_destroy(env);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {

@@ -760,6 +760,119 @@ TEST(ParityTest_Annotations_After_SetTaskLens_With_Params) {
 }
 
 // =============================================================================
+// Skills / tags / zones parity
+// =============================================================================
+
+// Random steps (Skill1 and Skill2 included) from one snapshot with skills,
+// tags and zones: the C API's agent skills / cooldowns / tags / statuses and
+// its SkillUsed / TagApplied events match the C++ env step for step. Tags are
+// compared by name (each env has its own TagTable).
+TEST(ParityTest_SkillsTagsZones) {
+  const int rows = 8, cols = 8, agents = 3, synchro = 1;
+  SynchroEnv cpp_env(rows, cols, agents, synchro, 0, 7, 0, 100);
+  cpp_env.Reset(7);
+  auto cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
+  const char* slot0[] = {"fireball", "vortex", "lightningStep"};
+  for (int i = 0; i < agents; ++i) {
+    ASSERT_TRUE(cpp_env.SetCompanionSkill(cpp_agents[i]->GetId(), 0, slot0[i]));
+    ASSERT_TRUE(cpp_env.SetCompanionSkill(cpp_agents[i]->GetId(), 1, "teleport"));
+  }
+  ASSERT_TRUE(cpp_env.ApplyTagTo(cpp_agents[0]->GetId(), "chilled", 3));
+  for (int r = 1; r < rows - 1; ++r) {
+    for (int c = 1; c < cols - 1; ++c) {
+      if ((r + c) % 3 == 0) ASSERT_TRUE(cpp_env.SetCellTag({r, c}, "wet", 2));
+    }
+  }
+  std::vector<uint8_t> bytes = cpp_env.SaveSnapshot().Serialize();
+  cpp_env.LoadSnapshot(Snapshot::Deserialize(bytes));  // Both sides start from a load
+
+  Companions_EnvConfig config = MakeConfig(rows, cols, agents, synchro, 0, 99);
+  Companions_Env* api_env = companions_create(&config);
+  ASSERT_NOT_NULL(api_env);
+  ASSERT_TRUE(companions_load_snapshot(api_env, bytes.data(), static_cast<int32_t>(bytes.size())));
+
+  auto tag_name = [&](int32_t id) {
+    const char* name = companions_get_tag_name(api_env, id);
+    return std::string(name ? name : "<null>");
+  };
+
+  pcg32 rng(2024);
+  int skill_events = 0, tag_events = 0;
+  for (int step = 0; step < 60; ++step) {
+    std::vector<Companions_Action> api_actions(agents);
+    std::vector<Action> cpp_actions(agents);
+    for (int a = 0; a < agents; ++a) {
+      int mov = rng() % 5;
+      int interact = rng() % 3;  // Skill2 is None (slot 2 not enabled)
+      api_actions[a] = {static_cast<Companions_MovementAction>(mov),
+                        static_cast<Companions_InteractAction>(interact)};
+      cpp_actions[a] = EncodeAction(static_cast<MovementAction>(mov),
+                                    interact == 1 ? InteractAction::Skill1 : InteractAction::None);
+    }
+    Companions_StepResult r = {};
+    companions_step(api_env, api_actions.data(), agents, &r);
+    StepResult cpp_result = cpp_env.Step(cpp_actions);
+    ASSERT_EQ(r.state.done, cpp_result.done);
+
+    cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
+    ASSERT_EQ(r.state.agent_count, static_cast<int>(cpp_agents.size()));
+    for (int i = 0; i < r.state.agent_count; ++i) {
+      const Companions_AgentState& s = r.state.agents[i];
+      const auto* c = dynamic_cast<const Companion*>(cpp_agents[i]);
+      ASSERT_NOT_NULL(c);
+      ASSERT_EQ(s.position.row, c->GetPosition().row);
+      ASSERT_EQ(s.position.col, c->GetPosition().col);
+      for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
+        ASSERT_EQ(std::string(s.skills[slot]), c->GetSkill(slot));
+        ASSERT_EQ(s.skill_cooldowns[slot], c->GetCooldown(slot));
+      }
+      ASSERT_EQ(s.tag_count, static_cast<int>(c->GetTags().size()));
+      for (int t = 0; t < s.tag_count; ++t) {
+        ASSERT_EQ(tag_name(s.tags[t].tag_id), cpp_env.GetTagTable().Name(c->GetTags()[t].id));
+        ASSERT_EQ(s.tags[t].duration, c->GetTags()[t].duration);
+      }
+      ASSERT_EQ(s.status_count, static_cast<int>(c->GetStatuses().size()));
+      for (int k = 0; k < s.status_count; ++k) {
+        ASSERT_EQ(static_cast<int>(s.statuses[k].type),
+                  static_cast<int>(c->GetStatuses()[k].type));
+        ASSERT_EQ(s.statuses[k].duration, c->GetStatuses()[k].duration);
+      }
+    }
+
+    std::vector<const Companions_Event*> used, landed;
+    for (int e = 0; e < r.event_count; ++e) {
+      if (r.events[e].type == Companions_Event_SkillUsed) used.push_back(&r.events[e]);
+      if (r.events[e].type == Companions_Event_TagApplied) landed.push_back(&r.events[e]);
+    }
+    const auto& uses = cpp_env.GetLastSkillUses();
+    ASSERT_EQ(used.size(), uses.size());
+    for (size_t k = 0; k < uses.size(); ++k) {
+      ASSERT_EQ(used[k]->subject_id, uses[k].caster);
+      ASSERT_EQ(std::string(used[k]->effect_name), uses[k].skill);
+      ASSERT_EQ(used[k]->position.row, uses[k].target.row);
+      ASSERT_EQ(used[k]->position.col, uses[k].target.col);
+    }
+    const auto& tags = cpp_env.GetLastTagsApplied();
+    ASSERT_EQ(landed.size(), tags.size());
+    for (size_t k = 0; k < tags.size(); ++k) {
+      ASSERT_EQ(landed[k]->subject_id, tags[k].agent);
+      ASSERT_EQ(std::string(landed[k]->effect_name), cpp_env.GetTagTable().Name(tags[k].tag));
+      ASSERT_EQ(landed[k]->status_duration, tags[k].duration);
+      ASSERT_EQ(landed[k]->health_source_id, tags[k].source);
+      ASSERT_EQ(landed[k]->tag_fresh, tags[k].fresh);
+    }
+    skill_events += static_cast<int>(used.size());
+    tag_events += static_cast<int>(landed.size());
+    if (cpp_result.done) break;
+  }
+  ASSERT_TRUE(skill_events > 0);
+  ASSERT_TRUE(tag_events > 0);
+  std::cout << "  " << skill_events << " skill uses, " << tag_events << " tag landings"
+            << std::endl;
+  companions_destroy(api_env);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {

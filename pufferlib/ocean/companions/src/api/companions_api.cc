@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,12 @@ struct Companions_Env {
   // C API boundary, yet must populate the cache to return its size.
   // Audit F13.
   mutable std::vector<uint8_t> cached_snapshot;
+
+  // Copies of the TagTable's names (index = tag id), handed out by
+  // companions_get_tag_name. A deque never moves its elements, and the table
+  // only grows and never renames, so a returned pointer stays valid for the
+  // env's lifetime (TagTable's own strings move when it grows).
+  mutable std::deque<std::string> tag_names;
 };
 
 // =============================================================================
@@ -152,9 +159,39 @@ static Companions_StatusType ToAPIStatusType(companions::StatusType type) {
     case companions::StatusType::Marked:
       return Companions_Status_Marked;
     case companions::StatusType::Rooted:
-      return Companions_Status_None;  // No C API value yet (Companions_Status_Rooted: P9)
+      return Companions_Status_Rooted;
   }
   return Companions_Status_None;
+}
+
+static_assert(static_cast<int>(companions::StatusType::None) == Companions_Status_None,
+              "StatusType::None out of sync with C API");
+static_assert(static_cast<int>(companions::StatusType::Stunned) == Companions_Status_Stunned,
+              "StatusType::Stunned out of sync with C API");
+static_assert(static_cast<int>(companions::StatusType::Slowed) == Companions_Status_Slowed,
+              "StatusType::Slowed out of sync with C API");
+static_assert(static_cast<int>(companions::StatusType::Marked) == Companions_Status_Marked,
+              "StatusType::Marked out of sync with C API");
+static_assert(static_cast<int>(companions::StatusType::Rooted) == Companions_Status_Rooted,
+              "StatusType::Rooted out of sync with C API");
+
+// Skills and interact actions
+static_assert(companions::kMaxSkillSlots == Companions_MAX_SKILL_SLOTS,
+              "kMaxSkillSlots out of sync with C API");
+static_assert(static_cast<int>(companions::InteractAction::None) == Companions_Interact_None &&
+                  static_cast<int>(companions::InteractAction::Skill1) ==
+                      Companions_Interact_Skill1 &&
+                  static_cast<int>(companions::InteractAction::Skill2) ==
+                      Companions_Interact_Skill2,
+              "InteractAction out of sync with C API");
+static_assert(companions::kInvalidTag == -1, "C API documents -1 as the invalid tag id");
+static_assert(companions::kPermanentTag == -1, "C API documents -1 as a permanent tag");
+
+// Copy `src` into a fixed-size C string, truncating, always terminated.
+template <size_t N>
+static void CopyName(char (&dst)[N], const std::string& src) {
+  std::strncpy(dst, src.c_str(), N - 1);
+  dst[N - 1] = '\0';
 }
 
 // companions::AgentKind is numerically 1:1 with Companions_AgentKind by
@@ -238,6 +275,21 @@ static void ExtractAgentState(const companions::Agent* agent,
   for (int i = 0; i < out->status_count; i++) {
     out->statuses[i].type = ToAPIStatusType(statuses[i].type);
     out->statuses[i].duration = statuses[i].duration;
+  }
+
+  // Tags (the first Companions_MAX_TAGS)
+  const auto& tags = agent->GetTags();
+  out->tag_count = std::min(static_cast<int>(tags.size()), Companions_MAX_TAGS);
+  for (int i = 0; i < out->tag_count; i++) {
+    out->tags[i].tag_id = tags[i].id;
+    out->tags[i].duration = tags[i].duration;
+  }
+
+  // Skill slots: companions only, "" / 0 for everyone else
+  const auto* slots = dynamic_cast<const companions::Companion*>(agent);
+  for (int slot = 0; slot < Companions_MAX_SKILL_SLOTS; slot++) {
+    CopyName(out->skills[slot], slots ? slots->GetSkill(slot) : std::string());
+    out->skill_cooldowns[slot] = slots ? slots->GetCooldown(slot) : 0;
   }
 
   // Actions - intent (before collision resolution) vs actual (after)
@@ -394,6 +446,47 @@ static void AddCastEvents(Companions_Env* wrapper) {
     std::strncpy(evt.effect_name, "companion_cast", Companions_EFFECT_NAME_LEN - 1);
     wrapper->events.push_back(evt);
   }
+}
+
+// One SkillUsed event per skill use of this step (subject = caster, position
+// = the skill's centre), then one TagApplied per tag landing (subject = the
+// agent, at its cell after the step; health_source_id = caster or -1 for a
+// zone). Names are truncated to Companions_EFFECT_NAME_LEN - 1 bytes.
+static void AddSkillAndTagEvents(Companions_Env* wrapper) {
+  auto* env = wrapper->env.get();
+  for (const auto& use : env->GetLastSkillUses()) {
+    Companions_Event evt = {};
+    evt.type = Companions_Event_SkillUsed;
+    evt.tick = env->GetTick();
+    evt.subject_id = use.caster;
+    evt.position = ToAPIPosition(use.target);
+    CopyName(evt.effect_name, use.skill);
+    wrapper->events.push_back(evt);
+  }
+  const auto& objects = env->GetObjectManager();
+  for (const auto& landed : env->GetLastTagsApplied()) {
+    Companions_Event evt = {};
+    evt.type = Companions_Event_TagApplied;
+    evt.tick = env->GetTick();
+    evt.subject_id = landed.agent;
+    const auto* agent = objects.GetActor(landed.agent);
+    evt.position = agent ? ToAPIPosition(agent->GetPosition()) : Companions_Position{-1, -1};
+    CopyName(evt.effect_name, env->GetTagTable().Name(landed.tag));
+    evt.status_duration = landed.duration;
+    evt.health_source_id = landed.source;
+    evt.tag_fresh = landed.fresh;
+    wrapper->events.push_back(evt);
+  }
+}
+
+// Name of `tag_id` from the wrapper's stable copies (see tag_names), or null.
+static const char* StableTagName(const Companions_Env* wrapper, int32_t tag_id) {
+  const auto& table = wrapper->env->GetTagTable();
+  if (tag_id < 0 || tag_id >= table.Size()) return nullptr;
+  while (static_cast<int>(wrapper->tag_names.size()) < table.Size()) {
+    wrapper->tag_names.push_back(table.Name(static_cast<int>(wrapper->tag_names.size())));
+  }
+  return wrapper->tag_names[static_cast<size_t>(tag_id)].c_str();
 }
 
 // =============================================================================
@@ -646,15 +739,18 @@ COMPANIONS_API void companions_step(Companions_Env* env,
       SetError("Invalid movement action");
       return;
     }
-    // Validate interact action range
-    if (actions[i].interact < Companions_Interact_None ||
-        actions[i].interact > Companions_Interact_Attack) {
+    // A negative interact is invalid. One past the enabled skill slots (today
+    // Skill2 and up) is None: EncodeAction would otherwise carry it into the
+    // movement digit of the flat action.
+    int32_t interact = static_cast<int32_t>(actions[i].interact);
+    if (interact < Companions_Interact_None) {
       SetError("Invalid interact action");
       return;
     }
+    if (interact >= companions::kNumInteractActions) interact = Companions_Interact_None;
     cpp_actions[i] = companions::EncodeAction(
         static_cast<companions::MovementAction>(actions[i].movement),
-        static_cast<companions::InteractAction>(actions[i].interact));
+        static_cast<companions::InteractAction>(interact));
   }
 
   // Clear events from previous step
@@ -668,9 +764,10 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->success = env->env->IsSuccess();
   env->last_rewards = result.rewards;
 
-  // Generate movement and cast events
+  // Generate movement, cast, skill and tag events
   AddMovementEvents(env);
   AddCastEvents(env);
+  AddSkillAndTagEvents(env);
 
   // Add episode end event if done
   if (env->done) {
@@ -856,6 +953,89 @@ COMPANIONS_API void companions_set_companion_cast(Companions_Env* env, bool enab
 
 COMPANIONS_API bool companions_get_companion_cast(const Companions_Env* env) {
   return env && env->env && env->env->IsCompanionCastEnabled();
+}
+
+// =============================================================================
+// Skills, tags and zones
+// =============================================================================
+
+COMPANIONS_API const char* companions_get_tag_name(const Companions_Env* env, int32_t tag_id) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return nullptr;
+  }
+  const char* name = StableTagName(env, tag_id);
+  if (!name) SetError("Unknown tag id");
+  return name;
+}
+
+COMPANIONS_API int32_t companions_find_tag(const Companions_Env* env, const char* name) {
+  if (!env || !env->env || !name) {
+    SetError("Invalid arguments");
+    return -1;
+  }
+  return env->env->GetTagTable().Find(name);
+}
+
+COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectId agent,
+                                         const char* tag, int32_t duration) {
+  if (!env || !env->env || !tag) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (!env->env->ApplyTagTo(agent, tag, duration)) {
+    SetError("companions_apply_tag: unknown agent, empty tag, or duration 0 or below -1");
+    return false;
+  }
+  return true;
+}
+
+COMPANIONS_API bool companions_remove_tag(Companions_Env* env, Companions_ObjectId agent,
+                                          const char* tag) {
+  if (!env || !env->env || !tag) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (!env->env->RemoveTagFrom(agent, tag)) {
+    SetError("companions_remove_tag: unknown agent");
+    return false;
+  }
+  return true;
+}
+
+COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, int32_t col,
+                                            const char* tag, int32_t duration) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return false;
+  }
+  if (!env->env->SetCellTag(companions::Position{row, col}, tag ? tag : "", duration)) {
+    SetError("companions_set_cell_tag: out of bounds, or duration 0 or below -1");
+    return false;
+  }
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_t row,
+                                               int32_t col) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return -1;
+  }
+  return env->env->GetCellTag(companions::Position{row, col}).tag;
+}
+
+COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_ObjectId agent,
+                                               int32_t slot, const char* skill) {
+  if (!env || !env->env || !skill) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (!env->env->SetCompanionSkill(agent, slot, skill)) {
+    SetError("companions_set_agent_skill: unknown skill, slot or companion");
+    return false;
+  }
+  return true;
 }
 
 COMPANIONS_API int32_t companions_get_rows(const Companions_Env* env) {

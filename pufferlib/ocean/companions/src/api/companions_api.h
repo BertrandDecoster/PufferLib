@@ -23,13 +23,26 @@
 // =============================================================================
 // Event System (Partial Implementation)
 // =============================================================================
-// Currently implemented events:
-// - Companions_Event_AgentMoved: Agent successfully moved to new position
+// Currently implemented events, in this order within a step:
+// - Companions_Event_AgentMoved: Agent moved to a new position (by walking,
+//   or by a skill: a teleport, dash, push or pull)
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
-// - Companions_Event_EpisodeEnd: Episode completed (success or timeout)
 // - Companions_Event_EffectSpawned: a companion cast (only with companion
 //   casts on, see companions_set_companion_cast): subject_id = caster,
 //   position = the faced cell, effect_name = "companion_cast".
+// - Companions_Event_SkillUsed: a companion used the skill in a slot:
+//   subject_id = caster, position = the skill's centre (the landing cell for
+//   a self-targeted skill such as teleport), effect_name = skill name.
+// - Companions_Event_TagApplied: a tag landed on an agent (from a skill or a
+//   zone, see companions_set_cell_tag): subject_id = agent, position = its
+//   cell after the step, effect_name = tag name, status_duration = duration
+//   (-1 = permanent), health_source_id = caster (-1 for a zone), tag_fresh =
+//   the agent did not carry the tag just before this landing.
+// - Companions_Event_EpisodeEnd: Episode completed (success or timeout)
+// A step reports at most Companions_MAX_EVENTS events, in the order above:
+// the ones past the cap are dropped, EpisodeEnd included (state.done and
+// state.success still tell). The state itself (agents' tags, skills,
+// statuses) is always complete.
 //
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
@@ -70,6 +83,9 @@ extern "C" {
 #define Companions_MAX_EFFECT_CELLS 16
 #define Companions_EFFECT_NAME_LEN 32
 #define Companions_MAX_RENDER_SIZE 4096
+#define Companions_MAX_TAGS 8          // Tags per Companions_AgentState
+#define Companions_MAX_SKILL_SLOTS 2   // Skill slots per companion
+#define Companions_SKILL_NAME_LEN 32   // Including the terminating '\0'
 
 // =============================================================================
 // Basic Types
@@ -99,9 +115,15 @@ typedef enum {
   Companions_Movement_Right = 4,
 } Companions_MovementAction;
 
+// Skill1 / Skill2 use the skill in slot 0 / 1 (see companions_set_agent_skill):
+// the companion stays put and its movement only aims. A skill that cannot be
+// used (empty slot, unknown skill, cooldown, rooted for a self-moving skill)
+// is dropped and the movement applies as with None.
 typedef enum {
   Companions_Interact_None = 0,
-  Companions_Interact_Attack = 1,
+  Companions_Interact_Skill1 = 1,
+  Companions_Interact_Skill2 = 2,  // Accepted but ignored until slot 2 is enabled
+  Companions_Interact_Attack = Companions_Interact_Skill1,  // Historical name
 } Companions_InteractAction;
 
 typedef enum {
@@ -142,6 +164,7 @@ typedef enum {
   Companions_Status_Stunned = 1,
   Companions_Status_Slowed = 2,
   Companions_Status_Marked = 3,
+  Companions_Status_Rooted = 4,  // Cannot move by itself (walking, self-moving skills)
 } Companions_StatusType;
 
 typedef enum {
@@ -184,6 +207,13 @@ typedef struct {
   int32_t duration;  // ticks remaining
 } Companions_StatusEffect;
 
+// A tag an agent carries ("burning", "wet", ...: opaque names, see
+// companions_get_tag_name)
+typedef struct {
+  int32_t tag_id;    // See companions_get_tag_name
+  int32_t duration;  // Ticks left, -1 = permanent
+} Companions_AgentTag;
+
 // Agent state snapshot
 typedef struct {
   Companions_ObjectId id;
@@ -210,6 +240,16 @@ typedef struct {
   // Status effects
   Companions_StatusEffect statuses[Companions_MAX_STATUSES];
   int32_t status_count;
+
+  // Tags, oldest first (the first Companions_MAX_TAGS only)
+  Companions_AgentTag tags[Companions_MAX_TAGS];
+  int32_t tag_count;
+
+  // Skill slots (companions only; "" = empty, and all "" / 0 for other
+  // agents). Names longer than Companions_SKILL_NAME_LEN - 1 bytes are
+  // truncated: give skills short names.
+  char skills[Companions_MAX_SKILL_SLOTS][Companions_SKILL_NAME_LEN];
+  int32_t skill_cooldowns[Companions_MAX_SKILL_SLOTS];  // Steps until usable, 0 = ready
 
   // Actions - intent (before collision resolution) vs actual (after)
   Companions_Action action_intent;   // What the agent wanted to do
@@ -258,6 +298,8 @@ typedef enum {
   Companions_Event_StatusRemoved = 12,
   Companions_Event_GoalReached = 13,
   Companions_Event_EpisodeEnd = 14,
+  Companions_Event_SkillUsed = 15,   // See "Event System" at the top
+  Companions_Event_TagApplied = 16,  // See "Event System" at the top
 } Companions_EventType;
 
 // Transition event (delta information for animations)
@@ -284,13 +326,17 @@ typedef struct {
   Companions_FSMStateType fsm_from;
   Companions_FSMStateType fsm_to;
 
-  // For Effect events:
+  // For Effect events (and SkillUsed / TagApplied: the skill / tag name,
+  // truncated to Companions_EFFECT_NAME_LEN - 1 bytes):
   int32_t effect_id;
   char effect_name[Companions_EFFECT_NAME_LEN];
 
-  // For Status events:
+  // For Status events (and TagApplied: the tag's duration, -1 = permanent):
   Companions_StatusType status_type;
   int32_t status_duration;
+
+  // For TagApplied (health_source_id = caster, -1 for a zone):
+  bool tag_fresh;  // The agent did not carry the tag just before this landing
 
   // For EpisodeEnd:
   bool episode_success;
@@ -422,6 +468,10 @@ COMPANIONS_API void companions_reset(Companions_Env* env,
 
 // Step environment with actions, returns full result with events
 // actions array must have env->agent_count elements
+// A movement outside Stay..Right or a negative interact refuses the whole step
+// (error set, nothing stepped). An interact past the enabled skill slots
+// (today: Companions_Interact_Skill2 and above) is treated as None: the
+// movement applies and no skill is used.
 COMPANIONS_API void companions_step(Companions_Env* env,
                                           const Companions_Action* actions,
                                           int32_t action_count,
@@ -480,12 +530,45 @@ COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
                                             Companions_ObjectId source_id);
 
 // Companion casts (default: off, and a companion's interact action is ignored
-// as before). When on, a companion whose action is Companions_Interact_Attack
-// stays put (the movement only aims) and casts "companion_cast" on the cell it
-// faces; each cast yields a Companions_Event_EffectSpawned in its step result.
+// as before). When on, a companion with an empty slot 0 (see
+// companions_set_agent_skill) whose action is Companions_Interact_Attack
+// stays put (the movement only aims) and casts "companion_cast" on the cell
+// it faces; each cast yields a Companions_Event_EffectSpawned in its step
+// result.
 // The setting survives companions_reset and snapshot loads.
 COMPANIONS_API void companions_set_companion_cast(Companions_Env* env, bool enabled);
 COMPANIONS_API bool companions_get_companion_cast(const Companions_Env* env);
+
+// =============================================================================
+// Skills, tags and zones
+// =============================================================================
+//
+// Tags: opaque names interned per env. Ids stay valid for this env's lifetime
+// (resets and snapshot loads included), and so does the string
+// companions_get_tag_name returns. Persist names, not ids.
+COMPANIONS_API const char* companions_get_tag_name(const Companions_Env* env, int32_t tag_id);  // NULL if unknown
+COMPANIONS_API int32_t companions_find_tag(const Companions_Env* env, const char* name);        // -1 if unknown
+// Land `tag` on an agent for `duration` steps (-1 = permanent). False for an
+// unknown agent, a NULL / "" tag, or a duration of 0 or below -1. Durations
+// tick at the start of each step: applied between two steps with duration d,
+// the tag is there now and after the next d - 1 steps (d = 1: gone after the
+// next step).
+COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectId agent, const char* tag, int32_t duration);
+// Remove `tag` from an agent (true even if it did not carry it). False for an
+// unknown agent or a NULL tag.
+COMPANIONS_API bool companions_remove_tag(Companions_Env* env, Companions_ObjectId agent, const char* tag);
+// Zones: one tag per cell ("" or NULL clears), landed on whoever stands there
+// after each step's movement, and on whoever a skill moves there, with
+// `duration` (-1 = permanent); each landing is a Companions_Event_TagApplied.
+// False out of bounds, or for a duration of 0 or below -1 with a tag.
+COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, int32_t col, const char* tag, int32_t duration);
+COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_t row, int32_t col);  // tag id or -1
+// Skill slots (0-based). "" empties the slot; false for an unknown skill/slot/agent.
+// Puts `skill` (a builtin: "fireball", "lightningStep", "teleport", "vortex",
+// or one a JSON snapshot defines) in a companion's slot and makes it ready
+// (cooldown 0). Only slot 0 is usable today (Companions_Interact_Skill1);
+// slot 1 can be filled but Skill2 is ignored.
+COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_ObjectId agent, int32_t slot, const char* skill);
 
 // =============================================================================
 // Configuration Queries
