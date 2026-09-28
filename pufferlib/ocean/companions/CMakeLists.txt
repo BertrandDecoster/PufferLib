@@ -56,6 +56,7 @@ set(CORE_SOURCES
   src/core/snapshot.cc
   src/core/snapshot_json.cc
   src/core/level_generator.cc
+  src/core/tag_table.cc
   src/core/fsm/fsm_states.cc
   src/core/fsm/enemies.cc
 )
@@ -82,6 +83,7 @@ set(CORE_HEADERS
   src/core/snapshot_json.h
   src/core/level_config.h
   src/core/level_generator.h
+  src/core/tag_table.h
   src/core/fsm/fsm_state.h
   src/core/fsm/fsm_states.h
   src/core/fsm/enemies.h
@@ -197,6 +199,10 @@ add_executable(companions_effects_test tests/test_effects.cc)
 target_link_libraries(companions_effects_test companions_viz companions_env companions_core)
 target_include_directories(companions_effects_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_skills_test tests/test_skills.cc)
+target_link_libraries(companions_skills_test companions_viz companions_env companions_core)
+target_include_directories(companions_skills_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(companions_dodge_test tests/test_dodge_env.cc)
 target_link_libraries(companions_dodge_test companions_viz companions_env companions_core)
 target_include_directories(companions_dodge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -268,6 +274,7 @@ add_test(NAME companions_test COMMAND companions_test)
 add_test(NAME companions_fsm_test COMMAND companions_fsm_test)
 add_test(NAME companions_aggro_test COMMAND companions_aggro_test)
 add_test(NAME companions_effects_test COMMAND companions_effects_test)
+add_test(NAME companions_skills_test COMMAND companions_skills_test)
 add_test(NAME companions_dodge_test COMMAND companions_dodge_test)
 add_test(NAME companions_map_generator_test COMMAND companions_map_generator_test)
 add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)

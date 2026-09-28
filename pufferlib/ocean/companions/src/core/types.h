@@ -26,6 +26,10 @@ constexpr int kDefaultGridSize = 12;
 constexpr int kDefaultHorizon = 100;
 constexpr ObjectId kInvalidObjectId = -1;
 
+using TagId = int;
+constexpr TagId kInvalidTag = -1;
+constexpr int kPermanentTag = -1;  // Tag duration: never expires
+
 // =============================================================================
 // Position
 // =============================================================================

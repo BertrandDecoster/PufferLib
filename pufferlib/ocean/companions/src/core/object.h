@@ -141,6 +141,12 @@ struct StatusEffect {
   void Clear() { type = StatusType::None; duration = 0; }
 };
 
+// An opaque tag on an agent (see TagTable). No gameplay effect in the env.
+struct AgentTag {
+  TagId id = kInvalidTag;
+  int duration = kPermanentTag;  // Ticks left, or kPermanentTag
+};
+
 // =============================================================================
 // Agent - an actor that can take actions
 // =============================================================================
@@ -214,6 +220,16 @@ class Agent : public Actor {
   // Marked damage multiplier (configurable, default 1.5x)
   static constexpr float kMarkedDamageMultiplier = 1.5f;
 
+  // ==========================================================================
+  // Tags (opaque, no gameplay effect)
+  // ==========================================================================
+  // Re-applying keeps the longer duration (permanent wins); duration 0 is a no-op.
+  void ApplyTag(TagId id, int duration);
+  void RemoveTag(TagId id);
+  bool HasTag(TagId id) const;
+  void TickTags();  // Timed tags lose a tick; expired ones are removed
+  const std::vector<AgentTag>& GetTags() const { return tags_; }
+
   std::unique_ptr<Object> Clone() const override {
     return std::make_unique<Agent>(*this);
   }
@@ -227,6 +243,7 @@ class Agent : public Actor {
   int health_ = 3;
   int max_health_ = 3;
   std::vector<StatusEffect> statuses_;  // Active status effects
+  std::vector<AgentTag> tags_;          // Opaque tags (see TagTable)
 };
 
 // =============================================================================

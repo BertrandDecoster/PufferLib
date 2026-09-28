@@ -89,6 +89,40 @@ bool Agent::HasStatus(StatusType type) const {
   return false;
 }
 
+void Agent::ApplyTag(TagId id, int duration) {
+  if (id == kInvalidTag || duration == 0) return;
+  for (AgentTag& t : tags_) {
+    if (t.id != id) continue;
+    if (t.duration == kPermanentTag || duration == kPermanentTag) {
+      t.duration = kPermanentTag;
+    } else {
+      t.duration = std::max(t.duration, duration);
+    }
+    return;
+  }
+  tags_.push_back({id, duration});
+}
+
+void Agent::RemoveTag(TagId id) {
+  tags_.erase(std::remove_if(tags_.begin(), tags_.end(),
+                             [id](const AgentTag& t) { return t.id == id; }),
+              tags_.end());
+}
+
+bool Agent::HasTag(TagId id) const {
+  return std::any_of(tags_.begin(), tags_.end(),
+                     [id](const AgentTag& t) { return t.id == id; });
+}
+
+void Agent::TickTags() {
+  for (AgentTag& t : tags_) {
+    if (t.duration > 0) --t.duration;
+  }
+  tags_.erase(std::remove_if(tags_.begin(), tags_.end(),
+                             [](const AgentTag& t) { return t.duration == 0; }),
+              tags_.end());
+}
+
 // =============================================================================
 // AgentFSM
 // =============================================================================
