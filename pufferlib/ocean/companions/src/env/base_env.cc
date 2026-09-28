@@ -52,6 +52,7 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       last_skill_uses_(other.last_skill_uses_),
       last_tags_applied_(other.last_tags_applied_),
       last_downs_(other.last_downs_),
+      last_revives_(other.last_revives_),
       cell_tags_(other.cell_tags_),
       max_downs_(other.max_downs_) {
   // Update EffectSystem pointers to point to our new copies
@@ -78,6 +79,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     last_skill_uses_ = other.last_skill_uses_;
     last_tags_applied_ = other.last_tags_applied_;
     last_downs_ = other.last_downs_;
+    last_revives_ = other.last_revives_;
     cell_tags_ = other.cell_tags_;
     max_downs_ = other.max_downs_;
   }
@@ -905,6 +907,7 @@ void BaseEnv::ClearStepReports() {
   last_skill_uses_.clear();
   last_tags_applied_.clear();
   last_downs_.clear();
+  last_revives_.clear();
 }
 
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
@@ -1065,8 +1068,8 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
       centre = ResolveGroundTarget(*grid_, from, dr, dc, skill.range);
       break;
     case SkillTargeting::Projectile: {
-      // Line rule, but the first affectable agent passing the filter stops it
-      // (a downed one is passed over).
+      // Line rule, but the first agent the skill affects stops it (a downed
+      // one is passed over, and a standing one by an affects_downed skill).
       Position cur = from;
       for (int i = 0; i < skill.range; ++i) {
         Position next{cur.row + dr, cur.col + dc};
@@ -1103,13 +1106,27 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
     }
   }
 
-  // 5. Root (the area only) and area motions; the dead and the downed are neither.
+  // 5. Revive: the downed it affects get up where they lie (an affects_downed
+  // skill has no tags, damage, root or motion). A companion revived by an
+  // earlier caster this step is standing again, so a later one skips it.
+  if (skill.revive_percent > 0) {
+    for (Agent* a : affected) {
+      auto* comp = dynamic_cast<Companion*>(a);
+      if (!comp || !comp->IsDowned()) continue;
+      const int health = (comp->GetMaxHealth() * skill.revive_percent + 99) / 100;
+      if (comp->Revive(health)) last_revives_.push_back({caster.GetId(), comp->GetId()});
+    }
+  }
+
+  // 6. Root (the area only) and area motions; the dead and the downed are neither.
   AreaMotion(skill, centre, caster, on_area);
   return centre;
 }
 
 bool BaseEnv::Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const {
-  if (!agent.IsAffectable() || !PassesFilter(agent, skill.filter)) return false;
+  const bool reachable =
+      skill.affects_downed ? agent.IsAlive() && agent.IsDowned() : agent.IsAffectable();
+  if (!reachable || !PassesFilter(agent, skill.filter)) return false;
   // The caster is of its own faction: without friendly fire it is spared too.
   return skill.friendly_fire || agent.GetFaction() != caster.GetFaction();
 }

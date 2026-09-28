@@ -277,6 +277,10 @@ class BaseEnv {
     std::string cause;                   // Skill name, or "zone"
     bool fresh = false;                  // The agent did not have the tag before
   };
+  struct Revival {
+    ObjectId reviver = kInvalidObjectId;  // The skill's caster
+    ObjectId revived = kInvalidObjectId;
+  };
   // What the last Step did (cleared at the start of every Step, and by
   // LoadSnapshot, hence by every Reset).
   // Skills resolve one caster at a time in agent-index order, each from its
@@ -286,6 +290,10 @@ class BaseEnv {
   // Companions that went down since the last report, one entry per down:
   // this step's, and any between steps (a host effect), reported once.
   const std::vector<ObjectId>& GetLastDowns() const { return last_downs_; }
+  // Downed companions a skill revived this step, in resolution order (each
+  // revive is also one of the step's skill uses). Revived and downed again in
+  // the same step: a revive here, then a down in GetLastDowns.
+  const std::vector<Revival>& GetLastRevives() const { return last_revives_; }
 
   // Zones: a cell may carry one tag, landed (with `duration`, cause "zone",
   // source kInvalidObjectId) on every living agent standing on it after the
@@ -387,7 +395,7 @@ class BaseEnv {
   void ResolveInteractions();
 
   // Skills (see GetSkillBook)
-  // Empties the per-step reports (skill uses, tags applied, downs): their
+  // Empties the per-step reports (skill uses, tags applied, downs, revives): their
   // ObjectIds are re-issued by a new world.
   void ClearStepReports();
   // Not rooted. Walking and caster-moving skills both need it (being pushed /
@@ -395,14 +403,15 @@ class BaseEnv {
   bool CanMoveItself(const Agent& agent) const;
   bool CanUseSkill(const Companion& comp, int slot) const;
   void ResolveSkills();         // After movement, in agent-index order
-  // Resolves one skill (caster motion, area, tags, damage, root, area
+  // Resolves one skill (caster motion, area, tags, damage, revive, root, area
   // motion); returns its centre.
   Position UseSkill(Companion& caster, const SkillConfig& skill);
   // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for Cross.
   std::vector<Position> AreaCells(Position centre, SkillArea area) const;
-  // The one definition of "affected": a living agent passing the skill's
-  // filter and, without friendly fire, not of the caster's faction (so never
-  // the caster). With friendly fire the caster itself can be affected; each
+  // The one definition of "affected": a standing agent (alive, not downed),
+  // or for an affects_downed skill a downed one, passing the skill's filter
+  // and, without friendly fire, not of the caster's faction (so never the
+  // caster). With friendly fire the caster itself can be affected; each
   // effect then checks its self_* flag.
   bool Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const;
   // Appends the agents on `cells` the skill affects, each once, in cell order.
@@ -447,6 +456,7 @@ class BaseEnv {
   std::vector<SkillUse> last_skill_uses_;
   std::vector<TagApplication> last_tags_applied_;
   std::vector<ObjectId> last_downs_;
+  std::vector<Revival> last_revives_;
   // Row-major rows_ * cols_ once a zone is set; empty = no zones.
   std::vector<CellTag> cell_tags_;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the

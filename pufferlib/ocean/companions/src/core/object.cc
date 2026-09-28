@@ -273,6 +273,13 @@ void Companion::OnZeroHealth() {
   ++times_downed_;
 }
 
+bool Companion::Revive(int health) {
+  if (!IsAlive() || !downed_) return false;
+  downed_ = false;
+  health_ = std::max(1, std::min(health, max_health_));
+  return true;
+}
+
 // =============================================================================
 // Player
 // =============================================================================

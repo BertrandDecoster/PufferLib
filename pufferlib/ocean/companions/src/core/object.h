@@ -406,6 +406,11 @@ class Companion : public Agent {
     reported_downs_ = times_downed_;
     return n;
   }
+  // Gets a downed companion up where it lies, with `health` clamped to
+  // [1, max]; its statuses are already clear (cleared as it went down), its
+  // tags kept, times_downed unchanged. False (nothing changes) unless it is
+  // alive and down.
+  bool Revive(int health);
   // Snapshot loads: the state as saved, already reported
   void RestoreDowns(bool downed, int times_downed) {
     downed_ = downed;

@@ -81,6 +81,16 @@ struct SkillConfig {
   bool self_motion = true;  // PushOut / PullIn may move the caster
   bool self_root = true;    // root_steps roots the caster
   bool self_damage = true;  // damage hurts the caster
+  // Who the skill can affect at all: off, the standing only (alive, not
+  // downed), as every skill but a revive; on, the downed only (alive and
+  // down), which it can only revive: no tags, damage, root or motion
+  // (validated: tags cannot land on the downed, damage cannot hurt them, and
+  // motion would move a body). A projectile flies past whom it cannot affect.
+  bool affects_downed = false;
+  // A downed agent the skill affects comes back (Companion::Revive) with this
+  // percent of its max HP, rounded up (at least 1). 0: no revive. In [0, 100];
+  // > 0 needs affects_downed.
+  int revive_percent = 0;
 };
 
 // Does this skill move its caster (so a rooted caster cannot use it)?
@@ -120,7 +130,8 @@ TargetFilter TargetFilterFromString(const std::string& s);      // Throws on unk
 // usable: non-empty name of at most kMaxNameLength bytes; range,
 // motion_distance, damage, root_steps and cooldown >= 0; tag names non-empty, of at
 // most kMaxNameLength bytes, with a duration of kPermanentTag or > 0; enums in
-// range.
+// range; revive_percent in [0, 100], and > 0 only with affects_downed; an
+// affects_downed skill without tags, damage, root_steps or motion.
 void ValidateSkillConfig(const SkillConfig& s);
 
 }  // namespace companions

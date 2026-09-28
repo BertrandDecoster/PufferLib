@@ -47,6 +47,18 @@ std::vector<SkillConfig> Builtins() {
   vortex.cooldown = 4;
   vortex.self_root = false;  // Pulled into its own vortex, the caster is not rooted
 
+  // Brings a downed ally on the faced cell back with half its max HP (rounded
+  // up). A builtin a level may retune, unlike the attack.
+  SkillConfig revive;
+  revive.name = "revive";
+  revive.targeting = SkillTargeting::Projectile;
+  revive.range = 1;
+  revive.area = SkillArea::Single;
+  revive.filter = TargetFilter::Companion;
+  revive.affects_downed = true;
+  revive.revive_percent = 50;
+  revive.cooldown = 0;
+
   // The fixed default skill (kDefaultSkill): strikes the faced cell.
   SkillConfig attack;
   attack.name = kDefaultSkill;
@@ -57,7 +69,7 @@ std::vector<SkillConfig> Builtins() {
   attack.friendly_fire = false;
   attack.cooldown = 0;
 
-  return {fireball, lightning_step, teleport, vortex, attack};
+  return {fireball, lightning_step, teleport, vortex, revive, attack};
 }
 }  // namespace
 
@@ -199,6 +211,25 @@ void ValidateSkillConfig(const SkillConfig& s) {
   check_non_negative("damage", s.damage);
   check_non_negative("root_steps", s.root_steps);
   check_non_negative("cooldown", s.cooldown);
+  if (s.revive_percent < 0 || s.revive_percent > 100) {
+    throw std::runtime_error(where + "revive_percent must be in [0, 100] (got " +
+                             std::to_string(s.revive_percent) + ")");
+  }
+  if (s.revive_percent > 0 && !s.affects_downed) {
+    throw std::runtime_error(where + "revive_percent needs affects_downed (only the downed revive)");
+  }
+  if (s.affects_downed) {
+    // It can only revive: nothing else reaches the downed.
+    auto reject = [&](bool present, const char* field, const char* why) {
+      if (present) {
+        throw std::runtime_error(where + field + " with affects_downed: " + why);
+      }
+    };
+    reject(!s.tags.empty(), "tags", "tags cannot land on the downed");
+    reject(s.damage > 0, "damage", "damage cannot hurt the downed");
+    reject(s.root_steps > 0, "root_steps", "the downed cannot be rooted");
+    reject(s.motion != SkillMotion::None, "motion", "a motion would move a body");
+  }
   for (size_t i = 0; i < s.tags.size(); ++i) {
     const SkillTagSpec& t = s.tags[i];
     const std::string tag_where = where + "tags[" + std::to_string(i) + "]";

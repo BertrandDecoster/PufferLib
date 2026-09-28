@@ -217,16 +217,16 @@ TEST(TestSkillBookDefineReplaces) {
   frost.tags = {{"chilled", kPermanentTag}};
   book.Define(frost);
   ASSERT_EQ(book.Find("frost")->range, 2);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(6));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(7));
   SkillConfig short_fireball = *book.Find("fireball");
   short_fireball.range = 2;
   book.Define(short_fireball);                  // a level retunes a builtin
   ASSERT_EQ(book.Find("fireball")->range, 2);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(6));  // replaced, not appended
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(7));  // replaced, not appended
   book.Reset();                                 // back to builtins only
   ASSERT_EQ(book.Find("fireball")->range, 3);
   ASSERT_TRUE(book.Find("frost") == nullptr);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(6));
   ASSERT_TRUE(book.Find(kDefaultSkill) != nullptr);  // Reset keeps the attack
 }
 
@@ -850,7 +850,7 @@ TEST(TestSkillBookIgnoresEmptyName) {
   book.Define(unnamed);
   unnamed.range = -1;  // Invalid too, but unnamed: still silently ignored
   book.Define(unnamed);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(6));
   ASSERT_TRUE(book.Find("") == nullptr);
 }
 
@@ -868,7 +868,7 @@ TEST(TestSkillBookDefineValidates) {
   bad_fireball = *book.Find("fireball");
   bad_fireball.name = std::string(kMaxNameLength + 1, 'f');
   ASSERT_TRUE(DefineThrows(book, bad_fireball));
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(6));
   frost.range = 2;
   frost.damage = -1;
   ASSERT_TRUE(DefineThrows(book, frost));
