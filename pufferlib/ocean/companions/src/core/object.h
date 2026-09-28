@@ -4,8 +4,10 @@
 #ifndef COMPANIONS_CORE_OBJECT_H_
 #define COMPANIONS_CORE_OBJECT_H_
 
+#include <array>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "types.h"
@@ -346,6 +348,15 @@ class Companion : public Agent {
   ActorColor GetColor() const { return color_; }
   void SetColor(ActorColor color) { color_ = color; }
 
+  // Skill slots (skill names from the env's SkillBook; "" = empty). Slots are
+  // 0-based, in [0, kMaxSkillSlots).
+  const std::string& GetSkill(int slot) const { return skills_[static_cast<size_t>(slot)]; }
+  void SetSkill(int slot, std::string name) { skills_[static_cast<size_t>(slot)] = std::move(name); }
+  // Steps before the slot's skill is usable again (0 = ready)
+  int GetCooldown(int slot) const { return cooldowns_[static_cast<size_t>(slot)]; }
+  void SetCooldown(int slot, int ticks) { cooldowns_[static_cast<size_t>(slot)] = ticks; }
+  void TickCooldowns() { for (int& c : cooldowns_) if (c > 0) --c; }
+
   std::unique_ptr<Object> Clone() const override {
     return std::make_unique<Companion>(*this);
   }
@@ -353,6 +364,8 @@ class Companion : public Agent {
  protected:
   Direction direction_ = Direction::Down;  // Default: facing down
   ActorColor color_ = ActorColor::None;
+  std::array<std::string, kMaxSkillSlots> skills_;
+  std::array<int, kMaxSkillSlots> cooldowns_{};
 };
 
 // =============================================================================

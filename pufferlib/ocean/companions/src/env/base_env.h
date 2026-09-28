@@ -15,7 +15,9 @@
 #include "../core/effect_config.h"
 #include "../core/grid.h"
 #include "../core/object_manager.h"
+#include "../core/skill_config.h"
 #include "../core/snapshot.h"
+#include "../core/tag_table.h"
 #include "../core/types.h"
 #include "task_lens.h"
 
@@ -183,6 +185,43 @@ class BaseEnv {
   const std::vector<CompanionCast>& GetLastCasts() const { return last_casts_; }
 
   // ==========================================================================
+  // Skills and tags (data-driven; names are opaque to the env)
+  // ==========================================================================
+  // A companion's Skill1 uses the skill in its slot 0: the companion stays put
+  // (the movement only aims) and the skill resolves after movement. A skill
+  // that cannot be used (empty slot, cooldown, disabled slot) is dropped and
+  // the movement applies as if no interact had been given.
+  const TagTable& GetTagTable() const { return tags_; }
+  TagTable& GetMutableTagTable() { return tags_; }
+  const SkillBook& GetSkillBook() const { return skills_; }
+  SkillBook& GetMutableSkillBook() { return skills_; }
+
+  // Put `skill` in a companion's slot (0-based; "" empties it) and reset the
+  // slot's cooldown. False for an unknown skill, slot or companion.
+  bool SetCompanionSkill(ObjectId companion, int slot, const std::string& skill);
+
+  // Host primitives: land / remove a tag outside of a step.
+  bool ApplyTagTo(ObjectId agent, const std::string& tag, int duration);
+  bool RemoveTagFrom(ObjectId agent, const std::string& tag);
+
+  struct SkillUse {
+    ObjectId caster = kInvalidObjectId;
+    std::string skill;
+    Position target;  // The skill's centre: landing cell for Self skills
+  };
+  struct TagApplication {
+    ObjectId agent = kInvalidObjectId;
+    TagId tag = kInvalidTag;
+    int duration = kPermanentTag;
+    ObjectId source = kInvalidObjectId;  // Caster, or kInvalidObjectId for a zone
+    std::string cause;                   // Skill name, or "zone"
+    bool fresh = false;                  // The agent did not have the tag before
+  };
+  // What the last Step did (cleared at the start of every Step).
+  const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
+  const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
+
+  // ==========================================================================
   // Snapshot Support - Save/Load complete world state
   // ==========================================================================
 
@@ -224,6 +263,20 @@ class BaseEnv {
   // Called after movement to apply damage from AttackState agents
   void ResolveInteractions();
 
+  // Skills (see GetSkillBook)
+  void TickTagsAndCooldowns();  // Start of Step
+  bool CanUseSkill(const Companion& comp, int slot) const;
+  void ResolveSkills();         // After movement, in agent-index order
+  // Resolves one skill (caster motion, area, tags); returns its centre.
+  Position UseSkill(Companion& caster, const SkillConfig& skill);
+  // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for Cross.
+  std::vector<Position> AreaCells(Position centre, SkillArea area) const;
+  void LandTag(Agent& agent, const std::string& tag, int duration,
+               ObjectId source, const std::string& cause);
+  void MoveActor(Actor& actor, Position to);  // Skill motions (zone tags follow in a later task)
+  void AreaMotion(const SkillConfig& skill, Position centre, int aim_dr, int aim_dc,
+                  ObjectId caster);  // PushOut / PullIn: next task (P6); empty stub now
+
   int rows_;
   int cols_;
   std::unique_ptr<Grid> grid_;
@@ -238,6 +291,10 @@ class BaseEnv {
   bool success_ = false;
   bool companion_cast_enabled_ = false;
   std::vector<CompanionCast> last_casts_;
+  TagTable tags_;
+  SkillBook skills_;
+  std::vector<SkillUse> last_skill_uses_;
+  std::vector<TagApplication> last_tags_applied_;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;

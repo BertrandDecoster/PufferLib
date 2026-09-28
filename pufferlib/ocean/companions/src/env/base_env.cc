@@ -18,6 +18,7 @@
 #include "../core/fsm/fsm_states.h"
 #include "../core/game_logger.h"
 #include "effect_system.h"
+#include "skill_motion.h"
 
 namespace companions {
 
@@ -45,7 +46,11 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       annotations_(other.annotations_),
       success_(other.success_),
       companion_cast_enabled_(other.companion_cast_enabled_),
-      last_casts_(other.last_casts_) {
+      last_casts_(other.last_casts_),
+      tags_(other.tags_),
+      skills_(other.skills_),
+      last_skill_uses_(other.last_skill_uses_),
+      last_tags_applied_(other.last_tags_applied_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -65,6 +70,10 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     success_ = other.success_;
     companion_cast_enabled_ = other.companion_cast_enabled_;
     last_casts_ = other.last_casts_;
+    tags_ = other.tags_;
+    skills_ = other.skills_;
+    last_skill_uses_ = other.last_skill_uses_;
+    last_tags_applied_ = other.last_tags_applied_;
   }
   return *this;
 }
@@ -79,6 +88,12 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     result.done = IsDone();
     return result;
   }
+
+  // Durations run down first: a tag landed or a cooldown started during the
+  // previous step was observed with its full value.
+  last_skill_uses_.clear();
+  last_tags_applied_.clear();
+  TickTagsAndCooldowns();
 
   // Pre-step hook
   PreStep();
@@ -508,16 +523,25 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
 
     DecodedAction decoded = DecodeAction(actions[i]);
 
-    // A companion that attacks stays put: the movement component only aims
-    // the attack (Stay keeps the current facing).
-    if (companion_cast_enabled_ && decoded.interact == InteractAction::Attack) {
+    // A companion using a skill stays put: the movement only aims (Stay keeps
+    // the facing). A skill it cannot use is dropped and the move applies, as
+    // before skills existed.
+    if (decoded.interact != InteractAction::None) {
       if (Companion* comp = dynamic_cast<Companion*>(agent)) {
-        if (auto dir = MovementToDirection(decoded.movement)) {
-          comp->SetDirection(*dir);
+        if (CanUseSkill(*comp, SkillSlotOf(decoded.interact))) {
+          if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
+          agent->SetIntention({MovementAction::Stay, decoded.interact});
+          continue;
         }
-        agent->SetIntention({MovementAction::Stay, InteractAction::Attack});
-        continue;
+        if (companion_cast_enabled_ && decoded.interact == InteractAction::Attack &&
+            comp->GetSkill(0).empty()) {
+          // Legacy generic cast (removed in a later task).
+          if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
+          agent->SetIntention({MovementAction::Stay, InteractAction::Attack});
+          continue;
+        }
       }
+      decoded.interact = InteractAction::None;
     }
 
     // Slowed agents can only move on even ticks
@@ -759,21 +783,193 @@ void BaseEnv::ResolveInteractions() {
   // FSM attack damage is handled via the Effect system (AttackState::OnEnter
   // spawns the effect). When companion casts are on, a companion's Attack
   // casts the generic "companion_cast" effect on the cell it faces: the env
-  // does not know which skill this is; the host interprets the cast.
+  // does not know which skill this is; the host interprets the cast. Only
+  // companions with an empty slot 0 cast it (legacy, removed in a later task).
   last_casts_.clear();
-  if (!companion_cast_enabled_) return;
+  if (companion_cast_enabled_) {
+    for (Agent* agent : object_manager_->GetAllAgents()) {
+      if (!agent->IsAlive()) continue;
+      if (agent->GetExecutedAction().interact != InteractAction::Attack) continue;
+      auto* comp = dynamic_cast<Companion*>(agent);
+      if (!comp) continue;
+      if (!comp->GetSkill(0).empty()) continue;  // Uses its skill instead
+      Position target = ApplyMovement(comp->GetPosition(),
+                                      DirectionToMovement(comp->GetDirection()));
+      if (!grid_->IsInBounds(target)) continue;
+      SpawnEffect("companion_cast", EffectTarget::AtCell(target),
+                  comp->GetDirection(), comp->GetId());
+      last_casts_.push_back({comp->GetId(), target});
+    }
+  }
+  ResolveSkills();
+}
+
+// =============================================================================
+// Skills
+// =============================================================================
+
+namespace {
+bool PassesFilter(const Agent& a, TargetFilter f) {
+  switch (f) {
+    case TargetFilter::All: return true;
+    case TargetFilter::Companion: return a.GetFaction() == Faction::COMPANION;
+    case TargetFilter::Enemy: return a.GetFaction() == Faction::ENEMY;
+    case TargetFilter::Neutral: return a.GetFaction() == Faction::NEUTRAL;
+  }
+  return false;
+}
+}  // namespace
+
+void BaseEnv::TickTagsAndCooldowns() {
   for (Agent* agent : object_manager_->GetAllAgents()) {
     if (!agent->IsAlive()) continue;
-    if (agent->GetExecutedAction().interact != InteractAction::Attack) continue;
+    agent->TickTags();
+    if (auto* comp = dynamic_cast<Companion*>(agent)) comp->TickCooldowns();
+  }
+}
+
+bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
+  if (slot < 0 || slot >= kEnabledSkillSlots) return false;
+  const std::string& name = comp.GetSkill(slot);
+  if (name.empty() || comp.GetCooldown(slot) != 0) return false;
+  return skills_.Find(name) != nullptr;
+}
+
+bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill) {
+  if (slot < 0 || slot >= kMaxSkillSlots) return false;
+  auto* comp = dynamic_cast<Companion*>(object_manager_->GetActor(id));
+  if (!comp) return false;
+  if (!skill.empty() && !skills_.Find(skill)) return false;
+  comp->SetSkill(slot, skill);
+  comp->SetCooldown(slot, 0);
+  return true;
+}
+
+bool BaseEnv::ApplyTagTo(ObjectId id, const std::string& tag, int duration) {
+  auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
+  if (!agent || tag.empty()) return false;
+  agent->ApplyTag(tags_.Intern(tag), duration);
+  return true;
+}
+
+bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
+  auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
+  if (!agent) return false;
+  TagId t = tags_.Find(tag);
+  if (t != kInvalidTag) agent->RemoveTag(t);
+  return true;
+}
+
+void BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration,
+                      ObjectId source, const std::string& cause) {
+  TagId id = tags_.Intern(tag);
+  bool fresh = !agent.HasTag(id);
+  agent.ApplyTag(id, duration);
+  last_tags_applied_.push_back({agent.GetId(), id, duration, source, cause, fresh});
+}
+
+void BaseEnv::MoveActor(Actor& actor, Position to) {
+  if (to != actor.GetPosition()) object_manager_->UpdatePosition(actor.GetId(), to);
+}
+
+std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const {
+  std::vector<Position> cells{centre};
+  if (area == SkillArea::Cross) {
+    // Priority order of the ring: up, right, down, left (vortex relies on it).
+    for (Direction d : {Direction::Up, Direction::Right, Direction::Down, Direction::Left}) {
+      int dr = 0, dc = 0;
+      DirectionDelta(d, dr, dc);
+      Position p{centre.row + dr, centre.col + dc};
+      if (grid_->IsInBounds(p)) cells.push_back(p);
+    }
+  }
+  return cells;
+}
+
+void BaseEnv::ResolveSkills() {
+  // Agent-index order: deterministic, and earlier casters claim landings first.
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    if (!agent->IsAlive()) continue;
     auto* comp = dynamic_cast<Companion*>(agent);
     if (!comp) continue;
-    Position target = ApplyMovement(comp->GetPosition(),
-                                    DirectionToMovement(comp->GetDirection()));
-    if (!grid_->IsInBounds(target)) continue;
-    SpawnEffect("companion_cast", EffectTarget::AtCell(target),
-                comp->GetDirection(), comp->GetId());
-    last_casts_.push_back({comp->GetId(), target});
+    int slot = SkillSlotOf(agent->GetExecutedAction().interact);
+    if (slot < 0 || slot >= kEnabledSkillSlots) continue;
+    const SkillConfig* found = skills_.Find(comp->GetSkill(slot));
+    if (!found) continue;  // Legacy generic cast (empty slot)
+    const SkillConfig skill = *found;
+    Position target = UseSkill(*comp, skill);
+    comp->SetCooldown(slot, skill.cooldown);
+    last_skill_uses_.push_back({comp->GetId(), skill.name, target});
   }
+}
+
+Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
+  int dr = 0, dc = 0;
+  DirectionDelta(caster.GetDirection(), dr, dc);
+  const Position from = caster.GetPosition();
+  std::vector<Position> path;  // Cells crossed by a dash (tag_path)
+
+  // 1. The caster's own motion, and the skill's centre.
+  switch (skill.motion) {
+    case SkillMotion::Dash:
+      MoveActor(caster, ResolveDash(*grid_, *object_manager_, from, dr, dc,
+                                    skill.motion_distance, caster.GetId(), &path));
+      break;
+    case SkillMotion::Teleport:
+      MoveActor(caster, ResolveTeleport(*grid_, *object_manager_, from, dr, dc,
+                                        skill.motion_distance, caster.GetId()));
+      break;
+    default:
+      break;
+  }
+  Position centre = from;
+  switch (skill.targeting) {
+    case SkillTargeting::Self:
+      centre = caster.GetPosition();
+      break;
+    case SkillTargeting::Ground:
+      centre = ResolveGroundTarget(*grid_, from, dr, dc, skill.range);
+      break;
+    case SkillTargeting::Projectile: {
+      // Line rule, but the first living agent passing the filter stops it.
+      Position cur = from;
+      for (int i = 0; i < skill.range; ++i) {
+        Position next{cur.row + dr, cur.col + dc};
+        if (!grid_->IsInBounds(next) || !grid_->IsPathable(next)) break;
+        cur = next;
+        auto* hit = dynamic_cast<Agent*>(object_manager_->GetActorAt(cur));
+        if (hit && hit->IsAlive() && hit != &caster && PassesFilter(*hit, skill.filter)) break;
+      }
+      centre = cur;
+      break;
+    }
+  }
+
+  // 2. Affected agents: on the area (and the dash path), never the caster.
+  std::vector<Position> cells = AreaCells(centre, skill.area);
+  if (skill.tag_path) cells.insert(cells.end(), path.begin(), path.end());
+  std::vector<Agent*> affected;
+  for (const Position& p : cells) {
+    auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
+    if (!a || !a->IsAlive() || a == &caster || !PassesFilter(*a, skill.filter)) continue;
+    if (std::find(affected.begin(), affected.end(), a) == affected.end()) affected.push_back(a);
+  }
+
+  // 3. Tags land on who was there at impact.
+  for (Agent* a : affected) {
+    for (const SkillTagSpec& t : skill.tags) {
+      LandTag(*a, t.tag, t.duration, caster.GetId(), skill.name);
+    }
+  }
+
+  // 4. Area motions and root (next task).
+  AreaMotion(skill, centre, dr, dc, caster.GetId());
+  return centre;
+}
+
+void BaseEnv::AreaMotion(const SkillConfig& /*skill*/, Position /*centre*/,
+                         int /*aim_dr*/, int /*aim_dc*/, ObjectId /*caster*/) {
+  // PushOut / PullIn and root: next task (P6).
 }
 
 // =============================================================================

@@ -3,6 +3,7 @@
 // and the line and landing rules of skill motion
 
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -420,6 +421,266 @@ TEST(TestTeleportNowhereStays) {
   for (int c = 2; c <= 4; ++c) env.GetMutableGrid().SetCell({3, c}, CellKind::Wall);
   Agent* a = Place(env, 0, {3, 1});
   ASSERT_TRUE(Teleport(env, a) == (Position{3, 1}));
+}
+
+// =============================================================================
+// Skill use in Step Tests
+// =============================================================================
+
+static Action Use(MovementAction aim) { return EncodeAction(aim, InteractAction::Skill1); }
+static const Action kStay = EncodeAction(MovementAction::Stay);
+static Companion* AsCompanion(Agent* a) { return dynamic_cast<Companion*>(a); }
+static bool Has(const BaseEnv& env, const Agent* a, const char* tag) {
+  TagId t = env.GetTagTable().Find(tag);
+  return t != kInvalidTag && a->HasTag(t);
+}
+
+TEST(TestTeleportThroughStep) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "teleport"));
+  env.Step({Use(MovementAction::Right)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(a->GetExecutedAction().interact == InteractAction::Skill1);
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string("teleport"));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 4}));
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 4);
+}
+
+TEST(TestLightningStepElectrifiesPathAndLandingCross) {
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* crossed = Place(env, 1, {3, 3});   // dashed through
+  Agent* beside = Place(env, 2, {2, 5});    // above the landing cell (3,5)
+  Agent* away = Place(env, 3, {5, 5});      // 2 below the landing cell: untouched
+  env.SetCompanionSkill(caster->GetId(), 0, "lightningStep");
+  env.Step({Use(MovementAction::Right), kStay, kStay, kStay});
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(Has(env, crossed, "electrified"));
+  ASSERT_TRUE(Has(env, beside, "electrified"));
+  ASSERT_FALSE(Has(env, away, "electrified"));
+  ASSERT_FALSE(Has(env, caster, "electrified"));
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(2));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].cause, std::string("lightningStep"));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].source, caster->GetId());
+  ASSERT_TRUE(env.GetLastTagsApplied()[0].fresh);
+}
+
+TEST(TestFireballBurnsTheCross) {
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});    // target (3,4)
+  Agent* center = Place(env, 1, {3, 4});
+  Agent* up = Place(env, 2, {2, 4});
+  Agent* far = Place(env, 3, {3, 6});       // 2 from the target: untouched
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), kStay, kStay, kStay});
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 4}));
+  ASSERT_TRUE(Has(env, center, "burning"));
+  ASSERT_TRUE(Has(env, up, "burning"));
+  ASSERT_FALSE(Has(env, far, "burning"));
+  ASSERT_FALSE(Has(env, caster, "burning"));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));  // casting = not moving
+  ASSERT_TRUE(AsCompanion(caster)->GetDirection() == Direction::Right);  // aimed
+}
+
+TEST(TestFireballFliesThroughAgentsWallStopsIt) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* crossed = Place(env, 1, {3, 2});   // not a stop; ring of the target (3,3)
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 3}));
+  ASSERT_TRUE(Has(env, crossed, "burning"));
+}
+
+TEST(TestSkillOnCooldownIsDroppedAndMovementApplies) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(a->GetId(), 0, "lightningStep");
+  env.Step({Use(MovementAction::Right)});  // t0: dash to (3,5), cd 3
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 5}));
+  env.Step({Use(MovementAction::Left)});   // t1: cd 2 -> plain move
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_TRUE(a->GetExecutedAction().interact == InteractAction::None);
+  env.Step({kStay});                       // t2: cd 1
+  env.Step({Use(MovementAction::Left)});   // t3: cd 0 -> dash
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+}
+
+TEST(TestEmptySlotKeepsLegacyDynamics) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  env.Step({Use(MovementAction::Right)});  // no skill: interact ignored
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 2}));
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_TRUE(env.GetLastCasts().empty());
+}
+
+TEST(TestSetCompanionSkillValidates) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_FALSE(env.SetCompanionSkill(a->GetId(), 0, "nope"));
+  ASSERT_FALSE(env.SetCompanionSkill(a->GetId(), 2, "vortex"));  // no slot 3
+  ASSERT_FALSE(env.SetCompanionSkill(a->GetId(), -1, "vortex"));
+  ASSERT_FALSE(env.SetCompanionSkill(kInvalidObjectId, 0, "vortex"));
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 1, "vortex"));   // slot 2 exists
+  ASSERT_EQ(AsCompanion(a)->GetSkill(1), std::string("vortex"));
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, ""));         // clears
+  ASSERT_TRUE(AsCompanion(a)->GetSkill(0).empty());
+}
+
+TEST(TestTwoDashersSameLandingFirstIndexWins) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({2, 5}, CellKind::Wall);  // b's dash up can only reach (3,5)
+  Agent* a = Place(env, 0, {3, 1});  // dashes right to (3,5)
+  Agent* b = Place(env, 1, {4, 5});
+  env.SetCompanionSkill(a->GetId(), 0, "lightningStep");
+  env.SetCompanionSkill(b->GetId(), 0, "lightningStep");
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Up)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(b->GetPosition() == (Position{4, 5}));  // (3,5) taken first: stays
+}
+
+TEST(TestProjectileSkillFromLevelData) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.targeting = SkillTargeting::Projectile;
+  frost.range = 2;
+  frost.tags = {{"chilled", 2}};
+  env.GetMutableSkillBook().Define(frost);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* near = Place(env, 1, {3, 3});
+  Agent* behind = Place(env, 2, {3, 4});
+  env.SetCompanionSkill(caster->GetId(), 0, "frost");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(Has(env, near, "chilled"));
+  ASSERT_FALSE(Has(env, behind, "chilled"));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 3}));
+  env.Step({kStay, kStay, kStay});  // duration 2: still there
+  ASSERT_TRUE(Has(env, near, "chilled"));
+  env.Step({kStay, kStay, kStay});  // expired
+  ASSERT_FALSE(Has(env, near, "chilled"));
+}
+
+TEST(TestProjectileStopsOnFirstAgent) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig bolt;
+  bolt.name = "bolt";
+  bolt.targeting = SkillTargeting::Projectile;
+  bolt.range = 4;
+  bolt.tags = {{"zapped", 1}};
+  env.GetMutableSkillBook().Define(bolt);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* first = Place(env, 1, {3, 2});   // adjacent: hit at once
+  Agent* second = Place(env, 2, {3, 4});  // shielded by the first
+  env.SetCompanionSkill(caster->GetId(), 0, "bolt");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 2}));
+  ASSERT_TRUE(Has(env, first, "zapped"));
+  ASSERT_FALSE(Has(env, second, "zapped"));
+}
+
+TEST(TestStunnedCompanionCannotUseSkill) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(a->GetId(), 0, "teleport");
+  a->ApplyStatus(StatusType::Stunned, 2);
+  env.Step({Use(MovementAction::Right)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 0);
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+}
+
+TEST(TestLegacyCastWithEmptySlot) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.SetCompanionCastEnabled(true);
+  Agent* a = Place(env, 0, {3, 1});
+  env.Step({EncodeAction(MovementAction::Right, InteractAction::Attack)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
+  ASSERT_EQ(env.GetLastCasts().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastCasts()[0].cell == (Position{3, 2}));
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+}
+
+TEST(TestSkillReplacesLegacyCast) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.SetCompanionCastEnabled(true);
+  Agent* a = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(a->GetId(), 0, "teleport");
+  env.Step({EncodeAction(MovementAction::Right, InteractAction::Attack)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(env.GetLastCasts().empty());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  env.Step({EncodeAction(MovementAction::Left, InteractAction::Attack)});  // cooldown
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 3}));  // dropped: no legacy cast either
+  ASSERT_TRUE(env.GetLastCasts().empty());
+}
+
+TEST(TestHostTagPrimitives) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "wet", 1));
+  ASSERT_TRUE(Has(env, a, "wet"));
+  ASSERT_FALSE(env.ApplyTagTo(a->GetId(), "", 1));
+  ASSERT_FALSE(env.ApplyTagTo(kInvalidObjectId, "wet", 1));
+  ASSERT_TRUE(env.RemoveTagFrom(a->GetId(), "wet"));
+  ASSERT_FALSE(Has(env, a, "wet"));
+  ASSERT_TRUE(env.RemoveTagFrom(a->GetId(), "never_seen"));
+  ASSERT_FALSE(env.RemoveTagFrom(kInvalidObjectId, "wet"));
+}
+
+TEST(TestCloneKeepsSkillsTagsAndCooldowns) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.targeting = SkillTargeting::Projectile;
+  frost.range = 3;
+  frost.cooldown = 2;
+  frost.tags = {{"chilled", kPermanentTag}};
+  env.GetMutableSkillBook().Define(frost);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* target = Place(env, 1, {3, 3});
+  env.SetCompanionSkill(caster->GetId(), 0, "frost");
+  env.Step({Use(MovementAction::Right), kStay});
+
+  std::unique_ptr<BaseEnv> copy = env.Clone();
+  const auto* c = dynamic_cast<const Companion*>(
+      copy->GetObjectManager().GetActor(caster->GetId()));
+  const auto* t = dynamic_cast<const Agent*>(
+      copy->GetObjectManager().GetActor(target->GetId()));
+  ASSERT_TRUE(c != nullptr && t != nullptr);
+  ASSERT_EQ(c->GetSkill(0), std::string("frost"));
+  ASSERT_EQ(c->GetCooldown(0), 2);
+  ASSERT_TRUE(Has(*copy, t, "chilled"));
+  ASSERT_TRUE(copy->GetSkillBook().Find("frost") != nullptr);
+  ASSERT_EQ(copy->GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(copy->GetLastTagsApplied().size(), static_cast<size_t>(1));
+
+  SynchroEnv assigned(10, 10, 2, 1, 0, 7);
+  assigned = env;
+  ASSERT_TRUE(assigned.GetSkillBook().Find("frost") != nullptr);
+  ASSERT_TRUE(Has(assigned, assigned.GetObjectManager().GetAllAgents()[1], "chilled"));
 }
 
 // =============================================================================
