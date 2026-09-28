@@ -91,8 +91,7 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
 
   // Durations run down first: a tag landed or a cooldown started during the
   // previous step was observed with its full value.
-  last_skill_uses_.clear();
-  last_tags_applied_.clear();
+  ClearStepReports();
   TickTagsAndCooldowns();
 
   // Pre-step hook
@@ -820,6 +819,12 @@ bool PassesFilter(const Agent& a, TargetFilter f) {
 }
 }  // namespace
 
+void BaseEnv::ClearStepReports() {
+  last_casts_.clear();
+  last_skill_uses_.clear();
+  last_tags_applied_.clear();
+}
+
 void BaseEnv::TickTagsAndCooldowns() {
   for (Agent* agent : object_manager_->GetAllAgents()) {
     if (!agent->IsAlive()) continue;
@@ -846,6 +851,7 @@ bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill)
 }
 
 bool BaseEnv::ApplyTagTo(ObjectId id, const std::string& tag, int duration) {
+  if (duration == 0 || duration < kPermanentTag) return false;
   auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
   if (!agent || tag.empty()) return false;
   agent->ApplyTag(tags_.Intern(tag), duration);
@@ -862,6 +868,7 @@ bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
 
 void BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration,
                       ObjectId source, const std::string& cause) {
+  if (duration == 0) return;  // Lands nothing, so reports nothing
   TagId id = tags_.Intern(tag);
   bool fresh = !agent.HasTag(id);
   agent.ApplyTag(id, duration);
@@ -894,8 +901,11 @@ void BaseEnv::ResolveSkills() {
     if (!comp) continue;
     int slot = SkillSlotOf(agent->GetExecutedAction().interact);
     if (slot < 0 || slot >= kEnabledSkillSlots) continue;
-    const SkillConfig* found = skills_.Find(comp->GetSkill(slot));
-    if (!found) continue;  // Legacy generic cast (empty slot)
+    const std::string& name = comp->GetSkill(slot);
+    if (name.empty()) continue;  // Empty slot (legacy generic cast, if any)
+    const SkillConfig* found = skills_.Find(name);
+    if (!found) continue;
+    // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
     const SkillConfig skill = *found;
     Position target = UseSkill(*comp, skill);
     comp->SetCooldown(slot, skill.cooldown);
@@ -1130,6 +1140,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   // Clear existing state
   object_manager_->Clear();
   effect_system_->Clear();
+  ClearStepReports();  // They name the old world's ObjectIds
 
   // Load agents
   for (const auto& as : snapshot.agents) {

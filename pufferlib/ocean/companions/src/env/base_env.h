@@ -189,8 +189,10 @@ class BaseEnv {
   // ==========================================================================
   // A companion's Skill1 uses the skill in its slot 0: the companion stays put
   // (the movement only aims) and the skill resolves after movement. A skill
-  // that cannot be used (empty slot, cooldown, disabled slot) is dropped and
-  // the movement applies as if no interact had been given.
+  // that cannot be used (cooldown, disabled slot, empty slot) is dropped and
+  // the movement applies as if no interact had been given; the exception is
+  // an empty slot 0 while the legacy companion cast is enabled, which casts
+  // "companion_cast" instead (see SetCompanionCastEnabled).
   const TagTable& GetTagTable() const { return tags_; }
   TagTable& GetMutableTagTable() { return tags_; }
   const SkillBook& GetSkillBook() const { return skills_; }
@@ -200,7 +202,11 @@ class BaseEnv {
   // slot's cooldown. False for an unknown skill, slot or companion.
   bool SetCompanionSkill(ObjectId companion, int slot, const std::string& skill);
 
-  // Host primitives: land / remove a tag outside of a step.
+  // Host primitives: land / remove a tag outside of a step. `duration` is a
+  // positive step count or kPermanentTag; ApplyTagTo returns false for 0 or
+  // anything below kPermanentTag. Durations tick at the START of each Step: a
+  // tag applied during step t (or between steps t and t+1) with duration d is
+  // present after steps t .. t+d-1.
   bool ApplyTagTo(ObjectId agent, const std::string& tag, int duration);
   bool RemoveTagFrom(ObjectId agent, const std::string& tag);
 
@@ -212,12 +218,15 @@ class BaseEnv {
   struct TagApplication {
     ObjectId agent = kInvalidObjectId;
     TagId tag = kInvalidTag;
+    // Steps, or kPermanentTag. Ticks at the START of each Step: landed during
+    // step t with duration d, the tag is present after steps t .. t+d-1.
     int duration = kPermanentTag;
     ObjectId source = kInvalidObjectId;  // Caster, or kInvalidObjectId for a zone
     std::string cause;                   // Skill name, or "zone"
     bool fresh = false;                  // The agent did not have the tag before
   };
-  // What the last Step did (cleared at the start of every Step).
+  // What the last Step did (cleared at the start of every Step, and by
+  // LoadSnapshot, hence by every Reset).
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
 
@@ -264,6 +273,9 @@ class BaseEnv {
   void ResolveInteractions();
 
   // Skills (see GetSkillBook)
+  // Empties the per-step reports (casts, skill uses, tags applied): their
+  // ObjectIds are re-issued by a new world.
+  void ClearStepReports();
   void TickTagsAndCooldowns();  // Start of Step
   bool CanUseSkill(const Companion& comp, int slot) const;
   void ResolveSkills();         // After movement, in agent-index order

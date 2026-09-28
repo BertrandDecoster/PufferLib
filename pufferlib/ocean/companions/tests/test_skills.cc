@@ -683,6 +683,96 @@ TEST(TestCloneKeepsSkillsTagsAndCooldowns) {
   ASSERT_TRUE(Has(assigned, assigned.GetObjectManager().GetAllAgents()[1], "chilled"));
 }
 
+// One step filling all three per-step reports: companion 0 (empty slot) does
+// the legacy cast, companion 1 fireballs companion 2.
+static void StepFillingReports(SynchroEnv& env) {
+  env.SetCompanionCastEnabled(true);
+  Place(env, 0, {3, 1});
+  Agent* caster = Place(env, 1, {5, 1});  // target (5,4)
+  Place(env, 2, {5, 4});
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Right), kStay});
+  ASSERT_EQ(env.GetLastCasts().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+}
+
+TEST(TestResetClearsStepReports) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  StepFillingReports(env);
+  env.Reset();  // ids are re-issued: old reports would name the new world's agents
+  ASSERT_TRUE(env.GetLastCasts().empty());
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+}
+
+TEST(TestLoadSnapshotClearsStepReports) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Snapshot saved = env.SaveSnapshot();
+  StepFillingReports(env);
+  env.LoadSnapshot(saved);
+  ASSERT_TRUE(env.GetLastCasts().empty());
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+}
+
+TEST(TestSkillBookIgnoresEmptyName) {
+  SkillBook book;
+  SkillConfig unnamed;
+  unnamed.tags = {{"ghost", kPermanentTag}};
+  book.Define(unnamed);
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(4));
+  ASSERT_TRUE(book.Find("") == nullptr);
+}
+
+TEST(TestEmptyNamedSkillNeverFiresForLegacyCaster) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.SetCompanionCastEnabled(true);
+  SkillConfig unnamed;
+  unnamed.range = 3;
+  unnamed.tags = {{"ghost", kPermanentTag}};
+  env.GetMutableSkillBook().Define(unnamed);
+  Place(env, 0, {3, 1});  // empty slot: legacy cast only
+  Agent* target = Place(env, 1, {3, 2});
+  env.Step({EncodeAction(MovementAction::Right, InteractAction::Attack), kStay});
+  ASSERT_EQ(env.GetLastCasts().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+  ASSERT_FALSE(Has(env, target, "ghost"));
+}
+
+TEST(TestZeroDurationSkillTagLandsNothing) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig splash;
+  splash.name = "splash";
+  splash.targeting = SkillTargeting::Projectile;
+  splash.range = 3;
+  splash.tags = {{"wet", 0}};
+  env.GetMutableSkillBook().Define(splash);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* target = Place(env, 1, {3, 2});
+  env.SetCompanionSkill(caster->GetId(), 0, "splash");
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+  ASSERT_FALSE(Has(env, target, "wet"));
+}
+
+TEST(TestApplyTagToRejectsBadDurations) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_FALSE(env.ApplyTagTo(a->GetId(), "wet", 0));
+  ASSERT_FALSE(env.ApplyTagTo(a->GetId(), "wet", -2));
+  ASSERT_FALSE(Has(env, a, "wet"));
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "wet", kPermanentTag));
+  ASSERT_TRUE(Has(env, a, "wet"));
+}
+
 // =============================================================================
 // Main
 // =============================================================================

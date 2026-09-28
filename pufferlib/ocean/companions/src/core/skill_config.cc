@@ -54,6 +54,7 @@ SkillBook::SkillBook() { Reset(); }
 void SkillBook::Reset() { skills_ = Builtins(); }
 
 void SkillBook::Define(SkillConfig config) {
+  if (config.name.empty()) return;  // "" is the empty slot, never a skill
   for (SkillConfig& s : skills_) {
     if (s.name == config.name) {
       s = std::move(config);

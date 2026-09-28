@@ -51,7 +51,9 @@ struct SkillConfig {
   bool tag_path = false;           // Dash: agents crossed on the way are affected too
   std::vector<SkillTagSpec> tags;  // Landed on every affected agent
   int root_steps = 0;              // Affected agents are rooted for this many next steps
-  int cooldown = 0;                // Steps before the slot can be used again
+  // Used at step t, usable again at step t + cooldown (0 and 1 both mean
+  // every step).
+  int cooldown = 0;
 };
 
 // Does this skill move its caster (so a rooted caster cannot use it)?
@@ -64,7 +66,8 @@ class SkillBook {
  public:
   SkillBook();   // Builtins only
   void Reset();  // Back to builtins only
-  void Define(SkillConfig config);  // Adds, or replaces a skill of the same name
+  // Adds, or replaces a skill of the same name; ignores an empty name.
+  void Define(SkillConfig config);
   // Invalidated by Define / Reset: do not hold the pointer across them.
   const SkillConfig* Find(const std::string& name) const;
   const std::vector<SkillConfig>& All() const { return skills_; }
