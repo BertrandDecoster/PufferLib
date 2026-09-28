@@ -1437,6 +1437,12 @@ TEST(TestSnapshotUnknownSlotSkillIsRejected) {
   companions_destroy(env);
 }
 
+static int CountEvents(const Companions_StepResult& r, Companions_EventType type) {
+  int n = 0;
+  for (int32_t i = 0; i < r.event_count; ++i) n += r.events[i].type == type;
+  return n;
+}
+
 // A step reports at most Companions_MAX_EVENTS events and counts the others
 // in events_dropped; the EpisodeEnd of a step that ends the episode is always
 // reported, as the last event.
@@ -1459,11 +1465,6 @@ TEST(TestEventCapKeepsEpisodeEnd) {
                                   skills, 2);
   std::vector<Companions_Action> actions(5, {Companions_Movement_Stay, Companions_Interact_None});
   actions[0].interact = Companions_Interact_Skill1;
-  auto count = [](const Companions_StepResult& r, Companions_EventType type) {
-    int n = 0;
-    for (int32_t i = 0; i < r.event_count; ++i) n += r.events[i].type == type;
-    return n;
-  };
 
   Companions_StepResult result = {};
   companions_step(env, actions.data(), 5, &result);
@@ -1471,8 +1472,8 @@ TEST(TestEventCapKeepsEpisodeEnd) {
   ASSERT_EQ(result.event_count, Companions_MAX_EVENTS);
   ASSERT_EQ(result.events_dropped, 81 - Companions_MAX_EVENTS);
   ASSERT_EQ(result.events[0].type, Companions_Event_SkillUsed);
-  ASSERT_EQ(count(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 1);
-  ASSERT_EQ(count(result, Companions_Event_EpisodeEnd), 0);
+  ASSERT_EQ(CountEvents(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 1);
+  ASSERT_EQ(CountEvents(result, Companions_Event_EpisodeEnd), 0);
 
   companions_step(env, actions.data(), 5, &result);
   ASSERT_TRUE(result.state.done);
@@ -1481,8 +1482,8 @@ TEST(TestEventCapKeepsEpisodeEnd) {
   ASSERT_EQ(result.events[Companions_MAX_EVENTS - 1].type, Companions_Event_EpisodeEnd);
   ASSERT_EQ(result.events[Companions_MAX_EVENTS - 1].episode_steps, 2);
   ASSERT_EQ(result.events[Companions_MAX_EVENTS - 2].type, Companions_Event_TagApplied);
-  ASSERT_EQ(count(result, Companions_Event_EpisodeEnd), 1);
-  ASSERT_EQ(count(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 2);
+  ASSERT_EQ(CountEvents(result, Companions_Event_EpisodeEnd), 1);
+  ASSERT_EQ(CountEvents(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 2);
   companions_destroy(env);
 }
 
@@ -1745,12 +1746,6 @@ TEST(TestEndReasonKeepsHorizonAfterAKill) {
   companions_destroy(env);
 }
 
-static int CountEvents(const Companions_StepResult& r, Companions_EventType type) {
-  int n = 0;
-  for (int32_t i = 0; i < r.event_count; ++i) n += r.events[i].type == type;
-  return n;
-}
-
 // A companion at 0 HP goes down: its state says so, the step reports it, and
 // the team's downs count it. The level is lost at max_downs (TeamDown).
 TEST(TestDownsThroughTheApi) {
@@ -1814,6 +1809,7 @@ TEST(TestTeamDownThroughTheApi) {
   ASSERT_FALSE(result.state.success);
   ASSERT_EQ(result.state.downs, 1);
   ExpectEnd(env, result, Companions_End_TeamDown);
+  ASSERT_TRUE(result.event_count >= 2);
   ASSERT_EQ(result.events[result.event_count - 1].type, Companions_Event_EpisodeEnd);
   ASSERT_EQ(result.events[result.event_count - 2].type, Companions_Event_AgentDowned);
   ASSERT_EQ(result.events[result.event_count - 2].subject_id, a.id);

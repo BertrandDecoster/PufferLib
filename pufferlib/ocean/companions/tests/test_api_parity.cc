@@ -766,7 +766,9 @@ TEST(ParityTest_Annotations_After_SetTaskLens_With_Params) {
 // Random steps (Skill1 and Skill2 included) from one snapshot with skills,
 // tags and zones: the C API's agent skills / cooldowns / tags / statuses and
 // its SkillUsed / TagApplied events match the C++ env step for step. Tags are
-// compared by name (each env has its own TagTable).
+// compared by name (each env has its own TagTable). A host "kill" downs a
+// companion on both sides at fixed steps, so downed / downs / AgentDowned are
+// compared with downs in them.
 TEST(ParityTest_SkillsTagsZones) {
   const int rows = 8, cols = 8, agents = 3, synchro = 1;
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, 7, 0, 100);
@@ -797,8 +799,14 @@ TEST(ParityTest_SkillsTagsZones) {
   };
 
   pcg32 rng(2024);
-  int skill_events = 0, tag_events = 0;
+  int skill_events = 0, tag_events = 0, down_events = 0;
   for (int step = 0; step < 60; ++step) {
+    if (step == 10 || step == 20) {  // A host kill between steps: companion 0, then 1
+      const Position cell = cpp_agents[step / 10 - 1]->GetPosition();
+      cpp_env.SpawnEffect("kill", EffectTarget::AtCell(cell));
+      ASSERT_TRUE(companions_spawn_effect(api_env, "kill", cell.row, cell.col,
+                                          Companions_Direction_Up, -1));
+    }
     std::vector<Companions_Action> api_actions(agents);
     std::vector<Action> cpp_actions(agents);
     for (int a = 0; a < agents; ++a) {
@@ -844,10 +852,11 @@ TEST(ParityTest_SkillsTagsZones) {
       }
     }
 
-    std::vector<const Companions_Event*> used, landed;
+    std::vector<const Companions_Event*> used, landed, downed;
     for (int e = 0; e < r.event_count; ++e) {
       if (r.events[e].type == Companions_Event_SkillUsed) used.push_back(&r.events[e]);
       if (r.events[e].type == Companions_Event_TagApplied) landed.push_back(&r.events[e]);
+      if (r.events[e].type == Companions_Event_AgentDowned) downed.push_back(&r.events[e]);
     }
     const auto& uses = cpp_env.GetLastSkillUses();
     ASSERT_EQ(used.size(), uses.size());
@@ -868,14 +877,24 @@ TEST(ParityTest_SkillsTagsZones) {
       ASSERT_EQ(landed[k]->health_source_id, tags[k].source);
       ASSERT_EQ(landed[k]->tag_fresh, tags[k].fresh);
     }
+    const auto& downs = cpp_env.GetLastDowns();
+    ASSERT_EQ(downed.size(), downs.size());
+    for (size_t k = 0; k < downs.size(); ++k) {
+      ASSERT_EQ(downed[k]->subject_id, downs[k]);
+      const Position at = cpp_env.GetObjectManager().GetActor(downs[k])->GetPosition();
+      ASSERT_EQ(downed[k]->position.row, at.row);
+      ASSERT_EQ(downed[k]->position.col, at.col);
+    }
     skill_events += static_cast<int>(used.size());
     tag_events += static_cast<int>(landed.size());
+    down_events += static_cast<int>(downed.size());
     if (cpp_result.done) break;
   }
   ASSERT_TRUE(skill_events > 0);
   ASSERT_TRUE(tag_events > 0);
-  std::cout << "  " << skill_events << " skill uses, " << tag_events << " tag landings"
-            << std::endl;
+  ASSERT_TRUE(down_events > 0);
+  std::cout << "  " << skill_events << " skill uses, " << tag_events << " tag landings, "
+            << down_events << " downs" << std::endl;
   companions_destroy(api_env);
 }
 

@@ -589,8 +589,10 @@ COMPANIONS_API bool companions_set_cell(Companions_Env* env, int32_t row,
                                         int32_t col, Companions_CellKind kind);
 
 // Spawn a registered effect at a cell, as the env would. Built-in effects
-// always available: "kill", "hit" (1 damage), "stun" (stunned, 3 ticks), plus
-// enemy attacks. Instant effects (no telegraph) apply
+// always available: "kill" (kills an agent; a companion goes down instead,
+// see Companions_AgentState.downed, reported by the next step's
+// Companions_Event_AgentDowned), "hit" (1 damage), "stun" (stunned, 3 ticks),
+// plus enemy attacks. Instant effects (no telegraph) apply
 // immediately; telegraphed ones resolve over the next steps.
 // source_id: agent immune to the effect (-1 for none).
 // Returns false on error (unknown effect, out of bounds).
@@ -653,7 +655,9 @@ COMPANIONS_API bool companions_is_success(const Companions_Env* env);
 // start a new episode with the env's own: None, or Horizon for a snapshot
 // loaded at the horizon (done at once; the next step reports EpisodeEnd).
 // A host that keeps playing on a task failure (a game layer) can tell
-// Companions_End_TaskFailed from a time out. Since 1.2.1.
+// Companions_End_TaskFailed from a time out. Since 1.2.1. Since 1.3, any env
+// is also done as Companions_End_TeamDown when the team is down (max_downs
+// downs, or every companion down at once): the level is lost.
 COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env);
 
 // =============================================================================
