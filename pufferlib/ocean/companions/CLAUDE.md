@@ -219,7 +219,8 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   duration-1 zone is re-landed fresh every step)
 - Event order in a step: AgentMoved, AgentBlocked, SkillUsed, TagApplied,
   EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
-- C API (`src/api/companions_api.h`, version 1.2.0: 1.2 removed the legacy cast):
+- C API (`src/api/companions_api.h`, version 1.2.1: 1.2 removed the legacy cast,
+  1.2.1 added `companions_get_end_reason`):
   `companions_set_agent_skill` (`""` / NULL = `attack`), `companions_apply_tag` /
   `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`, `companions_get_tag_name` /
   `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;
@@ -308,8 +309,17 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
   step returns `horizon * kTimePenalty - 1`, one below timing out: killing is never
   a shortcut, whatever the horizon. `AggroEnv::MinUtility` is that return
 - `done` is a verdict for RL episodes, never a stop: the env keeps stepping. A host
-  that keeps playing after a kill (a game layer) ignores `done` for that reason
-  (`IsSuccess` false, tick below the horizon, no living enemy)
+  that keeps playing after a kill (a game layer) ignores `done` for that reason:
+  `EndReason::TaskFailed`, see below
+
+**Why an episode ended** (`BaseEnv::GetEndReason`, `EndReason` in `base_env.h`):
+`None` while `IsDone()` is false, else `Success` (latched), `TaskFailed` (the latched
+lens failure), `Horizon` (tick >= horizon), else `TaskFailed` (an env's own end rule:
+a Dodge companion died, an Aggro enemy killed between steps). C API (1.2.1, additive,
+no struct layout change): `Companions_EndReason` (same values: None 0, Success 1,
+Horizon 2, TaskFailed 3) from `companions_get_end_reason(env)`, fixed on the step or
+lens change where done becomes true, kept while a host plays on, cleared by reset and
+snapshot loads; the EpisodeEnd event carries it in `effect_id`
 
 ### Known issue: D4 transform
 - `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)

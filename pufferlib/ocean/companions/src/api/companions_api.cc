@@ -40,7 +40,8 @@
 // 1.2.0: removed the legacy generic companion cast (its on/off setter and
 // getter, its EffectSpawned events): every skill slot holds a skill, "attack"
 // by default.
-#define COMPANIONS_VERSION "1.2.0"
+// 1.2.1: companions_get_end_reason (additive), EpisodeEnd's effect_id.
+#define COMPANIONS_VERSION "1.2.1"
 
 // =============================================================================
 // Thread-local error message
@@ -69,6 +70,9 @@ struct Companions_Env {
   // done becomes true, not on the steps a host keeps playing afterwards.
   // Cleared by reset and snapshot loads (a new episode).
   bool last_step_done = false;
+  // Why the episode ended: set when done becomes true (a step or a lens
+  // change), kept while a host plays on, cleared with done.
+  Companions_EndReason end_reason = Companions_End_None;
   std::vector<double> last_rewards;
 
   // Previous positions for tracking movement (for animation)
@@ -583,6 +587,18 @@ COMPANIONS_API Companions_Env* companions_create_aggro(
   return wrapper;
 }
 
+// The env's end reason while the cached done is true, else None (the values
+// of companions::EndReason are those of Companions_EndReason).
+static_assert(static_cast<int>(companions::EndReason::None) == Companions_End_None &&
+                  static_cast<int>(companions::EndReason::Success) == Companions_End_Success &&
+                  static_cast<int>(companions::EndReason::Horizon) == Companions_End_Horizon &&
+                  static_cast<int>(companions::EndReason::TaskFailed) == Companions_End_TaskFailed,
+              "EndReason and Companions_EndReason must match");
+static Companions_EndReason CurrentEndReason(const Companions_Env& env) {
+  if (!env.done) return Companions_End_None;
+  return static_cast<Companions_EndReason>(env.env->GetEndReason());
+}
+
 // =============================================================================
 // Task Lens API
 // =============================================================================
@@ -616,6 +632,7 @@ COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_Len
     // (Player may already be on goal cell for the new lens)
     env->done = env->env->IsDone();
     env->success = env->env->IsSuccess();
+    env->end_reason = CurrentEndReason(*env);
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());
@@ -669,6 +686,7 @@ COMPANIONS_API bool companions_set_task_lens_with_params(
     }
     env->done = env->env->IsDone();
     env->success = env->env->IsSuccess();
+    env->end_reason = CurrentEndReason(*env);
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());
@@ -707,6 +725,7 @@ COMPANIONS_API void companions_reset(Companions_Env* env,
   env->done = false;
   env->success = false;
   env->last_step_done = false;
+  env->end_reason = Companions_End_None;
   std::fill(env->last_rewards.begin(), env->last_rewards.end(), 0.0);
   env->events.clear();
 
@@ -768,6 +787,10 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->last_step_done = result.done;
   env->done = result.done;
   env->success = env->env->IsSuccess();
+  // The reason is fixed when done becomes true; playing on keeps it
+  if (episode_ended || !env->done || env->end_reason == Companions_End_None) {
+    env->end_reason = CurrentEndReason(*env);
+  }
   env->last_rewards = result.rewards;
 
   // Generate movement, skill and tag events
@@ -785,6 +808,7 @@ COMPANIONS_API void companions_step(Companions_Env* env,
       evt.episode_reward += static_cast<float>(r);
     }
     evt.episode_steps = env->env->GetTick();
+    evt.effect_id = static_cast<int32_t>(env->end_reason);  // Companions_EndReason
     env->events.push_back(evt);
   }
 
@@ -1060,6 +1084,10 @@ COMPANIONS_API bool companions_is_done(const Companions_Env* env) {
   return env ? env->done : true;
 }
 
+COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env) {
+  return env ? env->end_reason : Companions_End_None;
+}
+
 COMPANIONS_API bool companions_is_success(const Companions_Env* env) {
   return env ? env->success : false;
 }
@@ -1275,6 +1303,7 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
     env->done = false;
     env->success = false;
     env->last_step_done = false;
+    env->end_reason = Companions_End_None;
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();
@@ -1406,6 +1435,7 @@ COMPANIONS_API bool companions_load_snapshot_json(
     env->done = false;
     env->success = false;
     env->last_step_done = false;
+    env->end_reason = Companions_End_None;
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();
@@ -1454,6 +1484,7 @@ COMPANIONS_API bool companions_load_snapshot_json_file(
     env->done = false;
     env->success = false;
     env->last_step_done = false;
+    env->end_reason = Companions_End_None;
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();

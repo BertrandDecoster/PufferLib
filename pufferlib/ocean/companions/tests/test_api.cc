@@ -84,7 +84,8 @@ static Companions_EnvConfig MakeConfig(int rows = 12, int cols = 12, int compani
 TEST(TestVersion) {
   const char* version = companions_version();
   ASSERT_NOT_NULL(version);
-  ASSERT_EQ(std::string(version), std::string("1.2.0"));  // 1.2 removed the companion cast
+  // 1.2 removed the companion cast; 1.2.1 added companions_get_end_reason
+  ASSERT_EQ(std::string(version), std::string("1.2.1"));
   std::cout << "  Version: " << version << std::endl;
 }
 
@@ -1519,6 +1520,65 @@ TEST(TestEpisodeEndIsReportedOnce) {
   play_to_horizon();
   ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 1, ""}}, "[]", 2).c_str()));
   play_to_horizon();
+  companions_destroy(env);
+}
+
+// companions_get_end_reason says why the episode ended (None while it runs),
+// and the EpisodeEnd event carries the same reason in effect_id.
+static void ExpectEnd(Companions_Env* env, const Companions_StepResult& result,
+                      Companions_EndReason reason) {
+  ASSERT_TRUE(companions_is_done(env));
+  ASSERT_EQ(companions_get_end_reason(env), reason);
+  const Companions_Event* end = FindEvent(result, Companions_Event_EpisodeEnd);
+  ASSERT_NOT_NULL(end);
+  ASSERT_EQ(end->effect_id, static_cast<int32_t>(reason));
+  ASSERT_EQ(end->episode_success, reason == Companions_End_Success);
+}
+
+TEST(TestEndReasonSuccess) {
+  Companions_Env* env = LoadLevel({{6, 5, ""}});  // Next to the goal (6, 6)
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+  Companions_Action right = {Companions_Movement_Right, Companions_Interact_None};
+  Companions_StepResult result = {};
+  companions_step(env, &right, 1, &result);
+  ExpectEnd(env, result, Companions_End_Success);
+  companions_destroy(env);
+}
+
+TEST(TestEndReasonHorizon) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}}, "[]", 2);
+  Companions_Action stay = {Companions_Movement_Stay, Companions_Interact_None};
+  Companions_StepResult result = {};
+  companions_step(env, &stay, 1, &result);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+  companions_step(env, &stay, 1, &result);
+  ExpectEnd(env, result, Companions_End_Horizon);
+  companions_step(env, &stay, 1, &result);  // Playing on keeps the reason
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
+  ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 1, ""}}, "[]", 2).c_str()));
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+  companions_destroy(env);
+}
+
+// A dead Aggro enemy fails the task: a host that keeps playing (a game layer)
+// can tell it from a time out.
+TEST(TestEndReasonAggroEnemyDead) {
+  Companions_Env* env = MakeAggroZombieEnv();
+  const int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
+  ASSERT_TRUE(zi >= 0);
+  Companions_AgentState z = AgentAt(env, zi);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", z.position.row, z.position.col,
+                                      Companions_Direction_Up, -1));
+  const int32_t n = companions_get_agent_count(env);
+  std::vector<Companions_Action> stay(n, {Companions_Movement_Stay, Companions_Interact_None});
+  Companions_StepResult result = {};
+  companions_step(env, stay.data(), n, &result);
+  ExpectEnd(env, result, Companions_End_TaskFailed);
+  companions_step(env, stay.data(), n, &result);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_TaskFailed);
+  companions_reset(env, 42);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+  ASSERT_EQ(companions_get_end_reason(nullptr), Companions_End_None);
   companions_destroy(env);
 }
 

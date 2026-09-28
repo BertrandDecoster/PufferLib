@@ -170,6 +170,14 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   return result;
 }
 
+EndReason BaseEnv::GetEndReason() const {
+  if (!IsDone()) return EndReason::None;
+  if (IsSuccess()) return EndReason::Success;
+  if (failed_) return EndReason::TaskFailed;
+  if (tick_ >= horizon_) return EndReason::Horizon;
+  return EndReason::TaskFailed;  // Done by the env's own rule, not latched
+}
+
 void BaseEnv::PreStep() {
   // Run FSM updates BEFORE movement resolution so FSM agents set their intentions
   for (Agent* agent : object_manager_->GetAllAgents()) {

@@ -50,6 +50,15 @@ struct StepResult {
   std::string info;
 };
 
+// Why an episode ended (BaseEnv::GetEndReason). The values are those of
+// Companions_EndReason in the C API.
+enum class EndReason : int {
+  None = 0,        // Not done
+  Success = 1,     // The latched success
+  Horizon = 2,     // The horizon was reached without an outcome
+  TaskFailed = 3,  // The task can no longer succeed (e.g. Aggro's enemy is dead)
+};
+
 // =============================================================================
 // BaseEnv - RL-style environment base class
 // =============================================================================
@@ -84,6 +93,12 @@ class BaseEnv {
     ResetSuccess();
     failed_ = false;
   }
+  // Why the episode is done: None while IsDone() is false, else Success (the
+  // latched success), else TaskFailed (the latched failure), else Horizon
+  // (tick >= horizon), else TaskFailed (an env's own end rule: a Dodge
+  // companion died, an Aggro enemy killed between steps). Hosts that keep
+  // playing past a task failure tell it from a time out with this.
+  virtual EndReason GetEndReason() const;
 
   // Task lens management
   bool SetTaskLens(std::unique_ptr<TaskLens> lens);

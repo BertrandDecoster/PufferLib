@@ -327,6 +327,36 @@ TEST(TestResetAndLoadSnapshotClearTheLatchedOutcome) {
   ASSERT_FALSE(aggro.IsTaskFailed());
 }
 
+// Why the episode ended: None while it runs, then the latched success, the
+// task failure, or the horizon.
+TEST(TestGetEndReason) {
+  const Action stay = EncodeAction(MovementAction::Stay);
+  SynchroEnv win(6, 6, 1, 1, 0, 42, 0, 10);
+  ASSERT_TRUE(win.GetEndReason() == EndReason::None);
+  ObjectManager& om = win.GetMutableObjectManager();
+  om.UpdatePosition(om.GetAllCompanions()[0]->GetId(), win.GetSynchroPositions()[0]);
+  win.Step({stay});
+  ASSERT_TRUE(win.GetEndReason() == EndReason::Success);
+
+  SynchroEnv time_out(6, 6, 1, 1, 0, 42, 0, 10);
+  for (int i = 0; i < 9; ++i) time_out.Step({stay});
+  ASSERT_TRUE(time_out.GetEndReason() == EndReason::None);
+  time_out.Step({stay});
+  ASSERT_TRUE(time_out.GetEndReason() == EndReason::Horizon);
+
+  AggroEnv aggro(10, 1, EnemyType::Zombie, 42);
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
+  for (AgentFSM* enemy : aggro.GetMutableObjectManager().GetAllAgentFSMs()) {
+    enemy->TakeDamage(enemy->GetHealth());
+  }
+  // A kill between steps already ends the task; the next step latches it
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::TaskFailed);
+  aggro.Step({stay, stay});
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::TaskFailed);
+  aggro.Reset();
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
+}
+
 TEST(TestAggroLensAdditionalObsSize) {
   AggroLens lens;
   ASSERT_EQ(lens.AdditionalVectorObsSize(), 8);

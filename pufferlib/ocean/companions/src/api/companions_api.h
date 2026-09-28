@@ -6,13 +6,16 @@
 // =============================================================================
 // Versioning
 // =============================================================================
-// companions_version() is "1.2.0". 1.1 changed struct layouts
+// companions_version() is "1.2.1". 1.1 changed struct layouts
 // (Companions_AgentState, Companions_Event, Companions_StepResult): consumers
 // must be rebuilt against this header, never mixed with a 1.0 DLL or header.
 // 1.2 removed the legacy generic companion cast (its on/off setter and
 // getter, and its EffectSpawned events): every companion skill slot now holds
 // a skill, the fixed "attack" by default, so Companions_Interact_Attack
 // strikes the faced cell (struct layouts unchanged).
+// 1.2.1 (additive, struct layouts unchanged): Companions_EndReason and
+// companions_get_end_reason; the EpisodeEnd event carries the reason in
+// effect_id.
 // A minor bump may break the ABI (1.1 did): consumers pin major.minor, not
 // just major, and rebuild against the matching header.
 //
@@ -55,6 +58,7 @@
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
 //   reported once, on the step where done becomes true: the steps a host
 //   keeps playing afterwards (done stays true) do not repeat it.
+//   effect_id = the Companions_EndReason (see companions_get_end_reason).
 // A step reports at most Companions_MAX_EVENTS events, in the order above.
 // When there are more, the ones past the cap are dropped, except EpisodeEnd:
 // a step that ends the episode always reports it, as the last event (the
@@ -326,6 +330,14 @@ typedef enum {
   Companions_Event_SkillUsed = 15,   // See "Event System" at the top
   Companions_Event_TagApplied = 16,  // See "Event System" at the top
 } Companions_EventType;
+
+// Why an episode ended (companions_get_end_reason, EpisodeEnd's effect_id)
+typedef enum {
+  Companions_End_None = 0,        // Not done
+  Companions_End_Success = 1,     // The task succeeded
+  Companions_End_Horizon = 2,     // The horizon was reached
+  Companions_End_TaskFailed = 3,  // The task can no longer succeed (e.g. Aggro: the enemy is dead)
+} Companions_EndReason;
 
 // Transition event (delta information for animations)
 typedef struct {
@@ -604,6 +616,12 @@ companions_get_agent_count(const Companions_Env* env);
 COMPANIONS_API int32_t companions_get_tick(const Companions_Env* env);
 COMPANIONS_API bool companions_is_done(const Companions_Env* env);
 COMPANIONS_API bool companions_is_success(const Companions_Env* env);
+// Why the episode is done (Companions_End_None while companions_is_done is
+// false, and for a null env). Fixed on the step (or lens change) where done
+// becomes true: steps played on afterwards keep it; reset and snapshot loads
+// clear it. A host that keeps playing on a task failure (a game layer) can
+// tell Companions_End_TaskFailed from a time out. Since 1.2.1.
+COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env);
 
 // =============================================================================
 // Semantic Annotations (task-specific tags on cells and agents)
