@@ -55,6 +55,15 @@ class ObjectManager {
   // Update position (called after validated movement)
   void UpdatePosition(ObjectId id, Position new_pos);
 
+  // The actor grid holds one actor per cell, but living agents may stand on a
+  // dead agent's cell (collisions, CanLand ignore the dead). Every write goes
+  // through PlaceInGrid: a dead actor never takes a cell from a living one, so
+  // GetActorAt returns the living one whatever the order of writes. A corpse
+  // a living actor walked over and left is no longer in the grid (nothing
+  // looks dead actors up by cell). RebuildGrid re-places every actor, in id
+  // order; LoadSnapshot calls it once agents got their saved alive flags.
+  void RebuildGrid();
+
   // Iteration helpers
   std::vector<Actor*> GetAllActors();
   std::vector<const Actor*> GetAllActors() const;
@@ -91,6 +100,7 @@ class ObjectManager {
  private:
   bool InBounds(int row, int col) const;
   void ClearGrid();
+  void PlaceInGrid(Actor* actor, Position pos);
 
   ObjectId next_id_ = 0;
   int rows_;
@@ -125,10 +135,7 @@ T* ObjectManager::CreateActor(Position pos) {
 
   objects_[id] = std::move(actor);
 
-  // Update spatial grid
-  if (InBounds(pos.row, pos.col)) {
-    actor_grid_[pos.row][pos.col] = ptr;
-  }
+  PlaceInGrid(ptr, pos);
 
   ++mutation_version_;
   return ptr;

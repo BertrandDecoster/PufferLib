@@ -55,7 +55,15 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
 - 4-connected movement (Up/Down/Left/Right + Stay)
 - The world is a rectangular 2D grid, and there is a Cell in each square of the grid
 - Actors are Objects that have a position on the grid
-- There can be at most a single Actor in a Cell
+- There can be at most a single living Actor in a Cell. Dead agents stay where they
+  died, and living ones may walk / land onto their cell (collisions, `IsOccupied`,
+  `CanLand` ignore the dead)
+- `ObjectManager`'s actor grid (`GetActorAt`) holds one actor per cell: a dead actor
+  never takes a cell from a living one (`PlaceInGrid`, used by `CreateActor`,
+  `UpdatePosition` and `RebuildGrid`, which the copy ctor / `operator=`, the D4
+  transform and `LoadSnapshot` use), so `GetActorAt` returns the living one. A corpse
+  walked over and left drops out of the grid: read dead agents from `GetAllAgents()`,
+  never by cell
 
 ### Action space
  - Multidiscrete action space: movement X interaction

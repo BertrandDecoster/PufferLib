@@ -1722,6 +1722,86 @@ TEST(TestDamageAfterTagsBeforeRootAndMotion) {
 }
 
 // =============================================================================
+// A corpse never hides a living agent in the actor grid
+// =============================================================================
+
+// Companion 0 kills a 1-HP enemy on (3,2) with its default attack, then walks
+// onto the corpse. Companion 1 waits at (3,5) with a fireball (centre (3,2)
+// when aimed left).
+struct CorpseScene {
+  ObjectId walker, caster, enemy;
+};
+static CorpseScene WalkOntoACorpse(SynchroEnv& env) {
+  MakeArena(env);
+  Agent* walker = Place(env, 0, {3, 1});
+  Agent* caster = Place(env, 1, {3, 5});
+  Agent* enemy = AddAgent(env, {3, 2}, Faction::ENEMY);
+  enemy->SetMaxHealth(1);
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_FALSE(enemy->IsAlive());
+  env.Step({EncodeAction(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(walker->GetPosition() == (Position{3, 2}));
+  ASSERT_TRUE(env.GetObjectManager().GetActorAt({3, 2}) == walker);
+  return {walker->GetId(), caster->GetId(), enemy->GetId()};
+}
+
+// In `e` (a copy, or the env after a load): the living walker is who stands on
+// the corpse's cell, nobody can land there, and a fireball there burns it.
+static void ExpectTheLivingOneOnTheCorpseCell(BaseEnv& e, const CorpseScene& s) {
+  const Actor* there = e.GetObjectManager().GetActorAt({3, 2});
+  ASSERT_TRUE(there != nullptr);
+  ASSERT_EQ(there->GetId(), s.walker);
+  ASSERT_FALSE(CanLand(e.GetGrid(), e.GetObjectManager(), {3, 2}, s.caster));
+  ASSERT_FALSE(e.GetObjectManager().GetActor(s.enemy)->IsAlive());
+  e.Step({kStay, Use(MovementAction::Left), kStay});
+  ASSERT_EQ(e.GetLastSkillUses().size(), static_cast<size_t>(1));
+  const auto* walker = dynamic_cast<const Agent*>(e.GetObjectManager().GetActor(s.walker));
+  ASSERT_TRUE(Has(e, walker, "burning"));
+}
+
+TEST(TestCorpseNeverHidesTheLivingAfterSnapshotLoad) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  CorpseScene s = WalkOntoACorpse(env);
+  Snapshot saved = env.SaveSnapshot();
+  env.LoadSnapshot(saved);
+  ExpectTheLivingOneOnTheCorpseCell(env, s);
+}
+
+TEST(TestCorpseNeverHidesTheLivingAfterClone) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  CorpseScene s = WalkOntoACorpse(env);
+  std::unique_ptr<BaseEnv> copy = env.Clone();
+  ExpectTheLivingOneOnTheCorpseCell(*copy, s);
+}
+
+TEST(TestCorpseNeverHidesTheLivingAfterCopyAssign) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  CorpseScene s = WalkOntoACorpse(env);
+  SynchroEnv assigned(10, 10, 2, 1, 0, 7);
+  assigned = env;
+  ExpectTheLivingOneOnTheCorpseCell(assigned, s);
+  // BaseEnv assignment copy-constructs its ObjectManager: assign one directly too
+  ObjectManager objects(10, 10);
+  objects = env.GetObjectManager();
+  ASSERT_EQ(objects.GetActorAt({3, 2})->GetId(), s.walker);
+  ASSERT_FALSE(CanLand(env.GetGrid(), objects, {3, 2}, s.caster));
+}
+
+// A dead actor put on a living one's cell (a host moving a corpse) never
+// takes the cell.
+TEST(TestCorpseMovedOntoTheLivingNeverTakesTheCell) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  CorpseScene s = WalkOntoACorpse(env);
+  ObjectManager& om = env.GetMutableObjectManager();
+  om.UpdatePosition(s.enemy, {5, 5});
+  om.UpdatePosition(s.walker, {5, 5});
+  om.UpdatePosition(s.enemy, {3, 2});
+  om.UpdatePosition(s.enemy, {5, 5});
+  ASSERT_EQ(om.GetActorAt({5, 5})->GetId(), s.walker);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

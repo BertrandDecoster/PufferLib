@@ -20,18 +20,9 @@ ObjectManager::ObjectManager(const ObjectManager& other)
       actor_grid_(rows_, std::vector<Actor*>(cols_, nullptr)) {
   // Deep copy all objects via Clone()
   for (const auto& [id, obj] : other.objects_) {
-    auto cloned = obj->Clone();
-    Object* ptr = cloned.get();
-    objects_[id] = std::move(cloned);
-
-    // Update spatial grid if it's an Actor
-    if (Actor* actor = dynamic_cast<Actor*>(ptr)) {
-      Position pos = actor->GetPosition();
-      if (InBounds(pos.row, pos.col)) {
-        actor_grid_[pos.row][pos.col] = actor;
-      }
-    }
+    objects_[id] = obj->Clone();
   }
+  RebuildGrid();  // Not in map order: a corpse must not hide a living actor
 }
 
 ObjectManager& ObjectManager::operator=(const ObjectManager& other) {
@@ -44,23 +35,12 @@ ObjectManager& ObjectManager::operator=(const ObjectManager& other) {
     rows_ = other.rows_;
     cols_ = other.cols_;
 
-    // Resize and clear grid
-    actor_grid_.assign(rows_, std::vector<Actor*>(cols_, nullptr));
-
     // Deep copy all objects via Clone()
     for (const auto& [id, obj] : other.objects_) {
-      auto cloned = obj->Clone();
-      Object* ptr = cloned.get();
-      objects_[id] = std::move(cloned);
-
-      // Update spatial grid if it's an Actor
-      if (Actor* actor = dynamic_cast<Actor*>(ptr)) {
-        Position pos = actor->GetPosition();
-        if (InBounds(pos.row, pos.col)) {
-          actor_grid_[pos.row][pos.col] = actor;
-        }
-      }
+      objects_[id] = obj->Clone();
     }
+    RebuildGrid();
+    ++mutation_version_;  // The FSM cache points into the old objects
   }
   return *this;
 }
@@ -75,6 +55,23 @@ void ObjectManager::ClearGrid() {
       actor_grid_[r][c] = nullptr;
     }
   }
+}
+
+void ObjectManager::PlaceInGrid(Actor* actor, Position pos) {
+  if (!InBounds(pos.row, pos.col)) return;
+  Actor*& cell = actor_grid_[pos.row][pos.col];
+  if (cell && cell != actor && cell->IsAlive() && !actor->IsAlive()) {
+    return;  // A corpse never hides a living actor
+  }
+  cell = actor;
+}
+
+void ObjectManager::RebuildGrid() {
+  actor_grid_.assign(rows_, std::vector<Actor*>(cols_, nullptr));
+  std::vector<Actor*> actors = GetAllActors();
+  std::sort(actors.begin(), actors.end(),
+            [](const Actor* a, const Actor* b) { return a->GetId() < b->GetId(); });
+  for (Actor* actor : actors) PlaceInGrid(actor, actor->GetPosition());
 }
 
 void ObjectManager::RemoveObject(ObjectId id) {
@@ -157,10 +154,8 @@ void ObjectManager::UpdatePosition(ObjectId id, Position new_pos) {
     actor_grid_[old_pos.row][old_pos.col] = nullptr;
   }
 
-  // Add to new position in grid
-  if (InBounds(new_pos.row, new_pos.col)) {
-    actor_grid_[new_pos.row][new_pos.col] = actor;
-  }
+  // Add to new position in grid (unless a dead actor meets a living one)
+  PlaceInGrid(actor, new_pos);
 
   // Update actor's position
   actor->SetPosition(new_pos, PositionUpdateKey{});
@@ -320,28 +315,16 @@ void ObjectManager::TransformActorPositions(
   int old_rows = rows_;
   int old_cols = cols_;
 
-  // Collect actors and their new positions
-  std::vector<std::pair<Actor*, Position>> updates;
+  // Move every actor, then rebuild the grid at the new dimensions
   for (auto& [id, obj] : objects_) {
     if (Actor* actor = dynamic_cast<Actor*>(obj.get())) {
-      Position old_pos = actor->GetPosition();
-      Position new_pos = transform_func(old_pos, old_rows, old_cols);
-      updates.push_back({actor, new_pos});
+      actor->SetPosition(transform_func(actor->GetPosition(), old_rows, old_cols),
+                         PositionUpdateKey{});
     }
   }
-
-  // Resize the spatial grid to new dimensions
   rows_ = new_rows;
   cols_ = new_cols;
-  actor_grid_.assign(new_rows, std::vector<Actor*>(new_cols, nullptr));
-
-  // Apply new positions
-  for (auto& [actor, new_pos] : updates) {
-    actor->SetPosition(new_pos, PositionUpdateKey{});
-    if (InBounds(new_pos.row, new_pos.col)) {
-      actor_grid_[new_pos.row][new_pos.col] = actor;
-    }
-  }
+  RebuildGrid();
 }
 
 }  // namespace companions

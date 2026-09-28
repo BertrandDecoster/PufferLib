@@ -1397,6 +1397,11 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     }
   }
 
+  // Agents were placed in the grid alive, in the saved order: re-place them
+  // now that they carry their saved alive flag, so a corpse never hides a
+  // living agent standing on its cell.
+  object_manager_->RebuildGrid();
+
   // Load effects
   for (const auto& es : snapshot.effects) {
     const EffectConfig* config = EffectConfigRegistry::Instance().GetConfig(es.effect_name);
