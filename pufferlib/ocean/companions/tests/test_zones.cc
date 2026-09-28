@@ -1,6 +1,6 @@
 // Copyright 2024
-// Unit tests for zones (cell tags): their lifetime, their successor and their
-// damage per landing
+// Unit tests for zones (cell tags): their lifetime, their successor, their
+// damage per landing and the level's zone table
 
 #include <iostream>
 #include <memory>
@@ -14,6 +14,7 @@
 #include "../src/core/object.h"
 #include "../src/core/skill_config.h"
 #include "../src/core/snapshot.h"
+#include "../src/env/aggro_env.h"
 #include "../src/env/synchro_env.h"
 
 using namespace companions;
@@ -96,18 +97,34 @@ static bool Has(const BaseEnv& env, const Agent* a, const char* tag) {
 }
 static TagId Id(const BaseEnv& env, const char* tag) { return env.GetTagTable().Find(tag); }
 
+// A ZoneDef by named fields: Zone().Lasts(2).Then("smoke").Hurts(1).def
+struct Zone {
+  ZoneDef def;
+  Zone& Lands(int duration) { def.duration = duration; return *this; }
+  Zone& Lasts(int steps) { def.steps = steps; return *this; }
+  Zone& Then(const std::string& tag) { def.then = tag; return *this; }
+  Zone& Hurts(int damage) { def.damage = damage; return *this; }
+};
+
 // Sets a zone during the next Step (in PreStep, before the movement), as a
 // rule of the env would: a timer set during a step.
 class MidStepZoneEnv : public SynchroEnv {
  public:
   using SynchroEnv::SynchroEnv;
-  std::optional<std::pair<Position, ZoneSpec>> pending;
+  struct Pending {
+    Position cell;
+    std::string tag;
+    ZoneDef def;
+  };
+  std::optional<Pending> pending;
 
  protected:
   void PreStep() override {
     SynchroEnv::PreStep();
     if (pending) {
-      if (!SetCellTag(pending->first, pending->second)) throw std::runtime_error("zone refused");
+      if (!SetCellTag(pending->cell, pending->tag, pending->def)) {
+        throw std::runtime_error("zone refused");
+      }
       pending.reset();
     }
   }
@@ -117,8 +134,8 @@ class MidStepZoneEnv : public SynchroEnv {
 // The zone as data
 // =============================================================================
 
-// The duration-only primitive gives the defaults: permanent, no successor, no
-// damage, and the zone stays.
+// Without a definition in the table, a zone gets the defaults: permanent, no
+// successor, harmless (the landing duration given), and it stays.
 TEST(TestZoneDefaultsArePermanentHarmlessAndWithoutSuccessor) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -134,29 +151,29 @@ TEST(TestZoneDefaultsArePermanentHarmlessAndWithoutSuccessor) {
   for (int i = 0; i < 5; ++i) {
     env.Step({kStay});
     ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
-    ASSERT_EQ(env.GetLastTagsApplied()[0].damage, 0);
+    ASSERT_EQ(env.GetLastTagsApplied()[0].damage, 0);  // None dealt
   }
   ASSERT_EQ(env.GetCellTag({3, 2}).tag, Id(env, "wet"));
   ASSERT_EQ(env.GetCellTag({3, 2}).steps, kPermanentTag);
   ASSERT_EQ(a->GetHealth(), health);
 }
 
-TEST(TestZoneSpecIsValidatedBeforeAnythingChanges) {
+TEST(TestAnExplicitZoneIsValidatedBeforeAnythingChanges) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   const std::string too_long(static_cast<size_t>(kMaxNameLength) + 1, 'x');
-  ASSERT_FALSE(env.SetCellTag({3, 2}, ZoneSpec{"puddle", kPermanentTag, 0}));   // steps 0
-  ASSERT_FALSE(env.SetCellTag({3, 2}, ZoneSpec{"puddle", kPermanentTag, -2}));  // below permanent
-  ASSERT_FALSE(env.SetCellTag({3, 2}, ZoneSpec{"puddle", 0}));                  // duration 0
-  ASSERT_FALSE(env.SetCellTag({3, 2}, ZoneSpec{"puddle", kPermanentTag, 3, "steam", -1}));
-  ASSERT_FALSE(env.SetCellTag({3, 2}, ZoneSpec{"puddle", kPermanentTag, 3, too_long}));
-  ASSERT_FALSE(env.SetCellTag({3, 2}, ZoneSpec{too_long}));
-  ASSERT_FALSE(env.SetCellTag({12, 2}, ZoneSpec{"puddle"}));  // Out of bounds
+  ASSERT_FALSE(env.SetCellTag({3, 2}, "puddle", Zone().Lasts(0).def));
+  ASSERT_FALSE(env.SetCellTag({3, 2}, "puddle", Zone().Lasts(-2).def));  // Below permanent
+  ASSERT_FALSE(env.SetCellTag({3, 2}, "puddle", Zone().Lands(0).def));
+  ASSERT_FALSE(env.SetCellTag({3, 2}, "puddle", Zone().Lasts(3).Then("steam").Hurts(-1).def));
+  ASSERT_FALSE(env.SetCellTag({3, 2}, "puddle", Zone().Lasts(3).Then(too_long).def));
+  ASSERT_FALSE(env.SetCellTag({3, 2}, too_long, Zone().def));
+  ASSERT_FALSE(env.SetCellTag({12, 2}, "puddle", Zone().def));  // Out of bounds
   ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
   ASSERT_EQ(Id(env, "puddle"), kInvalidTag);  // A refusal interns nothing
   ASSERT_EQ(Id(env, "steam"), kInvalidTag);
 
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"puddle", 2, 3, "steam", 1}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "puddle", Zone().Lands(2).Lasts(3).Then("steam").Hurts(1).def));
   const BaseEnv::CellTag z = env.GetCellTag({3, 2});
   ASSERT_EQ(z.tag, Id(env, "puddle"));
   ASSERT_EQ(z.duration, 2);
@@ -164,12 +181,148 @@ TEST(TestZoneSpecIsValidatedBeforeAnythingChanges) {
   ASSERT_EQ(z.then, Id(env, "steam"));
   ASSERT_EQ(z.damage, 1);
 
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{}));  // "" clears, whatever the fields
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "", Zone().Lasts(3).Hurts(2).def));  // "" clears
   const BaseEnv::CellTag cleared = env.GetCellTag({3, 2});
   ASSERT_EQ(cleared.tag, kInvalidTag);
   ASSERT_EQ(cleared.steps, kPermanentTag);
   ASSERT_EQ(cleared.then, kInvalidTag);
   ASSERT_EQ(cleared.damage, 0);
+}
+
+// =============================================================================
+// The level's zone table
+// =============================================================================
+
+TEST(TestDefineZoneValidatesAndReplaces) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  const std::string too_long(static_cast<size_t>(kMaxNameLength) + 1, 'x');
+  ASSERT_FALSE(env.DefineZone("", Zone().def));
+  ASSERT_FALSE(env.DefineZone(too_long, Zone().def));
+  ASSERT_FALSE(env.DefineZone("burning", Zone().Lasts(0).def));
+  ASSERT_FALSE(env.DefineZone("burning", Zone().Lands(-3).def));
+  ASSERT_FALSE(env.DefineZone("burning", Zone().Hurts(-1).def));
+  ASSERT_FALSE(env.DefineZone("burning", Zone().Then(too_long).def));
+  ASSERT_TRUE(env.GetZoneDefs().empty());
+
+  ASSERT_TRUE(env.DefineZone("burning", Zone().Lasts(6).Hurts(1).def));
+  ASSERT_TRUE(env.DefineZone("burning", Zone().Lasts(4).Then("smoke").Hurts(2).def));  // Replaces
+  ASSERT_EQ(env.GetZoneDefs().size(), static_cast<size_t>(1));
+  const ZoneDef burning = env.GetZoneDef("burning");
+  ASSERT_EQ(burning.duration, kPermanentTag);
+  ASSERT_EQ(burning.steps, 4);
+  ASSERT_EQ(burning.then, std::string("smoke"));
+  ASSERT_EQ(burning.damage, 2);
+  const ZoneDef smoke = env.GetZoneDef("smoke");  // Undefined: the defaults
+  ASSERT_EQ(smoke.duration, kPermanentTag);
+  ASSERT_EQ(smoke.steps, kPermanentTag);
+  ASSERT_EQ(smoke.then, std::string(""));
+  ASSERT_EQ(smoke.damage, 0);
+}
+
+// A zone created by name takes the table's fields; the explicit duration
+// overrides the landing duration only, an explicit ZoneDef everything. Each
+// cell keeps its resolved copy: redefining a tag changes only later zones.
+TEST(TestZonesByNameTakeTheTablesFields) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.DefineZone("burning", Zone().Lands(2).Lasts(6).Then("smoke").Hurts(1).def));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "burning"));
+  BaseEnv::CellTag z = env.GetCellTag({3, 2});
+  ASSERT_EQ(z.duration, 2);
+  ASSERT_EQ(z.steps, 6);
+  ASSERT_EQ(z.then, Id(env, "smoke"));
+  ASSERT_EQ(z.damage, 1);
+  ASSERT_TRUE(env.SetCellTag({3, 3}, "burning", 5));
+  z = env.GetCellTag({3, 3});
+  ASSERT_EQ(z.duration, 5);
+  ASSERT_EQ(z.steps, 6);
+  ASSERT_EQ(z.damage, 1);
+  ASSERT_TRUE(env.SetCellTag({3, 4}, "burning", Zone().def));  // The override
+  z = env.GetCellTag({3, 4});
+  ASSERT_EQ(z.steps, kPermanentTag);
+  ASSERT_EQ(z.damage, 0);
+
+  ASSERT_TRUE(env.DefineZone("burning", Zone().Hurts(3).def));
+  ASSERT_EQ(env.GetCellTag({3, 2}).damage, 1);  // Already there: unchanged
+  ASSERT_TRUE(env.SetCellTag({3, 5}, "burning"));
+  ASSERT_EQ(env.GetCellTag({3, 5}).damage, 3);
+}
+
+// burning (2 steps, 1 damage) -> smoke (3 steps) -> nothing, through the table
+TEST(TestTheZoneTableChainsSuccessors) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.DefineZone("burning", Zone().Lands(1).Lasts(2).Then("smoke").Hurts(1).def));
+  ASSERT_TRUE(env.DefineZone("smoke", Zone().Lands(1).Lasts(3).def));
+  Agent* a = Place(env, 0, {3, 2});
+  a->SetMaxHealth(10);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "burning"));
+  for (int i = 1; i <= 2; ++i) {
+    env.Step({kStay});
+    ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+    ASSERT_EQ(env.GetLastTagsApplied()[0].tag, Id(env, "burning"));
+    ASSERT_EQ(env.GetLastTagsApplied()[0].damage, 1);
+    ASSERT_EQ(a->GetHealth(), 10 - i);
+  }
+  const BaseEnv::CellTag smoke = env.GetCellTag({3, 2});  // Its successor, by name
+  ASSERT_EQ(smoke.tag, Id(env, "smoke"));
+  ASSERT_EQ(smoke.duration, 1);
+  ASSERT_EQ(smoke.steps, 3);  // Its 3 next steps
+  ASSERT_EQ(smoke.then, kInvalidTag);
+  ASSERT_EQ(smoke.damage, 0);
+  for (int i = 0; i < 3; ++i) {
+    env.Step({kStay});
+    ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+    ASSERT_EQ(env.GetLastTagsApplied()[0].tag, Id(env, "smoke"));
+    ASSERT_EQ(env.GetLastTagsApplied()[0].damage, 0);
+  }
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
+  env.Step({kStay});
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+  ASSERT_EQ(a->GetHealth(), 8);
+}
+
+// Cycles are legal: a zone whose successor is itself renews every `steps`,
+// and a -> b -> a alternates, one zone per tick.
+TEST(TestZoneCyclesAdvanceOneZonePerTick) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.DefineZone("flicker", Zone().Lasts(2).Then("flicker").def));
+  ASSERT_TRUE(env.DefineZone("tide", Zone().Lasts(1).Then("ebb").def));
+  ASSERT_TRUE(env.DefineZone("ebb", Zone().Lasts(1).Then("tide").def));
+  Agent* a = Place(env, 0, {3, 2});
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "flicker"));
+  ASSERT_TRUE(env.SetCellTag({4, 2}, "tide"));
+  for (int i = 1; i <= 6; ++i) {
+    env.Step({kStay});
+    ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));  // Every step
+    ASSERT_EQ(env.GetLastTagsApplied()[0].agent, a->GetId());
+    ASSERT_EQ(env.GetCellTag({3, 2}).tag, Id(env, "flicker"));
+    ASSERT_EQ(env.GetCellTag({3, 2}).steps, i % 2 == 1 ? 1 : 2);
+    ASSERT_EQ(env.GetCellTag({4, 2}).tag, Id(env, i % 2 == 1 ? "ebb" : "tide"));
+  }
+}
+
+// The table is level data: copied with the env, kept across a generated
+// Reset, replaced by LoadSnapshot (by none until snapshot v7 carries it).
+TEST(TestTheZoneTableIsLevelData) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.DefineZone("burning", Zone().Lasts(6).Hurts(1).def));
+  std::unique_ptr<BaseEnv> copy = env.Clone();
+  ASSERT_EQ(copy->GetZoneDef("burning").steps, 6);
+  SynchroEnv assigned(10, 10, 1, 1, 0, 7);
+  assigned = env;
+  ASSERT_EQ(assigned.GetZoneDef("burning").damage, 1);
+
+  env.Reset();  // A generated level: kept
+  ASSERT_EQ(env.GetZoneDef("burning").steps, 6);
+
+  Snapshot saved = env.SaveSnapshot();
+  env.LoadSnapshot(saved);
+  ASSERT_TRUE(env.GetZoneDefs().empty());
+  ASSERT_EQ(copy->GetZoneDef("burning").steps, 6);  // Deep copies keep theirs
 }
 
 // =============================================================================
@@ -182,7 +335,7 @@ TEST(TestZoneSetBetweenStepsLastsItsSteps) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 2});
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"wet", 1, 2}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", Zone().Lands(1).Lasts(2).def));
   ASSERT_EQ(env.GetCellTag({3, 2}).steps, 2);
   env.Step({kStay});
   ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
@@ -202,7 +355,7 @@ TEST(TestZoneSetDuringAStepCoversItThenItsSteps) {
   MidStepZoneEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   Place(env, 0, {3, 2});
-  env.pending = std::make_pair(Position{3, 2}, ZoneSpec{"wet", 1, 2});
+  env.pending = MidStepZoneEnv::Pending{{3, 2}, "wet", Zone().Lands(1).Lasts(2).def};
   env.Step({kStay});  // t: set in PreStep, landed after the movement
   ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetCellTag({3, 2}).steps, 2);
@@ -216,15 +369,14 @@ TEST(TestZoneSetDuringAStepCoversItThenItsSteps) {
   ASSERT_TRUE(env.GetLastTagsApplied().empty());
 }
 
-// An expired zone becomes its successor: a zone with default fields
-// (permanent, landing a permanent tag, harmless, without successor), which
-// lands from the next step.
+// An expired zone becomes its successor (undefined in the table: the
+// defaults), which lands from the next step.
 TEST(TestZoneExpiresIntoItsSuccessor) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 1});
   a->SetMaxHealth(5);
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"burning", 2, 1, "ash", 1}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "burning", Zone().Lands(2).Lasts(1).Then("ash").Hurts(1).def));
   env.Step({kRight});  // Walks in: burns, then the zone expires
   ASSERT_TRUE(a->GetPosition() == (Position{3, 2}));
   ASSERT_TRUE(Has(env, a, "burning"));
@@ -250,7 +402,7 @@ TEST(TestZoneExpiresIntoItsSuccessor) {
 TEST(TestZoneTimersAreCopiedWithTheEnv) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"wet", kPermanentTag, 3, "mud", 2}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", Zone().Lasts(3).Then("mud").Hurts(2).def));
   env.Step({kStay});
   std::unique_ptr<BaseEnv> copy = env.Clone();
   ASSERT_EQ(copy->GetCellTag({3, 2}).steps, 2);
@@ -271,7 +423,7 @@ TEST(TestZoneDamagesEveryLanding) {
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 2});
   a->SetMaxHealth(5);
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"burning", 1, kPermanentTag, "", 1}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "burning", Zone().Lands(1).Hurts(1).def));
   for (int i = 1; i <= 3; ++i) {
     env.Step({kStay});
     ASSERT_EQ(a->GetHealth(), 5 - i);
@@ -294,7 +446,7 @@ TEST(TestZoneDamageIsMarked) {
   Agent* a = Place(env, 0, {3, 2});
   a->SetMaxHealth(5);
   a->ApplyStatus(StatusType::Marked, 3);
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"burning", 1, kPermanentTag, "", 2}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "burning", Zone().Lands(1).Hurts(2).def));
   env.Step({kStay});
   ASSERT_EQ(a->GetHealth(), 2);  // 2 x 1.5
   ASSERT_EQ(env.GetLastTagsApplied()[0].damage, 2);
@@ -306,7 +458,7 @@ TEST(TestZoneDamageIsMarked) {
 TEST(TestZoneDamageFollowsSkillMotions) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
-  ASSERT_TRUE(env.SetCellTag({3, 5}, ZoneSpec{"burning", 1, kPermanentTag, "", 1}));
+  ASSERT_TRUE(env.SetCellTag({3, 5}, "burning", Zone().Lands(1).Hurts(1).def));
   Agent* caster = Place(env, 0, {3, 1});
   Agent* beside = Place(env, 1, {2, 5});  // Orthogonal to the landing cell
   caster->SetMaxHealth(5);
@@ -332,7 +484,7 @@ TEST(TestZoneDamageDownsACompanionThenLeavesItUntouched) {
   Agent* a = Place(env, 0, {3, 2});
   a->SetMaxHealth(3);
   a->RestoreHealth(1);
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"burning", kPermanentTag, kPermanentTag, "", 1}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "burning", Zone().Hurts(1).def));
   env.Step({kStay, kStay});
   ASSERT_TRUE(a->IsDowned());
   ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
@@ -349,44 +501,88 @@ TEST(TestZoneDamageDownsACompanionThenLeavesItUntouched) {
   }
 }
 
-// A caster its landing zone downs gets nothing from its own skill: the use
-// reports neither Tags nor Damage on it (what the use DID).
-TEST(TestACasterDownedByItsLandingZoneGetsNothingFromItsSkill) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
+// An enemy a zone's damage kills neither acts nor strikes afterwards: it
+// stays where it died, and its target takes nothing more.
+TEST(TestAnEnemyKilledByAZoneNeitherActsNorStrikes) {
+  AggroEnv env(10, 1, EnemyType::Goblin, 42, 0, 100);
+  env.Reset(42);
+  Companion* comp = env.GetMutableObjectManager().GetAllCompanions()[0];
+  AgentFSM* enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
+  enemy->GetFSMContext().has_attack = true;
+  enemy->GetFSMContext().attack_effect_name = "goblin_attack";  // A builtin
+  bool placed = false;
+  const Position e = enemy->GetPosition();
+  for (Position p : {Position{e.row, e.col - 1}, Position{e.row, e.col + 1},
+                     Position{e.row - 1, e.col}, Position{e.row + 1, e.col}}) {
+    if (!placed && env.GetGrid().IsWalkable(p) && !env.GetObjectManager().GetActorAt(p)) {
+      env.GetMutableObjectManager().UpdatePosition(comp->GetId(), p);
+      placed = true;
+    }
+  }
+  ASSERT_TRUE(placed);
+  comp->SetMaxHealth(50);
+  enemy->ApplyStatus(StatusType::Rooted, 3);  // It stays on its zone
+  ASSERT_TRUE(env.SetCellTag(e, "burning", Zone().Hurts(enemy->GetHealth()).def));
+  const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()), kStay);
+  env.Step(stay);  // Dies on its zone
+  ASSERT_FALSE(enemy->IsAlive());
+  const int health = comp->GetHealth();
+  for (int i = 0; i < 10; ++i) {
+    env.Step(stay);
+    ASSERT_TRUE(enemy->GetPosition() == e);
+    ASSERT_TRUE(env.GetLastTagsApplied().empty());  // The zone skips the dead
+    ASSERT_TRUE(env.GetLastSkillUses().empty());
+  }
+  ASSERT_EQ(comp->GetHealth(), health);
+  ASSERT_TRUE(env.GetActiveEffects().empty());
+}
+
+// A caster its landing zone downs gets nothing from its own skill (the use
+// reports neither Tags nor Damage on it), but the rest of the use still runs:
+// the others are hit.
+TEST(TestACasterDownedByItsLandingZoneGetsNothingButItsUseGoesOn) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   SkillConfig blaze;
   blaze.name = "blaze";
   blaze.targeting = SkillTargeting::Self;
+  blaze.area = SkillArea::Cross;  // Around the landing cell
   blaze.motion = SkillMotion::Dash;
   blaze.motion_distance = 4;
   blaze.tags = {{"hot", 1}};
   blaze.damage = 1;  // Self tags and self damage: on by default
   env.GetMutableSkillBook().Define(blaze);
-  ASSERT_TRUE(env.SetCellTag({3, 5}, ZoneSpec{"burning", kPermanentTag, kPermanentTag, "", 1}));
+  ASSERT_TRUE(env.SetCellTag({3, 5}, "burning", Zone().Hurts(1).def));
   Agent* caster = Place(env, 0, {3, 1});
+  Agent* other = Place(env, 1, {2, 5});  // Up of the landing cell
   caster->SetMaxHealth(3);
   caster->RestoreHealth(1);
   ASSERT_TRUE(env.SetCompanionSkill(caster->GetId(), 0, "blaze"));
-  env.Step({Use(MovementAction::Right)});
+  env.Step({Use(MovementAction::Right), kStay});
   ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
   ASSERT_TRUE(caster->IsDowned());
   ASSERT_FALSE(Has(env, caster, "hot"));
-  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));  // The zone's only
+  ASSERT_TRUE(Has(env, other, "hot"));
+  ASSERT_EQ(other->GetHealth(), 2);
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(2));  // The zone's, then other's
+  ASSERT_EQ(env.GetLastTagsApplied()[1].agent, other->GetId());
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
   const auto& affected = env.GetLastSkillUses()[0].affected;
-  ASSERT_EQ(affected.size(), static_cast<size_t>(1));
+  ASSERT_EQ(affected.size(), static_cast<size_t>(2));
   ASSERT_EQ(affected[0].id, caster->GetId());
   ASSERT_EQ(affected[0].effects, 0u);
+  ASSERT_EQ(affected[1].id, other->GetId());
+  ASSERT_EQ(affected[1].effects, BaseEnv::kSkillEffectTags | BaseEnv::kSkillEffectDamage);
 }
 
 // =============================================================================
-// Snapshots (the new fields come with snapshot v7)
+// Snapshots (the zone table and timers come with snapshot v7)
 // =============================================================================
 
 TEST(TestADefaultZoneRoundTripsThroughASnapshot) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
-  ASSERT_TRUE(env.SetCellTag({3, 2}, ZoneSpec{"wet", 2}));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", 2));
   Snapshot saved = env.SaveSnapshot();
   env.ClearCellTags();
   env.LoadSnapshot(saved);

@@ -42,7 +42,7 @@ companions/                    # Standalone pure C++ implementation
   the revive report, v6 context rules: `companions_revive_test` (`tests/test_revive.cc`);
   `PreviewSkill` and `SkillUse::affected`: `companions_skills_test`; their C API side:
   `tests/test_api.cc`
-- Zones' lifetime, successor and damage per landing: `companions_zones_test`
+- Zones' lifetime, successor, damage per landing and the zone table: `companions_zones_test`
   (`tests/test_zones.cc`)
 - A test that registers its own effects holds a `ScopedEffectRegistry`
   (`tests/effect_registry_guard.h`), declared before its envs: it clears the global
@@ -129,7 +129,7 @@ tags, roots, cooldowns, revives. Code: `core/skill_config.{h,cc}`, `core/tag_tab
    the context rules are read here, once, before anyone moves) → `ResolveCollisions` →
    `ExecuteValidatedMovements`
 3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed; the tag,
-   then the zone's damage)
+   then the zone's damage if it is still affectable, see Zones)
 4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
    order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
 5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), `TickZones`
@@ -294,32 +294,47 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 - No gameplay effect in the env. Host primitives: `ApplyTagTo` / `RemoveTagFrom`
   (`ApplyTagTo` refuses a downed or dead agent and then interns nothing, like `LandTag`)
 
-**Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`; tests: `tests/test_zones.cc`):
-- One zone per cell (`CellTag`; set by name with a `ZoneSpec`, `core/types.h`; "" clears):
-  `tag`, `duration` (what it lands with), `steps` (its own lifetime), `then` (its
-  successor), `damage` (per landing). `SetCellTag(cell, tag, duration)` gives the
-  defaults: permanent, no successor, harmless. Refused (cell unchanged, nothing
-  interned): out of bounds, a name over 31 bytes, a duration or steps of 0 or below -1,
-  a negative damage
+**Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`, `DefineZone` / `GetZoneDefs`;
+tests: `tests/test_zones.cc`):
+- One zone per cell (`CellTag`, a resolved copy of a `ZoneDef`, `core/types.h`): `tag`,
+  `duration` (what it lands with), `steps` (its own lifetime), `then` (its successor),
+  `damage` (per landing)
+- **The zone table** (level data, keyed by tag): `DefineZone(tag, ZoneDef)` (re)defines
+  what a zone of that tag is; `GetZoneDefs()` / `GetZoneDef(tag)` (an undefined tag gets
+  the defaults: permanent, landing a permanent tag, harmless, without successor).
+  Anything that creates a zone BY NAME takes its fields from it: `SetCellTag(cell, tag)`,
+  `SetCellTag(cell, tag, duration)` (that landing duration, the rest from the table: the
+  C API setter), a successor (and, to come, `zone_becomes` and snapshot cells).
+  `SetCellTag(cell, tag, ZoneDef)` is the explicit per-cell override. A cell keeps its
+  resolved copy (no lookup on the hot path): redefining a tag changes later zones only.
+  Like max_downs: copied with the env, kept across a generated `Reset`, replaced by
+  `LoadSnapshot` (by none until snapshot v7 carries it: define zones after a load)
+- Refused (cell / table unchanged, nothing interned): out of bounds, an empty tag
+  (`DefineZone`; `SetCellTag` "" clears the cell), a tag or `then` over 31 bytes, a
+  duration or steps of 0 or below -1, a negative damage
 - Landed (cause `"zone"`, source -1) on every affectable agent standing there after regular
   movement (before casts and skills), and on any agent a skill motion lands there
   (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
-- Damage: each landing, right after the tag, deals `damage` through `Agent::TakeDamage`
-  (Marked applies, a companion goes down and keeps the tag, the downed and the dead get
-  no landing at all), reported as the landing's `damage` (the zone's, before Marked).
-  A caster its landing zone downs or kills gets nothing from its own skill (its
-  `SkillUse` reports no Tags / Damage on it)
+- **One landing, in order**: immunity (to come: nothing lands, no damage), the tag
+  (`LandTag`), weakness (to come: a defeated agent stops there), reaction (to come),
+  then the zone's own `damage` (`ApplyZoneTag`), only if the agent is still affectable:
+  through `Agent::TakeDamage` (Marked applies, a companion goes down and keeps the tag).
+  Reported as the landing's `damage` (the zone's, before Marked; 0 when none was dealt).
+  The downed and the dead get no landing at all
+- A caster its landing zone downs or kills gets nothing from its own skill (its
+  `SkillUse` reports no Tags / Damage on it), but the rest of the use still runs: the
+  others it affects are tagged, hurt, rooted, pushed
 - Lifetime: `steps` is a step timer (see Step timers): set between two steps, the zone
   lands during the n next steps; set during a step (a rule of the env), it also covers
-  the rest of that step (kept as n + 1) and reads n after it. `-1` = never expires.
-  Zones tick in `TickZones`, right after the agents' `EndStep`; an expired zone becomes
-  its successor `then`, a zone with the default fields (permanent, landing a permanent
-  tag, harmless, without successor: kept minimal until level data needs more), which
-  lands from the next step; without one the cell loses its zone
+  the rest of that step (kept as n + 1, `BaseEnv::in_step_`) and reads n after it. `-1` =
+  never expires. Zones tick in `TickZones`, right after the agents' `EndStep`; an
+  expired zone becomes its successor `then`, a zone by name (the table's fields; created
+  after the step, it lands from the next step and lasts its n next steps), or the cell
+  loses its zone. Cycles are legal (`a -> a`, `a -> b -> a`): one zone per tick
 - World state: copied with the env (timers included), saved in snapshots, replaced by
   `LoadSnapshot` (generated levels have none, so every `Reset` clears them). Snapshots
-  carry the tag and its duration only until snapshot v7: a saved zone loads permanent,
-  harmless and without successor
+  carry the tag and its duration only until snapshot v7 (neither the table nor the
+  remaining steps): a saved zone loads by name with that duration
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
 (damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
@@ -336,7 +351,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 | BaseEnv | Content | C API event |
 |---------|---------|-------------|
 | `GetLastSkillUses()` | caster, skill (the effective one), target (centre; landing cell for a self skill), slot, `affected` (the agents it affected, in processing order, with what it did to each: see Previews) | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill); the whole use, `affected` included: `companions_get_last_skill_use_count` / `companions_get_last_skill_use` (not an event: never cut by the event cap) |
-| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh`, `damage` (a zone's per landing; 0 for a skill's, not in the C API yet) | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
+| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh`, `damage` (the zone damage it dealt; 0 when none: a skill's landing, a harmless zone, an agent no longer affectable; not in the C API yet) | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
 | `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
 

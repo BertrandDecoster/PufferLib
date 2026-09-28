@@ -4,6 +4,7 @@
 #ifndef COMPANIONS_ENV_BASE_ENV_H_
 #define COMPANIONS_ENV_BASE_ENV_H_
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -369,10 +370,11 @@ class BaseEnv {
     ObjectId source = kInvalidObjectId;  // Caster, or kInvalidObjectId for a zone
     std::string cause;                   // Skill name, or "zone"
     bool fresh = false;                  // The agent did not have the tag before
-    // The damage this landing dealt: a zone's damage per landing (CellTag::
-    // damage as given, before Marked, like SkillConfig::damage), applied right
-    // after the tag. 0 for a skill's landing (a skill's damage is its
-    // SkillUse's Damage effect).
+    // The zone damage this landing dealt (CellTag::damage as given, before
+    // Marked, like SkillConfig::damage), after the tag. 0 when none was
+    // dealt: a skill's landing (a skill's damage is its SkillUse's Damage
+    // effect), a harmless zone, an agent no longer affectable once the tag
+    // landed.
     int damage = 0;
   };
   struct Revival {
@@ -404,21 +406,22 @@ class BaseEnv {
   // landing), so it is re-landed not fresh, and so is one already carrying
   // the tag from any source when it arrives.
   // Each landing then deals the zone's `damage` (Agent::TakeDamage: Marked
-  // applies, a companion goes down, the downed and the dead are untouched),
-  // reported in the landing's TagApplication::damage.
+  // applies, a companion goes down), if the agent is still affectable once
+  // the tag landed; reported in the landing's TagApplication::damage.
   // A zone lives `steps` steps (a step timer, like tags: set between two
   // steps it lands during the n next steps; set during a step it also covers
   // the rest of that step, kept as n + 1 and read n after it), or forever
   // (kPermanentTag). Zone timers tick at the end of Step, right after the
   // agents' (Agent::EndStep); an expired zone becomes its successor `then`
-  // (a zone with the default fields: permanent, landing a permanent tag,
-  // harmless, without successor; it lands from the next step), or nothing.
+  // (a zone by name: the table's fields; it lands from the next step and
+  // lasts its steps from there), or nothing. Cycles (a -> b -> a, a -> a)
+  // are legal: one zone per tick.
   // Cell tags are world state: copied with the env, saved in snapshots (by tag
   // name) and replaced by LoadSnapshot with the snapshot's own (a generated
   // level has none, so every Reset clears them). Like cell annotations, they
   // follow the snapshot's D4 transform. Snapshots carry the tag and its
-  // duration only (until snapshot v7): a saved zone loads permanent,
-  // harmless and without successor.
+  // duration only (until snapshot v7): a saved zone loads by name, with that
+  // duration.
   struct CellTag {
     TagId tag = kInvalidTag;
     int duration = kPermanentTag;  // The duration landed on agents
@@ -428,15 +431,32 @@ class BaseEnv {
     TagId then = kInvalidTag;  // Its successor's tag, or kInvalidTag (none)
     int damage = 0;            // Per landing
   };
-  // "" clears the cell (the other fields are then ignored). False (cell
-  // unchanged, nothing interned) out of bounds, for a tag or successor longer
-  // than kMaxNameLength, for a duration or steps of 0 or below kPermanentTag
-  // (as ApplyTagTo), or a negative damage.
-  bool SetCellTag(Position cell, const ZoneSpec& zone);
-  // A permanent, harmless zone without successor
+  // A zone by name: the zone table's fields for `tag` (GetZoneDef). ""
+  // clears the cell (the other fields are then ignored). False (cell
+  // unchanged, nothing interned) out of bounds, or for an invalid tag or
+  // fields (see DefineZone).
+  bool SetCellTag(Position cell, const std::string& tag);
+  // By name, with an explicit landing duration (the other fields: the table's)
   bool SetCellTag(Position cell, const std::string& tag, int duration);
+  // An explicit per-cell override: these fields, whatever the table says
+  bool SetCellTag(Position cell, const std::string& tag, const ZoneDef& zone);
   CellTag GetCellTag(Position cell) const;  // {} when none / out of bounds
   void ClearCellTags() { cell_tags_.clear(); }
+
+  // The level's zone table: what a zone of each tag is, used whenever a zone
+  // is created by name (SetCellTag without explicit fields, a successor).
+  // Each cell keeps its own resolved copy: (re)defining a tag changes the
+  // zones created after it, not those already there. A tag the table does not
+  // define gets the ZoneDef defaults. DefineZone (re)defines `tag`; false
+  // (table unchanged) for an empty tag, a tag or `then` longer than
+  // kMaxNameLength, a duration or steps of 0 or below kPermanentTag (as
+  // ApplyTagTo), or a negative damage. Level data like max_downs: copied with
+  // the env, kept across a generated Reset, replaced by LoadSnapshot (by
+  // none until snapshot v7 carries it: define zones after loading a level).
+  bool DefineZone(const std::string& tag, const ZoneDef& zone);
+  const std::map<std::string, ZoneDef>& GetZoneDefs() const { return zone_defs_; }
+  ZoneDef GetZoneDef(const std::string& tag) const;  // The defaults when undefined
+  void ClearZoneDefs() { zone_defs_.clear(); }
 
   // ==========================================================================
   // Snapshot Support - Save/Load complete world state
@@ -586,10 +606,12 @@ class BaseEnv {
                        const Agent& caster, Position landing,
                        std::vector<AffectedAgent>& affected,
                        std::vector<Position>& found_on) const;
-  // Lands the tag on an affectable agent (else nothing, and false), reports
-  // it, then deals `damage` (a zone's per landing; 0 for a skill's landing).
+  // One tag landing on an agent: lands it on an affectable agent (else
+  // nothing, and false) and reports it. The order of a landing: immunity,
+  // the tag, weakness, reaction (all in LandTag), then the zone's own damage
+  // (ApplyZoneTag, only if the agent is still affectable).
   bool LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
-               const std::string& cause, int damage = 0);
+               const std::string& cause);
   bool LandTag(Agent& agent, const std::string& tag, int duration,
                ObjectId source, const std::string& cause);  // Interns, forwards
   // Skill motions: a living agent moved onto a zone cell gets its tag. Only
@@ -598,8 +620,11 @@ class BaseEnv {
   void ApplyZoneTag(Agent& agent);  // The zone of the cell it stands on, if any
   void ApplyZoneTags();             // Every living agent (after movement)
   // End of Step, after the agents' timers: every timed zone loses a step, and
-  // an expired one becomes its successor (or nothing). Ends the step for zones.
+  // an expired one becomes its successor (or nothing). Ends the step (in_step_).
   void TickZones();
+  // `def` for `tag` on a cell: its steps as a step timer (n + 1 in a step),
+  // its successor interned. Validated by the caller.
+  CellTag ResolveZone(TagId tag, const ZoneDef& def);
   // PushOut (each ring MotionThingAt, away from the centre) / PullIn
   // (PullFrom's thing into the centre), read from the world as it is then;
   // returns the ids of the actors it really moved.
@@ -631,9 +656,11 @@ class BaseEnv {
   std::vector<Revival> last_revives_;
   // Row-major rows_ * cols_ once a zone is set; empty = no zones.
   std::vector<CellTag> cell_tags_;
-  // From the start of a Step to its zone tick (TickZones): a zone timer set
-  // then is kept as n + 1 (see CellTag), like Agent::BeginStep's.
-  bool zones_in_step_ = false;
+  // The level's zone table (DefineZone), by tag name
+  std::map<std::string, ZoneDef> zone_defs_;
+  // From the start of a Step to the world's timer tick (TickZones): a timer
+  // the world sets then (a zone's) is kept as n + 1, like Agent::BeginStep's.
+  bool in_step_ = false;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;

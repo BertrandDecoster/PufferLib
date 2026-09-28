@@ -54,7 +54,8 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       last_downs_(other.last_downs_),
       last_revives_(other.last_revives_),
       cell_tags_(other.cell_tags_),
-      zones_in_step_(other.zones_in_step_),
+      zone_defs_(other.zone_defs_),
+      in_step_(other.in_step_),
       intended_skills_(other.intended_skills_),
       max_downs_(other.max_downs_),
       context_skills_(other.context_skills_) {
@@ -84,7 +85,8 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     last_downs_ = other.last_downs_;
     last_revives_ = other.last_revives_;
     cell_tags_ = other.cell_tags_;
-    zones_in_step_ = other.zones_in_step_;
+    zone_defs_ = other.zone_defs_;
+    in_step_ = other.in_step_;
     intended_skills_ = other.intended_skills_;
     max_downs_ = other.max_downs_;
     context_skills_ = other.context_skills_;
@@ -107,7 +109,7 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Agent::BeginStep); they all tick at its end.
   ClearStepReports();
   for (Agent* agent : object_manager_->GetAllAgents()) agent->BeginStep();
-  zones_in_step_ = true;
+  in_step_ = true;
 
   // Pre-step hook
   PreStep();
@@ -1039,13 +1041,16 @@ bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
 }
 
 bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
-                      const std::string& cause, int damage) {
+                      const std::string& cause) {
   if (duration == 0 || !agent.IsAffectable()) return false;  // Lands nothing, so reports nothing
+  // 1. Immunity (reactions, to come): an immune agent gets nothing, so false.
+  // 2. The tag.
   bool fresh = !agent.HasTag(tag);
   agent.ApplyTag(tag, duration);
-  last_tags_applied_.push_back({agent.GetId(), tag, duration, source, cause, fresh, damage});
-  // After the tag: an agent the damage downs or kills keeps it
-  if (damage > 0) agent.TakeDamage(damage);
+  last_tags_applied_.push_back({agent.GetId(), tag, duration, source, cause, fresh});
+  // 3. Weakness (to come): a defeated agent stops here (no reaction, and no
+  //    zone damage: ApplyZoneTag finds it no longer affectable).
+  // 4. Reaction (to come): result, damage, spread, zone_becomes.
   return true;
 }
 
@@ -1062,37 +1067,56 @@ void BaseEnv::MoveActor(Actor& actor, Position to) {
   if (agent && agent->IsAffectable()) ApplyZoneTag(*agent);
 }
 
-bool BaseEnv::SetCellTag(Position cell, const std::string& tag, int duration) {
-  ZoneSpec zone;
-  zone.tag = tag;
-  zone.duration = duration;
-  return SetCellTag(cell, zone);
+namespace {
+// A zone's fields, as DefineZone and SetCellTag accept them
+bool IsValidZoneDef(const ZoneDef& zone) {
+  auto valid_steps = [](int n) { return n > 0 || n == kPermanentTag; };  // Or permanent
+  return valid_steps(zone.duration) && valid_steps(zone.steps) && zone.damage >= 0 &&
+         IsValidNameLength(zone.then);
+}
+}  // namespace
+
+bool BaseEnv::DefineZone(const std::string& tag, const ZoneDef& zone) {
+  if (tag.empty() || !IsValidNameLength(tag) || !IsValidZoneDef(zone)) return false;
+  zone_defs_[tag] = zone;
+  return true;
 }
 
-bool BaseEnv::SetCellTag(Position cell, const ZoneSpec& zone) {
+ZoneDef BaseEnv::GetZoneDef(const std::string& tag) const {
+  auto it = zone_defs_.find(tag);
+  return it == zone_defs_.end() ? ZoneDef{} : it->second;
+}
+
+BaseEnv::CellTag BaseEnv::ResolveZone(TagId tag, const ZoneDef& def) {
+  CellTag c;
+  c.tag = tag;
+  c.duration = def.duration;
+  // A step timer (see CellTag): set during a step, it also covers the rest of it
+  c.steps = in_step_ && def.steps > 0 ? def.steps + 1 : def.steps;
+  c.then = def.then.empty() ? kInvalidTag : tags_.Intern(def.then);
+  c.damage = def.damage;
+  return c;
+}
+
+bool BaseEnv::SetCellTag(Position cell, const std::string& tag) {
+  return SetCellTag(cell, tag, GetZoneDef(tag));
+}
+
+bool BaseEnv::SetCellTag(Position cell, const std::string& tag, int duration) {
+  ZoneDef zone = GetZoneDef(tag);
+  zone.duration = duration;
+  return SetCellTag(cell, tag, zone);
+}
+
+bool BaseEnv::SetCellTag(Position cell, const std::string& tag, const ZoneDef& zone) {
   if (!grid_->IsInBounds(cell)) return false;
-  // A step count: positive, or kPermanentTag
-  auto valid_steps = [](int n) { return n > 0 || n == kPermanentTag; };
-  if (!zone.tag.empty() &&
-      (!valid_steps(zone.duration) || !valid_steps(zone.steps) || zone.damage < 0 ||
-       !IsValidNameLength(zone.tag) || !IsValidNameLength(zone.then))) {
-    return false;
-  }
+  if (!tag.empty() && (!IsValidNameLength(tag) || !IsValidZoneDef(zone))) return false;
   if (cell_tags_.empty()) {
-    if (zone.tag.empty()) return true;  // Nothing to clear
+    if (tag.empty()) return true;  // Nothing to clear
     cell_tags_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), CellTag{});
   }
   CellTag& c = cell_tags_[static_cast<size_t>(cell.row * cols_ + cell.col)];
-  if (zone.tag.empty()) {
-    c = CellTag{};
-    return true;
-  }
-  c.tag = tags_.Intern(zone.tag);
-  c.duration = zone.duration;
-  // A step timer (see CellTag): set during a step, it also covers the rest of it
-  c.steps = zones_in_step_ && zone.steps > 0 ? zone.steps + 1 : zone.steps;
-  c.then = zone.then.empty() ? kInvalidTag : tags_.Intern(zone.then);
-  c.damage = zone.damage;
+  c = tag.empty() ? CellTag{} : ResolveZone(tags_.Intern(tag), zone);
   return true;
 }
 
@@ -1103,9 +1127,17 @@ BaseEnv::CellTag BaseEnv::GetCellTag(Position cell) const {
 }
 
 void BaseEnv::ApplyZoneTag(Agent& agent) {
-  CellTag c = GetCellTag(agent.GetPosition());
+  // A copy: the zone that lands (a reaction may change the cell meanwhile)
+  const CellTag c = GetCellTag(agent.GetPosition());
   if (c.tag == kInvalidTag) return;
-  LandTag(agent, c.tag, c.duration, kInvalidObjectId, "zone", c.damage);
+  const size_t landing = last_tags_applied_.size();  // Its report entry
+  if (!LandTag(agent, c.tag, c.duration, kInvalidObjectId, "zone")) return;
+  // 5. The zone's own damage, last: only on an agent still affectable once
+  // the tag landed (and its weakness / reaction resolved)
+  if (c.damage > 0 && agent.IsAffectable()) {
+    last_tags_applied_[landing].damage = c.damage;
+    agent.TakeDamage(c.damage);
+  }
 }
 
 void BaseEnv::ApplyZoneTags() {
@@ -1116,14 +1148,14 @@ void BaseEnv::ApplyZoneTags() {
 }
 
 void BaseEnv::TickZones() {
-  zones_in_step_ = false;
+  // The step is over: a successor created below lasts its n next steps
+  in_step_ = false;
   for (CellTag& z : cell_tags_) {
     if (z.tag == kInvalidTag || z.steps == kPermanentTag) continue;
     if (--z.steps > 0) continue;
-    // Expired: its successor, with the default fields, or nothing
-    const TagId then = z.then;
-    z = CellTag{};
-    z.tag = then;
+    // Expired: its successor, a zone by name (the table's fields), or nothing
+    // (each cell is visited once, so a cycle advances one zone per tick)
+    z = z.then == kInvalidTag ? CellTag{} : ResolveZone(z.then, GetZoneDef(tags_.Name(z.then)));
   }
 }
 
@@ -1365,7 +1397,8 @@ BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& sk
 
   // 3. Tags land on who was there at impact (area and path).
   // An agent no longer affectable by then (a caster its landing zone's
-  // damage downed or killed) gets nothing, and the use reports nothing on it.
+  // damage downed or killed) gets nothing, and the use reports nothing on it;
+  // the rest of the use still runs (the others are hit, pushed, rooted).
   for (size_t i = 0; i < agents.size(); ++i) {
     if (!has(i, kSkillEffectTags)) continue;
     if (!agents[i]->IsAffectable()) {
@@ -1622,8 +1655,8 @@ Snapshot BaseEnv::SaveSnapshot() const {
   }
 
   // Zones, by name, in current coordinates (as the cells and annotations above):
-  // tag and duration only until snapshot v7 (lifetime, successor and damage
-  // are not saved: a saved zone loads permanent and harmless)
+  // tag and duration only until snapshot v7 (neither the zone table nor the
+  // cells' remaining steps are saved yet)
   for (int r = 0; r < rows_ && !cell_tags_.empty(); ++r) {
     for (int c = 0; c < cols_; ++c) {
       const CellTag& z = cell_tags_[static_cast<size_t>(r * cols_ + c)];
@@ -1660,6 +1693,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   effect_system_->Clear();
   ClearStepReports();  // They name the old world's ObjectIds
   ClearCellTags();     // World state: replaced by the snapshot's zones below
+  ClearZoneDefs();     // Level data: the snapshot's (none until v7)
 
   // The level's skill book: builtins, then the snapshot's skills (which may
   // retune builtins). A snapshot without skills leaves the builtins only, so
@@ -1903,13 +1937,17 @@ void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
   // base load set the snapshot's).
   std::vector<ContextSkillRule> rules = context_skills_;
   snapshot.context_skills = std::vector<ContextSkillRule>{};
+  // The zone table as well (level data; a generated level has no zones)
+  std::map<std::string, ZoneDef> zone_defs = zone_defs_;
   try {
     LoadSnapshot(snapshot);
   } catch (...) {
     context_skills_ = std::move(rules);
+    zone_defs_ = std::move(zone_defs);
     throw;
   }
   context_skills_ = std::move(rules);
+  zone_defs_ = std::move(zone_defs);
 }
 
 void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {
