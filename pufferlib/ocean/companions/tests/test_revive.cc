@@ -835,6 +835,89 @@ TEST(TestAGeneratedResetKeepsTheRules) {
   ASSERT_TRUE(dodge.GetContextSkills() == rules);
 }
 
+// Every form of a saved state loads back.
+static void AssertSavedStateLoads(SynchroEnv& env) {
+  const Snapshot saved = env.SaveSnapshot();
+  env.LoadSnapshot(saved);
+  env.LoadSnapshot(Snapshot::Deserialize(saved.Serialize()));
+  env.LoadSnapshot(SnapshotFromJson(SnapshotToJson(saved)));
+}
+
+// After a generated Reset keeps a rule naming an earlier level's skill, the
+// saved state still loads: SaveSnapshot writes only the rules usable with the
+// book (the others are inert: skipped at run time).
+TEST(TestASavedStateWithAKeptRuleLoads) {
+  const ContextCondition adj = ContextCondition::AdjacentDownedAlly;
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  env.GetMutableSkillBook().Define(mend);
+  ASSERT_TRUE(env.SetContextSkills({{adj, 0, "mend"}, {adj, 1, "revive"}}));
+  env.Reset();  // Builtins only: the mend rule is kept, inert
+  ASSERT_EQ(env.GetContextSkills().size(), static_cast<size_t>(2));
+  const Snapshot saved = env.SaveSnapshot();
+  ASSERT_TRUE(saved.context_skills.has_value());
+  ASSERT_TRUE(*saved.context_skills ==
+              (std::vector<ContextSkillRule>{{adj, 1, "revive"}}));
+  AssertSavedStateLoads(env);
+  ASSERT_TRUE(env.GetContextSkills() ==
+              (std::vector<ContextSkillRule>{{adj, 1, "revive"}}));
+}
+
+// A rule whose skill gained a cooldown after the rules were set (a Define
+// behind their back) is skipped at run time, and not saved.
+TEST(TestARuleWhoseSkillGainedACooldownIsSkipped) {
+  const ContextCondition adj = ContextCondition::AdjacentDownedAlly;
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  env.GetMutableSkillBook().Define(mend);
+  ASSERT_TRUE(env.SetContextSkills({{adj, 0, "mend"}}));
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Agent* b = Place(env, 1, {3, 2});
+  DownCompanion(env, 1);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("mend"));
+  mend.cooldown = 2;
+  env.GetMutableSkillBook().Define(mend);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+  ASSERT_FALSE(env.IsContextSkill(*a, 0));
+  const Snapshot saved = env.SaveSnapshot();
+  ASSERT_TRUE(saved.context_skills.has_value() && saved.context_skills->empty());
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string(kDefaultSkill));
+  ASSERT_TRUE(b->IsDowned());
+  AssertSavedStateLoads(env);
+}
+
+// A SynchroEnv whose LoadSnapshot fails after the base load, on demand.
+class FailingLoadEnv : public SynchroEnv {
+ public:
+  using SynchroEnv::SynchroEnv;
+  bool fail = false;
+  void LoadSnapshot(const Snapshot& snapshot) override {
+    SynchroEnv::LoadSnapshot(snapshot);
+    if (fail) throw std::runtime_error("load failed after the base load");
+  }
+};
+
+// A generated Reset that fails keeps the env's rules all the same.
+TEST(TestAFailedResetKeepsTheRules) {
+  const std::vector<ContextSkillRule> rules = {
+      {ContextCondition::AdjacentDownedAlly, 1, "revive"}};
+  FailingLoadEnv env(10, 10, 2, 1, 0, 42);
+  ASSERT_TRUE(env.SetContextSkills(rules));
+  env.fail = true;
+  bool threw = false;
+  try {
+    env.Reset();
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+  ASSERT_TRUE(env.GetContextSkills() == rules);
+}
+
 // =============================================================================
 // Main
 // =============================================================================

@@ -269,8 +269,12 @@ number, binary 1..6):
   book (builtins + its skills): a known condition, slot in range, a known skill with
   cooldown 0 (a level may retune `revive`, not give it a cooldown while a rule uses
   it); messages name `context_skills[i]`. `LoadSnapshot` sets them; `SaveSnapshot`
-  always writes the env's; a generated `Reset` keeps the env's (`LoadGeneratedLevel`,
-  unchecked against the builtins: a rule whose skill the book lacks is skipped)
+  always writes the env's (but those the book no longer allows, `IsUsableWith`: they
+  are inert, and the loader would reject them); a generated `Reset` keeps the env's
+  (`LoadGeneratedLevel`, unchecked against the builtins). A rule whose skill the book
+  lacks or gave a cooldown is skipped at run time
+- A saved level pins its context rules (SaveSnapshot writes them explicitly): delete
+  `"context_skills"` from a level's JSON for it to follow the default rules
 - Every agent's `max_health` >= 1 (a revive brings back a percent of it)
 - Per agent: `"tags"` (`{tag, duration}`), `"skills"` (slot names; `""` or missing =
   `attack`), `"cooldowns"`;

@@ -264,9 +264,10 @@ class BaseEnv {
   // DefaultContextSkills() (next to a downed ally, slot 0 is revive),
   // snapshots carry them (LoadSnapshot sets the snapshot's, absent = the
   // default ones, validated against the snapshot's book), and a generated
-  // Reset keeps the env's rules. A rule whose skill the current book lacks
-  // (the book changed behind the rules' back: GetMutableSkillBook, a
-  // generated Reset reloading the builtins) is skipped.
+  // Reset keeps the env's rules. A rule the current book no longer allows
+  // (IsUsableWith: its skill gone or given a cooldown behind the rules' back
+  // through GetMutableSkillBook, a generated Reset reloading the builtins) is
+  // skipped, and SaveSnapshot leaves it out (so a saved state always loads).
   const std::vector<ContextSkillRule>& GetContextSkills() const { return context_skills_; }
   // Replaces the rules ({} = no override). False, rules unchanged and the
   // reason in `error` (when given), unless ValidateContextSkills accepts them
@@ -356,7 +357,7 @@ class BaseEnv {
   // Save current state to a snapshot (grid, agents, effects, timing, the skill
   // book but the fixed kDefaultSkill, agent tags / skill slots / cooldowns,
   // zones; tags by name; downs, max_downs; the context skills, always
-  // explicit)
+  // explicit, but for those the book no longer allows: see GetContextSkills)
   virtual Snapshot SaveSnapshot() const;
 
   // Load state from a snapshot. The skill book is reset to the builtins, then
@@ -436,8 +437,8 @@ class BaseEnv {
   // slot, a skill of the book, not cooling down (only an equipped skill reads
   // the cooldown), and a rooted caster only for a skill that does not move it.
   bool CanUseSkill(const Companion& comp, int slot) const;
-  // The first rule for `slot` whose skill the book has and whose condition
-  // holds for `comp`, or nullptr
+  // The first rule for `slot` usable with the book (IsUsableWith) whose
+  // condition holds for `comp`, or nullptr
   const ContextSkillRule* ActiveContextRule(const Companion& comp, int slot) const;
   // The one evaluation of a condition (a new condition: one more case)
   bool ContextHolds(ContextCondition condition, const Companion& comp) const;

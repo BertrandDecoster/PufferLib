@@ -614,6 +614,9 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
 
 void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
   auto agents = object_manager_->GetAllAgents();
+  // Indexed like `agents`: ResolveSkills reads them by the same index, so
+  // nothing may add or remove agents between GatherIntentions and
+  // ResolveSkills (it falls back to the caster's id if something did).
   intended_skills_.assign(agents.size(), IntendedSkill{});
   for (size_t i = 0; i < agents.size() && i < actions.size(); ++i) {
     Agent* agent = agents[i];
@@ -966,10 +969,11 @@ bool BaseEnv::ContextHolds(ContextCondition condition, const Companion& comp) co
 
 const ContextSkillRule* BaseEnv::ActiveContextRule(const Companion& comp, int slot) const {
   for (const ContextSkillRule& rule : context_skills_) {
-    // A rule whose skill the book lacks (a host changed the book behind the
-    // rules' back, a generated Reset reloaded the builtins) is skipped: it
-    // never disables a slot.
-    if (rule.slot == slot && skills_.Find(rule.skill) && ContextHolds(rule.condition, comp)) {
+    // A rule the book no longer allows (its skill gone or given a cooldown
+    // behind the rules' back: a Define, a generated Reset reloading the
+    // builtins) is skipped: it never disables a slot, and a context skill
+    // never has a cooldown.
+    if (rule.slot == slot && IsUsableWith(rule, skills_) && ContextHolds(rule.condition, comp)) {
       return &rule;
     }
   }
@@ -1109,14 +1113,25 @@ void BaseEnv::ResolveSkills() {
     int slot = SkillSlotOf(agent->GetExecutedAction().interact);
     if (slot < 0 || slot >= kEnabledSkillSlots) continue;
     // The skill GatherIntentions fixed (whoever an earlier caster revived or
-    // downed since, the context read then holds)
-    const bool recorded = i < intended_skills_.size() &&
-                          intended_skills_[i].caster == comp->GetId() &&
-                          intended_skills_[i].slot == slot &&
-                          intended_skills_[i].rule < static_cast<int>(context_skills_.size());
-    assert(recorded && "a skill use GatherIntentions did not record");
-    if (!recorded) continue;
-    const int rule = intended_skills_[i].rule;
+    // downed since, the context read then holds): at the agent's index, else
+    // (the agents changed mid-step, which they must not) by the caster's id
+    auto matches = [&](const IntendedSkill& r) {
+      return r.caster == comp->GetId() && r.slot == slot &&
+             r.rule < static_cast<int>(context_skills_.size());
+    };
+    const IntendedSkill* intended =
+        i < intended_skills_.size() && matches(intended_skills_[i]) ? &intended_skills_[i] : nullptr;
+    if (!intended) {
+      for (const IntendedSkill& r : intended_skills_) {
+        if (matches(r)) {
+          intended = &r;
+          break;
+        }
+      }
+    }
+    assert(intended && "a skill use GatherIntentions did not record");
+    if (!intended) continue;
+    const int rule = intended->rule;
     const std::string& name = rule >= 0 ? context_skills_[static_cast<size_t>(rule)].skill
                                         : comp->GetSkill(slot);
     const SkillConfig* found = skills_.Find(name);
@@ -1412,7 +1427,12 @@ Snapshot BaseEnv::SaveSnapshot() const {
   snap.horizon = horizon_;
   snap.d4_transform = d4_transform_;
   snap.max_downs = max_downs_;
-  snap.context_skills = context_skills_;  // Always explicit
+  // Always explicit. Only the rules usable with this book (the others are
+  // inert, skipped at run time): the snapshot's own loader would reject them.
+  snap.context_skills.emplace();
+  for (const ContextSkillRule& rule : context_skills_) {
+    if (IsUsableWith(rule, skills_)) snap.context_skills->push_back(rule);
+  }
 
   // Semantic annotations
   snap.annotations = annotations_.Serialize();
@@ -1699,9 +1719,16 @@ void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
   // generated book (the builtins), a rule naming an earlier level's skill
   // would fail the Reset. Kept as they are, such a rule is skipped
   // (ActiveContextRule). No rule to check meanwhile.
+  // Restored whatever happens (a derived LoadSnapshot may throw after the
+  // base load set the snapshot's).
   std::vector<ContextSkillRule> rules = context_skills_;
   snapshot.context_skills = std::vector<ContextSkillRule>{};
-  LoadSnapshot(snapshot);
+  try {
+    LoadSnapshot(snapshot);
+  } catch (...) {
+    context_skills_ = std::move(rules);
+    throw;
+  }
   context_skills_ = std::move(rules);
 }
 

@@ -1231,7 +1231,6 @@ TEST(TestJsonV4SnapshotLoadsWithoutDowns) {
   ASSERT_EQ(env.GetDowns(), 0);
 }
 
-// Every listed kind survives a save / load with its class.
 // Context skills (v6): absent = the default rules, present = exactly them
 // (empty included); they round-trip.
 TEST(TestJsonContextSkills) {
@@ -1360,6 +1359,7 @@ TEST(TestJsonV5SnapshotLoadsWithTheDefaultRules) {
   ASSERT_TRUE(env.GetContextSkills() == DefaultContextSkills());
 }
 
+// Every listed kind survives a save / load with its class.
 TEST(TestEnemyKindsRoundTrip) {
   for (const EnemyKind& kind : EnemyKinds()) {
     json j = AggroJson();

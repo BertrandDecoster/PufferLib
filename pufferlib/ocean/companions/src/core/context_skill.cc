@@ -46,6 +46,11 @@ std::vector<ContextSkillRule> DefaultContextSkills() {
   return {{ContextCondition::AdjacentDownedAlly, 0, "revive"}};
 }
 
+bool IsUsableWith(const ContextSkillRule& rule, const SkillBook& book) {
+  const SkillConfig* skill = book.Find(rule.skill);
+  return skill && skill->cooldown == 0;
+}
+
 void ValidateContextSkills(const std::vector<ContextSkillRule>& rules, const SkillBook& book) {
   for (size_t i = 0; i < rules.size(); ++i) {
     const ContextSkillRule& r = rules[i];

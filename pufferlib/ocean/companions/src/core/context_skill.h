@@ -47,6 +47,12 @@ struct ContextSkillRule {
 // "revive" (so every level has revive).
 std::vector<ContextSkillRule> DefaultContextSkills();
 
+// Whether the env can apply `rule` with `book`: its skill is in the book, with
+// cooldown 0 (what ValidateContextSkills asks of it). A rule accepted earlier
+// stops being one when the book changes behind it (a Define, a generated
+// Reset reloading the builtins): the env then skips it and does not save it.
+bool IsUsableWith(const ContextSkillRule& rule, const SkillBook& book);
+
 // Throws std::runtime_error naming the rule (index, condition, slot) and what
 // is wrong unless every rule is usable with `book`: a known condition, a slot
 // in [0, kMaxSkillSlots), a skill the book has, with cooldown 0 (cooldowns
