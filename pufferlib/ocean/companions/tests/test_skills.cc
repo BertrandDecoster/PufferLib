@@ -1,5 +1,6 @@
 // Copyright 2024
-// Unit tests for skills: opaque agent tags, the per-env TagTable and the SkillBook
+// Unit tests for skills: opaque agent tags, the per-env TagTable, the SkillBook
+// and the line and landing rules of skill motion
 
 #include <iostream>
 #include <sstream>
@@ -7,9 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "../src/core/grid.h"
 #include "../src/core/object.h"
 #include "../src/core/skill_config.h"
 #include "../src/core/tag_table.h"
+#include "../src/env/skill_motion.h"
+#include "../src/env/synchro_env.h"
 
 using namespace companions;
 
@@ -186,6 +190,197 @@ TEST(TestSkillEnumStringsRoundTrip) {
   try { SkillAreaFromString("ring"); } catch (const std::runtime_error&) { ++thrown; }
   try { SkillMotionFromString("blink"); } catch (const std::runtime_error&) { ++thrown; }
   ASSERT_EQ(thrown, 3);
+}
+
+// =============================================================================
+// Skill motion Tests (line and landing rules)
+// =============================================================================
+
+// A 10x10 arena shared by env-level tests: a wall border, floor inside (rows
+// and cols 1-8). Agents are parked on row 8 (cols 1..n) until a test places
+// them; tests only use rows 1-6. SynchroEnv is not movable (BaseEnv owns
+// unique_ptrs and declares a destructor), so the arena fills a caller's env:
+// `SynchroEnv env(10, 10, n, 1, 0, 42); MakeArena(env);`.
+static void MakeArena(SynchroEnv& env) {
+  env.Reset();
+  Grid& g = env.GetMutableGrid();
+  for (int r = 0; r < 10; ++r) {
+    for (int c = 0; c < 10; ++c) {
+      bool border = r == 0 || c == 0 || r == 9 || c == 9;
+      g.SetCell({r, c}, border ? CellKind::Wall : CellKind::Floor);
+    }
+  }
+  auto agents = env.GetMutableObjectManager().GetAllAgents();
+  for (size_t i = 0; i < agents.size(); ++i) {
+    env.GetMutableObjectManager().UpdatePosition(agents[i]->GetId(),
+                                                 {8, 1 + static_cast<int>(i)});
+  }
+}
+
+static Agent* Place(SynchroEnv& env, int index, Position p) {
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[static_cast<size_t>(index)];
+  env.GetMutableObjectManager().UpdatePosition(a->GetId(), p);
+  return a;
+}
+
+static Position Dash(SynchroEnv& env, Agent* a, std::vector<Position>* crossed = nullptr) {
+  return ResolveDash(env.GetGrid(), env.GetObjectManager(), a->GetPosition(),
+                     0, 1, 4, a->GetId(), crossed);  // toward the right
+}
+
+static Position Teleport(SynchroEnv& env, Agent* a) {
+  return ResolveTeleport(env.GetGrid(), env.GetObjectManager(), a->GetPosition(),
+                         0, 1, 3, a->GetId());
+}
+
+static Position Ground(SynchroEnv& env, Position from, int range = 3) {
+  return ResolveGroundTarget(env.GetGrid(), from, 0, 1, range);
+}
+
+TEST(TestDirectionDelta) {
+  int dr = -9, dc = -9;
+  DirectionDelta(Direction::Right, dr, dc);
+  ASSERT_EQ(dr, 0);
+  ASSERT_EQ(dc, 1);
+  DirectionDelta(Direction::Up, dr, dc);
+  Position up = ApplyMovement({5, 5}, MovementAction::Up);
+  ASSERT_EQ(dr, up.row - 5);
+  ASSERT_EQ(dc, up.col - 5);
+}
+
+TEST(TestGroundTargetClear) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(Ground(env, {3, 1}) == (Position{3, 4}));
+}
+
+TEST(TestGroundTargetCrossesHolesAndAgents) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 2}, CellKind::Hazard);
+  Place(env, 1, {3, 3});
+  ASSERT_TRUE(Ground(env, {3, 1}) == (Position{3, 4}));
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Hazard);  // may land on a hole
+  ASSERT_TRUE(Ground(env, {3, 1}) == (Position{3, 4}));
+}
+
+TEST(TestGroundTargetStoppedByWall) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
+  ASSERT_TRUE(Ground(env, {3, 1}) == (Position{3, 3}));
+  env.GetMutableGrid().SetCell({3, 2}, CellKind::Wall);
+  ASSERT_TRUE(Ground(env, {3, 1}) == (Position{3, 1}));  // wall adjacent: the caster's own cell
+}
+
+TEST(TestDashClearLaneAndPath) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  std::vector<Position> crossed;
+  ASSERT_TRUE(Dash(env, a, &crossed) == (Position{3, 5}));
+  ASSERT_EQ(crossed.size(), static_cast<size_t>(3));  // (3,2) (3,3) (3,4)
+  ASSERT_TRUE(crossed[0] == (Position{3, 2}));
+  ASSERT_TRUE(crossed[2] == (Position{3, 4}));
+}
+
+TEST(TestDashStopsBeforeWall) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 3}));
+}
+
+TEST(TestDashWallRightAwayStays) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 2}, CellKind::Wall);
+  Agent* a = Place(env, 0, {3, 1});
+  std::vector<Position> crossed;
+  ASSERT_TRUE(Dash(env, a, &crossed) == (Position{3, 1}));
+  ASSERT_TRUE(crossed.empty());
+}
+
+TEST(TestDashStopsAtBorder) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 6});
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 8}));
+}
+
+TEST(TestDashCrossesHole) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 3}, CellKind::Hazard);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 5}));
+}
+
+TEST(TestDashNeverLandsInHole) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 5}, CellKind::Hazard);
+  Agent* a = Place(env, 0, {3, 1});
+  std::vector<Position> crossed;
+  ASSERT_TRUE(Dash(env, a, &crossed) == (Position{3, 4}));
+  ASSERT_EQ(crossed.size(), static_cast<size_t>(2));  // only up to the landing cell
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Hazard);
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 3}));
+}
+
+TEST(TestDashCrossesAgentsButNeverLandsOnOne) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  Place(env, 1, {3, 3});
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 5}));  // through
+  Place(env, 1, {3, 5});
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 4}));  // short of it
+}
+
+TEST(TestTeleportClear) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(Teleport(env, a) == (Position{3, 4}));
+}
+
+TEST(TestTeleportJumpsWalls) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 2}, CellKind::Wall);
+  env.GetMutableGrid().SetCell({3, 3}, CellKind::Wall);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(Teleport(env, a) == (Position{3, 4}));
+}
+
+TEST(TestTeleportFallsBackCloser) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
+  ASSERT_TRUE(Teleport(env, a) == (Position{3, 3}));
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Hazard);
+  ASSERT_TRUE(Teleport(env, a) == (Position{3, 3}));
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Floor);
+  Place(env, 1, {3, 4});
+  ASSERT_TRUE(Teleport(env, a) == (Position{3, 3}));
+}
+
+TEST(TestTeleportOutOfBoundsFallsBack) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 7});  // +3 out of the grid, +2 the border wall
+  ASSERT_TRUE(Teleport(env, a) == (Position{3, 8}));
+}
+
+TEST(TestTeleportNowhereStays) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  for (int c = 2; c <= 4; ++c) env.GetMutableGrid().SetCell({3, c}, CellKind::Wall);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(Teleport(env, a) == (Position{3, 1}));
 }
 
 // =============================================================================
