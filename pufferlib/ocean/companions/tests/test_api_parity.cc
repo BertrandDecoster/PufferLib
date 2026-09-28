@@ -824,6 +824,7 @@ TEST(ParityTest_SkillsTagsZones) {
     ASSERT_EQ(r.state.done, cpp_result.done);
     ASSERT_EQ(r.state.downs, cpp_env.GetDowns());
     ASSERT_EQ(r.state.max_downs, cpp_env.GetMaxDowns());
+    ASSERT_EQ(r.state.team_down, cpp_env.IsTeamDown());
 
     cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
     ASSERT_EQ(r.state.agent_count, static_cast<int>(cpp_agents.size()));

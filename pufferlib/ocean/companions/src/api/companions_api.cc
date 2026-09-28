@@ -43,7 +43,7 @@
 // 1.2.1: companions_get_end_reason (additive), EpisodeEnd's effect_id.
 // 1.2.2: timers tick at the end of a step (cooldown n = n blocked steps).
 // 1.3.0: downs (Companions_AgentState.downed, Companions_GameState.downs /
-// max_downs, Companions_End_TeamDown, Companions_Event_AgentDowned); struct
+// max_downs / team_down, Companions_End_TeamDown, Companions_Event_AgentDowned); struct
 // layouts changed (consumers must rebuild).
 #define COMPANIONS_VERSION "1.3.0"
 
@@ -406,6 +406,7 @@ static void ExtractGameState(const Companions_Env* wrapper,
   out->success = wrapper->success;
   out->downs = env->GetDowns();
   out->max_downs = env->GetMaxDowns();
+  out->team_down = env->IsTeamDown();  // Live, not the latched end reason
   for (int i = 0; i < out->agent_count; i++) {
     out->rewards[i] = static_cast<float>(
         i < static_cast<int>(wrapper->last_rewards.size())

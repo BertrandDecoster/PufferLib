@@ -1775,6 +1775,7 @@ TEST(TestDownsThroughTheApi) {
   ASSERT_FALSE(result.state.agents[1].downed);
   ASSERT_EQ(result.state.downs, 1);
   ASSERT_EQ(result.state.max_downs, 3);
+  ASSERT_FALSE(result.state.team_down);  // One down of two, one of three
   ASSERT_FALSE(result.state.done);
   // The step after the down reports it, once
   ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 1);
@@ -1813,6 +1814,44 @@ TEST(TestTeamDownThroughTheApi) {
   ASSERT_EQ(result.events[result.event_count - 1].type, Companions_Event_EpisodeEnd);
   ASSERT_EQ(result.events[result.event_count - 2].type, Companions_Event_AgentDowned);
   ASSERT_EQ(result.events[result.event_count - 2].subject_id, a.id);
+  ASSERT_TRUE(result.state.team_down);
+  companions_destroy(env);
+}
+
+// team_down is the live verdict: a team that goes down after the episode
+// ended (here at its horizon, a host playing on) says so, while the end
+// reason keeps the first one (Horizon).
+TEST(TestTeamDownIsLiveAfterTheHorizon) {
+  Companions_Env* env = MakeAggroZombieEnv(2);
+  const int32_t n = companions_get_agent_count(env);
+  std::vector<Companions_Action> stay(n, {Companions_Movement_Stay, Companions_Interact_None});
+  Companions_StepResult result = {};
+  companions_step(env, stay.data(), n, &result);
+  ASSERT_FALSE(result.state.team_down);
+  companions_step(env, stay.data(), n, &result);
+  ExpectEnd(env, result, Companions_End_Horizon);
+  ASSERT_FALSE(result.state.team_down);
+
+  int32_t companions = 0;
+  for (int32_t i = 0; i < n; ++i) {
+    Companions_AgentState a = AgentAt(env, i);
+    if (a.faction != Companions_Faction_Companion) continue;
+    ++companions;
+    ASSERT_TRUE(companions_spawn_effect(env, "kill", a.position.row, a.position.col,
+                                        Companions_Direction_Up, -1));
+  }
+  ASSERT_TRUE(companions > 0);
+  Companions_GameState state = {};
+  companions_get_state(env, &state);  // Between steps, already
+  ASSERT_TRUE(state.team_down);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
+  for (int i = 0; i < 2; ++i) {
+    companions_step(env, stay.data(), n, &result);
+    ASSERT_TRUE(result.state.team_down);
+    ASSERT_TRUE(result.state.done);
+    ASSERT_EQ(CountEpisodeEnds(result), 0);
+    ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
+  }
   companions_destroy(env);
 }
 

@@ -25,7 +25,8 @@
 // Companions_GameState): consumers must rebuild against this header. A
 // companion at 0 HP goes down instead of dying: Companions_AgentState.downed
 // (alive stays true); Companions_GameState.downs / max_downs count the team's
-// downs; Companions_End_TeamDown (the level is lost) and
+// downs and Companions_GameState.team_down says the team is down now;
+// Companions_End_TeamDown (the level is lost) and
 // Companions_Event_AgentDowned.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
@@ -435,6 +436,10 @@ typedef struct {
   bool success;
   int32_t downs;      // The team's downs so far (every down counts)
   int32_t max_downs;  // The level is lost at this many (or every companion down)
+  // The team is down now: max_downs reached or every companion down;
+  // independent of the end reason, which keeps the first reason the episode
+  // ended with (a team down after the horizon stays Horizon). Since 1.3
+  bool team_down;
   float rewards[Companions_MAX_AGENTS];
 } Companions_GameState;
 
