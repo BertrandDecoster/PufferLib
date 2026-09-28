@@ -1441,14 +1441,16 @@ TEST(TestOverlongNamesAreRejected) {
 // in events_dropped; the EpisodeEnd of a step that ends the episode is always
 // reported, as the last event.
 TEST(TestEventCapKeepsEpisodeEnd) {
-  // "splash" lands 20 tags on each of the 4 agents around its caster: 80
-  // TagApplied + 1 SkillUsed per step (+ EpisodeEnd on step 2, the horizon).
+  // "splash" lands 20 tags on each of the 4 agents around its caster (spared:
+  // self_tags off): 80 TagApplied + 1 SkillUsed per step (+ EpisodeEnd on
+  // step 2, the horizon).
   std::string tags;
   for (int i = 0; i < 20; ++i) {
     tags += std::string(i ? "," : "") + "{\"tag\":\"t" + std::to_string(i) + "\",\"duration\":-1}";
   }
   const std::string skills =
-      "[{\"name\":\"splash\",\"targeting\":\"self\",\"area\":\"cross\",\"tags\":[" + tags + "]}]";
+      "[{\"name\":\"splash\",\"targeting\":\"self\",\"area\":\"cross\",\"self_tags\":false,"
+      "\"tags\":[" + tags + "]}]";
   Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"splash\"]"},
                                    {2, 3, ""},
                                    {4, 3, ""},

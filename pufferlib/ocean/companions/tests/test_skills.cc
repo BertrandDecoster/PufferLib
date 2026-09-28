@@ -145,6 +145,18 @@ TEST(TestSkillBookBuiltins) {
   ASSERT_TRUE(vortex->motion == SkillMotion::PullIn);
   ASSERT_EQ(vortex->root_steps, 1);
 
+  // Friendly fire everywhere; the caster spares itself only where noted.
+  for (const SkillConfig& s : book.All()) {
+    ASSERT_TRUE(s.friendly_fire);
+    ASSERT_TRUE(s.self_motion);
+  }
+  ASSERT_TRUE(fireball->self_tags && fireball->self_root);
+  ASSERT_FALSE(step->self_tags);  // It lands on the centre of its own cross
+  ASSERT_TRUE(step->self_root);
+  ASSERT_TRUE(tp->self_tags && tp->self_root);
+  ASSERT_TRUE(vortex->self_tags);
+  ASSERT_FALSE(vortex->self_root);
+
   ASSERT_TRUE(book.Find("frost") == nullptr);
   ASSERT_TRUE(SkillMovesCaster(*step));
   ASSERT_TRUE(SkillMovesCaster(*tp));
@@ -435,6 +447,16 @@ static bool Has(const BaseEnv& env, const Agent* a, const char* tag) {
   return t != kInvalidTag && a->HasTag(t);
 }
 
+// Define validates: true when it throws.
+static bool DefineThrows(SkillBook& book, const SkillConfig& s) {
+  try {
+    book.Define(s);
+  } catch (const std::runtime_error&) {
+    return true;
+  }
+  return false;
+}
+
 TEST(TestTeleportThroughStep) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -664,10 +686,10 @@ TEST(TestHostPrimitivesRejectOverlongNames) {
   ASSERT_EQ(env.GetTagTable().Find(too_long), kInvalidTag);
   ASSERT_TRUE(a->GetTags().empty());
 
-  // Even a skill the book holds (Define does not validate) cannot be slotted.
+  // Define refuses such a skill (ValidateSkillConfig), so it cannot be slotted.
   SkillConfig wordy;
   wordy.name = too_long;
-  env.GetMutableSkillBook().Define(wordy);
+  ASSERT_TRUE(DefineThrows(env.GetMutableSkillBook(), wordy));
   ASSERT_FALSE(env.SetCompanionSkill(a->GetId(), 0, too_long));
   ASSERT_TRUE(AsCompanion(a)->GetSkill(0).empty());
 
@@ -750,8 +772,30 @@ TEST(TestSkillBookIgnoresEmptyName) {
   SkillConfig unnamed;
   unnamed.tags = {{"ghost", kPermanentTag}};
   book.Define(unnamed);
+  unnamed.range = -1;  // Invalid too, but unnamed: still silently ignored
+  book.Define(unnamed);
   ASSERT_EQ(book.All().size(), static_cast<size_t>(4));
   ASSERT_TRUE(book.Find("") == nullptr);
+}
+
+TEST(TestSkillBookDefineValidates) {
+  SkillBook book;
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.range = -1;
+  ASSERT_TRUE(DefineThrows(book, frost));
+  ASSERT_TRUE(book.Find("frost") == nullptr);
+  SkillConfig bad_fireball = *book.Find("fireball");
+  bad_fireball.tags = {{"", 2}};
+  ASSERT_TRUE(DefineThrows(book, bad_fireball));
+  ASSERT_EQ(book.Find("fireball")->tags[0].tag, std::string("burning"));  // Unchanged
+  bad_fireball = *book.Find("fireball");
+  bad_fireball.name = std::string(kMaxNameLength + 1, 'f');
+  ASSERT_TRUE(DefineThrows(book, bad_fireball));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(4));
+  frost.range = 2;
+  ASSERT_FALSE(DefineThrows(book, frost));
+  ASSERT_EQ(book.Find("frost")->range, 2);
 }
 
 TEST(TestEmptyNamedSkillNeverFiresForLegacyCaster) {
@@ -771,7 +815,8 @@ TEST(TestEmptyNamedSkillNeverFiresForLegacyCaster) {
   ASSERT_FALSE(Has(env, target, "ghost"));
 }
 
-TEST(TestZeroDurationSkillTagLandsNothing) {
+// A skill tag of duration 0 would land nothing: Define refuses the skill.
+TEST(TestZeroDurationSkillTagIsRefused) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   SkillConfig splash;
@@ -779,14 +824,9 @@ TEST(TestZeroDurationSkillTagLandsNothing) {
   splash.targeting = SkillTargeting::Projectile;
   splash.range = 3;
   splash.tags = {{"wet", 0}};
-  env.GetMutableSkillBook().Define(splash);
+  ASSERT_TRUE(DefineThrows(env.GetMutableSkillBook(), splash));
   Agent* caster = Place(env, 0, {3, 1});
-  Agent* target = Place(env, 1, {3, 2});
-  env.SetCompanionSkill(caster->GetId(), 0, "splash");
-  env.Step({Use(MovementAction::Right), kStay});
-  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
-  ASSERT_TRUE(env.GetLastTagsApplied().empty());
-  ASSERT_FALSE(Has(env, target, "wet"));
+  ASSERT_FALSE(env.SetCompanionSkill(caster->GetId(), 0, "splash"));
 }
 
 TEST(TestApplyTagToRejectsBadDurations) {
@@ -995,19 +1035,210 @@ TEST(TestLaterCasterActsFromWhereAnEarlierSkillMovedIt) {
   ASSERT_TRUE(b->GetPosition() == (Position{3, 4}));
 }
 
-TEST(TestCasterOnTheRingIsNeverMovedOrRooted) {
-  for (const char* skill : {"vortex", "fireball"}) {
-    SynchroEnv env(10, 10, 1, 1, 0, 42);
+// =============================================================================
+// Friendly fire and the caster's own skill
+// =============================================================================
+
+// A plain (non-companion) agent of `faction`: SynchroEnv only spawns companions.
+static Agent* AddAgent(SynchroEnv& env, Position p, Faction faction) {
+  Agent* a = env.GetMutableObjectManager().CreateActor<Agent>(p);
+  a->SetFaction(faction);
+  return a;
+}
+
+// A copy of `base` under `name`, defined in the env's book.
+static SkillConfig DefineCopy(SynchroEnv& env, const char* base, const char* name) {
+  SkillConfig s = *env.GetSkillBook().Find(base);
+  s.name = name;
+  return s;
+}
+
+// Friendly fire is on by default: the caster's own fireball burns it and
+// pushes it off the ring, like anyone else there.
+TEST(TestCasterOnTheRingOfItsOwnFireballBurnsAndIsPushed) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
+  Agent* caster = Place(env, 0, {3, 2});  // the wall stops the target at (3,3)
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right)});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 3}));
+  ASSERT_TRUE(Has(env, caster, "burning"));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));  // left ring cell, pushed left
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].agent, caster->GetId());
+  ASSERT_EQ(env.GetLastTagsApplied()[0].source, caster->GetId());
+}
+
+// The caster on the highest-priority ring cell of its own vortex is pulled in
+// (vortex has self_root = false: not rooted); the ally left on the ring is.
+TEST(TestCasterOnTheRingOfItsOwnVortexIsPulledNotRooted) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({4, 4}, CellKind::Wall);
+  Agent* caster = Place(env, 0, {2, 4});  // aims down: the wall stops the target at (3,4)
+  Agent* ally = Place(env, 1, {3, 5});    // right ring cell: after "up"
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  env.Step({Use(MovementAction::Down), kStay});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 4}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 4}));
+  ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
+  ASSERT_TRUE(ally->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(ally->HasStatus(StatusType::Rooted));
+}
+
+// A ground skill stopped by an adjacent wall lands on the caster's own cell.
+TEST(TestGroundSkillAgainstAWallLandsOnTheCaster) {
+  {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});  // the border wall is at (3,0)
+    Agent* ally = Place(env, 1, {2, 1});    // up ring cell
+    env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+    env.Step({Use(MovementAction::Left), kStay});
+    ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 1}));
+    ASSERT_TRUE(Has(env, caster, "burning"));
+    ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));  // the centre is not pushed
+    ASSERT_TRUE(Has(env, ally, "burning"));
+    ASSERT_TRUE(ally->GetPosition() == (Position{1, 1}));
+  }
+  {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});
+    Agent* ally = Place(env, 1, {2, 1});
+    env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+    env.Step({Use(MovementAction::Left), kStay});
+    ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 1}));
+    ASSERT_TRUE(ally->GetPosition() == (Position{2, 1}));  // the centre is occupied
+    ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
+    ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));   // self_root = false
+    ASSERT_TRUE(ally->HasStatus(StatusType::Rooted));
+  }
+}
+
+// With self_root on (the default), a vortex on the caster's own cell roots it.
+TEST(TestSelfRootRootsTheCasterOnItsOwnArea) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig sticky = DefineCopy(env, "vortex", "stickyVortex");
+  sticky.self_root = true;
+  env.GetMutableSkillBook().Define(sticky);
+  Agent* caster = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(caster->GetId(), 0, "stickyVortex");
+  env.Step({Use(MovementAction::Left)});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 1}));
+  ASSERT_TRUE(caster->HasStatus(StatusType::Rooted));
+}
+
+// self_tags / self_motion spare the caster one effect each; allies still get it.
+TEST(TestSelfTagsAndSelfMotionSpareOnlyTheCaster) {
+  for (int variant = 0; variant < 2; ++variant) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
     MakeArena(env);
     env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
-    Agent* caster = Place(env, 0, {3, 2});  // the wall stops the target at (3,3)
-    env.SetCompanionSkill(caster->GetId(), 0, skill);
-    env.Step({Use(MovementAction::Right)});
-    ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 3}));
-    ASSERT_TRUE(caster->GetPosition() == (Position{3, 2}));  // left ring cell
-    ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
-    ASSERT_TRUE(env.GetLastTagsApplied().empty());
+    SkillConfig s = DefineCopy(env, "fireball", "myFireball");
+    if (variant == 0) s.self_tags = false;
+    if (variant == 1) s.self_motion = false;
+    env.GetMutableSkillBook().Define(s);
+    Agent* caster = Place(env, 0, {3, 2});  // left ring cell of (3,3)
+    Agent* ally = Place(env, 1, {2, 3});    // up ring cell
+    env.SetCompanionSkill(caster->GetId(), 0, "myFireball");
+    env.Step({Use(MovementAction::Right), kStay});
+    ASSERT_EQ(Has(env, caster, "burning"), variant == 1);
+    ASSERT_TRUE(caster->GetPosition() == (variant == 0 ? Position{3, 1} : Position{3, 2}));
+    ASSERT_TRUE(Has(env, ally, "burning"));
+    ASSERT_TRUE(ally->GetPosition() == (Position{1, 3}));
   }
+}
+
+// A lightning step's caster lands on the centre of its own cross; the builtin
+// spares it (self_tags = false), a copy with self_tags on electrifies it.
+TEST(TestLightningStepSelfTags) {
+  for (bool self_tags : {false, true}) {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    SkillConfig s = DefineCopy(env, "lightningStep", "myStep");
+    s.self_tags = self_tags;
+    env.GetMutableSkillBook().Define(s);
+    Agent* caster = Place(env, 0, {3, 1});
+    env.SetCompanionSkill(caster->GetId(), 0, "myStep");
+    env.Step({Use(MovementAction::Right)});
+    ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
+    ASSERT_EQ(Has(env, caster, "electrified"), self_tags);
+  }
+}
+
+// friendly_fire = false: allies (companions) and the caster are untouched (no
+// tag, no push); enemies and neutrals in the area are affected.
+TEST(TestNoFriendlyFireSparesAlliesAndTheCaster) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig s = DefineCopy(env, "fireball", "safeFireball");
+  s.friendly_fire = false;
+  env.GetMutableSkillBook().Define(s);
+  Agent* caster = Place(env, 0, {3, 1});   // target (3,4)
+  Agent* ally = Place(env, 1, {2, 4});     // up ring cell
+  Agent* enemy = AddAgent(env, {3, 5}, Faction::ENEMY);      // right ring cell
+  Agent* neutral = AddAgent(env, {4, 4}, Faction::NEUTRAL);  // down ring cell
+  env.SetCompanionSkill(caster->GetId(), 0, "safeFireball");
+  env.Step({Use(MovementAction::Right), kStay, kStay, kStay});  // one action per agent
+  ASSERT_FALSE(Has(env, ally, "burning"));
+  ASSERT_TRUE(ally->GetPosition() == (Position{2, 4}));
+  ASSERT_TRUE(Has(env, enemy, "burning"));
+  ASSERT_TRUE(enemy->GetPosition() == (Position{3, 6}));
+  ASSERT_TRUE(Has(env, neutral, "burning"));
+  ASSERT_TRUE(neutral->GetPosition() == (Position{5, 4}));
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(2));
+
+  // On its own cell (a wall right beside it) the caster is spared too.
+  Place(env, 0, {6, 1});
+  AsCompanion(caster)->SetCooldown(0, 0);
+  env.Step({Use(MovementAction::Left), kStay, kStay, kStay});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{6, 1}));
+  ASSERT_FALSE(Has(env, caster, "burning"));
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+}
+
+// friendly_fire = false: a vortex skips an ally of higher priority, pulls and
+// roots the enemy, and leaves the ally unrooted.
+TEST(TestNoFriendlyFireVortexPullsTheEnemyNotTheAlly) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig s = DefineCopy(env, "vortex", "safeVortex");
+  s.friendly_fire = false;
+  env.GetMutableSkillBook().Define(s);
+  Agent* caster = Place(env, 0, {3, 1});  // target (3,4), empty
+  Agent* ally = Place(env, 1, {2, 4});    // up: first in priority
+  Agent* enemy = AddAgent(env, {3, 5}, Faction::ENEMY);
+  env.SetCompanionSkill(caster->GetId(), 0, "safeVortex");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(ally->GetPosition() == (Position{2, 4}));
+  ASSERT_FALSE(ally->HasStatus(StatusType::Rooted));
+  ASSERT_TRUE(enemy->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(enemy->HasStatus(StatusType::Rooted));
+}
+
+// friendly_fire = false: a projectile flies past allies (it cannot affect
+// them) and stops on the first agent it can.
+TEST(TestNoFriendlyFireProjectilePassesAllies) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig bolt;
+  bolt.name = "bolt";
+  bolt.targeting = SkillTargeting::Projectile;
+  bolt.range = 5;
+  bolt.friendly_fire = false;
+  bolt.tags = {{"chilled", kPermanentTag}};
+  env.GetMutableSkillBook().Define(bolt);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* ally = Place(env, 1, {3, 2});
+  Agent* enemy = AddAgent(env, {3, 4}, Faction::ENEMY);
+  env.SetCompanionSkill(caster->GetId(), 0, "bolt");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 4}));
+  ASSERT_FALSE(Has(env, ally, "chilled"));
+  ASSERT_TRUE(Has(env, enemy, "chilled"));
 }
 
 TEST(TestEnemyFilteredVortexIgnoresCompanions) {

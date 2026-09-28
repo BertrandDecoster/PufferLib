@@ -31,8 +31,9 @@ enum class SkillMotion {
   None,
   Dash,      // Caster: up to `motion_distance`; crosses holes/agents, lands on the furthest valid cell
   Teleport,  // Caster: exactly `motion_distance`, else closer; ignores what is between
-  // PushOut / PullIn move things on the area's ring, never the caster; with
-  // SkillArea::Single there is no ring, so they do nothing.
+  // PushOut / PullIn move things on the area's ring (the caster too, when it
+  // stands there: see friendly_fire / self_motion); with SkillArea::Single
+  // there is no ring, so they do nothing.
   PushOut,   // Things on the area's ring: `motion_distance` away from the centre (landing rule)
   // PullIn: one thing on the ring into the centre, if free: above, right,
   // below, left. Always exactly one cell (ignores `motion_distance`); needs a
@@ -50,7 +51,7 @@ struct SkillConfig {
   std::string name;
   SkillTargeting targeting = SkillTargeting::Projectile;
   int range = 1;
-  TargetFilter filter = TargetFilter::All;  // Who is affected (the caster never is)
+  TargetFilter filter = TargetFilter::All;  // Who is affected (see also friendly_fire)
   SkillArea area = SkillArea::Single;
   SkillMotion motion = SkillMotion::None;
   int motion_distance = 0;
@@ -60,6 +61,16 @@ struct SkillConfig {
   // Used at step t, usable again at step t + cooldown (0 and 1 both mean
   // every step).
   int cooldown = 0;
+  // Who the skill affects, on top of `filter`. Off: only agents not of the
+  // caster's faction (enemies, neutrals): allies and the caster get no tag,
+  // no push / pull, no root, and a projectile flies past them. On: allies are
+  // affected like anyone else, and so is the caster when it stands in its own
+  // area (after its own motion), unless a self_* flag below spares it that
+  // effect (they mean nothing with friendly_fire off).
+  bool friendly_fire = true;
+  bool self_tags = true;    // The caster gets the skill's tags
+  bool self_motion = true;  // PushOut / PullIn may move the caster
+  bool self_root = true;    // root_steps roots the caster
 };
 
 // Does this skill move its caster (so a rooted caster cannot use it)?
@@ -72,7 +83,8 @@ class SkillBook {
  public:
   SkillBook();   // Builtins only
   void Reset();  // Back to builtins only
-  // Adds, or replaces a skill of the same name; ignores an empty name.
+  // Adds, or replaces a skill of the same name; ignores an empty name. Throws
+  // std::runtime_error (book unchanged) unless ValidateSkillConfig accepts it.
   void Define(SkillConfig config);
   // Invalidated by Define / Reset: do not hold the pointer across them.
   const SkillConfig* Find(const std::string& name) const;

@@ -822,6 +822,10 @@ void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
   }
   ASSERT_EQ(a.root_steps, b.root_steps);
   ASSERT_EQ(a.cooldown, b.cooldown);
+  ASSERT_EQ(a.friendly_fire, b.friendly_fire);
+  ASSERT_EQ(a.self_tags, b.self_tags);
+  ASSERT_EQ(a.self_motion, b.self_motion);
+  ASSERT_EQ(a.self_root, b.self_root);
 }
 
 // One skill per value of every enum, and every scalar off its default.
@@ -849,6 +853,11 @@ std::vector<SkillConfig> EverySkillShape() {
       s.tags = {{"t" + std::to_string(i), 1 + i}, {"perm", kPermanentTag}};
       s.root_steps = i;
       s.cooldown = 3 + i;
+      // Each flag both ways across the shapes, in different combinations.
+      s.friendly_fire = (i % 2) == 1;
+      s.self_tags = (i % 3) != 0;
+      s.self_motion = (i % 4) != 1;
+      s.self_root = (i % 5) != 2;
       out.push_back(s);
       ++i;
     }
@@ -944,6 +953,29 @@ TEST(TestBinaryEverySkillConfigFieldRoundTrips) {
   ASSERT_TRUE(back.cell_tags[0].cell == (Position{0, 1}));
   ASSERT_EQ(back.cell_tags[0].tag, std::string("wet"));
   ASSERT_EQ(back.cell_tags[0].duration, 5);
+}
+
+// The v4 skill record: name (length + bytes), targeting, range, filter, area,
+// motion, motion_distance (ints), tag_path (bool), tag count, the tags,
+// root_steps, cooldown (ints), friendly_fire, self_tags, self_motion,
+// self_root (bools). Without tags: 45 bytes plus the name.
+TEST(TestBinarySkillRecordLayout) {
+  Snapshot s = MinimalSnapshot();
+  const size_t without = s.Serialize().size();
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.friendly_fire = false;
+  frost.self_root = false;
+  s.skills.push_back(frost);
+  std::vector<uint8_t> bytes = s.Serialize();
+  ASSERT_EQ(bytes.size(), without + 45 + frost.name.size());
+  // The four flags close the record, just before the zone count.
+  const size_t flags_at = bytes.size() - 4 - 4;
+  ASSERT_EQ(bytes[flags_at + 0], 0);  // friendly_fire
+  ASSERT_EQ(bytes[flags_at + 1], 1);  // self_tags
+  ASSERT_EQ(bytes[flags_at + 2], 1);  // self_motion
+  ASSERT_EQ(bytes[flags_at + 3], 0);  // self_root
+  AssertSkillEq(Snapshot::Deserialize(bytes).skills[0], frost);
 }
 
 TEST(TestBinaryV3SnapshotStillLoads) {

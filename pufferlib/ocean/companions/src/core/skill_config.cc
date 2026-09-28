@@ -27,6 +27,7 @@ std::vector<SkillConfig> Builtins() {
   lightning_step.tag_path = true;
   lightning_step.tags = {{"electrified", kPermanentTag}};
   lightning_step.cooldown = 3;
+  lightning_step.self_tags = false;  // Its caster lands on the centre of its own cross
 
   SkillConfig teleport;
   teleport.name = "teleport";
@@ -44,6 +45,7 @@ std::vector<SkillConfig> Builtins() {
   vortex.motion_distance = 1;
   vortex.root_steps = 1;
   vortex.cooldown = 4;
+  vortex.self_root = false;  // Pulled into its own vortex, the caster is not rooted
 
   return {fireball, lightning_step, teleport, vortex};
 }
@@ -55,6 +57,7 @@ void SkillBook::Reset() { skills_ = Builtins(); }
 
 void SkillBook::Define(SkillConfig config) {
   if (config.name.empty()) return;  // "" is the empty slot, never a skill
+  ValidateSkillConfig(config);      // Throws before any change
   for (SkillConfig& s : skills_) {
     if (s.name == config.name) {
       s = std::move(config);

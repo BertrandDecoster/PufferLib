@@ -324,10 +324,14 @@ class BaseEnv {
   Position UseSkill(Companion& caster, const SkillConfig& skill);
   // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for Cross.
   std::vector<Position> AreaCells(Position centre, SkillArea area) const;
-  // The one definition of "affected": appends the living agents on `cells` that
-  // pass the skill's filter, never the caster, each once, in cell order.
+  // The one definition of "affected": a living agent passing the skill's
+  // filter and, without friendly fire, not of the caster's faction (so never
+  // the caster). With friendly fire the caster itself can be affected; each
+  // effect then checks its self_* flag.
+  bool Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const;
+  // Appends the agents on `cells` the skill affects, each once, in cell order.
   void CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
-                       ObjectId caster, std::vector<Agent*>& affected);
+                       const Agent& caster, std::vector<Agent*>& affected);
   void LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                const std::string& cause);
   void LandTag(Agent& agent, const std::string& tag, int duration,
@@ -338,9 +342,11 @@ class BaseEnv {
   void ApplyZoneTag(Agent& agent);  // The tag of the cell it stands on, if any
   void ApplyZoneTags();             // Every living agent (after movement)
   // Roots `on_area` (the affected agents on the area, centre included, not the
-  // dash path) before anything moves, then PushOut (the ring, away from the
-  // centre) / PullIn (one ring thing, by priority, into a free centre).
-  void AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster,
+  // dash path; the caster only with self_root) before anything moves, then
+  // PushOut (the ring, away from the centre) / PullIn (one ring thing, by
+  // priority, into a free centre); agents only if affected, the caster only
+  // with self_motion.
+  void AreaMotion(const SkillConfig& skill, Position centre, const Agent& caster,
                   const std::vector<Agent*>& on_area);
 
   int rows_;

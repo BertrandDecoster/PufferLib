@@ -1024,7 +1024,7 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
         if (!grid_->IsInBounds(next) || !grid_->IsPathable(next)) break;
         cur = next;
         auto* hit = dynamic_cast<Agent*>(object_manager_->GetActorAt(cur));
-        if (hit && hit->IsAlive() && hit != &caster && PassesFilter(*hit, skill.filter)) break;
+        if (hit && hit != &caster && Affects(skill, caster, *hit)) break;
       }
       centre = cur;
       break;
@@ -1033,51 +1033,60 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
 
   // 2. Affected agents: on the area, then (tag_path) on the dash path.
   std::vector<Agent*> affected;
-  CollectAffected(AreaCells(centre, skill.area), skill, caster.GetId(), affected);
+  CollectAffected(AreaCells(centre, skill.area), skill, caster, affected);
   const std::vector<Agent*> on_area = affected;
-  if (skill.tag_path) CollectAffected(path, skill, caster.GetId(), affected);
+  if (skill.tag_path) CollectAffected(path, skill, caster, affected);
 
   // 3. Tags land on who was there at impact (area and path).
   for (Agent* a : affected) {
+    if (a == &caster && !skill.self_tags) continue;
     for (const SkillTagSpec& t : skill.tags) {
       LandTag(*a, t.tag, t.duration, caster.GetId(), skill.name);
     }
   }
 
   // 4. Root (the area only) and area motions.
-  AreaMotion(skill, centre, caster.GetId(), on_area);
+  AreaMotion(skill, centre, caster, on_area);
   return centre;
 }
 
+bool BaseEnv::Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const {
+  if (!agent.IsAlive() || !PassesFilter(agent, skill.filter)) return false;
+  // The caster is of its own faction: without friendly fire it is spared too.
+  return skill.friendly_fire || agent.GetFaction() != caster.GetFaction();
+}
+
 void BaseEnv::CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
-                              ObjectId caster, std::vector<Agent*>& affected) {
+                              const Agent& caster, std::vector<Agent*>& affected) {
   for (const Position& p : cells) {
     auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
-    if (!a || !a->IsAlive() || a->GetId() == caster || !PassesFilter(*a, skill.filter)) continue;
+    if (!a || !Affects(skill, caster, *a)) continue;
     if (std::find(affected.begin(), affected.end(), a) == affected.end()) affected.push_back(a);
   }
 }
 
-void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster,
+void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, const Agent& caster,
                          const std::vector<Agent*>& on_area) {
   // Root first, before anything moves: no Agent* is used across a MoveActor.
   // Statuses tick at the end of Step (after this), so "rooted for the next
   // N steps" is applied as N + 1. Push / pull never read Rooted.
   if (skill.root_steps > 0) {
-    for (Agent* a : on_area) a->ApplyStatus(StatusType::Rooted, skill.root_steps + 1);
+    for (Agent* a : on_area) {
+      if (a == &caster && !skill.self_root) continue;
+      a->ApplyStatus(StatusType::Rooted, skill.root_steps + 1);
+    }
   }
 
   std::vector<Position> cells = AreaCells(centre, skill.area);
   std::vector<Position> ring(cells.begin() + 1, cells.end());  // Up, right, down, left
 
-  // A thing the motion may move: any living actor but the caster; the filter
-  // applies to agents.
+  // A thing the motion may move: any living actor, but an agent only if the
+  // skill affects it, and the caster only with self_motion.
   auto thing_at = [&](Position p) -> Actor* {
     Actor* a = object_manager_->GetActorAt(p);
-    if (!a || !a->IsAlive() || a->GetId() == caster) return nullptr;
-    if (auto* ag = dynamic_cast<Agent*>(a); ag && !PassesFilter(*ag, skill.filter)) {
-      return nullptr;
-    }
+    if (!a || !a->IsAlive()) return nullptr;
+    if (a == &caster && !skill.self_motion) return nullptr;
+    if (auto* ag = dynamic_cast<Agent*>(a); ag && !Affects(skill, caster, *ag)) return nullptr;
     return a;
   };
 

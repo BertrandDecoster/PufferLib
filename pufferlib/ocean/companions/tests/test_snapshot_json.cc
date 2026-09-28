@@ -504,6 +504,10 @@ void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
   }
   ASSERT_EQ(a.root_steps, b.root_steps);
   ASSERT_EQ(a.cooldown, b.cooldown);
+  ASSERT_EQ(a.friendly_fire, b.friendly_fire);
+  ASSERT_EQ(a.self_tags, b.self_tags);
+  ASSERT_EQ(a.self_motion, b.self_motion);
+  ASSERT_EQ(a.self_root, b.self_root);
 }
 
 // One skill per value of every enum, and every scalar off its default.
@@ -531,6 +535,11 @@ std::vector<SkillConfig> EverySkillShape() {
       s.tags = {{"t" + std::to_string(i), 1 + i}, {"perm", kPermanentTag}};
       s.root_steps = i;
       s.cooldown = 3 + i;
+      // Each flag both ways across the shapes, in different combinations.
+      s.friendly_fire = (i % 2) == 1;
+      s.self_tags = (i % 3) != 0;
+      s.self_motion = (i % 4) != 1;
+      s.self_root = (i % 5) != 2;
       out.push_back(s);
       ++i;
     }
@@ -614,6 +623,16 @@ TEST(TestJsonSnapshotKeys) {
   ASSERT_EQ(fireball.at("tag_path").get<bool>(), false);
   ASSERT_EQ(fireball.at("root_steps").get<int>(), 0);
   ASSERT_EQ(fireball.at("cooldown").get<int>(), 3);
+  ASSERT_EQ(fireball.at("friendly_fire").get<bool>(), true);
+  ASSERT_EQ(fireball.at("self_tags").get<bool>(), true);
+  ASSERT_EQ(fireball.at("self_motion").get<bool>(), true);
+  ASSERT_EQ(fireball.at("self_root").get<bool>(), true);
+  const json& step = j.at("skills").at(1);
+  ASSERT_EQ(step.at("name").get<std::string>(), std::string("lightningStep"));
+  ASSERT_EQ(step.at("self_tags").get<bool>(), false);
+  const json& vortex = j.at("skills").at(3);
+  ASSERT_EQ(vortex.at("name").get<std::string>(), std::string("vortex"));
+  ASSERT_EQ(vortex.at("self_root").get<bool>(), false);
 }
 
 TEST(TestJsonEverySkillConfigFieldRoundTrips) {
@@ -818,6 +837,25 @@ TEST(TestJsonRejectsNegativeSkillNumbers) {
     json j = LevelJson();
     Frost(j)[f[0]] = -1;
     AssertJsonErrorMentions(j, {"skill 'frost': " + std::string(f[1]) + " must be >= 0 (got -1)"});
+  }
+}
+
+TEST(TestJsonFriendlyFireAndSelfFlags) {
+  json j = LevelJson();
+  Frost(j)["friendly_fire"] = false;
+  Frost(j)["self_motion"] = false;
+  Snapshot s = SnapshotFromJson(j.dump());
+  const SkillConfig& frost = s.skills.back();
+  ASSERT_EQ(frost.name, std::string("frost"));
+  ASSERT_FALSE(frost.friendly_fire);
+  ASSERT_TRUE(frost.self_tags);  // Absent: true
+  ASSERT_FALSE(frost.self_motion);
+  ASSERT_TRUE(frost.self_root);
+
+  for (const char* key : {"friendly_fire", "self_tags", "self_motion", "self_root"}) {
+    j = LevelJson();
+    Frost(j)[key] = "no";
+    AssertJsonErrorMentions(j, {FrostSection(j) + ": " + key + ": type must be boolean"});
   }
 }
 
