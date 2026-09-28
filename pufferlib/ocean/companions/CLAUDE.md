@@ -308,7 +308,8 @@ tests: `tests/test_zones.cc`):
   `SetCellTag(cell, tag, ZoneDef)` is the explicit per-cell override. A cell keeps its
   resolved copy (no lookup on the hot path): redefining a tag changes later zones only.
   Like max_downs: copied with the env, kept across a generated `Reset`, replaced by
-  `LoadSnapshot` (by none until snapshot v7 carries it: define zones after a load)
+  `LoadSnapshot` (by none until snapshot v7 carries it: define zones after a load, and
+  set the snapshot's zone cells again, since they resolved with the defaults as they loaded)
 - Refused (cell / table unchanged, nothing interned): out of bounds, an empty tag
   (`DefineZone`; `SetCellTag` "" clears the cell), a tag or `then` over 31 bytes, a
   duration or steps of 0 or below -1, a negative damage

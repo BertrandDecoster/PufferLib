@@ -452,7 +452,9 @@ class BaseEnv {
   // kMaxNameLength, a duration or steps of 0 or below kPermanentTag (as
   // ApplyTagTo), or a negative damage. Level data like max_downs: copied with
   // the env, kept across a generated Reset, replaced by LoadSnapshot (by
-  // none until snapshot v7 carries it: define zones after loading a level).
+  // none until snapshot v7 carries it: define zones after loading a level,
+  // and set the snapshot's zone cells again, since they resolved with the
+  // defaults as they loaded).
   bool DefineZone(const std::string& tag, const ZoneDef& zone);
   const std::map<std::string, ZoneDef>& GetZoneDefs() const { return zone_defs_; }
   ZoneDef GetZoneDef(const std::string& tag) const;  // The defaults when undefined

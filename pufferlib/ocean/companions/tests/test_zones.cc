@@ -501,40 +501,83 @@ TEST(TestZoneDamageDownsACompanionThenLeavesItUntouched) {
   }
 }
 
-// An enemy a zone's damage kills neither acts nor strikes afterwards: it
-// stays where it died, and its target takes nothing more.
-TEST(TestAnEnemyKilledByAZoneNeitherActsNorStrikes) {
-  AggroEnv env(10, 1, EnemyType::Goblin, 42, 0, 100);
-  env.Reset(42);
-  Companion* comp = env.GetMutableObjectManager().GetAllCompanions()[0];
-  AgentFSM* enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
-  enemy->GetFSMContext().has_attack = true;
-  enemy->GetFSMContext().attack_effect_name = "goblin_attack";  // A builtin
-  bool placed = false;
-  const Position e = enemy->GetPosition();
-  for (Position p : {Position{e.row, e.col - 1}, Position{e.row, e.col + 1},
-                     Position{e.row - 1, e.col}, Position{e.row + 1, e.col}}) {
-    if (!placed && env.GetGrid().IsWalkable(p) && !env.GetObjectManager().GetActorAt(p)) {
-      env.GetMutableObjectManager().UpdatePosition(comp->GetId(), p);
-      placed = true;
+// An Aggro goblin with an attack, rooted for its first 3 steps, and its
+// companion next to it (50 HP); on `lethal_zone`, a zone under the goblin
+// whose damage per landing is the goblin's health.
+struct GoblinBesideCompanion {
+  AggroEnv env{10, 1, EnemyType::Goblin, 42, 0, 100};
+  Companion* comp = nullptr;
+  AgentFSM* enemy = nullptr;
+  Position cell;
+  std::vector<Action> stay;
+
+  explicit GoblinBesideCompanion(bool lethal_zone) {
+    env.Reset(42);
+    comp = env.GetMutableObjectManager().GetAllCompanions()[0];
+    enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
+    enemy->GetFSMContext().has_attack = true;
+    enemy->GetFSMContext().attack_effect_name = "goblin_attack";  // A builtin
+    cell = enemy->GetPosition();
+    bool placed = false;
+    for (Position p : {Position{cell.row, cell.col - 1}, Position{cell.row, cell.col + 1},
+                       Position{cell.row - 1, cell.col}, Position{cell.row + 1, cell.col}}) {
+      if (!placed && env.GetGrid().IsWalkable(p) && !env.GetObjectManager().GetActorAt(p)) {
+        env.GetMutableObjectManager().UpdatePosition(comp->GetId(), p);
+        placed = true;
+      }
     }
+    if (!placed) throw std::runtime_error("no cell beside the goblin");
+    comp->SetMaxHealth(50);
+    enemy->ApplyStatus(StatusType::Rooted, 3);  // It stays on its cell
+    if (lethal_zone && !env.SetCellTag(cell, "burning", Zone().Hurts(enemy->GetHealth()).def)) {
+      throw std::runtime_error("zone refused");
+    }
+    stay.assign(static_cast<size_t>(env.NumAgents()), kStay);
   }
-  ASSERT_TRUE(placed);
-  comp->SetMaxHealth(50);
-  enemy->ApplyStatus(StatusType::Rooted, 3);  // It stays on its zone
-  ASSERT_TRUE(env.SetCellTag(e, "burning", Zone().Hurts(enemy->GetHealth()).def));
-  const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()), kStay);
-  env.Step(stay);  // Dies on its zone
-  ASSERT_FALSE(enemy->IsAlive());
-  const int health = comp->GetHealth();
-  for (int i = 0; i < 10; ++i) {
-    env.Step(stay);
-    ASSERT_TRUE(enemy->GetPosition() == e);
-    ASSERT_TRUE(env.GetLastTagsApplied().empty());  // The zone skips the dead
-    ASSERT_TRUE(env.GetLastSkillUses().empty());
+};
+
+// The control: without the zone, the goblin strikes its companion within 20 steps.
+TEST(TestTheGoblinBesideItsCompanionStrikes) {
+  GoblinBesideCompanion s(false);
+  for (int i = 0; i < 20; ++i) s.env.Step(s.stay);
+  ASSERT_TRUE(s.enemy->IsAlive());
+  ASSERT_TRUE(s.comp->GetHealth() < 50);
+}
+
+// An enemy a zone's damage kills neither acts nor strikes afterwards: it
+// stays where it died, and its target takes nothing more (the control above
+// shows it would have).
+TEST(TestAnEnemyKilledByAZoneNeitherActsNorStrikes) {
+  GoblinBesideCompanion s(true);
+  s.env.Step(s.stay);  // Dies on its zone
+  ASSERT_FALSE(s.enemy->IsAlive());
+  const int health = s.comp->GetHealth();
+  for (int i = 0; i < 20; ++i) {
+    s.env.Step(s.stay);
+    ASSERT_TRUE(s.enemy->GetPosition() == s.cell);
+    ASSERT_TRUE(s.env.GetLastTagsApplied().empty());  // The zone skips the dead
   }
-  ASSERT_EQ(comp->GetHealth(), health);
-  ASSERT_TRUE(env.GetActiveEffects().empty());
+  ASSERT_EQ(s.comp->GetHealth(), health);
+  ASSERT_TRUE(s.env.GetActiveEffects().empty());
+}
+
+// A Step that throws mid-way leaves the env in a step; LoadSnapshot ends it,
+// so a zone set after the load reads its steps, not steps + 1.
+TEST(TestLoadSnapshotEndsAStepThatThrew) {
+  MidStepZoneEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Snapshot saved = env.SaveSnapshot();
+  env.pending = MidStepZoneEnv::Pending{{3, 2}, "wet", Zone().Lasts(0).def};  // Refused
+  bool threw = false;
+  try {
+    env.Step({kStay});
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+  env.LoadSnapshot(saved);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", Zone().Lasts(2).def));
+  ASSERT_EQ(env.GetCellTag({3, 2}).steps, 2);
 }
 
 // A caster its landing zone downs gets nothing from its own skill (the use

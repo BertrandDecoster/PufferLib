@@ -1694,6 +1694,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   ClearStepReports();  // They name the old world's ObjectIds
   ClearCellTags();     // World state: replaced by the snapshot's zones below
   ClearZoneDefs();     // Level data: the snapshot's (none until v7)
+  in_step_ = false;    // Between two steps, even after a Step that threw
 
   // The level's skill book: builtins, then the snapshot's skills (which may
   // retune builtins). A snapshot without skills leaves the builtins only, so
