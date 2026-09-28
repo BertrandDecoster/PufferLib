@@ -71,7 +71,8 @@ int SynchroLens::CountAgentsOnSynchroCells(const BaseEnv& env) const {
   const ObjectManager& om = env.GetObjectManager();
 
   for (const Agent* agent : om.GetAllAgents()) {
-    if (!agent->IsAlive()) continue;
+    // Objectives need a standing companion: the downed (and the dead) control none
+    if (!agent->IsAffectable()) continue;
     Position pos = agent->GetPosition();
     AnnotationKey key{AnnotationTarget::Cell, pos, kInvalidObjectId};
     if (annotations.HasTag(key, SemanticTag::SynchroGoal)) {

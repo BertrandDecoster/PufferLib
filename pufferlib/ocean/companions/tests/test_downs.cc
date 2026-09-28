@@ -15,6 +15,7 @@
 #include "../src/env/aggro_env.h"
 #include "../src/env/dodge_env.h"
 #include "../src/env/synchro_env.h"
+#include "../src/env/synchro_lens.h"
 #include "effect_registry_guard.h"
 
 using namespace companions;
@@ -369,6 +370,34 @@ TEST(TestResetClearsTheDowns) {
   env.Reset(42);
   ASSERT_EQ(env.GetDowns(), 0);
   ASSERT_FALSE(env.IsDone());
+}
+
+// Objectives need a standing companion: a downed body on the only goal does
+// not cover it (no success: the lens and the env count 0), until a standing
+// companion stands there.
+TEST(TestTheDownedControlNoObjective) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  const Position goal = env.GetSynchroPositions()[0];
+  const Position away = goal == Position{5, 5} ? Position{3, 3} : Position{5, 5};
+  Place(env, 0, goal);
+  Place(env, 1, away);
+  DownCompanion(env, 0);
+  SynchroLens lens;
+  ASSERT_FALSE(lens.IsSuccess(env));
+  ASSERT_EQ(env.NumAgentsOnSynchroCells(), 0);
+  env.Step({kStay, kStay});
+  ASSERT_FALSE(env.IsSuccess());
+  ASSERT_FALSE(env.IsDone());
+
+  // The body leaves the goal (moved by the test), a standing companion takes it
+  Place(env, 0, goal == Position{2, 2} ? Position{2, 3} : Position{2, 2});
+  Place(env, 1, goal);
+  ASSERT_TRUE(lens.IsSuccess(env));
+  ASSERT_EQ(env.NumAgentsOnSynchroCells(), 1);
+  env.Step({kStay, kStay});
+  ASSERT_TRUE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
 }
 
 // A success latched on the step the team goes down wins: the end reason is

@@ -213,7 +213,8 @@ int SynchroEnv::NumAgentsOnSynchroCells() const {
   int count = 0;
   const AnnotationStore& annotations = GetAnnotations();
   for (const Agent* agent : object_manager_->GetAllAgents()) {
-    if (!agent->IsAlive()) continue;
+    // Objectives need a standing companion: the downed (and the dead) control none
+    if (!agent->IsAffectable()) continue;
     Position pos = agent->GetPosition();
     if (annotations.HasTag(
             AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},

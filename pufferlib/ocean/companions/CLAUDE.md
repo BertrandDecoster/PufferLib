@@ -296,6 +296,11 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   `LegalActions`: Stay only).
   Enemies ignore it (`FindClosestCompanion`) and drop it as a target (`AggroState`, a
   wind-up locks no downed target). It still blocks its cell (collisions, landing)
+- **Objectives: only standing companions control them; physical presence (occupancy)
+  counts the downed.** A downed body on a goal cell does not cover it
+  (`SynchroLens::CountAgentsOnSynchroCells` / `SynchroEnv::NumAgentsOnSynchroCells`
+  count affectable agents only); occupancy checks (collisions, landing, `IsOccupied`)
+  stay on `IsAlive()`. Anything else is the host's rules (e.g. a game layer's plates)
 - `Agent::IsDead()` stays health-based (a downed companion `IsDead()`): DodgeEnv /
   DodgeLens count it as fallen (DodgeEnv: done, `TaskFailed`, unless the team is down)
 - **Team counter**: `GetDowns()` = the sum of `Companion::GetTimesDowned()` (every down
