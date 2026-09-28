@@ -31,6 +31,14 @@ Position ResolveGroundTarget(const Grid& grid, Position from, int dr, int dc,
 Position ResolveDash(const Grid& grid, const ObjectManager& objects,
                      Position from, int dr, int dc, int distance, ObjectId mover,
                      std::vector<Position>* crossed) {
+  return ResolveDashWith(
+      grid, from, dr, dc, distance,
+      [&](Position p) { return CanLand(grid, objects, p, mover); }, crossed);
+}
+
+Position ResolveDashWith(const Grid& grid, Position from, int dr, int dc, int distance,
+                         const std::function<bool(Position)>& can_land,
+                         std::vector<Position>* crossed) {
   if (dr == 0 && dc == 0) {
     if (crossed) crossed->clear();
     return from;
@@ -41,7 +49,7 @@ Position ResolveDash(const Grid& grid, const ObjectManager& objects,
   for (int i = 1; i <= distance; ++i) {
     cur = {cur.row + dr, cur.col + dc};
     if (!grid.IsInBounds(cur) || !grid.IsPathable(cur)) break;
-    if (CanLand(grid, objects, cur, mover)) {
+    if (can_land(cur)) {
       best = cur;
       best_step = i;
     }

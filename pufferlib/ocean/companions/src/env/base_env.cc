@@ -1193,6 +1193,18 @@ const Actor* BaseEnv::MotionThingAt(Position p, const SkillConfig& skill, const 
   return a;
 }
 
+Position BaseEnv::PushLanding(const SkillConfig& skill, Position p, Position centre,
+                              ObjectId mover, const Agent& caster, Position landing) const {
+  // CanLand, the caster on its landing cell
+  auto can_land = [&](Position q) {
+    if (!grid_->IsInBounds(q) || !grid_->IsWalkable(q)) return false;
+    const Actor* a = ActorAfterMotion(q, caster, landing);
+    return !(a && a->IsAlive() && a->GetId() != mover);
+  };
+  return ResolveDashWith(*grid_, p, p.row - centre.row, p.col - centre.col,
+                         skill.motion_distance, can_land);
+}
+
 std::optional<Position> BaseEnv::PullFrom(const SkillConfig& skill, Position centre,
                                           const Agent& caster, Position landing) const {
   // CanLand with nobody excepted, the caster on its landing cell
@@ -1276,15 +1288,12 @@ BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
     }
     if (area && skill.root_steps > 0 && (!self || skill.self_root)) e |= kSkillEffectRoot;
     if (area && found_on[i] != t.centre) {  // The ring
-      // Pushed only if the push would move it now (a wall right behind it
-      // stops it; the landing check reads the world before the caster's own
-      // motion, as AreaMotion reads it after)
+      // Pushed only if the push would move it (a wall right behind it stops
+      // it), read as AreaMotion reads it: the caster on its landing cell
       const Position p = found_on[i];
-      const bool pushed =
-          skill.motion == SkillMotion::PushOut &&
-          MotionThingAt(p, skill, caster, t.landing) == a &&
-          ResolveDash(*grid_, *object_manager_, p, p.row - t.centre.row, p.col - t.centre.col,
-                      skill.motion_distance, a->GetId()) != p;
+      const bool pushed = skill.motion == SkillMotion::PushOut &&
+                          MotionThingAt(p, skill, caster, t.landing) == a &&
+                          PushLanding(skill, p, t.centre, a->GetId(), caster, t.landing) != p;
       const bool pulled = pulled_from && *pulled_from == found_on[i];
       if (pushed || pulled) e |= kSkillEffectMotion;
     }
@@ -1400,9 +1409,7 @@ std::vector<ObjectId> BaseEnv::AreaMotion(const SkillConfig& skill, Position cen
       const Position p = cells[i];
       const Actor* thing = MotionThingAt(p, skill, caster, here);
       if (!thing) continue;
-      int dr = p.row - centre.row, dc = p.col - centre.col;
-      move(thing, ResolveDash(*grid_, *object_manager_, p, dr, dc, skill.motion_distance,
-                              thing->GetId()));
+      move(thing, PushLanding(skill, p, centre, thing->GetId(), caster, here));
     }
   } else if (skill.motion == SkillMotion::PullIn) {
     if (std::optional<Position> from = PullFrom(skill, centre, caster, here)) {

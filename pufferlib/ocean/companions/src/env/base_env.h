@@ -534,6 +534,12 @@ class BaseEnv {
   // with self_motion. Shared by ResolveSkillTargets and AreaMotion.
   const Actor* MotionThingAt(Position p, const SkillConfig& skill, const Agent& caster,
                              Position landing) const;
+  // Where a PushOut moves `mover`, on ring cell `p`, away from `centre`
+  // (ResolveDash's rule, landings read with the caster on `landing`, as the
+  // step reads them once the caster moved). Shared by ResolveSkillTargets
+  // and AreaMotion.
+  Position PushLanding(const SkillConfig& skill, Position p, Position centre, ObjectId mover,
+                       const Agent& caster, Position landing) const;
   // The ring cell a PullIn takes its one thing from (caster on `landing`):
   // the first MotionThingAt by ring priority (up, right, down, left), only
   // into a walkable centre no living actor holds; nullopt for none.

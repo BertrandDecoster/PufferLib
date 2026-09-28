@@ -2388,6 +2388,40 @@ TEST(TestAPushIntoAWallIsNoMotion) {
   ASSERT_TRUE(free->GetPosition() == (Position{2, 6}));
 }
 
+// A push reads the world as the step does, the caster where it stands when
+// the push resolves. (A skill has one motion: one that pushes never dashes
+// or teleports its caster, so that is the cell it used it from.) A ring agent
+// pushed toward the caster is blocked by it: no Motion, predicted or done.
+TEST(TestPreviewPushIsBlockedByTheCaster) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig shove = DefineCopy(env, "fireball", "shove");  // cross, push_out 1
+  shove.range = 2;
+  env.GetMutableSkillBook().Define(shove);
+  Agent* caster = Place(env, 0, {3, 1});  // centre (3,3)
+  Agent* left = Place(env, 1, {3, 2});    // left ring cell, pushed toward the caster
+  env.SetCompanionSkill(caster->GetId(), 0, "shove");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 2);
+  ASSERT_TRUE(p.centre == (Position{3, 3}));
+  ASSERT_TRUE(p.affected == (Affected{{left->GetId(), kTagsFx}}));
+  ASSERT_TRUE(left->GetPosition() == (Position{3, 2}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
+}
+
+// The caster on the ring of its own push (self_motion): pushed, and the
+// preview says so (Motion on the caster, as the use reports it).
+TEST(TestPreviewPushOfTheCasterItself) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
+  Agent* caster = Place(env, 0, {3, 2});  // The wall stops the centre at (3,3)
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 1);
+  ASSERT_TRUE(p.centre == (Position{3, 3}));
+  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), kTagsFx | kMotionFx}}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
+}
+
 // The step's SkillUse lists whom it affected: a later caster reaches what an
 // earlier one left (not what a preview before the step saw).
 TEST(TestSkillUseAffectedIsTheStepsOwn) {

@@ -12,6 +12,7 @@
 #ifndef COMPANIONS_ENV_SKILL_MOTION_H_
 #define COMPANIONS_ENV_SKILL_MOTION_H_
 
+#include <functional>
 #include <vector>
 
 #include "../core/grid.h"
@@ -32,6 +33,13 @@ Position ResolveGroundTarget(const Grid& grid, Position from, int dr, int dc, in
 Position ResolveDash(const Grid& grid, const ObjectManager& objects,
                      Position from, int dr, int dc, int distance, ObjectId mover,
                      std::vector<Position>* crossed = nullptr);
+
+// ResolveDash with the landing rule given: `can_land(p)` says whether the
+// mover may end on `p` (ResolveDash passes CanLand on `objects`; a caller
+// may read another view of the world, e.g. a caster already moved).
+Position ResolveDashWith(const Grid& grid, Position from, int dr, int dc, int distance,
+                         const std::function<bool(Position)>& can_land,
+                         std::vector<Position>* crossed = nullptr);
 
 // Exactly `distance` cells by (dr, dc), ignoring what lies between; if that
 // cell is out of bounds, not walkable or occupied, `distance - 1`, and so on
