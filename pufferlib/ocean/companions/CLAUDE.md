@@ -255,11 +255,23 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;
   name buffers are 32 bytes (31 + NUL)
 
-**Levels** bring their skills, zones, slots and downs through snapshot JSON v5
-(`core/snapshot_json.cc`; versions 2..5 load, binary snapshots follow the same number):
-- Top level `"skills"`: SkillConfig objects (keys above; all but `name` optional)
+**Levels** bring their skills, zones, slots, downs and context skills through snapshot
+JSON v6 (`core/snapshot_json.cc`; versions 2..6 load, binary snapshots follow the same
+number, binary 1..6):
+- Top level `"skills"`: SkillConfig objects (keys above; all but `name` optional; v6
+  adds `affects_downed` / `revive_percent`, absent = false / 0)
 - Top level `"cell_tags"`: `{row, col, tag, duration}` (duration absent = -1)
 - Top level `"max_downs"` (v5; absent = 3, must be >= 1)
+- Top level `"context_skills"` (v6): `[{condition, slot, skill}]` (all required;
+  condition `"adjacent_downed_ally"`). Absent = the default rules (next to a downed
+  ally, slot 0 is `revive`), so every older level has revive; `[]` = no rule.
+  `ValidateSkillsTagsZones` checks them (the default ones too) against the level's
+  book (builtins + its skills): a known condition, slot in range, a known skill with
+  cooldown 0 (a level may retune `revive`, not give it a cooldown while a rule uses
+  it); messages name `context_skills[i]`. `LoadSnapshot` sets them; `SaveSnapshot`
+  always writes the env's; a generated `Reset` keeps the env's (`LoadGeneratedLevel`,
+  unchecked against the builtins: a rule whose skill the book lacks is skipped)
+- Every agent's `max_health` >= 1 (a revive brings back a percent of it)
 - Per agent: `"tags"` (`{tag, duration}`), `"skills"` (slot names; `""` or missing =
   `attack`), `"cooldowns"`;
   statuses as `"status_type": "stunned" | "marked" | "rooted"`; companions only (v5):

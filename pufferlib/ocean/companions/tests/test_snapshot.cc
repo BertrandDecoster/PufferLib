@@ -754,12 +754,13 @@ TEST(TestSnapshotV1MigrationRoundTripsAsV2) {
   Snapshot migrated = Snapshot::Deserialize(buf_v1);
 
   std::vector<uint8_t> buf_v2 = migrated.Serialize();
-  // Serialize always writes the current version (5: v4 + downs).
+  // Serialize always writes the current version (6: v5 + context skills and
+  // revive fields).
   uint32_t magic = 0, version = 0;
   std::memcpy(&magic, buf_v2.data(), sizeof(magic));
   std::memcpy(&version, buf_v2.data() + sizeof(magic), sizeof(version));
   ASSERT_EQ(magic, (uint32_t)0x534E4150);
-  ASSERT_EQ(version, (uint32_t)5);
+  ASSERT_EQ(version, (uint32_t)6);
 
   Snapshot round = Snapshot::Deserialize(buf_v2);
   ASSERT_EQ(round.cells.size(), migrated.cells.size());
@@ -828,6 +829,8 @@ void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
   ASSERT_EQ(a.self_root, b.self_root);
   ASSERT_EQ(a.damage, b.damage);
   ASSERT_EQ(a.self_damage, b.self_damage);
+  ASSERT_EQ(a.affects_downed, b.affects_downed);
+  ASSERT_EQ(a.revive_percent, b.revive_percent);
 }
 
 // One skill per value of every enum, and every scalar off its default.
@@ -866,6 +869,18 @@ std::vector<SkillConfig> EverySkillShape() {
       ++i;
     }
   }
+  // Skills that affect the downed (they can only revive: no tags, damage,
+  // root or motion), reviving or not.
+  SkillConfig mend;
+  mend.name = "mend";
+  mend.range = 2;
+  mend.filter = TargetFilter::Companion;
+  mend.affects_downed = true;
+  mend.revive_percent = 75;
+  out.push_back(mend);
+  mend.name = "touch";
+  mend.revive_percent = 0;
+  out.push_back(mend);
   return out;
 }
 
@@ -959,10 +974,11 @@ TEST(TestBinaryEverySkillConfigFieldRoundTrips) {
   ASSERT_EQ(back.cell_tags[0].duration, 5);
 }
 
-// The v4 skill record: name (length + bytes), targeting, range, filter, area,
+// The skill record: name (length + bytes), targeting, range, filter, area,
 // motion, motion_distance (ints), tag_path (bool), tag count, the tags,
 // root_steps, cooldown, damage (ints), friendly_fire, self_tags, self_motion,
-// self_root, self_damage (bools). Without tags: 50 bytes plus the name.
+// self_root, self_damage (bools); v6 appends affects_downed (a byte) and
+// revive_percent (int). Without tags: 55 bytes plus the name.
 TEST(TestBinarySkillRecordLayout) {
   Snapshot s = MinimalSnapshot();
   const size_t without = s.Serialize().size();
@@ -974,10 +990,13 @@ TEST(TestBinarySkillRecordLayout) {
   frost.self_damage = false;
   s.skills.push_back(frost);
   std::vector<uint8_t> bytes = s.Serialize();
-  ASSERT_EQ(bytes.size(), without + 50 + frost.name.size());
-  // The five flags close the record, just before the zone count (then
-  // max_downs, v5); the damage comes right before them.
-  const size_t flags_at = bytes.size() - 4 - 4 - 5;
+  ASSERT_EQ(bytes.size(), without + 55 + frost.name.size());
+  // affects_downed and revive_percent close the record, just before the zone
+  // count, max_downs (v5) and the context skills flag (v6, absent here); the
+  // five flags and the damage come right before them.
+  const size_t revive_at = bytes.size() - 1 - 4 - 4 - 4;
+  const size_t affects_at = revive_at - 1;
+  const size_t flags_at = affects_at - 5;
   int damage = 0;
   std::memcpy(&damage, bytes.data() + flags_at - sizeof(int), sizeof(int));
   ASSERT_EQ(damage, 7);
@@ -986,7 +1005,21 @@ TEST(TestBinarySkillRecordLayout) {
   ASSERT_EQ(bytes[flags_at + 2], 1);  // self_motion
   ASSERT_EQ(bytes[flags_at + 3], 0);  // self_root
   ASSERT_EQ(bytes[flags_at + 4], 0);  // self_damage
+  ASSERT_EQ(bytes[affects_at], 0);    // affects_downed
   AssertSkillEq(Snapshot::Deserialize(bytes).skills[0], frost);
+
+  SkillConfig mend;  // The v6 fields set; a name as long as "frost"
+  mend.name = "mends";
+  mend.affects_downed = true;
+  mend.revive_percent = 75;
+  s.skills = {mend};
+  bytes = s.Serialize();
+  ASSERT_EQ(bytes.size(), without + 55 + mend.name.size());
+  int percent = 0;
+  std::memcpy(&percent, bytes.data() + revive_at, sizeof(int));
+  ASSERT_EQ(percent, 75);
+  ASSERT_EQ(bytes[affects_at], 1);
+  AssertSkillEq(Snapshot::Deserialize(bytes).skills[0], mend);
 }
 
 namespace {
@@ -994,6 +1027,15 @@ namespace {
 // After MinimalSnapshot's agent: effects count, tick, horizon, rng x2, d4,
 // patrol count, annotations count, skills count, cell tags count, max_downs.
 constexpr size_t kV5Tail = 4 + 4 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 4;
+
+// A v6 buffer of a snapshot without skills nor context skills (nullopt) as
+// version 5: without the trailing context skills flag.
+std::vector<uint8_t> AsV5(const std::vector<uint8_t>& v6) {
+  std::vector<uint8_t> v5(v6.begin(), v6.end() - 1);
+  uint32_t five = 5;
+  std::memcpy(v5.data() + 4, &five, sizeof(five));
+  return v5;
+}
 
 // A v5 buffer of a one-agent snapshot as version 4: without the agent's
 // downed (bool) and times_downed (int), closing its record, nor the trailing
@@ -1019,14 +1061,14 @@ TEST(TestBinaryDownsRoundTrip) {
   ASSERT_TRUE(back.agents[0].downed);
   ASSERT_EQ(back.agents[0].times_downed, 2);
   // The v5 record: downed (1 byte) and times_downed close the agent's record,
-  // max_downs closes the buffer.
+  // max_downs comes last but the v6 context skills flag.
   std::vector<uint8_t> bytes = s.Serialize();
-  ASSERT_EQ(bytes.size(), AsV4(bytes).size() + 1 + 4 + 4);
+  ASSERT_EQ(AsV5(bytes).size(), AsV4(AsV5(bytes)).size() + 1 + 4 + 4);
   int max_downs = 0;
-  std::memcpy(&max_downs, bytes.data() + bytes.size() - 4, sizeof(int));
+  std::memcpy(&max_downs, bytes.data() + bytes.size() - 1 - 4, sizeof(int));
   ASSERT_EQ(max_downs, 7);
   // Truncated before max_downs: an underflow, not a default
-  bytes.resize(bytes.size() - 4);
+  bytes.resize(bytes.size() - 1 - 4);
   ASSERT_THROW(Snapshot::Deserialize(bytes), std::runtime_error);
 }
 
@@ -1036,7 +1078,7 @@ TEST(TestBinaryV4SnapshotLoadsWithoutDowns) {
   s.agents[0].health = 0;
   s.agents[0].downed = true;
   s.agents[0].times_downed = 2;
-  Snapshot back = Snapshot::Deserialize(AsV4(s.Serialize()));
+  Snapshot back = Snapshot::Deserialize(AsV4(AsV5(s.Serialize())));
   ASSERT_EQ(back.max_downs, 3);
   ASSERT_FALSE(back.agents[0].downed);
   ASSERT_EQ(back.agents[0].times_downed, 0);
@@ -1048,7 +1090,7 @@ TEST(TestBinaryV3SnapshotStillLoads) {
   // Everything v4 adds is empty here, so a v3 buffer is the v4 one minus the
   // agent's three empty counts (tags, skills, cooldowns) and the two trailing
   // empty counts (skills, cell tags), with version 3.
-  std::vector<uint8_t> v4 = AsV4(MinimalSnapshot().Serialize());
+  std::vector<uint8_t> v4 = AsV4(AsV5(MinimalSnapshot().Serialize()));
   // After the agent: effects count, tick, horizon, rng x2, d4, patrol count,
   // annotations count, skills count, cell tags count.
   const size_t tail = 4 + 4 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4;
@@ -1413,11 +1455,12 @@ TEST(TestSnapshotRejectsRemovedOrUnknownStatus) {
 
 TEST(TestDeserializeRejectsOversizedV4Counts) {
   // Nothing in the snapshot after the skill book: the buffer ends with the
-  // skill count, the zone count, then max_downs (v5).
+  // skill count, the zone count, max_downs (v5), then the context skills flag
+  // (v6; absent).
   Snapshot s = MinimalSnapshot();
   std::vector<uint8_t> bytes = s.Serialize();
-  const size_t zones_at = bytes.size() - 8;
-  const size_t skills_at = bytes.size() - 12;
+  const size_t zones_at = bytes.size() - 9;
+  const size_t skills_at = bytes.size() - 13;
 
   std::vector<uint8_t> bad = bytes;
   uint32_t huge = 9000000;  // Under the sanity cap, far over the bytes left
@@ -1434,6 +1477,190 @@ TEST(TestDeserializeRejectsOversizedV4Counts) {
   uint32_t one = 1;
   std::memcpy(bad.data() + zones_at, &one, sizeof(one));
   ASSERT_THROW(Snapshot::Deserialize(bad), std::runtime_error);
+}
+
+// =============================================================================
+// Snapshot v6: revive fields, context skills
+// =============================================================================
+
+// Every form keeps the builtin revive a revive (a save + reload once turned it
+// into a no-op), and the env's context rules.
+TEST(TestSaveLoadKeepsTheReviveAndTheContextSkills) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  mend.revive_percent = 100;
+  env.GetMutableSkillBook().Define(mend);
+  const std::vector<ContextSkillRule> rules = {
+      {ContextCondition::AdjacentDownedAlly, 1, "mend"},
+      {ContextCondition::AdjacentDownedAlly, 0, "revive"}};
+  ASSERT_TRUE(env.SetContextSkills(rules));
+  const Snapshot saved = env.SaveSnapshot();
+  ASSERT_TRUE(saved.context_skills.has_value());
+  ASSERT_TRUE(*saved.context_skills == rules);
+  for (const Snapshot& s : {saved, BinaryRoundTrip(saved)}) {
+    SynchroEnv other(8, 8, 1, 1, 0, 7);
+    other.LoadSnapshot(s);
+    const SkillConfig* revive = other.GetSkillBook().Find("revive");
+    ASSERT_TRUE(revive != nullptr);
+    ASSERT_TRUE(revive->affects_downed);
+    ASSERT_EQ(revive->revive_percent, 50);
+    AssertSkillEq(*other.GetSkillBook().Find("mend"), mend);
+    ASSERT_TRUE(other.GetContextSkills() == rules);
+  }
+}
+
+TEST(TestBinaryContextSkillsRoundTrip) {
+  Snapshot s = MinimalSnapshot();
+  const size_t absent = s.Serialize().size();
+  ASSERT_FALSE(BinaryRoundTrip(s).context_skills.has_value());
+  ASSERT_EQ(s.Serialize().back(), 0);  // The flag: none
+
+  s.context_skills = std::vector<ContextSkillRule>{};  // Present, empty: no override
+  std::vector<uint8_t> bytes = s.Serialize();
+  ASSERT_EQ(bytes.size(), absent + 4);  // The flag set, then a count of 0
+  Snapshot back = Snapshot::Deserialize(bytes);
+  ASSERT_TRUE(back.context_skills.has_value());
+  ASSERT_TRUE(back.context_skills->empty());
+
+  // Each rule: condition, slot (ints), skill (length + bytes)
+  s.context_skills = std::vector<ContextSkillRule>{
+      {ContextCondition::AdjacentDownedAlly, 1, "revive"},
+      {ContextCondition::AdjacentDownedAlly, 0, "attack"}};
+  bytes = s.Serialize();
+  ASSERT_EQ(bytes.size(), absent + 4 + (4 + 4 + 4 + 6) + (4 + 4 + 4 + 6));
+  back = Snapshot::Deserialize(bytes);
+  ASSERT_TRUE(back.context_skills.has_value());
+  ASSERT_TRUE(*back.context_skills == *s.context_skills);
+
+  // A corrupt rule count fails on the bytes left, not on an allocation
+  std::vector<uint8_t> bad = bytes;
+  const uint32_t huge = 9000000;
+  std::memcpy(bad.data() + absent, &huge, sizeof(huge));
+  AssertThrowsMentioning([&] { Snapshot::Deserialize(bad); }, "context skill count");
+  // Truncated: an underflow
+  bad = bytes;
+  bad.resize(bad.size() - 3);
+  ASSERT_THROW(Snapshot::Deserialize(bad), std::runtime_error);
+}
+
+// A v5 file has no context skills (the default rules on load) and v5 skill
+// records (no revive fields: they affect the standing).
+TEST(TestBinaryV5SnapshotLoadsWithTheDefaultRules) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Snapshot saved = env.SaveSnapshot();
+  saved.skills.clear();  // Builtins only, as AsV5 needs
+  saved.context_skills.reset();
+  Snapshot back = Snapshot::Deserialize(AsV5(saved.Serialize()));
+  ASSERT_FALSE(back.context_skills.has_value());
+  ASSERT_TRUE(env.SetContextSkills({}));
+  env.LoadSnapshot(back);
+  ASSERT_TRUE(env.GetContextSkills() == DefaultContextSkills());
+
+  Snapshot s = MinimalSnapshot();
+
+  // A v5 skill record: the v6 one without its last 5 bytes (the skill is the
+  // last record, before the zone count, max_downs and the v6 flag)
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.range = 4;
+  s.skills = {frost};
+  std::vector<uint8_t> v6 = s.Serialize();
+  std::vector<uint8_t> v5(v6.begin(), v6.end() - 1 - 4 - 4 - 5);
+  v5.insert(v5.end(), v6.end() - 1 - 4 - 4, v6.end() - 1);
+  uint32_t five = 5;
+  std::memcpy(v5.data() + 4, &five, sizeof(five));
+  back = Snapshot::Deserialize(v5);
+  ASSERT_EQ(back.skills.size(), 1u);
+  AssertSkillEq(back.skills[0], frost);
+  ASSERT_FALSE(back.context_skills.has_value());
+}
+
+// A snapshot without context skills gets the default rules, whatever the env
+// had; with them, exactly those.
+TEST(TestLoadSnapshotSetsTheContextSkills) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Snapshot s = env.SaveSnapshot();
+  s.context_skills.reset();
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  ASSERT_TRUE(other.SetContextSkills({}));
+  other.LoadSnapshot(s);
+  ASSERT_TRUE(other.GetContextSkills() == DefaultContextSkills());
+  s.context_skills = std::vector<ContextSkillRule>{};
+  other.LoadSnapshot(s);
+  ASSERT_TRUE(other.GetContextSkills().empty());
+}
+
+// Rules are checked against the snapshot's own book (builtins + its skills),
+// before any change; messages name context_skills[i] and the field.
+TEST(TestSnapshotRejectsBadContextSkills) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const ContextCondition adj = ContextCondition::AdjacentDownedAlly;
+  using Rules = std::vector<ContextSkillRule>;
+
+  Snapshot s = good;
+  s.context_skills = Rules{{static_cast<ContextCondition>(99), 0, "revive"}};
+  AssertSnapshotRejected(s, "Snapshot: context_skills[0]");
+  AssertSnapshotRejected(s, "condition: unknown value 99");
+  s.context_skills = Rules{{adj, 0, "revive"}, {adj, kMaxSkillSlots, "revive"}};
+  AssertSnapshotRejected(s, "context_skills[1]");
+  AssertSnapshotRejected(s, "slot: out of range");
+  s.context_skills = Rules{{adj, -1, "revive"}};
+  AssertSnapshotRejected(s, "slot: out of range");
+  s.context_skills = Rules{{adj, 0, "meteor"}};
+  AssertSnapshotRejected(s, "context_skills[0]");
+  AssertSnapshotRejected(s, "unknown skill 'meteor'");
+  s.context_skills = Rules{{adj, 0, ""}};
+  AssertSnapshotRejected(s, "skill: none named");
+  s.context_skills = Rules{{adj, 0, "fireball"}};
+  AssertSnapshotRejected(s, "'fireball' has cooldown 3");
+
+  // The level's book: a skill of its own is known; a retuned revive with a
+  // cooldown is rejected while a rule (the default ones included) uses it
+  SkillConfig mend = *SkillBook().Find("revive");
+  mend.name = "mend";
+  s = good;
+  s.skills.push_back(mend);
+  s.context_skills = Rules{{adj, 0, "mend"}};
+  SynchroEnv(8, 8, 1, 1, 0, 42).LoadSnapshot(Snapshot::Deserialize(s.Serialize()));
+  SkillConfig slow_revive = *SkillBook().Find("revive");
+  slow_revive.cooldown = 3;
+  s = good;
+  s.skills.push_back(slow_revive);
+  s.context_skills.reset();  // The default rules
+  AssertSnapshotRejected(s, "context_skills[0]");
+  AssertSnapshotRejected(s, "'revive' has cooldown 3");
+  s.context_skills = Rules{};  // No rule uses it: a level may give it one
+  SynchroEnv(8, 8, 1, 1, 0, 42).LoadSnapshot(Snapshot::Deserialize(s.Serialize()));
+
+  // Rejected before any change
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  const Rules custom = {{adj, 1, "revive"}};
+  ASSERT_TRUE(env.SetContextSkills(custom));
+  s = good;
+  s.max_downs = 5;
+  s.context_skills = Rules{{adj, 0, "meteor"}};
+  ASSERT_THROW(env.LoadSnapshot(s), std::runtime_error);
+  ASSERT_TRUE(env.GetContextSkills() == custom);
+  ASSERT_EQ(env.GetMaxDowns(), BaseEnv::kDefaultMaxDowns);
+}
+
+// Every agent has max_health >= 1 (a revive brings back a percent of it).
+TEST(TestSnapshotRejectsMaxHealthBelowOne) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const std::string agent0 = "agent #0 (id " + std::to_string(good.agents[0].id) + ")";
+  for (int max_health : {0, -3}) {
+    Snapshot s = good;
+    s.agents[0].max_health = max_health;
+    s.agents[0].health = 0;
+    AssertSnapshotRejected(s, agent0 + ": max_health must be >= 1 (got " +
+                                  std::to_string(max_health) + ")");
+  }
+  Snapshot s = good;
+  s.agents[0].max_health = 1;
+  s.agents[0].health = 1;
+  SynchroEnv(8, 8, 1, 1, 0, 42).LoadSnapshot(Snapshot::Deserialize(s.Serialize()));
 }
 
 TEST(TestZoneSaveLoadRoundTripAtIdentity) {

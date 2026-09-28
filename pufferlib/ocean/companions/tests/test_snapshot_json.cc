@@ -428,9 +428,9 @@ TEST(TestJsonSnapshotVersionRejection) {
 
   // Tamper the version field.
   std::string tampered = json_str;
-  size_t pos = tampered.find("\"version\": 5");
+  size_t pos = tampered.find("\"version\": 6");
   ASSERT_TRUE(pos != std::string::npos);
-  tampered.replace(pos, 12, "\"version\": 6");  // One above current
+  tampered.replace(pos, 12, "\"version\": 7");  // One above current
 
   bool threw = false;
   try {
@@ -511,6 +511,8 @@ void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
   ASSERT_EQ(a.self_root, b.self_root);
   ASSERT_EQ(a.damage, b.damage);
   ASSERT_EQ(a.self_damage, b.self_damage);
+  ASSERT_EQ(a.affects_downed, b.affects_downed);
+  ASSERT_EQ(a.revive_percent, b.revive_percent);
 }
 
 // One skill per value of every enum, and every scalar off its default.
@@ -549,6 +551,18 @@ std::vector<SkillConfig> EverySkillShape() {
       ++i;
     }
   }
+  // Skills that affect the downed (they can only revive: no tags, damage,
+  // root or motion), reviving or not.
+  SkillConfig mend;
+  mend.name = "mend";
+  mend.range = 2;
+  mend.filter = TargetFilter::Companion;
+  mend.affects_downed = true;
+  mend.revive_percent = 75;
+  out.push_back(mend);
+  mend.name = "touch";
+  mend.revive_percent = 0;
+  out.push_back(mend);
   return out;
 }
 
@@ -604,7 +618,16 @@ TEST(TestJsonSnapshotKeys) {
   ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
   ASSERT_TRUE(env.SetCellTag({2, 3}, "wet", 4));
   json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
-  ASSERT_EQ(j.at("version").get<int>(), 5);
+  ASSERT_EQ(j.at("version").get<int>(), 6);
+  // v6: the env's context rules, always written
+  ASSERT_EQ(j.at("context_skills"),
+            json::array({json{{"condition", "adjacent_downed_ally"}, {"slot", 0},
+                              {"skill", "revive"}}}));
+  for (const json& skill : j.at("skills")) {
+    const bool revive = skill.at("name").get<std::string>() == "revive";
+    ASSERT_EQ(skill.at("affects_downed").get<bool>(), revive);
+    ASSERT_EQ(skill.at("revive_percent").get<int>(), revive ? 50 : 0);
+  }
   const json& agent = j.at("agents").at(0);
   ASSERT_EQ(agent.at("downed").get<bool>(), false);  // v5: downs
   ASSERT_EQ(agent.at("times_downed").get<int>(), 0);
@@ -658,6 +681,19 @@ TEST(TestJsonEverySkillConfigFieldRoundTrips) {
   Snapshot back = JsonRoundTrip(s);
   ASSERT_EQ(back.skills.size(), s.skills.size());
   for (size_t i = 0; i < s.skills.size(); ++i) AssertSkillEq(s.skills[i], back.skills[i]);
+}
+
+// Every form keeps the builtin revive a revive (a save + reload once turned it
+// into a no-op).
+TEST(TestJsonKeepsTheRevive) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  other.LoadSnapshot(JsonRoundTrip(env.SaveSnapshot()));
+  const SkillConfig* revive = other.GetSkillBook().Find("revive");
+  ASSERT_TRUE(revive != nullptr);
+  ASSERT_TRUE(revive->affects_downed);
+  ASSERT_EQ(revive->revive_percent, 50);
+  AssertSkillEq(*revive, *SkillBook().Find("revive"));
 }
 
 TEST(TestJsonSkillFieldsDefaultWhenAbsent) {
@@ -1196,6 +1232,134 @@ TEST(TestJsonV4SnapshotLoadsWithoutDowns) {
 }
 
 // Every listed kind survives a save / load with its class.
+// Context skills (v6): absent = the default rules, present = exactly them
+// (empty included); they round-trip.
+TEST(TestJsonContextSkills) {
+  const ContextCondition adj = ContextCondition::AdjacentDownedAlly;
+  const std::vector<ContextSkillRule> rules = {{adj, 1, "frost"}, {adj, 0, "revive"}};
+  json j = LevelJson();
+  Frost(j)["cooldown"] = 0;
+  j["context_skills"] = json::array({json{{"condition", "adjacent_downed_ally"}, {"slot", 1},
+                                          {"skill", "frost"}},
+                                     json{{"condition", "adjacent_downed_ally"}, {"slot", 0},
+                                          {"skill", "revive"}}});
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_TRUE(s.context_skills.has_value());
+  ASSERT_TRUE(*s.context_skills == rules);
+  ASSERT_TRUE(*JsonRoundTrip(s).context_skills == rules);
+  SynchroEnv env(8, 8, 1, 1, 0, 7);
+  env.LoadSnapshot(s);
+  ASSERT_TRUE(env.GetContextSkills() == rules);
+
+  j["context_skills"] = json::array();
+  s = SnapshotFromJson(j.dump());
+  ASSERT_TRUE(s.context_skills.has_value() && s.context_skills->empty());
+  ASSERT_EQ(json::parse(SnapshotToJson(s)).at("context_skills"), json::array());
+  env.LoadSnapshot(s);
+  ASSERT_TRUE(env.GetContextSkills().empty());
+
+  j.erase("context_skills");
+  s = SnapshotFromJson(j.dump());
+  ASSERT_FALSE(s.context_skills.has_value());
+  ASSERT_FALSE(json::parse(SnapshotToJson(s)).contains("context_skills"));  // Stays absent
+  env.LoadSnapshot(s);
+  ASSERT_TRUE(env.GetContextSkills() == DefaultContextSkills());
+}
+
+TEST(TestJsonRejectsBadContextSkills) {
+  auto with_rule = [](json rule) {
+    json j = LevelJson();
+    j["context_skills"] = json::array({json{{"condition", "adjacent_downed_ally"}, {"slot", 0},
+                                            {"skill", "revive"}},
+                                       rule});
+    return j;
+  };
+  const json good{{"condition", "adjacent_downed_ally"}, {"slot", 1}, {"skill", "revive"}};
+  SnapshotFromJson(with_rule(good).dump());  // Sanity
+
+  json rule = good;
+  rule["condition"] = "next_to_a_friend";
+  AssertJsonErrorMentions(with_rule(rule), {"context_skills[1]", "condition",
+                                            "unknown context condition 'next_to_a_friend'"});
+  rule = good;
+  rule["slot"] = kMaxSkillSlots;
+  AssertJsonErrorMentions(with_rule(rule), {"context_skills[1]", "slot: out of range"});
+  rule = good;
+  rule["skill"] = "meteor";
+  AssertJsonErrorMentions(with_rule(rule), {"context_skills[1]", "unknown skill 'meteor'"});
+  rule = good;
+  rule["skill"] = "frost";  // LevelJson's frost, given a cooldown
+  json j = with_rule(rule);
+  Frost(j)["cooldown"] = 2;
+  AssertJsonErrorMentions(j, {"context_skills[1]", "'frost' has cooldown 2"});
+  rule = good;
+  rule["when"] = "always";
+  AssertJsonErrorMentions(with_rule(rule), {"context_skills[1]: unknown key 'when'"});
+  for (const char* key : {"condition", "slot", "skill"}) {
+    rule = good;
+    rule.erase(key);
+    AssertJsonErrorMentions(with_rule(rule),
+                            {"context_skills[1]: key '" + std::string(key) + "' not found"});
+  }
+  rule = good;
+  rule["slot"] = "0";
+  AssertJsonErrorMentions(with_rule(rule), {"context_skills[1]: slot: type must be number"});
+  j = LevelJson();
+  j["context_skills"] = json::object();
+  AssertJsonErrorMentions(j, {"context_skills: type must be array"});
+
+  // Absent: the default rules, checked against the level's book too
+  j = LevelJson();
+  for (json& skill : j.at("skills")) {
+    if (skill.at("name") == "revive") skill["cooldown"] = 3;
+  }
+  AssertJsonErrorMentions(j, {"context_skills[0]", "'revive' has cooldown 3"});
+  j["context_skills"] = json::array();  // No rule uses it: it loads
+  SnapshotFromJson(j.dump());
+}
+
+TEST(TestJsonRejectsBadReviveFields) {
+  json j = LevelJson();
+  Frost(j)["revive_percent"] = 50;  // Without affects_downed
+  AssertJsonErrorMentions(j, {"skill 'frost'", "revive_percent needs affects_downed"});
+  j = LevelJson();
+  Frost(j)["affects_downed"] = "yes";
+  AssertJsonErrorMentions(j, {"affects_downed: type must be boolean"});
+  j = LevelJson();
+  Frost(j).erase("tags");
+  Frost(j)["affects_downed"] = true;
+  Frost(j)["revive_percent"] = 101;
+  AssertJsonErrorMentions(j, {"skill 'frost'", "revive_percent must be in [0, 100] (got 101)"});
+  Frost(j)["revive_percent"] = 100;
+  const Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_TRUE(s.skills.back().affects_downed);
+  ASSERT_EQ(s.skills.back().revive_percent, 100);
+  j.at("agents").at(0)["max_health"] = 0;
+  j.at("agents").at(0)["health"] = 0;
+  AssertJsonErrorMentions(j, {"agent #0", "max_health must be >= 1 (got 0)"});
+}
+
+// A v5 level (no context skills, no revive keys) loads: the default rules,
+// its skills affect the standing.
+TEST(TestJsonV5SnapshotLoadsWithTheDefaultRules) {
+  json j = LevelJson();
+  j["version"] = 5;
+  j.erase("context_skills");
+  for (json& skill : j.at("skills")) {
+    if (skill.at("name") == "revive") continue;  // v5 files had no builtin revive
+    skill.erase("affects_downed");
+    skill.erase("revive_percent");
+  }
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_FALSE(s.context_skills.has_value());
+  ASSERT_FALSE(s.skills.back().affects_downed);
+  ASSERT_EQ(s.skills.back().revive_percent, 0);
+  SynchroEnv env(8, 8, 1, 1, 0, 7);
+  ASSERT_TRUE(env.SetContextSkills({}));
+  env.LoadSnapshot(s);
+  ASSERT_TRUE(env.GetContextSkills() == DefaultContextSkills());
+}
+
 TEST(TestEnemyKindsRoundTrip) {
   for (const EnemyKind& kind : EnemyKinds()) {
     json j = AggroJson();

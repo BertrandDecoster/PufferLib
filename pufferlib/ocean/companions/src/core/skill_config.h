@@ -85,7 +85,9 @@ struct SkillConfig {
   // downed), as every skill but a revive; on, the downed only (alive and
   // down), which it can only revive: no tags, damage, root or motion
   // (validated: tags cannot land on the downed, damage cannot hurt them, and
-  // motion would move a body). A projectile flies past whom it cannot affect.
+  // motion would move a body), and friendly fire on (only companions go
+  // down: without it, nobody to affect). A projectile flies past whom it
+  // cannot affect.
   bool affects_downed = false;
   // A downed agent the skill affects comes back (Companion::Revive) with this
   // percent of its max HP, rounded up (at least 1). 0: no revive. In [0, 100];
@@ -131,7 +133,8 @@ TargetFilter TargetFilterFromString(const std::string& s);      // Throws on unk
 // motion_distance, damage, root_steps and cooldown >= 0; tag names non-empty, of at
 // most kMaxNameLength bytes, with a duration of kPermanentTag or > 0; enums in
 // range; revive_percent in [0, 100], and > 0 only with affects_downed; an
-// affects_downed skill without tags, damage, root_steps or motion.
+// affects_downed skill without tags, damage, root_steps or motion, with
+// friendly_fire.
 void ValidateSkillConfig(const SkillConfig& s);
 
 }  // namespace companions

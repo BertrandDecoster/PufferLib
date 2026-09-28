@@ -261,9 +261,12 @@ class BaseEnv {
   // step reads the intentions (GatherIntentions): an ally revived or downed
   // later in the step does not change it.
   // The rules are level data, like max_downs: a fresh env has
-  // DefaultContextSkills() (next to a downed ally, slot 0 is revive), and a
-  // generated Reset keeps the env's rules. LoadSnapshot does not touch them
-  // (snapshots do not carry them yet).
+  // DefaultContextSkills() (next to a downed ally, slot 0 is revive),
+  // snapshots carry them (LoadSnapshot sets the snapshot's, absent = the
+  // default ones, validated against the snapshot's book), and a generated
+  // Reset keeps the env's rules. A rule whose skill the current book lacks
+  // (the book changed behind the rules' back: GetMutableSkillBook, a
+  // generated Reset reloading the builtins) is skipped.
   const std::vector<ContextSkillRule>& GetContextSkills() const { return context_skills_; }
   // Replaces the rules ({} = no override). False, rules unchanged and the
   // reason in `error` (when given), unless ValidateContextSkills accepts them
@@ -350,12 +353,14 @@ class BaseEnv {
 
   // Save current state to a snapshot (grid, agents, effects, timing, the skill
   // book but the fixed kDefaultSkill, agent tags / skill slots / cooldowns,
-  // zones; tags by name)
+  // zones; tags by name; downs, max_downs; the context skills, always
+  // explicit)
   virtual Snapshot SaveSnapshot() const;
 
   // Load state from a snapshot. The skill book is reset to the builtins, then
   // gets the snapshot's skills; the TagTable is kept (ids stay stable). An
-  // empty or missing slot loads as kDefaultSkill.
+  // empty or missing slot loads as kDefaultSkill. max_downs and the context
+  // skills are the snapshot's (absent rules: DefaultContextSkills()).
   // Throws std::runtime_error if snapshot is incompatible (e.g., wrong
   // dimensions) or its skills / tags / zones are invalid, before any change.
   virtual void LoadSnapshot(const Snapshot& snapshot);
@@ -373,8 +378,9 @@ class BaseEnv {
   // Update all agents with FSM AI (called in PreStep)
   void UpdateAgentFSM();
 
-  // A generated Reset's load: LoadSnapshot with the env's max_downs (level
-  // data, kept across Reset) in place of the generated level's default
+  // A generated Reset's load: LoadSnapshot keeping the env's max_downs and
+  // context skills (level data, kept across Reset) in place of the generated
+  // level's defaults. The rules are not checked against the generated book.
   void LoadGeneratedLevel(Snapshot snapshot);
 
   // The env's own end rule (IsDone's other term, besides IsTeamDown): the
@@ -428,7 +434,8 @@ class BaseEnv {
   // slot, a skill of the book, not cooling down (only an equipped skill reads
   // the cooldown), and a rooted caster only for a skill that does not move it.
   bool CanUseSkill(const Companion& comp, int slot) const;
-  // The first rule for `slot` whose condition holds for `comp`, or nullptr
+  // The first rule for `slot` whose skill the book has and whose condition
+  // holds for `comp`, or nullptr
   const ContextSkillRule* ActiveContextRule(const Companion& comp, int slot) const;
   // The one evaluation of a condition (a new condition: one more case)
   bool ContextHolds(ContextCondition condition, const Companion& comp) const;

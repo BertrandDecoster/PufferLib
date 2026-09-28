@@ -13,6 +13,7 @@
 #include "../../third_party/nlohmann/json.hpp"
 #include "annotations.h"
 #include "cell.h"
+#include "context_skill.h"
 #include "object.h"
 #include "skill_config.h"
 #include "types.h"
@@ -362,8 +363,8 @@ TagSnapshot JsonToTag(const json& j, const std::string& section, const std::stri
 
 // SkillConfig: every field but "name" is optional and takes the SkillConfig
 // default when absent (so "filter" defaults to "all", "damage" to 0,
-// "friendly_fire" and the "self_*" flags to true). "distance" is
-// motion_distance.
+// "friendly_fire" and the "self_*" flags to true, "affects_downed" to false,
+// "revive_percent" to 0). "distance" is motion_distance.
 json SkillConfigToJson(const SkillConfig& s) {
   json tags = json::array();
   for (const SkillTagSpec& t : s.tags) tags.push_back(TagToJson(t.tag, t.duration));
@@ -384,7 +385,9 @@ json SkillConfigToJson(const SkillConfig& s) {
     {"self_tags", s.self_tags},
     {"self_motion", s.self_motion},
     {"self_root", s.self_root},
-    {"self_damage", s.self_damage}
+    {"self_damage", s.self_damage},
+    {"affects_downed", s.affects_downed},
+    {"revive_percent", s.revive_percent}
   };
 }
 
@@ -398,7 +401,7 @@ SkillConfig JsonToSkillConfig(const json& j, const std::string& section) {
   const std::string owner = "skill '" + s.name + "'";
   CheckKeys(j, {"name", "targeting", "range", "filter", "area", "motion", "distance", "tag_path",
                 "tags", "damage", "root_steps", "cooldown", "friendly_fire", "self_tags",
-                "self_motion", "self_root", "self_damage"},
+                "self_motion", "self_root", "self_damage", "affects_downed", "revive_percent"},
             owner);
   // An enum field, parsed by `from_string` (which throws on an unknown value).
   auto enum_field = [&](const char* key, auto& field, auto from_string) {
@@ -432,7 +435,33 @@ SkillConfig JsonToSkillConfig(const json& j, const std::string& section) {
   s.self_motion = GetOr<bool>(j, "self_motion", s.self_motion, sec);
   s.self_root = GetOr<bool>(j, "self_root", s.self_root, sec);
   s.self_damage = GetOr<bool>(j, "self_damage", s.self_damage, sec);
+  s.affects_downed = GetOr<bool>(j, "affects_downed", s.affects_downed, sec);
+  s.revive_percent = GetOr<int>(j, "revive_percent", s.revive_percent, sec);
   return s;
+}
+
+// A context skill rule: {"condition", "slot", "skill"}, all required.
+// Values are checked by ValidateContextSkills (Snapshot::ValidateSkillsTagsZones).
+json ContextSkillRuleToJson(const ContextSkillRule& r) {
+  return json{{"condition", ContextConditionToString(r.condition)},
+              {"slot", r.slot},
+              {"skill", r.skill}};
+}
+
+// `section` is "context_skills[i]".
+ContextSkillRule JsonToContextSkillRule(const json& j, const std::string& section) {
+  RequireObject(j, section);
+  CheckKeys(j, {"condition", "slot", "skill"}, section);
+  ContextSkillRule r;
+  const std::string condition = Get<std::string>(j, "condition", section);
+  try {
+    r.condition = ContextConditionFromString(condition);
+  } catch (const std::runtime_error& e) {
+    throw std::runtime_error(section + ": condition: " + e.what());
+  }
+  r.slot = Get<int>(j, "slot", section);
+  r.skill = Get<std::string>(j, "skill", section);
+  return r;
 }
 
 // AgentSnapshot serialization
@@ -625,9 +654,10 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j, const std::string& se
 // Audit F4: JSON path must be version-gated just like binary.
 // 2: annotations (agent kind / attack config are optional keys); 4: skills,
 // agent tags / skill slots / cooldowns, cell_tags (zones); 5: downs (agent
-// downed / times_downed, max_downs). There never was a JSON 3: the number
-// follows the binary format. Versions 2..5 load.
-static constexpr int kJsonSnapshotVersion = 5;
+// downed / times_downed, max_downs); 6: skills' affects_downed /
+// revive_percent, context_skills. There never was a JSON 3: the number
+// follows the binary format. Versions 2..6 load.
+static constexpr int kJsonSnapshotVersion = 6;
 static constexpr int kMinJsonSnapshotVersion = 2;
 static constexpr const char* kJsonSnapshotMagic = "SNAP";
 // rows * cols cap, so a hand-authored level can not make us allocate gigabytes.
@@ -706,6 +736,16 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
 
   // The level's max downs (v5)
   j["max_downs"] = snapshot.max_downs;
+
+  // The level's context skill rules (v6), when present: absent stays absent
+  // (the default rules), [] stays [] (none)
+  if (snapshot.context_skills) {
+    json rules = json::array();
+    for (const ContextSkillRule& r : *snapshot.context_skills) {
+      rules.push_back(ContextSkillRuleToJson(r));
+    }
+    j["context_skills"] = rules;
+  }
 
   return j.dump(2);  // Pretty-print with 2-space indent
 }
@@ -834,6 +874,16 @@ Snapshot ReadSnapshot(const json& j) {
 
   // The level's max downs (v5; absent = the default)
   snapshot.max_downs = GetOr<int>(j, "max_downs", kDefaultMaxDowns, "snapshot");
+
+  // The level's context skill rules (v6; absent = the default rules, [] = none)
+  if (j.contains("context_skills")) {
+    const json& rules = GetArray(j, "context_skills", "snapshot");
+    std::vector<ContextSkillRule> parsed;
+    for (size_t i = 0; i < rules.size(); ++i) {
+      parsed.push_back(JsonToContextSkillRule(rules[i], Indexed("context_skills", i)));
+    }
+    snapshot.context_skills = std::move(parsed);
+  }
 
   snapshot.ValidateSkillsTagsZones();
   return snapshot;

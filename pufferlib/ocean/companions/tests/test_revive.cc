@@ -10,7 +10,9 @@
 #include "../src/core/context_skill.h"
 #include "../src/core/object.h"
 #include "../src/core/skill_config.h"
+#include "../src/core/snapshot_json.h"
 #include "../src/env/aggro_env.h"
+#include "../src/env/dodge_env.h"
 #include "../src/env/synchro_env.h"
 #include "effect_registry_guard.h"
 
@@ -143,6 +145,17 @@ TEST(TestReviveFieldsValidate) {
   e = ValidationError(s);
   ASSERT_TRUE(Mentions(e, "raise") && Mentions(e, "revive_percent") &&
               Mentions(e, "affects_downed"));
+
+  // Only companions go down and the caster is one: without friendly fire, a
+  // skill that affects the downed could never affect anyone
+  s = Raise();
+  s.friendly_fire = false;
+  e = ValidationError(s);
+  ASSERT_TRUE(Mentions(e, "raise") && Mentions(e, "friendly_fire") &&
+              Mentions(e, "affects_downed"));
+  s.revive_percent = 0;
+  e = ValidationError(s);
+  ASSERT_TRUE(Mentions(e, "friendly_fire"));
 }
 
 // A skill that affects the downed can only revive.
@@ -682,6 +695,93 @@ TEST(TestContextSkillsAreLevelData) {
   ASSERT_TRUE(aggro.GetContextSkills().empty());
 }
 
+// A snapshot carries the level's rules: a load sets them (absent = the
+// default), every form keeps them, and they work in a step.
+TEST(TestSnapshotsCarryTheContextSkills) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  mend.revive_percent = 100;
+  env.GetMutableSkillBook().Define(mend);
+  const std::vector<ContextSkillRule> rules = {
+      {ContextCondition::AdjacentDownedAlly, 0, "mend"}};
+  ASSERT_TRUE(env.SetContextSkills(rules));
+  Place(env, 0, {3, 1});
+  Agent* b = Place(env, 1, {3, 2});
+  b->SetMaxHealth(4);
+  DownCompanion(env, 1);
+  const Snapshot saved = env.SaveSnapshot();
+  for (const Snapshot& s : {saved, Snapshot::Deserialize(saved.Serialize()),
+                            SnapshotFromJson(SnapshotToJson(saved))}) {
+    SynchroEnv other(10, 10, 2, 1, 0, 7);
+    other.LoadSnapshot(s);
+    ASSERT_TRUE(other.GetContextSkills() == rules);
+    Companion* a2 = AsCompanion(other.GetMutableObjectManager().GetAllAgents()[0]);
+    Agent* b2 = other.GetMutableObjectManager().GetAllAgents()[1];
+    ASSERT_EQ(other.EffectiveSkill(*a2, 0), std::string("mend"));
+    other.Step({Use(MovementAction::Right), kStay});
+    ASSERT_FALSE(b2->IsDowned());
+    ASSERT_EQ(b2->GetHealth(), 4);  // mend: 100%
+  }
+}
+
+// A rule whose skill the current book lacks (a host redefined the book behind
+// the rules' back) is skipped: the slot keeps its equipped skill.
+TEST(TestARuleWhoseSkillTheBookLacksIsSkipped) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  env.GetMutableSkillBook().Define(mend);
+  const ContextCondition adj = ContextCondition::AdjacentDownedAlly;
+  ASSERT_TRUE(env.SetContextSkills({{adj, 0, "mend"}, {adj, 1, "mend"}, {adj, 1, "revive"}}));
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Place(env, 1, {3, 2});
+  DownCompanion(env, 1);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("mend"));
+  env.GetMutableSkillBook().Reset();  // Builtins only: no mend
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+  ASSERT_FALSE(env.IsContextSkill(*a, 0));
+  ASSERT_EQ(env.EffectiveSkill(*a, 1), std::string("revive"));  // The next rule holds
+  ASSERT_EQ(CountSkill1(env.LegalActions(0)), static_cast<size_t>(kNumMovementActions));
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string(kDefaultSkill));
+  ASSERT_TRUE(env.GetLastRevives().empty());
+}
+
+// A generated Reset keeps the env's rules like max_downs, even one naming a
+// skill of an earlier level (its book is the builtins): skipped, not rejected.
+TEST(TestAGeneratedResetKeepsTheRules) {
+  const ContextCondition adj = ContextCondition::AdjacentDownedAlly;
+  const std::vector<ContextSkillRule> rules = {{adj, 0, "mend"}, {adj, 1, "revive"}};
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  env.GetMutableSkillBook().Define(mend);
+  ASSERT_TRUE(env.SetContextSkills(rules));
+  MakeArena(env);  // Resets
+  ASSERT_TRUE(env.GetContextSkills() == rules);
+  ASSERT_TRUE(env.GetSkillBook().Find("mend") == nullptr);
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Place(env, 1, {3, 2});
+  DownCompanion(env, 1);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+  ASSERT_EQ(env.EffectiveSkill(*a, 1), std::string("revive"));
+
+  AggroEnv aggro(10, 2, EnemyType::Zombie, 42, 0, 100);
+  aggro.GetMutableSkillBook().Define(mend);
+  ASSERT_TRUE(aggro.SetContextSkills(rules));
+  aggro.Reset(42);
+  ASSERT_TRUE(aggro.GetContextSkills() == rules);
+  DodgeEnv dodge(7, 2, 3, 50, 42);
+  dodge.GetMutableSkillBook().Define(mend);
+  ASSERT_TRUE(dodge.SetContextSkills(rules));
+  dodge.Reset(42);
+  ASSERT_TRUE(dodge.GetContextSkills() == rules);
+}
+
 // =============================================================================
 // Main
 // =============================================================================
@@ -701,7 +801,12 @@ int main() {
   int passed = 0;
   for (const auto& test : tests) {
     std::cout << "[ RUN      ] " << test.name << "\n";
-    test.func();
+    try {
+      test.func();
+    } catch (const std::exception& e) {
+      std::cout << "[  FAILED  ] " << test.name << ": " << e.what() << "\n";
+      continue;
+    }
     std::cout << "[       OK ] " << test.name << "\n";
     passed++;
   }
@@ -709,5 +814,5 @@ int main() {
   std::cout << "\n[==========] " << passed << "/" << tests.size()
             << " tests passed.\n";
 
-  return 0;
+  return passed == static_cast<int>(tests.size()) ? 0 : 1;
 }

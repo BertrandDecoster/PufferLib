@@ -10,11 +10,13 @@
 #define COMPANIONS_CORE_SNAPSHOT_H_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "annotations.h"
 #include "cell.h"
+#include "context_skill.h"
 #include "fsm/fsm_state.h"
 #include "skill_config.h"
 #include "types.h"
@@ -203,6 +205,13 @@ struct Snapshot {
   // Snapshot version 5: the level's max downs (BaseEnv::SetMaxDowns, >= 1).
   int max_downs = kDefaultMaxDowns;
 
+  // Snapshot version 6: the level's context skill rules (BaseEnv::
+  // SetContextSkills). Absent (nullopt: older files, a JSON level without the
+  // key) = DefaultContextSkills(), so every level has revive; present =
+  // exactly these rules (empty = no override). SaveSnapshot always writes
+  // them.
+  std::optional<std::vector<ContextSkillRule>> context_skills;
+
   // ==========================================================================
   // Validation helpers
   // ==========================================================================
@@ -229,8 +238,12 @@ struct Snapshot {
   // real skill ("" is kDefaultSkill); an agent's kind is empty, or one of
   // EnemyKinds() on an AgentFSM agent; v5 downs: max_downs >= 1, downed /
   // times_downed only on a companion type (IsCompanionType), times_downed
-  // >= 0, a downed agent at 0 HP with times_downed >= 1 and no statuses.
-  // Messages name the skill, agent (index and id) or zone cell.
+  // >= 0, a downed agent at 0 HP with times_downed >= 1 and no statuses;
+  // every agent's max_health >= 1; v6: the context skill rules (absent: the
+  // default ones) pass ValidateContextSkills with that same book (so a level
+  // may retune a rule's skill, but not give it a cooldown).
+  // Messages name the skill, agent (index and id), zone cell or rule
+  // (context_skills[i]).
   void ValidateSkillsTagsZones() const;
 
   // ==========================================================================

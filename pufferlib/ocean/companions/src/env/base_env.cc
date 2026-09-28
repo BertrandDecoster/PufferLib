@@ -959,7 +959,12 @@ bool BaseEnv::ContextHolds(ContextCondition condition, const Companion& comp) co
 
 const ContextSkillRule* BaseEnv::ActiveContextRule(const Companion& comp, int slot) const {
   for (const ContextSkillRule& rule : context_skills_) {
-    if (rule.slot == slot && ContextHolds(rule.condition, comp)) return &rule;
+    // A rule whose skill the book lacks (a host changed the book behind the
+    // rules' back, a generated Reset reloaded the builtins) is skipped: it
+    // never disables a slot.
+    if (rule.slot == slot && skills_.Find(rule.skill) && ContextHolds(rule.condition, comp)) {
+      return &rule;
+    }
   }
   return nullptr;
 }
@@ -1398,6 +1403,7 @@ Snapshot BaseEnv::SaveSnapshot() const {
   snap.horizon = horizon_;
   snap.d4_transform = d4_transform_;
   snap.max_downs = max_downs_;
+  snap.context_skills = context_skills_;  // Always explicit
 
   // Semantic annotations
   snap.annotations = annotations_.Serialize();
@@ -1588,6 +1594,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   const bool max_downs_set = SetMaxDowns(snapshot.max_downs);
   assert(max_downs_set && "validated max_downs rejected");
   (void)max_downs_set;
+  // The level's context skills (absent: the default ones), validated above
+  // against the book just built
+  context_skills_ = snapshot.context_skills ? *snapshot.context_skills : DefaultContextSkills();
 
   // Agents were placed in the grid alive, in the saved order: re-place them
   // now that they carry their saved alive flag, so a corpse never hides a
@@ -1676,10 +1685,15 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
 
 void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
   // Level data kept across Reset: a generated level has the default.
-  // The context skills too: LoadSnapshot leaves them alone (snapshots do not
-  // carry them yet).
   snapshot.max_downs = max_downs_;
+  // The context skills too, but not through the snapshot: checked against the
+  // generated book (the builtins), a rule naming an earlier level's skill
+  // would fail the Reset. Kept as they are, such a rule is skipped
+  // (ActiveContextRule). No rule to check meanwhile.
+  std::vector<ContextSkillRule> rules = context_skills_;
+  snapshot.context_skills = std::vector<ContextSkillRule>{};
   LoadSnapshot(snapshot);
+  context_skills_ = std::move(rules);
 }
 
 void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {

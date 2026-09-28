@@ -229,6 +229,10 @@ void ValidateSkillConfig(const SkillConfig& s) {
     reject(s.damage > 0, "damage", "damage cannot hurt the downed");
     reject(s.root_steps > 0, "root_steps", "the downed cannot be rooted");
     reject(s.motion != SkillMotion::None, "motion", "a motion would move a body");
+    // Only companions go down, and the caster is one: sparing its faction
+    // would leave nobody to affect.
+    reject(!s.friendly_fire, "friendly_fire off",
+           "only companions go down, the caster's own faction");
   }
   for (size_t i = 0; i < s.tags.size(); ++i) {
     const SkillTagSpec& t = s.tags[i];

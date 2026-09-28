@@ -122,9 +122,22 @@ void Snapshot::ValidateSkillsTagsZones() const {
     throw std::runtime_error("Snapshot: max_downs must be >= 1 (got " + std::to_string(max_downs) +
                              ")");
   }
+  // The rules LoadSnapshot will set, against that book. Absent, the default
+  // ones: a level retuning their skill with a cooldown is rejected too.
+  try {
+    ValidateContextSkills(context_skills ? *context_skills : DefaultContextSkills(), book);
+  } catch (const std::runtime_error& e) {
+    throw std::runtime_error(std::string("Snapshot: ") + e.what() +
+                             (context_skills ? "" : " (the default rules: the snapshot has none)"));
+  }
   for (size_t i = 0; i < agents.size(); ++i) {
     const AgentSnapshot& agent = agents[i];
     const std::string who = "agent #" + std::to_string(i) + " (id " + std::to_string(agent.id) + ")";
+    // A revive brings back a percent of it, at least 1 HP (Companion::Revive)
+    if (agent.max_health < 1) {
+      throw std::runtime_error("Snapshot: " + who + ": max_health must be >= 1 (got " +
+                               std::to_string(agent.max_health) + ")");
+    }
     if (!agent.kind.empty()) {
       if (agent.type != static_cast<int>(ObjectType::AgentFSM)) {
         throw std::runtime_error("Snapshot: " + who + ": kind \"" + agent.kind +
@@ -363,9 +376,13 @@ void WriteSkill(std::vector<uint8_t>& buffer, const SkillConfig& s) {
   WriteValue(buffer, s.self_motion);
   WriteValue(buffer, s.self_root);
   WriteValue(buffer, s.self_damage);
+  // v6
+  WriteValue(buffer, static_cast<uint8_t>(s.affects_downed));  // Read as a byte
+  WriteValue(buffer, s.revive_percent);
 }
 
-SkillConfig ReadSkill(const uint8_t*& ptr, const uint8_t* end) {
+// `version`: the file's; a record before v6 has no revive fields.
+SkillConfig ReadSkill(const uint8_t*& ptr, const uint8_t* end, uint32_t version) {
   SkillConfig s;
   s.name = ReadString(ptr, end);
   s.targeting = static_cast<SkillTargeting>(ReadValue<int>(ptr, end));
@@ -392,7 +409,35 @@ SkillConfig ReadSkill(const uint8_t*& ptr, const uint8_t* end) {
   s.self_motion = ReadValue<bool>(ptr, end);
   s.self_root = ReadValue<bool>(ptr, end);
   s.self_damage = ReadValue<bool>(ptr, end);
+  if (version >= 6) {
+    // A byte, not a bool: any value read from the buffer is a valid one
+    s.affects_downed = ReadValue<uint8_t>(ptr, end) != 0;
+    s.revive_percent = ReadValue<int>(ptr, end);
+  }
   return s;
+}
+
+// v6: the context skill rules (the reader validates them)
+void WriteContextSkills(std::vector<uint8_t>& buffer, const std::vector<ContextSkillRule>& rules) {
+  WriteValue(buffer, static_cast<uint32_t>(rules.size()));
+  for (const ContextSkillRule& r : rules) {
+    WriteValue(buffer, static_cast<int>(r.condition));
+    WriteValue(buffer, r.slot);
+    WriteString(buffer, r.skill);
+  }
+}
+
+std::vector<ContextSkillRule> ReadContextSkills(const uint8_t*& ptr, const uint8_t* end) {
+  uint32_t count = ReadValue<uint32_t>(ptr, end);
+  // condition, slot, skill name length
+  CheckCountFits(count, 2 * sizeof(int) + sizeof(uint32_t), ptr, end, "context skill count");
+  std::vector<ContextSkillRule> rules(count);
+  for (ContextSkillRule& r : rules) {
+    r.condition = static_cast<ContextCondition>(ReadValue<int>(ptr, end));
+    r.slot = ReadValue<int>(ptr, end);
+    r.skill = ReadString(ptr, end);
+  }
+  return rules;
 }
 
 }  // namespace
@@ -408,8 +453,9 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   WriteValue(buffer, static_cast<uint32_t>(0x534E4150));  // "SNAP"
   // Version 2 added annotations; version 3 agent kind + attack config;
   // version 4 skills, agent tags / skill slots / cooldowns and zones;
-  // version 5 downs (agent downed / times_downed, max_downs).
-  WriteValue(buffer, static_cast<uint32_t>(5));
+  // version 5 downs (agent downed / times_downed, max_downs); version 6
+  // skills' affects_downed / revive_percent and the context skill rules.
+  WriteValue(buffer, static_cast<uint32_t>(6));
 
   // Grid dimensions
   WriteValue(buffer, rows);
@@ -543,6 +589,10 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   // v5: the level's max downs
   WriteValue(buffer, max_downs);
 
+  // v6: the context skill rules, when present (a byte: has them, then the list)
+  WriteValue(buffer, static_cast<uint8_t>(context_skills.has_value()));
+  if (context_skills) WriteContextSkills(buffer, *context_skills);
+
   return buffer;
 }
 
@@ -560,7 +610,7 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     throw std::runtime_error("Invalid snapshot magic number");
   }
   uint32_t version = ReadValue<uint32_t>(ptr, end);
-  if (version < 1 || version > 5) {
+  if (version < 1 || version > 6) {
     throw std::runtime_error("Unsupported snapshot version");
   }
 
@@ -777,11 +827,14 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
       throw std::runtime_error("Snapshot buffer corrupt: unreasonable skill count");
     }
     // name length, 9 ints (targeting .. damage), tag count, 6 bools (tag_path,
-    // friendly_fire, self_tags, self_motion, self_root, self_damage)
-    CheckCountFits(num_skills, sizeof(uint32_t) + 9 * sizeof(int) + sizeof(uint32_t) + 6 * sizeof(bool),
+    // friendly_fire, self_tags, self_motion, self_root, self_damage); v6:
+    // affects_downed (a byte), revive_percent
+    const size_t v6_bytes = version >= 6 ? sizeof(uint8_t) + sizeof(int) : 0;
+    CheckCountFits(num_skills,
+                   sizeof(uint32_t) + 9 * sizeof(int) + sizeof(uint32_t) + 6 * sizeof(bool) + v6_bytes,
                    ptr, end, "skill count");
     snap.skills.reserve(num_skills);
-    for (uint32_t i = 0; i < num_skills; ++i) snap.skills.push_back(ReadSkill(ptr, end));
+    for (uint32_t i = 0; i < num_skills; ++i) snap.skills.push_back(ReadSkill(ptr, end, version));
     uint32_t num_zones = ReadValue<uint32_t>(ptr, end);
     if (num_zones > 10000000) {
       throw std::runtime_error("Snapshot buffer corrupt: unreasonable zone count");
@@ -799,6 +852,12 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
 
   // The level's max downs (v5+); older snapshots take the default.
   if (version >= 5) snap.max_downs = ReadValue<int>(ptr, end);
+
+  // The context skill rules (v6+); older snapshots have none (the default
+  // rules on load).
+  if (version >= 6 && ReadValue<uint8_t>(ptr, end) != 0) {
+    snap.context_skills = ReadContextSkills(ptr, end);
+  }
 
   snap.ValidateSkillsTagsZones();
   return snap;
