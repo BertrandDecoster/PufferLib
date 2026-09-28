@@ -91,7 +91,8 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
    `None`), plus, for a companion, each enabled slot (`slot < kEnabledSkillSlots`) it
    `CanUseSkill`, as `Skill1` / `Skill2` with each of the 5 aims (a wall-facing aim
    included). FSM / plain agents: movement only; the dead and the stunned (any kind):
-   Stay only. Only the C++ tests call it today
+   Stay only; the rooted (any kind): no moves (Stay, and a companion's skills). Only the
+   C++ tests call it today
  - The legacy generic companion cast (an on/off flag that cast an effect for an EMPTY
    slot 0) is gone, with its C API setter / getter and EffectSpawned events (C API 1.2.0)
 
@@ -110,11 +111,17 @@ tags, roots, cooldowns. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 `env/skill_motion.{h,cc}`, `env/base_env.cc` (`ResolveSkills`, `UseSkill`, `Affects`, `AreaMotion`).
 
 **Step order** (`BaseEnv::Step`):
-1. Clear the per-step reports, tick tags and cooldowns
+1. Clear the per-step reports, `BeginStep` on every agent
 2. `PreStep` (enemy FSM) → `GatherIntentions` → `ResolveCollisions` → `ExecuteValidatedMovements`
 3. `ApplyZoneTags` (every living agent on a zone cell)
 4. `ResolveInteractions` → `ResolveSkills`
-5. Effects tick, statuses tick, `tick_++`, `PostStep`, rewards (TaskLens)
+5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), `tick_++`, `PostStep`, rewards (TaskLens)
+
+**Step timers** (`Agent::BeginStep` / `EndStep`): tag and status durations and cooldowns all
+count steps and all tick at the END of `Step`. A timer of n is in effect for the n next
+steps: set between two steps (host primitives, snapshots), it reads n; set during a step,
+it also covers the rest of that step (kept as n + 1 inside the step) and reads n after it.
+What a host reads between steps is always the number of steps to come it covers.
 
 **Line and landing rules** (`env/skill_motion.h`):
 - Line rule: a line travels along the facing; a wall (not pathable) or the grid edge
@@ -150,7 +157,9 @@ it holds `attack`. It is FIXED:
   an empty one) or a missing slot, `companions_set_agent_skill(..., "" or NULL)`;
   agent state reports `"attack"`, never `""`
 
-Cooldown: used at step t, usable again at step t + cooldown (0 and 1 both mean every step).
+Cooldown: 0 = no cooldown (every step); n = blocked for the n steps after the one it was
+used in (used at step t, usable again at step t + n + 1). Reads n after the use, then
+n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
 
 **SkillConfig** (JSON key in parentheses when it differs):
 
@@ -192,8 +201,8 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 - Opaque names interned per env; ids stay stable (the table only grows, never cleared
   by `LoadSnapshot` / `Reset`). Persist names, not ids
 - Duration in steps, or -1 (`kPermanentTag`); re-applying keeps the longer (permanent wins)
-- Durations tick at the START of `Step`: landed during step t with duration d, the tag
-  is present after steps t .. t+d-1
+- Durations are step timers (see Step timers): landed during step t with duration d,
+  the tag is present after steps t .. t+d-1 (and during step t+d, until its end)
 - No gameplay effect in the env. Host primitives: `ApplyTagTo` / `RemoveTagFrom`
 
 **Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`):
@@ -211,7 +220,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - Rooted: can't move by itself (walking becomes Stay, dash / teleport skills are
   unusable, `CanMoveItself`), can still use non-moving skills (a rooted FSM enemy still
   attacks), can be pushed / pulled
-- Statuses tick at the END of `Step`, so `root_steps = n` is applied as n + 1
+- Statuses are step timers (see Step timers): `root_steps = n` roots for the n next steps
 
 **Per-step reports** (cleared at the start of every `Step` and by `LoadSnapshot`, hence every `Reset`):
 
@@ -220,8 +229,8 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 | `GetLastSkillUses()` | caster, skill, target (centre; landing cell for a self skill), slot | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill) |
 | `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
 
-- `fresh` = the agent did not carry the tag just before this landing (so an agent on a
-  duration-1 zone is re-landed fresh every step)
+- `fresh` = the agent did not carry the tag just before this landing (an agent standing on
+  a duration-1 zone still carries its tag when the zone lands it again: not fresh)
 - Event order in a step: AgentMoved, AgentBlocked, SkillUsed, TagApplied,
   EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
 - C API (`src/api/companions_api.h`, version 1.2.1: 1.2 removed the legacy cast,
@@ -271,6 +280,9 @@ Location: `companions/src/core/fsm/`
 - `Zombie`: cadence [1,0] (moves every 2 turns), A* pathfinding, detection=3, lose=5
 - `Goblin`: no cadence (always moves), A* pathfinding, detection=4, lose=6
 - `Dragon`: flying (ignores walls), direct movement, detection=5, lose=8. Not implemented yet
+- Snapshots save and restore the class by name (`"kind"`) through one registry,
+  `EnemyKinds()` in `enemies.cc`: a new class is added there, nowhere else. A snapshot
+  naming an unknown kind, or a kind on a non-FSM agent, is rejected
 
 **Integration**: `BaseEnv::PreStep()` calls `UpdateEnemyFSM()` before gathering intentions
 

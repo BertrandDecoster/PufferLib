@@ -14,6 +14,7 @@
 #include "../src/core/snapshot_json.h"
 #include "../src/core/types.h"
 #include "../src/core/cell.h"
+#include "../src/core/fsm/enemies.h"
 #include "../src/env/synchro_env.h"
 #include "../src/env/aggro_env.h"
 #include "../third_party/nlohmann/json.hpp"
@@ -1097,6 +1098,34 @@ TEST(TestJsonRequiresArrays) {
   json& fsm = FsmAgent(j).at("fsm");
   fsm["patrol_path"] = json::object({{"p", json{{"row", 1}, {"col", 1}}}});
   AssertJsonErrorMentions(j, {"agents[", "patrol_path: type must be array, but is object"});
+}
+
+// An enemy class is restored by its "kind": a misspelled one (or one on an
+// agent that has no FSM) is rejected, not loaded as a plain AgentFSM.
+TEST(TestJsonRejectsUnknownEnemyKind) {
+  json j = AggroJson();
+  ASSERT_EQ(FsmAgent(j).at("kind").get<std::string>(), std::string("Zombie"));
+  SnapshotFromJson(j.dump());  // Sanity
+  for (const char* bad : {"zombie", "Zombi", "Troll"}) {
+    FsmAgent(j)["kind"] = bad;
+    AssertJsonErrorMentions(j, {"agent #", "unknown kind \"" + std::string(bad) + "\"",
+                                "Zombie, Goblin, Dragon"});
+  }
+  j = LevelJson();
+  j.at("agents").at(0)["kind"] = "Zombie";
+  AssertJsonErrorMentions(j, {"agent #0", "only for an AgentFSM agent"});
+}
+
+// Every listed kind survives a save / load with its class.
+TEST(TestEnemyKindsRoundTrip) {
+  for (const EnemyKind& kind : EnemyKinds()) {
+    json j = AggroJson();
+    FsmAgent(j)["kind"] = kind.name;
+    AggroEnv env(10, 2, EnemyType::Zombie, 42, 0, 100);
+    env.LoadSnapshot(SnapshotFromJson(j.dump()));
+    json saved = json::parse(SnapshotToJson(env.SaveSnapshot()));
+    ASSERT_EQ(FsmAgent(saved).at("kind").get<std::string>(), std::string(kind.name));
+  }
 }
 
 TEST(TestJsonRejectsUnknownEnumNames) {

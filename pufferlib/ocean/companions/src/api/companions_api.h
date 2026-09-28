@@ -6,7 +6,7 @@
 // =============================================================================
 // Versioning
 // =============================================================================
-// companions_version() is "1.2.1". 1.1 changed struct layouts
+// companions_version() is "1.2.2". 1.1 changed struct layouts
 // (Companions_AgentState, Companions_Event, Companions_StepResult): consumers
 // must be rebuilt against this header, never mixed with a 1.0 DLL or header.
 // 1.2 removed the legacy generic companion cast (its on/off setter and
@@ -16,6 +16,11 @@
 // 1.2.1 (additive, struct layouts unchanged): Companions_EndReason and
 // companions_get_end_reason; the EpisodeEnd event carries the reason in
 // effect_id.
+// 1.2.2 (behaviour, struct layouts unchanged): every timer (tag and status
+// durations, skill cooldowns) ticks at the end of a step; a cooldown of n
+// blocks the n steps after the use (it blocked n - 1). A lens change starts
+// a new episode, which reports its own EpisodeEnd. A snapshot naming an
+// unknown enemy "kind" is rejected.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -284,7 +289,7 @@ typedef struct {
   // there; all "" / 0 for other agents). Names always fit: the env refuses
   // longer ones.
   char skills[Companions_MAX_SKILL_SLOTS][Companions_SKILL_NAME_LEN];
-  int32_t skill_cooldowns[Companions_MAX_SKILL_SLOTS];  // Steps until usable, 0 = ready
+  int32_t skill_cooldowns[Companions_MAX_SKILL_SLOTS];  // Next steps it stays unusable, 0 = ready
 
   // Actions - intent (before collision resolution) vs actual (after)
   Companions_Action action_intent;   // What the agent wanted to do
@@ -591,9 +596,10 @@ COMPANIONS_API const char* companions_get_tag_name(const Companions_Env* env, in
 COMPANIONS_API int32_t companions_find_tag(const Companions_Env* env, const char* name);        // -1 if unknown
 // Land `tag` on an agent for `duration` steps (-1 = permanent). False for an
 // unknown agent, a NULL / "" tag or one over 31 bytes, or a duration of 0 or
-// below -1. Durations tick at the start of each step: applied between two
-// steps with duration d, the tag is there now and after the next d - 1 steps
-// (d = 1: gone after the next step).
+// below -1. Durations, statuses' and cooldowns included, tick at the end of
+// each step: applied between two steps with duration d, the tag is there for
+// the d next steps (d = 1: gone after the next step). Landed during a step
+// with duration d, it reads d after that step (the same step timer).
 COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectId agent, const char* tag, int32_t duration);
 // Remove `tag` from an agent (true even if it did not carry it). False for an
 // unknown agent or a NULL tag.

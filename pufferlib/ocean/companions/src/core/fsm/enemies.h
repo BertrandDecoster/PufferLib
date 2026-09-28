@@ -102,6 +102,22 @@ Dragon* CreateDragon(ObjectManager& mgr, Position pos,
                      pcg32& rng);
 
 // =============================================================================
+// Enemy kinds: the FSM classes a snapshot names ("kind")
+// =============================================================================
+
+// A snapshot saves an FSM agent's class by name (its GetTypeName()) when the
+// class is listed here, and LoadSnapshot restores it by that name, with its
+// movement (A*, cadence, flying). A snapshot naming a kind not listed here is
+// rejected; an FSM agent saved without a kind comes back as a plain AgentFSM.
+// Adding an enemy class means adding it to the list in enemies.cc.
+struct EnemyKind {
+  const char* name;  // The class's GetTypeName()
+  AgentFSM* (*create)(ObjectManager& mgr, Position pos);  // Bare: no FSM config
+};
+const std::vector<EnemyKind>& EnemyKinds();
+const EnemyKind* FindEnemyKind(const std::string& name);  // nullptr if unknown
+
+// =============================================================================
 // Patrol Path Validation
 // =============================================================================
 

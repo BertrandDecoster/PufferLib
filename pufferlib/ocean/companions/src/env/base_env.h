@@ -163,7 +163,8 @@ class BaseEnv {
   // collisions), all with interact None; for a companion, also each enabled
   // slot's skill it can use (CanUseSkill; slot < kEnabledSkillSlots: Skill1,
   // then Skill2 once enabled) with every aim (Stay + 4 directions). A dead or
-  // stunned agent (any kind): Stay only.
+  // stunned agent (any kind): Stay only. A rooted one: no moves (Stay and its
+  // skills only).
   std::vector<Action> LegalActions(int agent_idx) const;
 
   // Find empty cells (Floor cells with no actor)
@@ -234,9 +235,8 @@ class BaseEnv {
   // Host primitives: land / remove a tag outside of a step. `duration` is a
   // positive step count or kPermanentTag; ApplyTagTo returns false for 0 or
   // anything below kPermanentTag, and for an empty tag or one longer than
-  // kMaxNameLength. Durations tick at the START of each Step: a tag applied
-  // during step t (or between steps t and t+1) with duration d is present after
-  // steps t .. t+d-1.
+  // kMaxNameLength. Durations are step timers (see Agent::BeginStep): a tag
+  // applied between two steps with duration d is there for the d next steps.
   bool ApplyTagTo(ObjectId agent, const std::string& tag, int duration);
   bool RemoveTagFrom(ObjectId agent, const std::string& tag);
 
@@ -249,8 +249,9 @@ class BaseEnv {
   struct TagApplication {
     ObjectId agent = kInvalidObjectId;
     TagId tag = kInvalidTag;
-    // Steps, or kPermanentTag. Ticks at the START of each Step: landed during
-    // step t with duration d, the tag is present after steps t .. t+d-1.
+    // Steps, or kPermanentTag. A step timer (see Agent::BeginStep): landed
+    // during step t with duration d, the tag is there until the end of step
+    // t + d (read after steps t .. t+d-1).
     int duration = kPermanentTag;
     ObjectId source = kInvalidObjectId;  // Caster, or kInvalidObjectId for a zone
     std::string cause;                   // Skill name, or "zone"
@@ -268,9 +269,10 @@ class BaseEnv {
   // regular movement of every Step (before skills), and on any
   // agent a skill moves onto it. Each landing is reported; its `fresh` is that
   // of TagApplication (the agent did not carry the tag just before this
-  // landing), so it does not tell arrivals apart: tags tick at the start of
-  // Step, so an agent standing on a duration-1 zone is re-landed fresh every
-  // step, and one already carrying the tag (from any source) arrives not fresh.
+  // landing), so it does not tell arrivals apart: an agent standing on a
+  // zone still carries its tag (it ticks at the END of Step, after the
+  // landing), so it is re-landed not fresh, and so is one already carrying
+  // the tag from any source when it arrives.
   // Cell tags are world state: copied with the env, saved in snapshots (by tag
   // name) and replaced by LoadSnapshot with the snapshot's own (a generated
   // level has none, so every Reset clears them). Like cell annotations, they
@@ -357,7 +359,6 @@ class BaseEnv {
   // Empties the per-step reports (skill uses, tags applied): their
   // ObjectIds are re-issued by a new world.
   void ClearStepReports();
-  void TickTagsAndCooldowns();  // Start of Step
   // Not rooted. Walking and caster-moving skills both need it (being pushed /
   // pulled does not).
   bool CanMoveItself(const Agent& agent) const;

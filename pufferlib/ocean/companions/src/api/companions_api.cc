@@ -41,7 +41,8 @@
 // getter, its EffectSpawned events): every skill slot holds a skill, "attack"
 // by default.
 // 1.2.1: companions_get_end_reason (additive), EpisodeEnd's effect_id.
-#define COMPANIONS_VERSION "1.2.1"
+// 1.2.2: timers tick at the end of a step (cooldown n = n blocked steps).
+#define COMPANIONS_VERSION "1.2.2"
 
 // =============================================================================
 // Thread-local error message
@@ -68,7 +69,7 @@ struct Companions_Env {
   bool success = false;
   // The done of the last step: EpisodeEnd is reported only on the step where
   // done becomes true, not on the steps a host keeps playing afterwards.
-  // Cleared by reset and snapshot loads (a new episode).
+  // Cleared by reset, snapshot loads and lens changes (a new episode).
   bool last_step_done = false;
   // Why the episode ended: set when done becomes true (a step or a lens
   // change), kept while a host plays on; reset and snapshot loads take the
@@ -600,7 +601,7 @@ static Companions_EndReason CurrentEndReason(const Companions_Env& env) {
   return static_cast<Companions_EndReason>(env.env->GetEndReason());
 }
 
-// A new episode (reset, snapshot load): done / success / end reason as the
+// A new episode (reset, snapshot load, lens change): done / success / end reason as the
 // env latched them (a state loaded at the horizon is done, as Horizon). The
 // EpisodeEnd event is still to report: the next step does.
 static void StartEpisode(Companions_Env& env) {
@@ -639,11 +640,9 @@ COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_Len
       SetError("Lens incompatible with current environment state");
       return false;
     }
-    // Refresh cached done/success with new lens's evaluation
-    // (Player may already be on goal cell for the new lens)
-    env->done = env->env->IsDone();
-    env->success = env->env->IsSuccess();
-    env->end_reason = CurrentEndReason(*env);
+    // A new task is a new episode: its done / success (the player may
+    // already be on the new lens's goal cell) and its EpisodeEnd to report
+    StartEpisode(*env);
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());
@@ -695,9 +694,7 @@ COMPANIONS_API bool companions_set_task_lens_with_params(
       SetError("Lens incompatible with current environment state");
       return false;
     }
-    env->done = env->env->IsDone();
-    env->success = env->env->IsSuccess();
-    env->end_reason = CurrentEndReason(*env);
+    StartEpisode(*env);  // A new episode, as companions_set_task_lens
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());

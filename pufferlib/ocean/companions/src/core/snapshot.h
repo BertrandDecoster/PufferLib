@@ -102,9 +102,9 @@ struct AgentSnapshot {
   int direction = 0;         // Direction as int (for Companions)
   int color = 0;             // ActorColor as int
   bool alive = true;
-  // Concrete AgentFSM class ("Zombie", "Goblin", "Dragon"; empty = plain
-  // AgentFSM). Restores class behaviour (pathfinding, flying) on load.
-  // Snapshot version 3.
+  // Concrete AgentFSM class, one of EnemyKinds() ("Zombie", "Goblin",
+  // "Dragon"; empty = plain AgentFSM). Restores class behaviour (pathfinding,
+  // flying) on load. Snapshot version 3.
   std::string kind;
 
   // Status effects
@@ -213,7 +213,8 @@ struct Snapshot {
   // kMaxNameLength bytes; zones inside the grid; at most kMaxSkillSlots slots /
   // cooldowns per agent, cooldowns >= 0; every non-empty slot names a builtin
   // or one of `skills` (the book LoadSnapshot builds), so slots always hold a
-  // real skill ("" is kDefaultSkill). Messages name the skill, agent (index
+  // real skill ("" is kDefaultSkill); an agent's kind is empty, or one of
+  // EnemyKinds() on an AgentFSM agent. Messages name the skill, agent (index
   // and id) or zone cell.
   void ValidateSkillsTagsZones() const;
 

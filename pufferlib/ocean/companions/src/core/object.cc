@@ -43,8 +43,19 @@ void Agent::Heal(int amount) {
   if (health_ > max_health_) health_ = max_health_;
 }
 
+void Agent::EndStep() {
+  in_step_ = false;
+  if (IsAlive()) TickTimers();
+}
+
+void Agent::TickTimers() {
+  TickTags();
+  TickStatuses();
+}
+
 void Agent::ApplyStatus(StatusType type, int duration) {
   if (type == StatusType::None || duration <= 0) return;
+  duration = TimerSteps(duration);
 
   // Check if we already have this status - refresh duration if so
   for (auto& status : statuses_) {
@@ -91,6 +102,7 @@ bool Agent::HasStatus(StatusType type) const {
 
 void Agent::ApplyTag(TagId id, int duration) {
   if (id == kInvalidTag || duration == 0) return;
+  duration = TimerSteps(duration);  // kPermanentTag stays
   for (AgentTag& t : tags_) {
     if (t.id != id) continue;
     if (t.duration == kPermanentTag || duration == kPermanentTag) {
@@ -243,6 +255,11 @@ void AgentFSM::MoveTo(Position target, const BaseEnv& /*env*/) {
 Companion::Companion(ObjectId id, Position pos) : Agent(id, pos) {
   faction_ = Faction::COMPANION;
   skills_.fill(kDefaultSkill);  // No empty slots
+}
+
+void Companion::TickTimers() {
+  Agent::TickTimers();
+  TickCooldowns();
 }
 
 // =============================================================================

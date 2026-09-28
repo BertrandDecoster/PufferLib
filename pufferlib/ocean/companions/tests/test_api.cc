@@ -86,8 +86,9 @@ static Companions_EnvConfig MakeConfig(int rows = 12, int cols = 12, int compani
 TEST(TestVersion) {
   const char* version = companions_version();
   ASSERT_NOT_NULL(version);
-  // 1.2 removed the companion cast; 1.2.1 added companions_get_end_reason
-  ASSERT_EQ(std::string(version), std::string("1.2.1"));
+  // 1.2 removed the companion cast; 1.2.1 added companions_get_end_reason;
+  // 1.2.2 made every timer tick at the end of a step
+  ASSERT_EQ(std::string(version), std::string("1.2.2"));
   std::cout << "  Version: " << version << std::endl;
 }
 
@@ -1522,6 +1523,34 @@ TEST(TestEpisodeEndIsReportedOnce) {
   play_to_horizon();
   ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 1, ""}}, "[]", 2).c_str()));
   play_to_horizon();
+  companions_destroy(env);
+}
+
+// A lens change starts a new episode (as reset does), which reports its own
+// end: here it is done at once (still at the horizon), so the next step does.
+TEST(TestLensChangeReportsTheNextEpisodeEnd) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  config.horizon = 2;
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  Companions_Action stay = {Companions_Movement_Stay, Companions_Interact_None};
+  Companions_StepResult result = {};
+  companions_step(env, &stay, 1, &result);
+  companions_step(env, &stay, 1, &result);
+  ASSERT_EQ(CountEpisodeEnds(result), 1);
+  companions_step(env, &stay, 1, &result);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);  // Playing on
+  for (int round = 0; round < 2; ++round) {
+    const bool with_params = round == 1;
+    ASSERT_TRUE(with_params
+                    ? companions_set_task_lens_with_params(env, Companions_Lens_Synchro, nullptr, 0)
+                    : companions_set_task_lens(env, Companions_Lens_Synchro));
+    companions_step(env, &stay, 1, &result);
+    ASSERT_TRUE(result.state.done);
+    ASSERT_EQ(CountEpisodeEnds(result), 1);
+    companions_step(env, &stay, 1, &result);
+    ASSERT_EQ(CountEpisodeEnds(result), 0);
+  }
   companions_destroy(env);
 }
 

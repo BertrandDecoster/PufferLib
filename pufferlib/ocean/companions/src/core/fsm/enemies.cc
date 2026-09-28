@@ -231,6 +231,33 @@ Dragon* CreateDragon(ObjectManager& mgr, Position pos,
 // =============================================================================
 // Patrol Path Validation
 // =============================================================================
+// =============================================================================
+// Enemy kinds
+// =============================================================================
+
+namespace {
+template <typename T>
+AgentFSM* CreateBare(ObjectManager& mgr, Position pos) {
+  return mgr.CreateActor<T>(pos);
+}
+}  // namespace
+
+const std::vector<EnemyKind>& EnemyKinds() {
+  static const std::vector<EnemyKind> kinds = {
+      {"Zombie", &CreateBare<Zombie>},
+      {"Goblin", &CreateBare<Goblin>},
+      {"Dragon", &CreateBare<Dragon>},
+  };
+  return kinds;
+}
+
+const EnemyKind* FindEnemyKind(const std::string& name) {
+  for (const EnemyKind& kind : EnemyKinds()) {
+    if (name == kind.name) return &kind;
+  }
+  return nullptr;
+}
+
 bool ValidatePatrolPath(const std::vector<Position>& path) {
   // Empty path or single point is valid
   if (path.size() <= 1) return true;

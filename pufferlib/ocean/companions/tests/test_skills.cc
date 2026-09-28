@@ -90,6 +90,48 @@ TEST(TestAgentTagDurations) {
   ASSERT_FALSE(a.HasTag(0));
 }
 
+// Every timer (tags, statuses, cooldowns) is a step timer: n means "in effect
+// for the n next steps", and all tick at EndStep. Set between steps, n reads n
+// now; set during a step (after BeginStep), n reads n once the step is over.
+TEST(TestStepTimersTickAtTheEndOfTheStep) {
+  Companion between(0, {1, 1});
+  between.ApplyTag(0, 2);
+  between.ApplyStatus(StatusType::Stunned, 2);
+  between.SetCooldown(0, 2);
+  Companion during(1, {1, 2});
+  during.BeginStep();
+  during.ApplyTag(0, 2);
+  during.ApplyStatus(StatusType::Stunned, 2);
+  during.SetCooldown(0, 2);
+  during.EndStep();
+  for (Companion* c : {&between, &during}) {
+    ASSERT_EQ(c->GetTags()[0].duration, 2);
+    ASSERT_EQ(c->GetStatuses()[0].duration, 2);
+    ASSERT_EQ(c->GetCooldown(0), 2);
+  }
+  for (int step = 0; step < 2; ++step) {  // In effect for the 2 next steps
+    for (Companion* c : {&between, &during}) {
+      c->BeginStep();
+      ASSERT_TRUE(c->HasTag(0));
+      ASSERT_TRUE(c->IsStunned());
+      ASSERT_TRUE(c->GetCooldown(0) > 0);
+      c->EndStep();
+    }
+  }
+  for (Companion* c : {&between, &during}) {
+    ASSERT_FALSE(c->HasTag(0));
+    ASSERT_FALSE(c->IsStunned());
+    ASSERT_EQ(c->GetCooldown(0), 0);
+  }
+  // Permanent tags and a cooldown of 0 are no timers
+  during.BeginStep();
+  during.ApplyTag(1, kPermanentTag);
+  during.SetCooldown(1, 0);
+  during.EndStep();
+  ASSERT_EQ(during.GetTags()[0].duration, kPermanentTag);
+  ASSERT_EQ(during.GetCooldown(1), 0);
+}
+
 TEST(TestAgentTagRefreshKeepsLonger) {
   Agent a(0, {1, 1});
   a.ApplyTag(0, 3);
@@ -531,16 +573,66 @@ TEST(TestSkillOnCooldownIsDroppedAndMovementApplies) {
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 1});
   env.SetCompanionSkill(a->GetId(), 0, "lightningStep");
-  env.Step({Use(MovementAction::Right)});  // t0: dash to (3,5), cd 3
+  // Cooldown 3: blocked for the 3 steps after the one it was used in. What
+  // reads between steps is the number of blocked steps to come.
+  env.Step({Use(MovementAction::Right)});  // t0: dash to (3,5)
   ASSERT_TRUE(a->GetPosition() == (Position{3, 5}));
-  env.Step({Use(MovementAction::Left)});   // t1: cd 2 -> plain move
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 3);
+  env.Step({Use(MovementAction::Left)});   // t1: blocked -> plain move
   ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
   ASSERT_TRUE(env.GetLastSkillUses().empty());
   ASSERT_TRUE(a->GetExecutedAction().interact == InteractAction::None);
-  env.Step({kStay});                       // t2: cd 1
-  env.Step({Use(MovementAction::Left)});   // t3: cd 0 -> dash
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 2);
+  env.Step({kStay});                       // t2: blocked
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 1);
+  env.Step({Use(MovementAction::Left)});   // t3: still blocked -> plain move
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 3}));
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 0);
+  env.Step({Use(MovementAction::Left)});   // t4: ready -> dash
   ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+}
+
+// Cooldown 1: blocked for the next step only, usable every other step.
+// LegalActions reads the same value GatherIntentions will: a skill it lists
+// is used, one it leaves out is dropped.
+TEST(TestCooldownOneBlocksOneStepAndLegalActionsAgree) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig jab;
+  jab.name = "jab";
+  jab.targeting = SkillTargeting::Projectile;
+  jab.range = 1;
+  jab.cooldown = 1;
+  env.GetMutableSkillBook().Define(jab);
+  Agent* a = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(a->GetId(), 0, "jab");
+  auto lists_skill = [&]() {
+    for (Action act : env.LegalActions(0)) {
+      if (DecodeAction(act).interact == InteractAction::Skill1) return true;
+    }
+    return false;
+  };
+  for (int t = 0; t < 6; ++t) {
+    const bool ready = t % 2 == 0;
+    ASSERT_EQ(lists_skill(), ready);
+    env.Step({Use(MovementAction::Right)});
+    ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(ready ? 1 : 0));
+    ASSERT_EQ(AsCompanion(a)->GetCooldown(0), ready ? 1 : 0);
+  }
+}
+
+// Cooldown 0: no cooldown, usable every step.
+TEST(TestCooldownZeroIsEveryStep) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});  // The default attack: cooldown 0
+  for (int t = 0; t < 3; ++t) {
+    env.Step({Use(MovementAction::Right)});
+    ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+    ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 0);
+  }
 }
 
 // No skill set: the slot holds the default attack, so Skill1 strikes the faced
@@ -1307,8 +1399,10 @@ TEST(TestZoneTagsWhoeverStandsThere) {
 }
 
 TEST(TestZoneFreshMeansTheAgentDidNotCarryTheTag) {
-  {  // Standing still on a duration-1 zone: the tag expires at every Step
-     // start, so every landing is fresh.
+  {  // Standing still on a duration-1 zone: the tag ticks at the END of
+     // Step, after the landing, so the agent still carries it when the zone
+     // lands it again. Only the first landing is fresh; off the zone, the
+     // tag lasts the next step and is gone after it.
     SynchroEnv env(10, 10, 1, 1, 0, 42);
     MakeArena(env);
     ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", 1));
@@ -1317,9 +1411,12 @@ TEST(TestZoneFreshMeansTheAgentDidNotCarryTheTag) {
       env.Step({kStay});
       ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
       ASSERT_EQ(env.GetLastTagsApplied()[0].cause, std::string("zone"));
-      ASSERT_TRUE(env.GetLastTagsApplied()[0].fresh);
+      ASSERT_EQ(env.GetLastTagsApplied()[0].fresh, i == 0);
       ASSERT_TRUE(Has(env, a, "wet"));
+      ASSERT_EQ(a->GetTags()[0].duration, 1);
     }
+    env.Step({EncodeAction(MovementAction::Right)});
+    ASSERT_FALSE(Has(env, a, "wet"));
   }
   {  // Arriving on a permanent zone while already carrying its tag: not fresh.
     SynchroEnv env(10, 10, 1, 1, 0, 42);
@@ -1868,6 +1965,23 @@ TEST(TestLegalActionsOfTheStunnedAreStayOnly) {
   ASSERT_EQ(env.LegalActions(1).size(), static_cast<size_t>(1));
   ASSERT_TRUE(env.LegalActions(1)[0] == kStay);
   ASSERT_EQ(env.LegalActions(0).size(), static_cast<size_t>(2 * kNumMovementActions));
+}
+
+// A rooted agent can't move by itself (GatherIntentions turns its moves into
+// Stay): Stay, plus a companion's skills with every aim (the aim is no move).
+TEST(TestLegalActionsOfTheRootedHaveNoMoves) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 3});
+  Agent* enemy = AddAgent(env, {5, 5}, Faction::ENEMY);
+  a->ApplyStatus(StatusType::Rooted, 1);
+  enemy->ApplyStatus(StatusType::Rooted, 1);
+  ASSERT_EQ(env.LegalActions(0).size(), static_cast<size_t>(1 + kNumMovementActions));
+  ASSERT_TRUE(Contains(env.LegalActions(0), kStay));
+  ASSERT_FALSE(Contains(env.LegalActions(0), EncodeAction(MovementAction::Right)));
+  ASSERT_EQ(LegalSkillActions(env, 0).size(), static_cast<size_t>(kNumMovementActions));
+  ASSERT_EQ(env.LegalActions(1).size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.LegalActions(1)[0] == kStay);
 }
 
 TEST(TestLegalActionsOfNonCompanionsAndTheDeadListNoSkill) {

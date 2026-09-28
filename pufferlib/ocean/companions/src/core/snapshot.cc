@@ -3,6 +3,7 @@
 
 #include "snapshot.h"
 
+#include "fsm/enemies.h"  // FindEnemyKind
 #include "object.h"  // StatusType
 
 #include <cstring>
@@ -109,6 +110,18 @@ void Snapshot::ValidateSkillsTagsZones() const {
   for (size_t i = 0; i < agents.size(); ++i) {
     const AgentSnapshot& agent = agents[i];
     const std::string who = "agent #" + std::to_string(i) + " (id " + std::to_string(agent.id) + ")";
+    if (!agent.kind.empty()) {
+      if (agent.type != static_cast<int>(ObjectType::AgentFSM)) {
+        throw std::runtime_error("Snapshot: " + who + ": kind \"" + agent.kind +
+                                 "\" is only for an AgentFSM agent");
+      }
+      if (!FindEnemyKind(agent.kind)) {
+        std::string known;
+        for (const EnemyKind& k : EnemyKinds()) known += (known.empty() ? "" : ", ") + std::string(k.name);
+        throw std::runtime_error("Snapshot: " + who + ": unknown kind \"" + agent.kind +
+                                 "\" (known: " + known + ")");
+      }
+    }
     for (const TagSnapshot& t : agent.tags) CheckTag(t.tag, t.duration, who);
     for (size_t k = 0; k < agent.statuses.size(); ++k) {
       const int type = agent.statuses[k].type;

@@ -139,7 +139,7 @@ enum class StatusType {
 
 struct StatusEffect {
   StatusType type = StatusType::None;
-  int duration = 0;  // Ticks remaining
+  int duration = 0;  // Steps remaining (see Agent::BeginStep)
 
   bool IsActive() const { return type != StatusType::None && duration > 0; }
   void Tick() { if (duration > 0) duration--; }
@@ -149,7 +149,7 @@ struct StatusEffect {
 // An opaque tag on an agent (see TagTable). No gameplay effect in the env.
 struct AgentTag {
   TagId id = kInvalidTag;
-  int duration = kPermanentTag;  // Ticks left, or kPermanentTag
+  int duration = kPermanentTag;  // Steps left (see Agent::BeginStep), or kPermanentTag
 };
 
 // =============================================================================
@@ -207,12 +207,24 @@ class Agent : public Actor {
   bool IsDead() const { return health_ <= 0; }
 
   // ==========================================================================
+  // Step timers: tag and status durations and (Companion) cooldowns count
+  // steps, and all of them tick at the END of a step (EndStep). A timer of n
+  // is in effect for the n next steps: set between two steps, it ticks at the
+  // end of each of them; set during a step (between BeginStep and EndStep),
+  // it also covers the rest of that step, so it is kept as n + 1 and reads n
+  // once the step is over. Either way, what a host reads between steps is
+  // the number of steps still to come that it covers.
+  // ==========================================================================
+  void BeginStep() { in_step_ = true; }
+  void EndStep();  // A living agent's timers lose a step; expired ones go
+
+  // ==========================================================================
   // Status Effects
   // ==========================================================================
   void ApplyStatus(StatusType type, int duration);
   void ClearStatus(StatusType type);
   void ClearAllStatuses();
-  void TickStatuses();  // Called each step to decrement durations
+  void TickStatuses();  // Durations lose a step; expired statuses are removed
 
   bool HasStatus(StatusType type) const;
   bool IsStunned() const { return HasStatus(StatusType::Stunned); }
@@ -240,6 +252,10 @@ class Agent : public Actor {
   }
 
  protected:
+  // A timer of n steps as stored (see BeginStep): n + 1 during a step
+  int TimerSteps(int n) const { return in_step_ && n > 0 ? n + 1 : n; }
+  virtual void TickTimers();  // Called by EndStep on a living agent
+
   DecodedAction intention_;
   DecodedAction original_intention_;  // Captured before collision resolution
   DecodedAction action_actual_;       // Snapshot after collision, before clear
@@ -249,6 +265,9 @@ class Agent : public Actor {
   int max_health_ = 3;
   std::vector<StatusEffect> statuses_;  // Active status effects
   std::vector<AgentTag> tags_;          // Opaque tags (see TagTable)
+
+ private:
+  bool in_step_ = false;  // Between BeginStep and EndStep
 };
 
 // =============================================================================
@@ -358,9 +377,11 @@ class Companion : public Agent {
   void SetSkill(int slot, std::string name) {
     skills_[static_cast<size_t>(slot)] = name.empty() ? std::string(kDefaultSkill) : std::move(name);
   }
-  // Steps before the slot's skill is usable again (0 = ready)
+  // Next steps the slot's skill stays unusable (0 = ready): a step timer
+  // (see Agent::BeginStep), so a skill used with cooldown n is blocked for
+  // the n steps after the one it was used in.
   int GetCooldown(int slot) const { return cooldowns_[static_cast<size_t>(slot)]; }
-  void SetCooldown(int slot, int ticks) { cooldowns_[static_cast<size_t>(slot)] = ticks; }
+  void SetCooldown(int slot, int steps) { cooldowns_[static_cast<size_t>(slot)] = TimerSteps(steps); }
   void TickCooldowns() { for (int& c : cooldowns_) if (c > 0) --c; }
 
   std::unique_ptr<Object> Clone() const override {
@@ -368,6 +389,8 @@ class Companion : public Agent {
   }
 
  protected:
+  void TickTimers() override;
+
   Direction direction_ = Direction::Down;  // Default: facing down
   ActorColor color_ = ActorColor::None;
   std::array<std::string, kMaxSkillSlots> skills_;

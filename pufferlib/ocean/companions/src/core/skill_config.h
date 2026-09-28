@@ -67,8 +67,8 @@ struct SkillConfig {
   // x1.5 truncates toward zero: 1 damage stays 1, 2 becomes 3, 3 becomes 4.
   int damage = 0;
   int root_steps = 0;              // Affected agents are rooted for this many next steps
-  // Used at step t, usable again at step t + cooldown (0 and 1 both mean
-  // every step).
+  // 0: no cooldown. n: blocked for the n steps after the one it was used in
+  // (usable again at step t + n + 1); a step timer (see Agent::BeginStep).
   int cooldown = 0;
   // Who the skill affects, on top of `filter`. Off: only agents not of the
   // caster's faction (enemies, neutrals): allies and the caster get no tag,

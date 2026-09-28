@@ -91,10 +91,10 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     return result;
   }
 
-  // Durations run down first: a tag landed or a cooldown started during the
-  // previous step was observed with its full value.
+  // Timers set from here on also cover the rest of this step (see
+  // Agent::BeginStep); they all tick at its end.
   ClearStepReports();
-  TickTagsAndCooldowns();
+  for (Agent* agent : object_manager_->GetAllAgents()) agent->BeginStep();
 
   // Pre-step hook
   PreStep();
@@ -124,12 +124,8 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Effect pushes move agents without zone tags: they get them next step if they stay.
   effect_system_->Tick();
 
-  // Tick agent status effects (decrement durations, remove expired)
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (agent->IsAlive()) {
-      agent->TickStatuses();
-    }
-  }
+  // Every timer (tags, statuses, cooldowns) ticks here, at the end of the step
+  for (Agent* agent : object_manager_->GetAllAgents()) agent->EndStep();
 
   // Increment tick
   tick_++;
@@ -543,11 +539,13 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
     MovementAction mov = static_cast<MovementAction>(m);
     Position target = ApplyMovement(pos, mov);
 
-    // Stay is always legal
+    // Stay is always legal; a rooted agent can only stay (GatherIntentions
+    // turns its moves into Stay), though its skills below keep every aim
     if (mov == MovementAction::Stay) {
       actions.push_back(EncodeAction(mov));
       continue;
     }
+    if (!CanMoveItself(*agent)) continue;
 
     // Check if target is walkable (don't check occupancy - that's for collision)
     if (grid_->IsInBounds(target) && grid_->IsWalkable(target)) {
@@ -872,14 +870,6 @@ void BaseEnv::ClearStepReports() {
   last_tags_applied_.clear();
 }
 
-void BaseEnv::TickTagsAndCooldowns() {
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (!agent->IsAlive()) continue;
-    agent->TickTags();
-    if (auto* comp = dynamic_cast<Companion*>(agent)) comp->TickCooldowns();
-  }
-}
-
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
 
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
@@ -1097,13 +1087,13 @@ void BaseEnv::CollectAffected(const std::vector<Position>& cells, const SkillCon
 void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, const Agent& caster,
                          const std::vector<Agent*>& on_area) {
   // Root first, before anything moves: no Agent* is used across a MoveActor.
-  // Statuses tick at the end of Step (after this), so "rooted for the next
-  // N steps" is applied as N + 1. Push / pull never read Rooted.
+  // Rooted for the next root_steps steps (a step timer, see Agent::BeginStep).
+  // Push / pull never read Rooted.
   if (skill.root_steps > 0) {
     for (Agent* a : on_area) {
       if (!a->IsAlive()) continue;  // Killed by the skill's damage
       if (a == &caster && !skill.self_root) continue;
-      a->ApplyStatus(StatusType::Rooted, skill.root_steps + 1);
+      a->ApplyStatus(StatusType::Rooted, skill.root_steps);
     }
   }
 
@@ -1243,13 +1233,7 @@ Snapshot BaseEnv::SaveSnapshot() const {
         as.fsm.attack_ticks = ctx.attack_ticks;
         as.fsm.recovery_ticks = ctx.recovery_ticks;
       }
-      if (dynamic_cast<const Zombie*>(agent)) {
-        as.kind = "Zombie";
-      } else if (dynamic_cast<const Goblin*>(agent)) {
-        as.kind = "Goblin";
-      } else if (dynamic_cast<const Dragon*>(agent)) {
-        as.kind = "Dragon";
-      }
+      if (FindEnemyKind(agent->GetTypeName())) as.kind = agent->GetTypeName();
       as.cadence = fsm_agent->GetCadence();
       as.tick = fsm_agent->GetTick();
     }
@@ -1367,13 +1351,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
         break;
       case ObjectType::AgentFSM:
         // Restore the concrete class so its movement (A*, cadence, flying)
-        // comes back with it.
-        if (as.kind == "Zombie") {
-          agent = object_manager_->CreateActor<Zombie>(as.position);
-        } else if (as.kind == "Goblin") {
-          agent = object_manager_->CreateActor<Goblin>(as.position);
-        } else if (as.kind == "Dragon") {
-          agent = object_manager_->CreateActor<Dragon>(as.position);
+        // comes back with it (a kind ValidateSkillsTagsZones checked).
+        if (const EnemyKind* kind = FindEnemyKind(as.kind)) {
+          agent = kind->create(*object_manager_, as.position);
         } else {
           agent = object_manager_->CreateActor<AgentFSM>(as.position);
         }
