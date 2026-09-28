@@ -269,7 +269,9 @@ TEST(TestAggroLensRewardStructure) {
 
 static_assert(AggroLens::kEnemyDeadPenalty < 0.0, "a dead enemy is a penalty");
 
-// No living FSM enemy left: the lens is done, as a failure, with the penalty.
+// No living FSM enemy left: the lens is done, as a failure, with the penalty
+// (the rest of the episode's time cost plus kEnemyDeadPenalty) until the env
+// latches the failure.
 TEST(TestAggroLensDoneAsFailureWithoutALivingEnemy) {
   AggroEnv env(10, 1, EnemyType::Zombie, 42);
   AggroLens lens;
@@ -279,8 +281,50 @@ TEST(TestAggroLensDoneAsFailureWithoutALivingEnemy) {
     enemy->TakeDamage(enemy->GetHealth());
   }
   ASSERT_TRUE(lens.IsDone(env));
+  ASSERT_TRUE(lens.IsFailed(env));
   ASSERT_FALSE(lens.IsSuccess(env));
-  ASSERT_EQ(lens.ComputeReward(env, 0), AggroLens::kEnemyDeadPenalty);
+  ASSERT_FALSE(env.IsTaskFailed());
+  ASSERT_EQ(lens.ComputeReward(env, 0),
+            AggroLens::FailurePenalty(env.GetHorizon(), env.GetTick()));
+  ASSERT_TRUE(AggroLens::FailurePenalty(env.GetHorizon(), env.GetTick()) <=
+              AggroLens::kTimePenalty * env.GetHorizon() + AggroLens::kEnemyDeadPenalty);
+}
+
+// A new episode (Reset, LoadSnapshot) starts without an outcome: a latched
+// success or failure never leaks into it.
+TEST(TestResetAndLoadSnapshotClearTheLatchedOutcome) {
+  SynchroEnv synchro(6, 6, 1, 1, 0, 42, 0, 10);
+  auto to_goal = [&synchro]() {
+    ObjectManager& om = synchro.GetMutableObjectManager();
+    om.UpdatePosition(om.GetAllCompanions()[0]->GetId(), synchro.GetSynchroPositions()[0]);
+  };
+  to_goal();
+  synchro.Step({EncodeAction(MovementAction::Stay)});
+  ASSERT_TRUE(synchro.IsSuccess());
+  ASSERT_TRUE(synchro.IsDone());
+  synchro.Reset();
+  ASSERT_FALSE(synchro.IsSuccess());
+  ASSERT_FALSE(synchro.IsDone());
+  to_goal();
+  const Snapshot before = synchro.SaveSnapshot();
+  synchro.Step({EncodeAction(MovementAction::Stay)});
+  ASSERT_TRUE(synchro.IsSuccess());
+  synchro.LoadSnapshot(before);
+  ASSERT_FALSE(synchro.IsSuccess());
+  ASSERT_FALSE(synchro.IsDone());
+
+  AggroEnv aggro(10, 1, EnemyType::Zombie, 42);
+  const Snapshot alive = aggro.SaveSnapshot();
+  for (AgentFSM* enemy : aggro.GetMutableObjectManager().GetAllAgentFSMs()) {
+    enemy->TakeDamage(enemy->GetHealth());
+  }
+  aggro.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Stay)});
+  ASSERT_TRUE(aggro.IsTaskFailed());
+  aggro.LoadSnapshot(alive);
+  ASSERT_FALSE(aggro.IsTaskFailed());
+  ASSERT_FALSE(aggro.IsDone());
+  aggro.Reset();
+  ASSERT_FALSE(aggro.IsTaskFailed());
 }
 
 TEST(TestAggroLensAdditionalObsSize) {

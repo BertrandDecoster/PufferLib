@@ -297,9 +297,16 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 - Smart spawning: companions and target outside aggro range
 - Episode end: success when a living FSM enemy stands on the target; failure at the
   horizon or as soon as no living FSM enemy remains (killed: the lure can't succeed
-  any more), rewarded `AggroLens::kEnemyDeadPenalty` (-1, the mirror of the +1 win)
-  instead of the time penalty. `AggroEnv::IsDone` applies the dead-enemy rule only
+  any more, `AggroLens::IsFailed`). `AggroEnv::IsDone` applies the dead-enemy rule only
   while the active lens is the Aggro lens; it never consults another lens's `IsDone`
+- Rewards: +1 win, `kTimePenalty` (-0.01) per other step. The failure is terminal:
+  `BaseEnv::Step` latches it after the rewards (`IsTaskFailed`, like `success_`; the
+  first outcome is final; `SetTaskLens` / `LoadSnapshot` / `Reset` clear both with
+  `ResetOutcome`), so only the killing step pays `AggroLens::FailurePenalty(horizon,
+  tick)` = `kTimePenalty * (horizon - tick + 1) + kEnemyDeadPenalty` (the rest of the
+  episode's time cost, that step included, plus -1); later steps pay 0. A kill at any
+  step returns `horizon * kTimePenalty - 1`, one below timing out: killing is never
+  a shortcut, whatever the horizon. `AggroEnv::MinUtility` is that return
 - `done` is a verdict for RL episodes, never a stop: the env keeps stepping. A host
   that keeps playing after a kill (a game layer) ignores `done` for that reason
   (`IsSuccess` false, tick below the horizon, no living enemy)

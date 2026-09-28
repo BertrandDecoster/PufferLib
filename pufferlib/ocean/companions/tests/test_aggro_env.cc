@@ -1,6 +1,7 @@
 // Copyright 2024
 // Unit tests for AggroEnv
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -763,7 +764,9 @@ TEST(TestKillingTheEnemyEndsTheEpisodeAsFailure) {
   ASSERT_TRUE(result.done);
   ASSERT_TRUE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());
-  for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kEnemyDeadPenalty);
+  for (double r : result.rewards) {
+    ASSERT_EQ(r, AggroLens::FailurePenalty(env.GetHorizon(), env.GetTick()));
+  }
   // The env never stops by itself: a host that keeps playing just steps on
   const int tick = env.GetTick();
   env.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Up)});
@@ -781,6 +784,60 @@ TEST(TestAWoundedEnemyKeepsTheEpisodeGoing) {
   ASSERT_FALSE(result.done);
   ASSERT_FALSE(env.IsDone());
   for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
+}
+
+// The RL return (rewards summed until done) of an episode where the companion
+// stays, then kills the 1-HP goblin on step `kill_step` (1-based; 0 = never:
+// the episode times out).
+static double AggroReturn(int horizon, int kill_step) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, horizon);
+  GoblinNextToCompanion(env, 1);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  double total = 0.0;
+  for (int step = 1; step <= horizon; ++step) {
+    StepResult r = step == kill_step ? AttackRight(env) : env.Step({stay, stay});
+    total += r.rewards[1];
+    if (r.done) {
+      ASSERT_EQ(env.GetTick(), kill_step == 0 ? horizon : kill_step);
+      return total;
+    }
+  }
+  throw std::runtime_error("the episode never ended");
+}
+
+// Killing the enemy is never a shortcut: whatever the step, the episode's
+// return stays below timing out (the failure pays the rest of the episode's
+// time cost, plus kEnemyDeadPenalty), and it is the lowest return there is.
+TEST(TestKillingTheEnemyNeverBeatsTimingOut) {
+  for (int horizon : {100, 400}) {
+    const double time_out = AggroReturn(horizon, 0);
+    ASSERT_TRUE(std::abs(time_out - horizon * AggroLens::kTimePenalty) < 1e-9);
+    AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, horizon);
+    for (int kill_step = 1; kill_step <= horizon; ++kill_step) {
+      const double killed = AggroReturn(horizon, kill_step);
+      ASSERT_TRUE(killed < time_out);
+      ASSERT_TRUE(std::abs(killed - env.MinUtility()) < 1e-9);
+    }
+  }
+}
+
+// The failure is terminal: its penalty is paid on the step the enemy dies,
+// once; a host that keeps playing afterwards is rewarded 0.
+TEST(TestTheFailurePenaltyIsPaidOnce) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 100);
+  GoblinNextToCompanion(env, 1);
+  StepResult kill = AttackRight(env);
+  ASSERT_TRUE(kill.done);
+  for (double r : kill.rewards) ASSERT_EQ(r, AggroLens::FailurePenalty(100, 1));
+  ASSERT_TRUE(env.IsTaskFailed());
+  const Action stay = EncodeAction(MovementAction::Stay);
+  while (env.GetTick() < 110) {
+    StepResult r = env.Step({stay, stay});
+    ASSERT_TRUE(r.done);
+    for (double reward : r.rewards) ASSERT_EQ(reward, 0.0);
+  }
+  ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.IsTaskFailed());
 }
 
 // Only the Aggro task ends on a dead enemy: under another lens, AggroEnv is

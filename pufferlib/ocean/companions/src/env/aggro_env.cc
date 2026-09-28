@@ -79,7 +79,7 @@ void AggroEnv::ValidateConfig() {
 
 void AggroEnv::Reset() {
   // Reset state
-  success_ = false;
+  ResetOutcome();
 
   // Create level config for aggro env WITHOUT enemies or companions
   // AggroEnv has special spawn requirements:
@@ -303,10 +303,11 @@ void AggroEnv::SpawnCompanions() {
 
 
 bool AggroEnv::IsDone() const {
-  // The Aggro task also ends, as a failure, once no living enemy remains.
-  // Other lenses' own verdicts are not consulted.
+  // The Aggro task also ends, as a failure, once no living enemy remains
+  // (latched by Step, or a kill between steps). Other lenses' own verdicts
+  // are not consulted.
   const bool aggro_task = task_lens_ && task_lens_->GetKind() == TaskLens::kAggro;
-  return success_ || tick_ >= horizon_ ||
+  return success_ || failed_ || tick_ >= horizon_ ||
          (aggro_task && !AggroLens::HasLivingEnemy(*this));
 }
 
@@ -411,9 +412,6 @@ void AggroEnv::LoadSnapshot(const Snapshot& snapshot) {
 
   // Extract patrol_path_ from snapshot
   patrol_path_ = snapshot.patrol_path;
-
-  // Reset success flag
-  success_ = false;
 }
 
 }  // namespace companions

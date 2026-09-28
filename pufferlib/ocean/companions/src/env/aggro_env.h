@@ -6,6 +6,7 @@
 
 #include <vector>
 
+#include "aggro_lens.h"
 #include "base_env.h"
 #include "../core/pcg32.h"
 
@@ -60,8 +61,12 @@ class AggroEnv : public BaseEnv {
   int GetNumCompanions() const { return num_companions_; }
   EnemyType GetEnemyType() const { return enemy_type_; }
 
-  // Utility bounds
-  double MinUtility() const override { return -1.0 * horizon_; }  // Time penalty only
+  // Utility bounds. The worst return is a killed enemy (AggroLens): the time
+  // penalty of the whole horizon plus the failure penalty, whatever the step
+  // of the kill (timing out returns horizon * kTimePenalty).
+  double MinUtility() const override {
+    return AggroLens::kTimePenalty * horizon_ + AggroLens::kEnemyDeadPenalty;
+  }
   double MaxUtility() const override { return kWinReward; }
 
   // Vector Observation - adds AggroEnv-specific features:

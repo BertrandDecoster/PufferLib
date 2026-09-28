@@ -45,6 +45,7 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       d4_transform_(other.d4_transform_),
       annotations_(other.annotations_),
       success_(other.success_),
+      failed_(other.failed_),
       tags_(other.tags_),
       skills_(other.skills_),
       last_skill_uses_(other.last_skill_uses_),
@@ -67,6 +68,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     d4_transform_ = other.d4_transform_;
     annotations_ = other.annotations_;
     success_ = other.success_;
+    failed_ = other.failed_;
     tags_ = other.tags_;
     skills_ = other.skills_;
     last_skill_uses_ = other.last_skill_uses_;
@@ -149,9 +151,15 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     }
     // Latch success so IsSuccess/IsDone survive even if agents subsequently
     // leave a winning configuration (matches pre-TaskLens semantics where
-    // CalculateRewards set success_ once per episode).
-    if (!success_ && task_lens_->IsSuccess(*this)) {
-      success_ = true;
+    // CalculateRewards set success_ once per episode). Latch a failure the
+    // same way, after the rewards: the lens pays it on this step only. The
+    // first outcome is final.
+    if (!success_ && !failed_) {
+      if (task_lens_->IsSuccess(*this)) {
+        success_ = true;
+      } else if (task_lens_->IsFailed(*this)) {
+        failed_ = true;
+      }
     }
   }
   result.rewards = reward_buffer_;
@@ -1441,6 +1449,10 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   horizon_ = snapshot.horizon;
   d4_transform_ = snapshot.d4_transform;
 
+  // A new episode: no outcome latched yet (snapshots carry none). Every
+  // generated Reset goes through here too.
+  ResetOutcome();
+
   // Restore semantic annotations (present in v2+ snapshots; empty vector in v1).
   annotations_.Deserialize(snapshot.annotations);
 
@@ -1478,8 +1490,8 @@ bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
     task_lens_->Deactivate(*this);
   }
   task_lens_ = std::move(lens);
-  // Reset success flag so new lens can evaluate victory from scratch
-  ResetSuccess();
+  // Reset the outcome so the new lens evaluates its task from scratch
+  ResetOutcome();
   return true;
 }
 
@@ -1514,7 +1526,7 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
     }
   }
   task_lens_ = std::move(lens);
-  ResetSuccess();
+  ResetOutcome();
   return true;
 }
 

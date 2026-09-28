@@ -75,6 +75,15 @@ class BaseEnv {
   // SetTaskLens). Subclasses normally should not override.
   virtual bool IsSuccess() const { return success_; }
   virtual void ResetSuccess() { success_ = false; }
+  // Latched task failure: BaseEnv::Step sets it once the active TaskLens
+  // reports IsFailed (the task can no longer succeed, e.g. Aggro's enemy is
+  // dead). An outcome, once latched, is final: success and failure exclude
+  // each other. SetTaskLens, LoadSnapshot and Reset clear both (ResetOutcome).
+  bool IsTaskFailed() const { return failed_; }
+  void ResetOutcome() {
+    ResetSuccess();
+    failed_ = false;
+  }
 
   // Task lens management
   bool SetTaskLens(std::unique_ptr<TaskLens> lens);
@@ -355,6 +364,8 @@ class BaseEnv {
   AnnotationStore annotations_;
   // Latched once the active lens reports IsSuccess. Reset via ResetSuccess.
   bool success_ = false;
+  // Latched once the active lens reports IsFailed. Reset via ResetOutcome.
+  bool failed_ = false;
   TagTable tags_;
   SkillBook skills_;
   std::vector<SkillUse> last_skill_uses_;

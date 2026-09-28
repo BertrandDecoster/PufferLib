@@ -133,7 +133,7 @@ void DodgeEnv::RegisterDefaultEffects() {
 
 void DodgeEnv::Reset() {
   // Reset state
-  success_ = false;
+  ResetOutcome();
   any_dead_ = false;
 
   // Clear effects

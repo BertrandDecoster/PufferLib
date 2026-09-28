@@ -25,8 +25,7 @@ bool AggroLens::CanOperateOn(const BaseEnv& env) const {
 }
 
 bool AggroLens::IsDone(const BaseEnv& env) const {
-  return IsSuccess(env) || env.GetTick() >= env.GetHorizon() ||
-         !HasLivingEnemy(env);
+  return IsSuccess(env) || env.GetTick() >= env.GetHorizon() || IsFailed(env);
 }
 
 bool AggroLens::HasLivingEnemy(const BaseEnv& env) {
@@ -57,8 +56,10 @@ double AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   if (IsSuccess(env)) {
     return kWinReward;
   }
-  if (!HasLivingEnemy(env)) {
-    return kEnemyDeadPenalty;  // The lure can no longer succeed
+  if (IsFailed(env)) {
+    // Terminal: paid once, on the step of the kill (BaseEnv latches the
+    // failure after the rewards), and it covers the rest of the episode.
+    return env.IsTaskFailed() ? 0.0 : FailurePenalty(env.GetHorizon(), env.GetTick());
   }
   return kTimePenalty;
 }
