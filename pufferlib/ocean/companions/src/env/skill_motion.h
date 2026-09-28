@@ -5,6 +5,9 @@
 // grid edge stops it on the cell before; holes (pathable, not walkable) and
 // actors do not. Landing rule: something moved never ends on a hole or on
 // another living actor.
+//
+// (dr, dc) is a unit orthogonal step; a zero direction (0, 0) is a no-op:
+// every resolver returns `from` (and a dash crosses nothing).
 
 #ifndef COMPANIONS_ENV_SKILL_MOTION_H_
 #define COMPANIONS_ENV_SKILL_MOTION_H_

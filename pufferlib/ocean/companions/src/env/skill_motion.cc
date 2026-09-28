@@ -18,6 +18,7 @@ void DirectionDelta(Direction dir, int& dr, int& dc) {
 
 Position ResolveGroundTarget(const Grid& grid, Position from, int dr, int dc,
                              int range) {
+  if (dr == 0 && dc == 0) return from;
   Position cur = from;
   for (int i = 0; i < range; ++i) {
     Position next{cur.row + dr, cur.col + dc};
@@ -30,6 +31,10 @@ Position ResolveGroundTarget(const Grid& grid, Position from, int dr, int dc,
 Position ResolveDash(const Grid& grid, const ObjectManager& objects,
                      Position from, int dr, int dc, int distance, ObjectId mover,
                      std::vector<Position>* crossed) {
+  if (dr == 0 && dc == 0) {
+    if (crossed) crossed->clear();
+    return from;
+  }
   Position best = from;
   int best_step = 0;
   Position cur = from;
@@ -52,6 +57,7 @@ Position ResolveDash(const Grid& grid, const ObjectManager& objects,
 
 Position ResolveTeleport(const Grid& grid, const ObjectManager& objects,
                          Position from, int dr, int dc, int distance, ObjectId mover) {
+  if (dr == 0 && dc == 0) return from;
   for (int d = distance; d >= 1; --d) {
     Position p{from.row + dr * d, from.col + dc * d};
     if (CanLand(grid, objects, p, mover)) return p;

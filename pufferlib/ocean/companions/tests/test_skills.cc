@@ -246,6 +246,13 @@ TEST(TestDirectionDelta) {
   Position up = ApplyMovement({5, 5}, MovementAction::Up);
   ASSERT_EQ(dr, up.row - 5);
   ASSERT_EQ(dc, up.col - 5);
+  DirectionDelta(Direction::Down, dr, dc);
+  Position down = ApplyMovement({5, 5}, MovementAction::Down);
+  ASSERT_EQ(dr, down.row - 5);
+  ASSERT_EQ(dc, down.col - 5);
+  DirectionDelta(Direction::Left, dr, dc);
+  ASSERT_EQ(dr, 0);
+  ASSERT_EQ(dc, -1);
 }
 
 TEST(TestGroundTargetClear) {
@@ -281,7 +288,39 @@ TEST(TestDashClearLaneAndPath) {
   ASSERT_TRUE(Dash(env, a, &crossed) == (Position{3, 5}));
   ASSERT_EQ(crossed.size(), static_cast<size_t>(3));  // (3,2) (3,3) (3,4)
   ASSERT_TRUE(crossed[0] == (Position{3, 2}));
+  ASSERT_TRUE(crossed[1] == (Position{3, 3}));
   ASSERT_TRUE(crossed[2] == (Position{3, 4}));
+}
+
+TEST(TestResolveZeroDirectionStays) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 3});
+  std::vector<Position> crossed{{1, 1}};  // Stale content is cleared
+  ASSERT_TRUE(ResolveDash(env.GetGrid(), env.GetObjectManager(), a->GetPosition(),
+                          0, 0, 4, a->GetId(), &crossed) == (Position{3, 3}));
+  ASSERT_TRUE(crossed.empty());
+  ASSERT_TRUE(ResolveGroundTarget(env.GetGrid(), {3, 3}, 0, 0, 3) == (Position{3, 3}));
+  ASSERT_TRUE(ResolveTeleport(env.GetGrid(), env.GetObjectManager(), {3, 3}, 0, 0, 3,
+                              a->GetId()) == (Position{3, 3}));
+}
+
+TEST(TestCanLand) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  const Grid& g = env.GetGrid();
+  const ObjectManager& om = env.GetObjectManager();
+  Agent* a = Place(env, 0, {3, 1});
+  Agent* b = Place(env, 1, {3, 3});
+  ASSERT_TRUE(CanLand(g, om, {3, 2}, a->GetId()));   // empty floor
+  ASSERT_TRUE(CanLand(g, om, {3, 1}, a->GetId()));   // the mover's own cell
+  ASSERT_FALSE(CanLand(g, om, {3, 3}, a->GetId()));  // another living agent
+  b->SetAlive(false);
+  ASSERT_TRUE(CanLand(g, om, {3, 3}, a->GetId()));   // a dead actor does not block
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Hazard);
+  ASSERT_FALSE(CanLand(g, om, {3, 4}, a->GetId()));  // hole
+  ASSERT_FALSE(CanLand(g, om, {0, 4}, a->GetId()));  // wall
+  ASSERT_FALSE(CanLand(g, om, {-1, 4}, a->GetId())); // out of bounds
 }
 
 TEST(TestDashStopsBeforeWall) {
