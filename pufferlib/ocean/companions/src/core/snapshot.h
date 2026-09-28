@@ -126,6 +126,12 @@ struct AgentSnapshot {
   std::vector<TagSnapshot> tags;
   std::vector<std::string> skills;
   std::vector<int> cooldowns;
+
+  // Snapshot version 5: downs (companions only). A downed companion is alive
+  // at 0 HP and has gone down at least once; its downs load as already
+  // reported (BaseEnv::GetLastDowns).
+  bool downed = false;
+  int times_downed = 0;
 };
 
 // =============================================================================
@@ -190,6 +196,9 @@ struct Snapshot {
   // annotations: on load, d4_transform moves them with the grid.
   std::vector<CellTagSnapshot> cell_tags;
 
+  // Snapshot version 5: the level's max downs (BaseEnv::SetMaxDowns, >= 1).
+  int max_downs = kDefaultMaxDowns;
+
   // ==========================================================================
   // Validation helpers
   // ==========================================================================
@@ -214,8 +223,10 @@ struct Snapshot {
   // cooldowns per agent, cooldowns >= 0; every non-empty slot names a builtin
   // or one of `skills` (the book LoadSnapshot builds), so slots always hold a
   // real skill ("" is kDefaultSkill); an agent's kind is empty, or one of
-  // EnemyKinds() on an AgentFSM agent. Messages name the skill, agent (index
-  // and id) or zone cell.
+  // EnemyKinds() on an AgentFSM agent; v5 downs: max_downs >= 1, downed /
+  // times_downed only on a companion type (Companion, Player, NPCCompanion),
+  // times_downed >= 0, a downed agent at 0 HP with times_downed >= 1.
+  // Messages name the skill, agent (index and id) or zone cell.
   void ValidateSkillsTagsZones() const;
 
   // ==========================================================================

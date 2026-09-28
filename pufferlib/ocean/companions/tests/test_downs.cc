@@ -10,6 +10,8 @@
 
 #include "../src/core/fsm/fsm_state.h"
 #include "../src/core/object.h"
+#include "../src/core/snapshot.h"
+#include "../src/core/snapshot_json.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/synchro_env.h"
 #include "effect_registry_guard.h"
@@ -433,6 +435,91 @@ TEST(TestTheStepReportsEachDownOnce) {
   ASSERT_EQ(env.GetLastDowns()[0], during->GetId());
   env.Step(stay);
   ASSERT_TRUE(env.GetLastDowns().empty());
+}
+
+// =============================================================================
+// Snapshots (v5) keep the downs
+// =============================================================================
+
+// Companion 0 carries a tag, then goes down (a downed companion keeps its
+// tags but accepts no new ones: the load must restore them before the down).
+// Every form of the snapshot (as saved, binary, JSON) restores it downed,
+// alive at 0 HP, its tag kept, and the level's max_downs; the loaded down is
+// already reported.
+TEST(TestSnapshotsKeepTheDowns) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetMaxDowns(5));
+  Agent* down = env.GetMutableObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(env.ApplyTagTo(down->GetId(), "blessed", kPermanentTag));
+  DownCompanion(env, 0);
+  ASSERT_TRUE(down->IsDowned());
+  Snapshot snap = env.SaveSnapshot();
+  ASSERT_TRUE(snap.agents[0].downed);
+  ASSERT_EQ(snap.agents[0].times_downed, 1);
+  ASSERT_EQ(snap.max_downs, 5);
+  for (const Snapshot& s : {snap, Snapshot::Deserialize(snap.Serialize()),
+                            SnapshotFromJson(SnapshotToJson(snap))}) {
+    SynchroEnv copy(10, 10, 2, 1, 0, 7);
+    copy.LoadSnapshot(s);
+    ASSERT_EQ(copy.GetMaxDowns(), 5);
+    ASSERT_EQ(copy.GetDowns(), 1);
+    Companion* c = AsCompanion(copy.GetMutableObjectManager().GetAllAgents()[0]);
+    ASSERT_TRUE(c->IsDowned());
+    ASSERT_TRUE(c->IsAlive());
+    ASSERT_EQ(c->GetHealth(), 0);
+    ASSERT_EQ(c->GetTimesDowned(), 1);
+    ASSERT_TRUE(Has(copy, c, "blessed"));
+    Companion* other = AsCompanion(copy.GetMutableObjectManager().GetAllAgents()[1]);
+    ASSERT_FALSE(other->IsDowned());
+    ASSERT_EQ(other->GetTimesDowned(), 0);
+    ASSERT_FALSE(copy.IsDone());  // 1 down of 5, companion 1 stands
+    copy.Step({kStay, kStay});
+    ASSERT_TRUE(copy.GetLastDowns().empty());  // Loaded as already reported
+    ASSERT_TRUE(c->IsDowned());
+  }
+}
+
+// A companion saved at 0 HP but not downed (hand-authored) loads alive and
+// standing: RestoreHealth has no consequence, only the saved flag downs it.
+TEST(TestALoadedZeroHealthCompanionIsNotDownedByTheLoad) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Snapshot snap = env.SaveSnapshot();
+  snap.agents[0].health = 0;
+  SynchroEnv copy(10, 10, 2, 1, 0, 7);
+  copy.LoadSnapshot(snap);
+  const Agent* a = copy.GetObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(a->IsAlive());
+  ASSERT_FALSE(a->IsDowned());
+  ASSERT_EQ(copy.GetDowns(), 0);
+}
+
+// A state saved team down loads done, as TeamDown: the load sets max_downs
+// before it latches the end reason.
+TEST(TestASnapshotSavedTeamDownLoadsDone) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetMaxDowns(1));
+  DownCompanion(env, 0);
+  ASSERT_TRUE(env.IsTeamDown());
+  SynchroEnv copy(10, 10, 2, 1, 0, 7);  // max_downs 3: not down without the snapshot's
+  copy.LoadSnapshot(env.SaveSnapshot());
+  ASSERT_TRUE(copy.IsDone());
+  ASSERT_TRUE(copy.GetEndReason() == EndReason::TeamDown);
+}
+
+// A snapshot without downs (older files) loads with the default max_downs,
+// whatever the env had.
+TEST(TestASnapshotSetsMaxDowns) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Snapshot snap = env.SaveSnapshot();
+  ASSERT_EQ(snap.max_downs, BaseEnv::kDefaultMaxDowns);
+  SynchroEnv copy(10, 10, 2, 1, 0, 7);
+  ASSERT_TRUE(copy.SetMaxDowns(1));
+  copy.LoadSnapshot(snap);
+  ASSERT_EQ(copy.GetMaxDowns(), BaseEnv::kDefaultMaxDowns);
 }
 
 // =============================================================================

@@ -146,6 +146,8 @@ void DodgeEnv::Reset() {
 
   // Generate snapshot using LevelGenerator
   Snapshot snapshot = LevelGenerator::Generate(config);
+  // A generated level keeps the env's max downs (level data, kept across Reset)
+  snapshot.max_downs = GetMaxDowns();
 
   // Load the snapshot (handles grid, companions, timing, D4 transform)
   LoadSnapshot(snapshot);

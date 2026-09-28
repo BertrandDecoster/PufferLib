@@ -25,6 +25,9 @@ using ObjectId = int;
 constexpr int kDefaultGridSize = 12;
 constexpr int kDefaultHorizon = 100;
 constexpr ObjectId kInvalidObjectId = -1;
+// The team's downs that lose a level (BaseEnv::SetMaxDowns; level data, and
+// what a snapshot without max_downs loads)
+constexpr int kDefaultMaxDowns = 3;
 
 using TagId = int;
 constexpr TagId kInvalidTag = -1;

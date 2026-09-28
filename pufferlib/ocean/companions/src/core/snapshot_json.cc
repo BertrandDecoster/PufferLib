@@ -479,6 +479,10 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
   if (!agent.skills.empty()) j["skills"] = agent.skills;
   if (!agent.cooldowns.empty()) j["cooldowns"] = agent.cooldowns;
 
+  // Downs (v5)
+  j["downed"] = agent.downed;
+  j["times_downed"] = agent.times_downed;
+
   return j;
 }
 
@@ -528,6 +532,10 @@ AgentSnapshot JsonToAgentSnapshot(const json& j, const std::string& section) {
   }
   if (j.contains("skills")) agent.skills = Get<std::vector<std::string>>(j, "skills", section);
   if (j.contains("cooldowns")) agent.cooldowns = Get<std::vector<int>>(j, "cooldowns", section);
+
+  // Downs (v5; absent = standing, never down). Validated with the rest.
+  agent.downed = GetOr<bool>(j, "downed", false, section);
+  agent.times_downed = GetOr<int>(j, "times_downed", 0, section);
 
   return agent;
 }
@@ -614,9 +622,10 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j, const std::string& se
 // Keep this in sync with the binary version check in snapshot.cc:Serialize.
 // Audit F4: JSON path must be version-gated just like binary.
 // 2: annotations (agent kind / attack config are optional keys); 4: skills,
-// agent tags / skill slots / cooldowns, cell_tags (zones). There never was a
-// JSON 3: the number follows the binary format. Versions 2..4 load.
-static constexpr int kJsonSnapshotVersion = 4;
+// agent tags / skill slots / cooldowns, cell_tags (zones); 5: downs (agent
+// downed / times_downed, max_downs). There never was a JSON 3: the number
+// follows the binary format. Versions 2..5 load.
+static constexpr int kJsonSnapshotVersion = 5;
 static constexpr int kMinJsonSnapshotVersion = 2;
 static constexpr const char* kJsonSnapshotMagic = "SNAP";
 // rows * cols cap, so a hand-authored level can not make us allocate gigabytes.
@@ -692,6 +701,9 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
                              {"tag", z.tag}, {"duration", z.duration}});
   }
   j["cell_tags"] = cell_tags;
+
+  // The level's max downs (v5)
+  j["max_downs"] = snapshot.max_downs;
 
   return j.dump(2);  // Pretty-print with 2-space indent
 }
@@ -817,6 +829,9 @@ Snapshot ReadSnapshot(const json& j) {
       snapshot.cell_tags.push_back(zone);
     }
   }
+
+  // The level's max downs (v5; absent = the default)
+  snapshot.max_downs = GetOr<int>(j, "max_downs", kDefaultMaxDowns, "snapshot");
 
   snapshot.ValidateSkillsTagsZones();
   return snapshot;

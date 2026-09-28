@@ -428,9 +428,9 @@ TEST(TestJsonSnapshotVersionRejection) {
 
   // Tamper the version field.
   std::string tampered = json_str;
-  size_t pos = tampered.find("\"version\": 4");
+  size_t pos = tampered.find("\"version\": 5");
   ASSERT_TRUE(pos != std::string::npos);
-  tampered.replace(pos, 12, "\"version\": 5");  // One above current
+  tampered.replace(pos, 12, "\"version\": 6");  // One above current
 
   bool threw = false;
   try {
@@ -604,8 +604,11 @@ TEST(TestJsonSnapshotKeys) {
   ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
   ASSERT_TRUE(env.SetCellTag({2, 3}, "wet", 4));
   json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
-  ASSERT_EQ(j.at("version").get<int>(), 4);
+  ASSERT_EQ(j.at("version").get<int>(), 5);
   const json& agent = j.at("agents").at(0);
+  ASSERT_EQ(agent.at("downed").get<bool>(), false);  // v5: downs
+  ASSERT_EQ(agent.at("times_downed").get<int>(), 0);
+  ASSERT_EQ(j.at("max_downs").get<int>(), 3);
   ASSERT_EQ(agent.at("skills"), json({"teleport", "attack"}));
   ASSERT_EQ(agent.at("cooldowns"), json({0, 0}));
   ASSERT_EQ(agent.at("tags").at(0).at("tag").get<std::string>(), std::string("burning"));
@@ -1114,6 +1117,60 @@ TEST(TestJsonRejectsUnknownEnemyKind) {
   j = LevelJson();
   j.at("agents").at(0)["kind"] = "Zombie";
   AssertJsonErrorMentions(j, {"agent #0", "only for an AgentFSM agent"});
+}
+
+// Downs (v5): max_downs >= 1; a downed agent is a companion at 0 HP that went
+// down at least once; times_downed >= 0.
+TEST(TestJsonRejectsBadDowns) {
+  json j = LevelJson();
+  ASSERT_EQ(j.at("agents").at(0).at("agent_type").get<std::string>(), std::string("Player"));  // A Companion
+  j["max_downs"] = 0;
+  AssertJsonErrorMentions(j, {"max_downs", ">= 1", "(got 0)"});
+  j = LevelJson();
+  j.at("agents").at(0)["downed"] = true;  // health is not 0
+  j.at("agents").at(0)["times_downed"] = 1;
+  AssertJsonErrorMentions(j, {"agent #0", "downed", "0 HP"});
+  j = LevelJson();
+  j.at("agents").at(0)["times_downed"] = -1;
+  AssertJsonErrorMentions(j, {"agent #0", "times_downed", ">= 0"});
+  j = LevelJson();
+  j.at("agents").at(0)["downed"] = true;  // Down, but never went down
+  j.at("agents").at(0)["health"] = 0;
+  j.at("agents").at(0)["times_downed"] = 0;
+  AssertJsonErrorMentions(j, {"agent #0", "times_downed", ">= 1 when downed"});
+  j = LevelJson();
+  j.at("agents").at(0)["downed"] = "yes";
+  AssertJsonErrorMentions(j, {"agents[0]: downed: type must be boolean"});
+  j = LevelJson();
+  j["max_downs"] = "three";
+  AssertJsonErrorMentions(j, {"max_downs: type must be number"});
+  for (const char* key : {"downed", "times_downed"}) {
+    j = AggroJson();
+    json& enemy = FsmAgent(j);
+    enemy["health"] = 0;
+    enemy[key] = key == std::string("downed") ? json(true) : json(1);
+    if (key == std::string("downed")) enemy["times_downed"] = 1;
+    AssertJsonErrorMentions(j, {"agent #", "only a companion goes down"});
+  }
+}
+
+// A v4 level (no downs keys) loads: nobody down, the default max_downs.
+TEST(TestJsonV4SnapshotLoadsWithoutDowns) {
+  json j = LevelJson();
+  j["version"] = 4;
+  j.erase("max_downs");
+  for (json& agent : j.at("agents")) {
+    agent.erase("downed");
+    agent.erase("times_downed");
+  }
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_EQ(s.max_downs, 3);
+  ASSERT_FALSE(s.agents[0].downed);
+  ASSERT_EQ(s.agents[0].times_downed, 0);
+  SynchroEnv env(8, 8, 1, 1, 0, 7);
+  env.LoadSnapshot(s);
+  ASSERT_EQ(env.GetMaxDowns(), BaseEnv::kDefaultMaxDowns);
+  ASSERT_EQ(env.GetDowns(), 0);
 }
 
 // Every listed kind survives a save / load with its class.

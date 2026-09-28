@@ -754,12 +754,12 @@ TEST(TestSnapshotV1MigrationRoundTripsAsV2) {
   Snapshot migrated = Snapshot::Deserialize(buf_v1);
 
   std::vector<uint8_t> buf_v2 = migrated.Serialize();
-  // Serialize always writes the current version (4: v3 + skills, tags, zones).
+  // Serialize always writes the current version (5: v4 + downs).
   uint32_t magic = 0, version = 0;
   std::memcpy(&magic, buf_v2.data(), sizeof(magic));
   std::memcpy(&version, buf_v2.data() + sizeof(magic), sizeof(version));
   ASSERT_EQ(magic, (uint32_t)0x534E4150);
-  ASSERT_EQ(version, (uint32_t)4);
+  ASSERT_EQ(version, (uint32_t)5);
 
   Snapshot round = Snapshot::Deserialize(buf_v2);
   ASSERT_EQ(round.cells.size(), migrated.cells.size());
@@ -975,9 +975,9 @@ TEST(TestBinarySkillRecordLayout) {
   s.skills.push_back(frost);
   std::vector<uint8_t> bytes = s.Serialize();
   ASSERT_EQ(bytes.size(), without + 50 + frost.name.size());
-  // The five flags close the record, just before the zone count; the damage
-  // comes right before them.
-  const size_t flags_at = bytes.size() - 4 - 5;
+  // The five flags close the record, just before the zone count (then
+  // max_downs, v5); the damage comes right before them.
+  const size_t flags_at = bytes.size() - 4 - 4 - 5;
   int damage = 0;
   std::memcpy(&damage, bytes.data() + flags_at - sizeof(int), sizeof(int));
   ASSERT_EQ(damage, 7);
@@ -989,11 +989,66 @@ TEST(TestBinarySkillRecordLayout) {
   AssertSkillEq(Snapshot::Deserialize(bytes).skills[0], frost);
 }
 
+namespace {
+
+// After MinimalSnapshot's agent: effects count, tick, horizon, rng x2, d4,
+// patrol count, annotations count, skills count, cell tags count, max_downs.
+constexpr size_t kV5Tail = 4 + 4 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 4;
+
+// A v5 buffer of a one-agent snapshot as version 4: without the agent's
+// downed (bool) and times_downed (int), closing its record, nor the trailing
+// max_downs.
+std::vector<uint8_t> AsV4(const std::vector<uint8_t>& v5) {
+  std::vector<uint8_t> v4(v5.begin(), v5.end() - kV5Tail - 5);
+  v4.insert(v4.end(), v5.end() - kV5Tail, v5.end() - 4);
+  uint32_t four = 4;
+  std::memcpy(v4.data() + 4, &four, sizeof(four));
+  return v4;
+}
+
+}  // namespace
+
+TEST(TestBinaryDownsRoundTrip) {
+  Snapshot s = MinimalSnapshot();
+  s.max_downs = 7;
+  s.agents[0].health = 0;
+  s.agents[0].downed = true;
+  s.agents[0].times_downed = 2;
+  Snapshot back = BinaryRoundTrip(s);
+  ASSERT_EQ(back.max_downs, 7);
+  ASSERT_TRUE(back.agents[0].downed);
+  ASSERT_EQ(back.agents[0].times_downed, 2);
+  // The v5 record: downed (1 byte) and times_downed close the agent's record,
+  // max_downs closes the buffer.
+  std::vector<uint8_t> bytes = s.Serialize();
+  ASSERT_EQ(bytes.size(), AsV4(bytes).size() + 1 + 4 + 4);
+  int max_downs = 0;
+  std::memcpy(&max_downs, bytes.data() + bytes.size() - 4, sizeof(int));
+  ASSERT_EQ(max_downs, 7);
+  // Truncated before max_downs: an underflow, not a default
+  bytes.resize(bytes.size() - 4);
+  ASSERT_THROW(Snapshot::Deserialize(bytes), std::runtime_error);
+}
+
+TEST(TestBinaryV4SnapshotLoadsWithoutDowns) {
+  Snapshot s = MinimalSnapshot();
+  s.max_downs = 7;  // Dropped with the v5 fields: defaults on load
+  s.agents[0].health = 0;
+  s.agents[0].downed = true;
+  s.agents[0].times_downed = 2;
+  Snapshot back = Snapshot::Deserialize(AsV4(s.Serialize()));
+  ASSERT_EQ(back.max_downs, 3);
+  ASSERT_FALSE(back.agents[0].downed);
+  ASSERT_EQ(back.agents[0].times_downed, 0);
+  ASSERT_EQ(back.agents[0].health, 0);
+  ASSERT_EQ(back.horizon, 100);
+}
+
 TEST(TestBinaryV3SnapshotStillLoads) {
   // Everything v4 adds is empty here, so a v3 buffer is the v4 one minus the
   // agent's three empty counts (tags, skills, cooldowns) and the two trailing
   // empty counts (skills, cell tags), with version 3.
-  std::vector<uint8_t> v4 = MinimalSnapshot().Serialize();
+  std::vector<uint8_t> v4 = AsV4(MinimalSnapshot().Serialize());
   // After the agent: effects count, tick, horizon, rng x2, d4, patrol count,
   // annotations count, skills count, cell tags count.
   const size_t tail = 4 + 4 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4;
@@ -1271,6 +1326,59 @@ TEST(TestSnapshotValidationErrorsSayWhere) {
   AssertSnapshotRejected(s, "without a name");
 }
 
+// Downs (v5): max_downs >= 1; a downed agent is a companion at 0 HP that went
+// down at least once; times_downed >= 0 and only on a companion.
+TEST(TestSnapshotRejectsBadDowns) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const std::string agent0 = "agent #0 (id " + std::to_string(good.agents[0].id) + ")";
+
+  Snapshot s = good;
+  s.max_downs = 0;
+  AssertSnapshotRejected(s, "Snapshot: max_downs must be >= 1 (got 0)");
+  s = good;
+  s.agents[0].downed = true;
+  s.agents[0].times_downed = 1;
+  AssertSnapshotRejected(s, agent0 + ": downed with " + std::to_string(good.agents[0].health) +
+                                " HP, a downed companion has 0 HP");
+  s = good;
+  s.agents[0].times_downed = -1;
+  AssertSnapshotRejected(s, agent0 + ": times_downed must be >= 0 (>= 1 when downed)");
+  s = good;
+  s.agents[0].health = 0;
+  s.agents[0].downed = true;
+  AssertSnapshotRejected(s, agent0 + ": times_downed must be >= 0 (>= 1 when downed)");
+
+  // Not on a non-companion (a second agent, a plain Agent)
+  AgentSnapshot enemy = good.agents[0];
+  enemy.id = 99;
+  enemy.type = static_cast<int>(ObjectType::Agent);
+  enemy.position = {6, 6};
+  enemy.skills.clear();
+  enemy.cooldowns.clear();
+  enemy.health = 0;
+  s = good;
+  s.agents.push_back(enemy);
+  s.agents.back().times_downed = 1;
+  AssertSnapshotRejected(s, "agent #1 (id 99): only a companion goes down");
+  s.agents.back().downed = true;
+  AssertSnapshotRejected(s, "only a companion goes down");
+  s.agents.back().downed = false;  // Sanity: the same agent without downs loads
+  s.agents.back().times_downed = 0;
+  SynchroEnv(8, 8, 1, 1, 0, 42).LoadSnapshot(s);
+
+  // Every Companion type goes down
+  for (ObjectType type : {ObjectType::Companion, ObjectType::Player, ObjectType::NPCCompanion}) {
+    s = good;
+    s.agents[0].type = static_cast<int>(type);
+    s.agents[0].health = 0;
+    s.agents[0].downed = true;
+    s.agents[0].times_downed = 1;
+    SynchroEnv env(8, 8, 1, 1, 0, 42);
+    env.LoadSnapshot(Snapshot::Deserialize(s.Serialize()));
+    ASSERT_TRUE(env.GetObjectManager().GetAllAgents()[0]->IsDowned());
+  }
+}
+
 // Statuses are StatusType values; Slowed (2) was removed and is reserved.
 TEST(TestSnapshotRejectsRemovedOrUnknownStatus) {
   const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
@@ -1297,11 +1405,11 @@ TEST(TestSnapshotRejectsRemovedOrUnknownStatus) {
 
 TEST(TestDeserializeRejectsOversizedV4Counts) {
   // Nothing in the snapshot after the skill book: the buffer ends with the
-  // skill count, then the zone count.
+  // skill count, the zone count, then max_downs (v5).
   Snapshot s = MinimalSnapshot();
   std::vector<uint8_t> bytes = s.Serialize();
-  const size_t zones_at = bytes.size() - 4;
-  const size_t skills_at = bytes.size() - 8;
+  const size_t zones_at = bytes.size() - 8;
+  const size_t skills_at = bytes.size() - 12;
 
   std::vector<uint8_t> bad = bytes;
   uint32_t huge = 9000000;  // Under the sanity cap, far over the bytes left

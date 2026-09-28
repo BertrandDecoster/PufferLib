@@ -1230,10 +1230,12 @@ Snapshot BaseEnv::SaveSnapshot() const {
       as.tags.push_back({tags_.Name(t.id), t.duration});
     }
 
-    // Direction, skill slots and cooldowns for Companions
+    // Direction, skill slots, cooldowns and downs for Companions
     if (const Companion* comp = dynamic_cast<const Companion*>(agent)) {
       as.direction = static_cast<int>(comp->GetDirection());
       as.color = static_cast<int>(comp->GetColor());
+      as.downed = comp->IsDowned();
+      as.times_downed = comp->GetTimesDowned();
       for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
         as.skills.push_back(comp->GetSkill(slot));
         as.cooldowns.push_back(comp->GetCooldown(slot));
@@ -1301,6 +1303,7 @@ Snapshot BaseEnv::SaveSnapshot() const {
   snap.tick = tick_;
   snap.horizon = horizon_;
   snap.d4_transform = d4_transform_;
+  snap.max_downs = max_downs_;
 
   // Semantic annotations
   snap.annotations = annotations_.Serialize();
@@ -1405,11 +1408,11 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     if (!agent) continue;
     saved_to_new.emplace(as.id, agent->GetId());
 
-    // Restore basic state
+    // Restore basic state. The health as saved, without the consequences of
+    // damage: TakeDamage would down a companion saved at 0 HP (a phantom
+    // down) or kill it. Deaths and downs come from their own flags.
     agent->SetMaxHealth(as.max_health);
-    if (as.health < as.max_health) {
-      agent->TakeDamage(as.max_health - as.health);
-    }
+    agent->RestoreHealth(as.health);
     agent->SetFaction(static_cast<Faction>(as.faction));
     agent->SetAlive(as.alive);
 
@@ -1435,6 +1438,10 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
         comp->SetSkill(slot, i < as.skills.size() ? as.skills[i] : std::string());
         comp->SetCooldown(slot, i < as.cooldowns.size() ? as.cooldowns[i] : 0);
       }
+      // Downs last: a downed agent accepts no tags or statuses, so the ones
+      // restored above must land before it goes down. Loaded as already
+      // reported (the step that downed it did).
+      comp->RestoreDowns(as.downed, as.times_downed);
     }
 
     // Restore AgentFSM-specific state
@@ -1480,6 +1487,12 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
       }
     }
   }
+
+  // The level's max downs (validated >= 1 above), before the latch below
+  // reads IsDone()
+  const bool max_downs_set = SetMaxDowns(snapshot.max_downs);
+  assert(max_downs_set && "validated max_downs rejected");
+  (void)max_downs_set;
 
   // Agents were placed in the grid alive, in the saved order: re-place them
   // now that they carry their saved alive flag, so a corpse never hides a

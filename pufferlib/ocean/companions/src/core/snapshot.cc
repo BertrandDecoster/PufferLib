@@ -87,6 +87,18 @@ bool IsKnownStatus(int type) {
   return false;
 }
 
+// The ObjectTypes built as a Companion (the only agents that go down)
+bool IsCompanionType(int type) {
+  switch (static_cast<ObjectType>(type)) {
+    case ObjectType::Companion:
+    case ObjectType::Player:
+    case ObjectType::NPCCompanion:
+      return true;
+    default:
+      return false;
+  }
+}
+
 std::string CellText(const Position& p) {
   return "(" + std::to_string(p.row) + ", " + std::to_string(p.col) + ")";
 }
@@ -106,6 +118,10 @@ void Snapshot::ValidateSkillsTagsZones() const {
       // The index says which skill when it has no name.
       throw std::runtime_error("Snapshot: skills[" + std::to_string(i) + "]: " + e.what());
     }
+  }
+  if (max_downs < 1) {
+    throw std::runtime_error("Snapshot: max_downs must be >= 1 (got " + std::to_string(max_downs) +
+                             ")");
   }
   for (size_t i = 0; i < agents.size(); ++i) {
     const AgentSnapshot& agent = agents[i];
@@ -155,6 +171,20 @@ void Snapshot::ValidateSkillsTagsZones() const {
         throw std::runtime_error("Snapshot: " + who + ": cooldowns[" + std::to_string(slot) +
                                  "] must be >= 0 (got " + std::to_string(agent.cooldowns[slot]) +
                                  ")");
+      }
+    }
+    if (agent.downed || agent.times_downed != 0) {
+      if (!IsCompanionType(agent.type)) {
+        throw std::runtime_error("Snapshot: " + who + ": only a companion goes down");
+      }
+      if (agent.downed && agent.health != 0) {
+        throw std::runtime_error("Snapshot: " + who + ": downed with " +
+                                 std::to_string(agent.health) + " HP, a downed companion has 0 HP");
+      }
+      if (agent.times_downed < 0 || (agent.downed && agent.times_downed < 1)) {
+        throw std::runtime_error("Snapshot: " + who +
+                                 ": times_downed must be >= 0 (>= 1 when downed), got " +
+                                 std::to_string(agent.times_downed));
       }
     }
   }
@@ -371,8 +401,9 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   // Magic number and version
   WriteValue(buffer, static_cast<uint32_t>(0x534E4150));  // "SNAP"
   // Version 2 added annotations; version 3 agent kind + attack config;
-  // version 4 skills, agent tags / skill slots / cooldowns and zones.
-  WriteValue(buffer, static_cast<uint32_t>(4));
+  // version 4 skills, agent tags / skill slots / cooldowns and zones;
+  // version 5 downs (agent downed / times_downed, max_downs).
+  WriteValue(buffer, static_cast<uint32_t>(5));
 
   // Grid dimensions
   WriteValue(buffer, rows);
@@ -447,6 +478,10 @@ std::vector<uint8_t> Snapshot::Serialize() const {
     WriteValue(buffer, static_cast<uint32_t>(agent.skills.size()));
     for (const std::string& name : agent.skills) WriteString(buffer, name);
     WriteVector(buffer, agent.cooldowns);
+
+    // v5: downs
+    WriteValue(buffer, agent.downed);
+    WriteValue(buffer, agent.times_downed);
   }
 
   // Effects
@@ -499,6 +534,9 @@ std::vector<uint8_t> Snapshot::Serialize() const {
     WriteValue(buffer, z.duration);
   }
 
+  // v5: the level's max downs
+  WriteValue(buffer, max_downs);
+
   return buffer;
 }
 
@@ -516,7 +554,7 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     throw std::runtime_error("Invalid snapshot magic number");
   }
   uint32_t version = ReadValue<uint32_t>(ptr, end);
-  if (version < 1 || version > 4) {
+  if (version < 1 || version > 5) {
     throw std::runtime_error("Unsupported snapshot version");
   }
 
@@ -658,6 +696,12 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
       for (std::string& name : agent.skills) name = ReadString(ptr, end);
       agent.cooldowns = ReadVector<int>(ptr, end);
     }
+
+    if (version >= 5) {
+      // A byte, not a bool: any value read from the buffer is a valid one
+      agent.downed = ReadValue<uint8_t>(ptr, end) != 0;
+      agent.times_downed = ReadValue<int>(ptr, end);
+    }
   }
 
   // Effects
@@ -746,6 +790,9 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
       z.duration = ReadValue<int>(ptr, end);
     }
   }
+
+  // The level's max downs (v5+); older snapshots take the default.
+  if (version >= 5) snap.max_downs = ReadValue<int>(ptr, end);
 
   snap.ValidateSkillsTagsZones();
   return snap;

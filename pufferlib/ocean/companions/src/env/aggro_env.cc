@@ -94,6 +94,8 @@ void AggroEnv::Reset() {
 
   // Generate snapshot using LevelGenerator
   Snapshot snapshot = LevelGenerator::Generate(config);
+  // A generated level keeps the env's max downs (level data, kept across Reset)
+  snapshot.max_downs = GetMaxDowns();
 
   // Extract positions from snapshot BEFORE loading (pre-transform order)
   // These will be transformed after LoadSnapshot applies D4

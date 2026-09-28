@@ -85,9 +85,9 @@ class BaseEnv {
 
   // Downs. Every companion going down counts (revived or not); the level is
   // lost (EndReason::TeamDown) once the count reaches max_downs, or when every
-  // companion is down at once. max_downs is level data (default 3, >= 1),
-  // kept across Reset.
-  static constexpr int kDefaultMaxDowns = 3;
+  // companion is down at once. max_downs is level data (default 3, >= 1):
+  // snapshots carry it (LoadSnapshot sets it), a generated Reset keeps it.
+  static constexpr int kDefaultMaxDowns = companions::kDefaultMaxDowns;  // core/types.h
   int GetDowns() const;
   int GetMaxDowns() const { return max_downs_; }
   // False below 1. Level data: meant to be set at load or between episodes.
