@@ -1230,12 +1230,26 @@ COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char*
   return true;
 }
 
-// Up to Companions_MAX_AGENTS ids into a fixed array; returns the count written.
-static int32_t CopyIds(const std::vector<companions::ObjectId>& ids,
-                       Companions_ObjectId (&out)[Companions_MAX_AGENTS]) {
-  const size_t n = std::min(ids.size(), static_cast<size_t>(Companions_MAX_AGENTS));
-  for (size_t i = 0; i < n; ++i) out[i] = ids[i];
-  return static_cast<int32_t>(n);
+static_assert(companions::BaseEnv::kSkillEffectTags == Companions_SkillEffect_Tags &&
+                  companions::BaseEnv::kSkillEffectDamage == Companions_SkillEffect_Damage &&
+                  companions::BaseEnv::kSkillEffectRoot == Companions_SkillEffect_Root &&
+                  companions::BaseEnv::kSkillEffectMotion == Companions_SkillEffect_Motion &&
+                  companions::BaseEnv::kSkillEffectRevive == Companions_SkillEffect_Revive,
+              "SkillEffect out of sync with C API");
+
+// Up to Companions_MAX_AGENTS affected agents into fixed arrays (ids,
+// effects) of a Companions_SkillPreview or Companions_SkillUseInfo, with the
+// count written and the total.
+static void CopyAffected(const std::vector<companions::BaseEnv::AffectedAgent>& affected,
+                         Companions_ObjectId* ids, uint32_t* effects, int32_t* count,
+                         int32_t* total) {
+  const size_t n = std::min(affected.size(), static_cast<size_t>(Companions_MAX_AGENTS));
+  for (size_t i = 0; i < n; ++i) {
+    ids[i] = affected[i].id;
+    effects[i] = affected[i].effects;
+  }
+  *count = static_cast<int32_t>(n);
+  *total = static_cast<int32_t>(affected.size());
 }
 
 COMPANIONS_API bool companions_preview_skill(const Companions_Env* env, Companions_ObjectId agent,
@@ -1276,7 +1290,8 @@ COMPANIONS_API bool companions_preview_skill(const Companions_Env* env, Companio
   CopyName(out->skill, p.skill);
   out->centre = ToAPIPosition(p.centre);
   out->caster_landing = ToAPIPosition(p.caster_landing);
-  out->affected_count = CopyIds(p.affected, out->affected);
+  CopyAffected(p.affected, out->affected, out->affected_effects, &out->affected_count,
+               &out->affected_total);
   return true;
 }
 
@@ -1305,7 +1320,8 @@ COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int
   CopyName(out->skill, use.skill);
   out->slot = use.slot;
   out->centre = ToAPIPosition(use.target);
-  out->affected_count = CopyIds(use.affected, out->affected);
+  CopyAffected(use.affected, out->affected, out->affected_effects, &out->affected_count,
+               &out->affected_total);
   return true;
 }
 

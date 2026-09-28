@@ -1001,14 +1001,16 @@ TEST(TestPreviewPassesOverTheDownedAndTheContextReviveReachesThem) {
   ASSERT_EQ(p.skill, std::string("revive"));
   ASSERT_TRUE(p.usable);
   ASSERT_TRUE(p.centre == (Position{4, 1}));
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{down->GetId()}));
+  ASSERT_TRUE(p.affected == (std::vector<BaseEnv::AffectedAgent>{
+                                 {down->GetId(), BaseEnv::kSkillEffectRevive}}));
 
   // Without the context rule, the bolt flies over the downed ally
   ASSERT_TRUE(env.SetContextSkills({}));
   p = PreviewThenStep(env, Direction::Down, 3);
   ASSERT_EQ(p.skill, std::string("bolt"));
   ASSERT_TRUE(p.centre == (Position{6, 1}));
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{standing->GetId()}));
+  ASSERT_TRUE(p.affected == (std::vector<BaseEnv::AffectedAgent>{
+                                 {standing->GetId(), BaseEnv::kSkillEffectTags}}));
   ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastTagsApplied()[0].agent, standing->GetId());
 }
@@ -1028,7 +1030,8 @@ TEST(TestPreviewRetunedReviveReachesPastAStandingAlly) {
   ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "revive"));
   BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 3);
   ASSERT_TRUE(p.centre == (Position{3, 3}));
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{down->GetId()}));
+  ASSERT_TRUE(p.affected == (std::vector<BaseEnv::AffectedAgent>{
+                                 {down->GetId(), BaseEnv::kSkillEffectRevive}}));
   ASSERT_FALSE(down->IsDowned());
   ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastRevives()[0].revived, down->GetId());

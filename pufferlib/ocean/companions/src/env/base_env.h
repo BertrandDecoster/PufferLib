@@ -283,6 +283,27 @@ class BaseEnv {
   // companion that cannot act and for a slot out of range)
   bool IsContextSkill(const Companion& comp, int slot) const;
 
+  // What a skill use does to one agent it affects (bit flags, as UseSkill
+  // decides them when it resolves the use): the skill's tags land on it, its
+  // damage hits it, it is revived, rooted, or moved by the area motion (a
+  // push, or the one thing a pull takes). The caster, affected with friendly
+  // fire, gets only what its self_* flags allow. Root and motion are decided
+  // before the damage: an agent the same use downs or kills is then neither
+  // rooted nor moved, and a pull then takes the next thing of its ring.
+  enum SkillEffect : unsigned {
+    kSkillEffectTags = 1u << 0,
+    kSkillEffectDamage = 1u << 1,
+    kSkillEffectRoot = 1u << 2,
+    kSkillEffectMotion = 1u << 3,
+    kSkillEffectRevive = 1u << 4,
+  };
+  struct AffectedAgent {
+    ObjectId id = kInvalidObjectId;
+    unsigned effects = 0;  // SkillEffect flags; 0: affected, but nothing applies to it
+    bool operator==(const AffectedAgent& o) const { return id == o.id && effects == o.effects; }
+    bool operator!=(const AffectedAgent& o) const { return !(*this == o); }
+  };
+
   // What `caster` using its slot `slot` aimed `aim` would do NOW, before the
   // step: a pure query (nothing moves, no tag lands, no damage, no revive,
   // nothing is interned). The skill is the slot's effective one
@@ -294,8 +315,8 @@ class BaseEnv {
   // agent-index order, so an earlier caster's push / pull / damage / revive
   // (or a walk into the line) changes what a later one reaches. A use whose
   // movement is Stay keeps the caster's facing: preview it with that facing.
-  // The preview says whom the skill affects, not where a push / pull then
-  // moves them.
+  // The preview says whom the skill affects and how (SkillEffect), not
+  // where a push / pull then moves them.
   struct SkillPreview {
     // The step would use it: a caster that is not stunned (GatherIntentions
     // makes it stay) and CanUseSkill (not cooling down, not rooted for a
@@ -306,7 +327,7 @@ class BaseEnv {
     // the caster's cell, nobody affected).
     std::string skill;
     Position centre;                  // Its SkillUse::target
-    std::vector<ObjectId> affected;   // Its SkillUse::affected, same order
+    std::vector<AffectedAgent> affected;  // Its SkillUse::affected, same order and effects
     Position caster_landing;          // Where a dash / teleport puts the caster, else its cell
   };
   // Computed whatever `usable` says (what the skill would do if it could).
@@ -328,12 +349,10 @@ class BaseEnv {
     int slot = 0;     // The caster's slot it was used from (0-based)
     // The agents it affected, in the order it processed them: those on its
     // area (cell order: the centre, then up, right, down, left for a Cross),
-    // then those on a tag_path dash's path. Each got its tags, damage and
-    // revive (the caster, affected with friendly fire, only those its self_*
-    // flags allow; tags and revives only on the affectable / downed, as
-    // LandTag and Revive say). The same list PreviewSkill gives before the
-    // step (ResolveSkillTargets).
-    std::vector<ObjectId> affected;
+    // then those on a tag_path dash's path, each with the effects the use
+    // applied to it (SkillEffect). The same list PreviewSkill gives before
+    // the step (ResolveSkillTargets).
+    std::vector<AffectedAgent> affected;
   };
   struct TagApplication {
     ObjectId agent = kInvalidObjectId;
@@ -492,16 +511,28 @@ class BaseEnv {
   struct SkillTargets {
     Position landing;                // The caster's cell after its own motion
     Position centre;                 // By the skill's targeting
-    std::vector<ObjectId> affected;  // On the area (cell order), then on a tag_path dash's path
-    size_t on_area = 0;              // affected[0, on_area) are on the area
+    // On the area (cell order), then on a tag_path dash's path, with their effects
+    std::vector<AffectedAgent> affected;
   };
   // Pure: reads the world as it is, with the caster already on its landing
   // cell (AgentAfterMotion), for `aim` (UseSkill passes the caster's facing).
   SkillTargets ResolveSkillTargets(const Companion& caster, const SkillConfig& skill,
                                    Direction aim) const;
-  // The living agent on `p` once `caster` moved from its cell to `landing`
-  // (nullptr for none, or for a non-agent actor)
+  // The actor on `p` once `caster` moved from its cell to `landing` (the
+  // caster on `landing`, nobody on the cell it left), as GetActorAt gives it
+  const Actor* ActorAfterMotion(Position p, const Agent& caster, Position landing) const;
+  // The same, when it is an agent (nullptr for none, or a non-agent actor)
   const Agent* AgentAfterMotion(Position p, const Agent& caster, Position landing) const;
+  // What a skill's area motion may move on `p` (caster on `landing`): a
+  // living actor, an agent only if the skill affects it, the caster only
+  // with self_motion. Shared by ResolveSkillTargets and AreaMotion.
+  const Actor* MotionThingAt(Position p, const SkillConfig& skill, const Agent& caster,
+                             Position landing) const;
+  // The ring cell a PullIn takes its one thing from (caster on `landing`):
+  // the first MotionThingAt by ring priority (up, right, down, left), only
+  // into a walkable centre no living actor holds; nullopt for none.
+  std::optional<Position> PullFrom(const SkillConfig& skill, Position centre, const Agent& caster,
+                                   Position landing) const;
   // Resolves one skill (caster motion, area, tags, damage, revive, root, area
   // motion); returns its targets (centre and affected, for the SkillUse).
   SkillTargets UseSkill(Companion& caster, const SkillConfig& skill);
@@ -514,10 +545,12 @@ class BaseEnv {
   // effect then checks its self_* flag.
   bool Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const;
   // Appends the agents on `cells` the skill affects (with the caster on
-  // `landing`, see AgentAfterMotion), each once, in cell order.
+  // `landing`, see AgentAfterMotion), each once, in cell order, with the
+  // cell each was found on (`found_on`, parallel), effects not set.
   void CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
                        const Agent& caster, Position landing,
-                       std::vector<ObjectId>& affected) const;
+                       std::vector<AffectedAgent>& affected,
+                       std::vector<Position>& found_on) const;
   void LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                const std::string& cause);
   void LandTag(Agent& agent, const std::string& tag, int duration,
@@ -527,13 +560,12 @@ class BaseEnv {
   void MoveActor(Actor& actor, Position to);
   void ApplyZoneTag(Agent& agent);  // The tag of the cell it stands on, if any
   void ApplyZoneTags();             // Every living agent (after movement)
-  // Roots `on_area` (the affected agents on the area, centre included, not the
-  // dash path; the caster only with self_root; not those the damage killed)
-  // before anything moves, then PushOut (the ring, away from the centre) /
-  // PullIn (one ring thing, by priority, into a free centre); living agents
-  // only if affected, the caster only with self_motion.
+  // Roots `rooted` (the affected agents given kSkillEffectRoot; not those
+  // the damage downed or killed) before anything moves, then PushOut (each
+  // ring MotionThingAt, away from the centre) / PullIn (PullFrom's thing into
+  // the centre), read from the world as it is then.
   void AreaMotion(const SkillConfig& skill, Position centre, const Agent& caster,
-                  const std::vector<Agent*>& on_area);
+                  const std::vector<Agent*>& rooted);
 
   int rows_;
   int cols_;

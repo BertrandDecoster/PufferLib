@@ -2262,8 +2262,12 @@ TEST(TestPreviewSkillMatchesTheStepThroughTheApi) {
   ASSERT_EQ(p.caster_landing.row, 3);
   ASSERT_EQ(p.caster_landing.col, 1);
   ASSERT_EQ(p.affected_count, 2);
+  ASSERT_EQ(p.affected_total, 2);  // Nothing cut
   ASSERT_EQ(p.affected[0], b.id);  // The centre, then up
   ASSERT_EQ(p.affected[1], c.id);
+  ASSERT_EQ(p.affected_effects[0], static_cast<uint32_t>(Companions_SkillEffect_Tags));
+  ASSERT_EQ(p.affected_effects[1],
+            static_cast<uint32_t>(Companions_SkillEffect_Tags | Companions_SkillEffect_Motion));
 
   std::vector<uint8_t> after(static_cast<size_t>(companions_get_snapshot_size(env)));
   ASSERT_TRUE(companions_save_snapshot(env, after.data(), static_cast<int32_t>(after.size())));
@@ -2289,8 +2293,11 @@ TEST(TestPreviewSkillMatchesTheStepThroughTheApi) {
   ASSERT_EQ(use.centre.row, 3);
   ASSERT_EQ(use.centre.col, 4);
   ASSERT_EQ(use.affected_count, p.affected_count);
-  ASSERT_EQ(use.affected[0], p.affected[0]);
-  ASSERT_EQ(use.affected[1], p.affected[1]);
+  ASSERT_EQ(use.affected_total, p.affected_total);
+  for (int32_t i = 0; i < use.affected_count; ++i) {
+    ASSERT_EQ(use.affected[i], p.affected[i]);
+    ASSERT_EQ(use.affected_effects[i], p.affected_effects[i]);
+  }
 
   // Cooling down: previewed, not usable. The next step empties the uses.
   ASSERT_TRUE(companions_preview_skill(env, a.id, 0, Companions_Direction_Right, &p));
@@ -2314,6 +2321,7 @@ TEST(TestPreviewTheContextReviveThroughTheApi) {
   ASSERT_EQ(std::string(p.skill), std::string("revive"));
   ASSERT_EQ(p.affected_count, 1);
   ASSERT_EQ(p.affected[0], b.id);
+  ASSERT_EQ(p.affected_effects[0], static_cast<uint32_t>(Companions_SkillEffect_Revive));
   // The downed ally cannot use anything
   ASSERT_TRUE(companions_preview_skill(env, b.id, 0, Companions_Direction_Left, &p));
   ASSERT_FALSE(p.usable);
@@ -2326,7 +2334,9 @@ TEST(TestPreviewTheContextReviveThroughTheApi) {
   ASSERT_TRUE(companions_get_last_skill_use(env, 0, &use));
   ASSERT_EQ(std::string(use.skill), std::string("revive"));
   ASSERT_EQ(use.affected_count, 1);
+  ASSERT_EQ(use.affected_total, 1);
   ASSERT_EQ(use.affected[0], b.id);
+  ASSERT_EQ(use.affected_effects[0], static_cast<uint32_t>(Companions_SkillEffect_Revive));
   ASSERT_FALSE(result.state.agents[1].downed);
   companions_destroy(env);
 }

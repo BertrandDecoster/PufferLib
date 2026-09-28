@@ -2039,6 +2039,21 @@ static BaseEnv::SkillPreview PreviewThenStep(SynchroEnv& env, Direction aim, siz
   return p;
 }
 
+using Affected = std::vector<BaseEnv::AffectedAgent>;
+constexpr unsigned kTagsFx = BaseEnv::kSkillEffectTags;
+constexpr unsigned kDamageFx = BaseEnv::kSkillEffectDamage;
+constexpr unsigned kRootFx = BaseEnv::kSkillEffectRoot;
+constexpr unsigned kMotionFx = BaseEnv::kSkillEffectMotion;
+
+// The affected agents given effect `e`, in order.
+static std::vector<ObjectId> WithEffect(const Affected& affected, unsigned e) {
+  std::vector<ObjectId> ids;
+  for (const auto& a : affected) {
+    if (a.effects & e) ids.push_back(a.id);
+  }
+  return ids;
+}
+
 // The agents that got a tag from the step's skill, in landing order.
 static std::vector<ObjectId> TaggedBySkill(const BaseEnv& env) {
   std::vector<ObjectId> ids;
@@ -2061,8 +2076,12 @@ TEST(TestPreviewFireballMatchesTheStep) {
   ASSERT_EQ(p.skill, std::string("fireball"));
   ASSERT_TRUE(p.centre == (Position{3, 4}));
   ASSERT_TRUE(p.caster_landing == (Position{3, 1}));
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{center->GetId(), up->GetId()}));
-  ASSERT_TRUE(TaggedBySkill(env) == p.affected);  // Burning, in that order
+  // Both burn; the ring one is pushed out
+  ASSERT_TRUE(p.affected ==
+              (Affected{{center->GetId(), kTagsFx}, {up->GetId(), kTagsFx | kMotionFx}}));
+  ASSERT_TRUE(TaggedBySkill(env) == WithEffect(p.affected, kTagsFx));  // In that order
+  ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));                    // Pushed
+  ASSERT_TRUE(center->GetPosition() == (Position{3, 4}));
 }
 
 TEST(TestPreviewLightningStepLandsAndTagsThePath) {
@@ -2078,10 +2097,11 @@ TEST(TestPreviewLightningStepLandsAndTagsThePath) {
   ASSERT_TRUE(p.centre == (Position{3, 5}));
   // The caster on its own centre (friendly fire; self_tags spares it), its
   // ring, then the path
-  ASSERT_TRUE(p.affected ==
-              (std::vector<ObjectId>{caster->GetId(), beside->GetId(), crossed->GetId()}));
+  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), 0},
+                                      {beside->GetId(), kTagsFx},
+                                      {crossed->GetId(), kTagsFx}}));
   ASSERT_TRUE(caster->GetPosition() == p.caster_landing);
-  ASSERT_TRUE(TaggedBySkill(env) == (std::vector<ObjectId>{beside->GetId(), crossed->GetId()}));
+  ASSERT_TRUE(TaggedBySkill(env) == WithEffect(p.affected, kTagsFx));
 }
 
 TEST(TestPreviewTeleportLanding) {
@@ -2093,7 +2113,7 @@ TEST(TestPreviewTeleportLanding) {
   BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 1);
   ASSERT_TRUE(p.caster_landing == (Position{3, 4}));
   ASSERT_TRUE(p.centre == (Position{3, 4}));
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{caster->GetId()}));  // Friendly fire: its own area
+  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), 0}}));  // Friendly fire: its own area, nothing to apply
   ASSERT_TRUE(caster->GetPosition() == (Position{3, 4}));
 }
 
@@ -2106,7 +2126,9 @@ TEST(TestPreviewVortexSaysWhomItAffectsNotWhereTheyGo) {
   env.SetCompanionSkill(caster->GetId(), 0, "vortex");
   BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 3);
   ASSERT_TRUE(p.centre == (Position{3, 4}));
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{above->GetId(), left->GetId()}));
+  // Both rooted; the one above (ring priority) is the one pulled
+  ASSERT_TRUE(p.affected ==
+              (Affected{{above->GetId(), kRootFx | kMotionFx}, {left->GetId(), kRootFx}}));
   ASSERT_TRUE(above->GetPosition() == (Position{3, 4}));  // Pulled in by the step
   ASSERT_TRUE(above->HasStatus(StatusType::Rooted));
   ASSERT_TRUE(left->HasStatus(StatusType::Rooted));
@@ -2128,7 +2150,7 @@ TEST(TestPreviewAttackSparesAnAllyStrikesAnEnemy) {
   const int health = enemy->GetHealth();
   p = PreviewThenStep(env, Direction::Down, 3);
   ASSERT_TRUE(p.centre == (Position{4, 1}));
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{enemy->GetId()}));
+  ASSERT_TRUE(p.affected == (Affected{{enemy->GetId(), kDamageFx}}));
   ASSERT_EQ(enemy->GetHealth(), health - 1);
 }
 
@@ -2149,15 +2171,15 @@ TEST(TestPreviewNeutralAgentAndFilters) {
   env.SetCompanionSkill(env.GetObjectManager().GetAllAgents()[0]->GetId(), 0, "bolt");
   BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 3);
   ASSERT_TRUE(p.centre == (Position{3, 5}));  // Past the neutral
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{enemy->GetId()}));
-  ASSERT_TRUE(TaggedBySkill(env) == p.affected);
+  ASSERT_TRUE(p.affected == (Affected{{enemy->GetId(), kTagsFx}}));
+  ASSERT_TRUE(TaggedBySkill(env) == WithEffect(p.affected, kTagsFx));
 
   bolt.filter = TargetFilter::All;
   env.GetMutableSkillBook().Define(bolt);
   p = PreviewThenStep(env, Direction::Right, 3);
   ASSERT_TRUE(p.centre == (Position{3, 3}));  // Stopped by the neutral
-  ASSERT_TRUE(p.affected == (std::vector<ObjectId>{neutral->GetId()}));
-  ASSERT_TRUE(TaggedBySkill(env) == p.affected);
+  ASSERT_TRUE(p.affected == (Affected{{neutral->GetId(), kTagsFx}}));
+  ASSERT_TRUE(TaggedBySkill(env) == WithEffect(p.affected, kTagsFx));
 }
 
 TEST(TestPreviewUsableFollowsTheStep) {
@@ -2199,6 +2221,76 @@ TEST(TestPreviewUsableFollowsTheStep) {
   ASSERT_TRUE(p.affected.empty());
 }
 
+// A dash of 1 whose cross covers the cell it left: the caster is counted on
+// its landing (the centre, first), the vacated cell holds nobody.
+TEST(TestPreviewSeesTheCellADashLeftEmpty) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig hop;
+  hop.name = "hop";
+  hop.targeting = SkillTargeting::Self;
+  hop.area = SkillArea::Cross;
+  hop.motion = SkillMotion::Dash;
+  hop.motion_distance = 1;
+  hop.tags = {{"hopped", kPermanentTag}};
+  env.GetMutableSkillBook().Define(hop);
+  Agent* caster = Place(env, 0, {3, 2});
+  Agent* above = Place(env, 1, {2, 3});  // Above the landing cell (3,3)
+  env.SetCompanionSkill(caster->GetId(), 0, "hop");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 2);
+  ASSERT_TRUE(p.caster_landing == (Position{3, 3}));
+  // The centre (the caster, landed), then up; (3,2), left of the centre, is empty
+  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), kTagsFx}, {above->GetId(), kTagsFx}}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 3}));
+  ASSERT_TRUE(TaggedBySkill(env) == WithEffect(p.affected, kTagsFx));
+}
+
+// A teleport onto a corpse's cell (a landing ignores the dead): the caster
+// is what stands there, affected by its own area.
+TEST(TestPreviewLandsOnACorpsesCell) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig blink = DefineCopy(env, "teleport", "blink");
+  blink.tags = {{"blinked", kPermanentTag}};
+  env.GetMutableSkillBook().Define(blink);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* corpse = AddAgent(env, {3, 4}, Faction::ENEMY);
+  corpse->SetAlive(false);
+  env.SetCompanionSkill(caster->GetId(), 0, "blink");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 2);
+  ASSERT_TRUE(p.caster_landing == (Position{3, 4}));
+  ASSERT_TRUE(p.centre == (Position{3, 4}));
+  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), kTagsFx}}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(TaggedBySkill(env) == (std::vector<ObjectId>{caster->GetId()}));
+}
+
+// The self_* flags decide what the caster gets, in the preview and the step.
+TEST(TestPreviewCasterEffectsFollowItsSelfFlags) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig nova;
+  nova.name = "nova";
+  nova.targeting = SkillTargeting::Self;
+  nova.area = SkillArea::Cross;
+  nova.tags = {{"lit", kPermanentTag}};
+  nova.damage = 1;
+  nova.root_steps = 1;
+  nova.self_tags = false;
+  nova.self_damage = true;
+  nova.self_root = false;
+  env.GetMutableSkillBook().Define(nova);
+  Agent* caster = Place(env, 0, {3, 3});
+  caster->SetMaxHealth(5);
+  caster->RestoreHealth(5);
+  env.SetCompanionSkill(caster->GetId(), 0, "nova");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 1);
+  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), kDamageFx}}));
+  ASSERT_EQ(caster->GetHealth(), 4);
+  ASSERT_TRUE(TaggedBySkill(env).empty());
+  ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
+}
+
 // The step's SkillUse lists whom it affected: a later caster reaches what an
 // earlier one left (not what a preview before the step saw).
 TEST(TestSkillUseAffectedIsTheStepsOwn) {
@@ -2212,7 +2304,7 @@ TEST(TestSkillUseAffectedIsTheStepsOwn) {
   ASSERT_TRUE(before.centre == (Position{5, 4}));  // From (2,4), before the pull
   env.Step({Use(MovementAction::Right), Use(MovementAction::Down)});
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
-  ASSERT_TRUE(env.GetLastSkillUses()[0].affected == (std::vector<ObjectId>{b->GetId()}));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].affected == (Affected{{b->GetId(), kRootFx | kMotionFx}}));
   ASSERT_TRUE(env.GetLastSkillUses()[1].target == (Position{6, 4}));  // From (3,4)
   ASSERT_TRUE(env.GetLastSkillUses()[1].affected.empty());
 }

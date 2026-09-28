@@ -1167,7 +1167,7 @@ BaseEnv::SkillPreview BaseEnv::PreviewSkill(const Companion& caster, int slot,
   return preview;
 }
 
-const Agent* BaseEnv::AgentAfterMotion(Position p, const Agent& caster, Position landing) const {
+const Actor* BaseEnv::ActorAfterMotion(Position p, const Agent& caster, Position landing) const {
   const Position from = caster.GetPosition();
   if (landing != from) {
     // Landing needs a cell free of living actors (CanLand), and a corpse
@@ -1177,7 +1177,33 @@ const Agent* BaseEnv::AgentAfterMotion(Position p, const Agent& caster, Position
     if (p == landing) return &caster;
     if (p == from) return nullptr;
   }
-  return dynamic_cast<const Agent*>(object_manager_->GetActorAt(p));
+  return object_manager_->GetActorAt(p);
+}
+
+const Agent* BaseEnv::AgentAfterMotion(Position p, const Agent& caster, Position landing) const {
+  return dynamic_cast<const Agent*>(ActorAfterMotion(p, caster, landing));
+}
+
+const Actor* BaseEnv::MotionThingAt(Position p, const SkillConfig& skill, const Agent& caster,
+                                    Position landing) const {
+  const Actor* a = ActorAfterMotion(p, caster, landing);
+  if (!a || !a->IsAlive()) return nullptr;
+  if (a == &caster && !skill.self_motion) return nullptr;
+  if (auto* ag = dynamic_cast<const Agent*>(a); ag && !Affects(skill, caster, *ag)) return nullptr;
+  return a;
+}
+
+std::optional<Position> BaseEnv::PullFrom(const SkillConfig& skill, Position centre,
+                                          const Agent& caster, Position landing) const {
+  // CanLand with nobody excepted, the caster on its landing cell
+  if (!grid_->IsInBounds(centre) || !grid_->IsWalkable(centre)) return std::nullopt;
+  const Actor* on_centre = ActorAfterMotion(centre, caster, landing);
+  if (on_centre && on_centre->IsAlive()) return std::nullopt;
+  const std::vector<Position> cells = AreaCells(centre, skill.area);
+  for (size_t i = 1; i < cells.size(); ++i) {  // The ring, by priority
+    if (MotionThingAt(cells[i], skill, caster, landing)) return cells[i];
+  }
+  return std::nullopt;
 }
 
 BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
@@ -1228,9 +1254,35 @@ BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
   }
 
   // 2. Affected agents: on the area, then (tag_path) on the dash path.
-  CollectAffected(AreaCells(t.centre, skill.area), skill, caster, t.landing, t.affected);
-  t.on_area = t.affected.size();
-  if (skill.tag_path) CollectAffected(path, skill, caster, t.landing, t.affected);
+  std::vector<Position> found_on;  // Parallel to t.affected
+  CollectAffected(AreaCells(t.centre, skill.area), skill, caster, t.landing, t.affected,
+                  found_on);
+  const size_t on_area = t.affected.size();
+  if (skill.tag_path) CollectAffected(path, skill, caster, t.landing, t.affected, found_on);
+
+  // 3. What the use does to each (the caster only as its self_* flags allow).
+  std::optional<Position> pulled_from;
+  if (skill.motion == SkillMotion::PullIn) pulled_from = PullFrom(skill, t.centre, caster, t.landing);
+  for (size_t i = 0; i < t.affected.size(); ++i) {
+    const Agent* a = AgentAfterMotion(found_on[i], caster, t.landing);
+    const bool self = a == &caster;
+    const bool area = i < on_area;
+    unsigned e = 0;
+    if (!skill.tags.empty() && (!self || skill.self_tags)) e |= kSkillEffectTags;
+    if (skill.damage > 0 && (!self || skill.self_damage)) e |= kSkillEffectDamage;
+    // Only a downed companion gets up (an affects_downed skill reaches the downed only)
+    if (skill.revive_percent > 0 && a->IsDowned() && dynamic_cast<const Companion*>(a)) {
+      e |= kSkillEffectRevive;
+    }
+    if (area && skill.root_steps > 0 && (!self || skill.self_root)) e |= kSkillEffectRoot;
+    if (area && found_on[i] != t.centre) {  // The ring
+      const bool pushed = skill.motion == SkillMotion::PushOut &&
+                          MotionThingAt(found_on[i], skill, caster, t.landing) == a;
+      const bool pulled = pulled_from && *pulled_from == found_on[i];
+      if (pushed || pulled) e |= kSkillEffectMotion;
+    }
+    t.affected[i].effects = e;
+  }
   return t;
 }
 
@@ -1242,18 +1294,18 @@ BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& sk
   SkillTargets targets = ResolveSkillTargets(caster, skill, caster.GetDirection());
   MoveActor(caster, targets.landing);
   const Position centre = targets.centre;
-  std::vector<Agent*> affected;
+  // The agents and what the use does to each, as decided above
+  std::vector<std::pair<Agent*, unsigned>> affected;
   affected.reserve(targets.affected.size());
-  for (ObjectId id : targets.affected) {
-    affected.push_back(dynamic_cast<Agent*>(object_manager_->GetActor(id)));
-    assert(affected.back() && "ResolveSkillTargets gives agents");
+  for (const AffectedAgent& t : targets.affected) {
+    Agent* a = dynamic_cast<Agent*>(object_manager_->GetActor(t.id));
+    assert(a && "ResolveSkillTargets gives agents");
+    if (a) affected.emplace_back(a, t.effects);
   }
-  const std::vector<Agent*> on_area(affected.begin(),
-                                    affected.begin() + static_cast<std::ptrdiff_t>(targets.on_area));
 
   // 3. Tags land on who was there at impact (area and path).
-  for (Agent* a : affected) {
-    if (a == &caster && !skill.self_tags) continue;
+  for (const auto& [a, effects] : affected) {
+    if (!(effects & kSkillEffectTags)) continue;
     for (const SkillTagSpec& t : skill.tags) {
       LandTag(*a, t.tag, t.duration, caster.GetId(), skill.name);
     }
@@ -1261,29 +1313,28 @@ BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& sk
 
   // 4. Damage, on the same agents (after the tags: an agent it kills still got
   // them). Deaths are the health system's (Agent::TakeDamage), as for effects.
-  if (skill.damage > 0) {
-    for (Agent* a : affected) {
-      if (a == &caster && !skill.self_damage) continue;
-      a->TakeDamage(skill.damage);
-    }
+  for (const auto& [a, effects] : affected) {
+    if (effects & kSkillEffectDamage) a->TakeDamage(skill.damage);
   }
 
   // 5. Revive: the downed it affects get up where they lie (an affects_downed
-  // skill has no tags, damage, root or motion). A companion revived by an
-  // earlier caster this step is standing again, so a later one skips it.
-  if (skill.revive_percent > 0) {
-    for (Agent* a : affected) {
-      auto* comp = dynamic_cast<Companion*>(a);
-      if (!comp || !comp->IsDowned()) continue;
-      const int health = (comp->GetMaxHealth() * skill.revive_percent + 99) / 100;
-      if (comp->Revive(health)) {
-        last_revives_.push_back({caster.GetId(), comp->GetId(), comp->GetHealth()});
-      }
+  // skill has no tags, damage, root or motion).
+  for (const auto& [a, effects] : affected) {
+    if (!(effects & kSkillEffectRevive)) continue;
+    auto* comp = dynamic_cast<Companion*>(a);
+    if (!comp || !comp->IsDowned()) continue;
+    const int health = (comp->GetMaxHealth() * skill.revive_percent + 99) / 100;
+    if (comp->Revive(health)) {
+      last_revives_.push_back({caster.GetId(), comp->GetId(), comp->GetHealth()});
     }
   }
 
-  // 6. Root (the area only) and area motions; the dead and the downed are neither.
-  AreaMotion(skill, centre, caster, on_area);
+  // 6. Root and area motions; the dead and the downed are neither.
+  std::vector<Agent*> rooted;
+  for (const auto& [a, effects] : affected) {
+    if (effects & kSkillEffectRoot) rooted.push_back(a);
+  }
+  AreaMotion(skill, centre, caster, rooted);
   return targets;
 }
 
@@ -1297,60 +1348,48 @@ bool BaseEnv::Affects(const SkillConfig& skill, const Agent& caster, const Agent
 
 void BaseEnv::CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
                               const Agent& caster, Position landing,
-                              std::vector<ObjectId>& affected) const {
+                              std::vector<AffectedAgent>& affected,
+                              std::vector<Position>& found_on) const {
   for (const Position& p : cells) {
     const Agent* a = AgentAfterMotion(p, caster, landing);
     if (!a || !Affects(skill, caster, *a)) continue;
-    if (std::find(affected.begin(), affected.end(), a->GetId()) == affected.end()) {
-      affected.push_back(a->GetId());
+    const ObjectId id = a->GetId();
+    if (std::find_if(affected.begin(), affected.end(),
+                     [id](const AffectedAgent& x) { return x.id == id; }) == affected.end()) {
+      affected.push_back({id, 0});
+      found_on.push_back(p);
     }
   }
 }
 
 void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, const Agent& caster,
-                         const std::vector<Agent*>& on_area) {
+                         const std::vector<Agent*>& rooted) {
   // Root first, before anything moves: no Agent* is used across a MoveActor.
   // Rooted for the next root_steps steps (a step timer, see Agent::BeginStep).
   // Push / pull never read Rooted.
-  if (skill.root_steps > 0) {
-    for (Agent* a : on_area) {
-      if (!a->IsAffectable()) continue;  // Killed or downed by the skill's damage
-      if (a == &caster && !skill.self_root) continue;
-      a->ApplyStatus(StatusType::Rooted, skill.root_steps);
-    }
+  for (Agent* a : rooted) {
+    if (!a->IsAffectable()) continue;  // Killed or downed by the skill's damage
+    a->ApplyStatus(StatusType::Rooted, skill.root_steps);
   }
 
-  std::vector<Position> cells = AreaCells(centre, skill.area);
-  std::vector<Position> ring(cells.begin() + 1, cells.end());  // Up, right, down, left
-
-  // A thing the motion may move: any living actor, but an agent only if the
-  // skill affects it, and the caster only with self_motion.
-  auto thing_at = [&](Position p) -> Actor* {
-    Actor* a = object_manager_->GetActorAt(p);
-    if (!a || !a->IsAlive()) return nullptr;
-    if (a == &caster && !skill.self_motion) return nullptr;
-    if (auto* ag = dynamic_cast<Agent*>(a); ag && !Affects(skill, caster, *ag)) return nullptr;
-    return a;
-  };
-
+  // The caster already stands on its landing cell: the world as it is now.
+  const Position here = caster.GetPosition();
+  auto mutable_actor = [&](const Actor* a) { return object_manager_->GetActor(a->GetId()); };
   if (skill.motion == SkillMotion::PushOut) {
     // Ring cells push in 4 different directions: no two pushes compete.
-    for (const Position& p : ring) {
-      Actor* a = thing_at(p);
-      if (!a) continue;
+    const std::vector<Position> cells = AreaCells(centre, skill.area);
+    for (size_t i = 1; i < cells.size(); ++i) {
+      const Position p = cells[i];
+      const Actor* thing = MotionThingAt(p, skill, caster, here);
+      if (!thing) continue;
+      Actor* a = mutable_actor(thing);
       int dr = p.row - centre.row, dc = p.col - centre.col;
       MoveActor(*a, ResolveDash(*grid_, *object_manager_, p, dr, dc,
                                 skill.motion_distance, a->GetId()));
     }
   } else if (skill.motion == SkillMotion::PullIn) {
-    // Only into a free, walkable centre; one thing, by ring priority.
-    if (CanLand(*grid_, *object_manager_, centre, kInvalidObjectId)) {
-      for (const Position& p : ring) {
-        if (Actor* a = thing_at(p)) {
-          MoveActor(*a, centre);
-          break;
-        }
-      }
+    if (std::optional<Position> from = PullFrom(skill, centre, caster, here)) {
+      MoveActor(*mutable_actor(MotionThingAt(*from, skill, caster, here)), centre);
     }
   }
 }

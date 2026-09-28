@@ -45,7 +45,8 @@
 // Also amended in: companions_preview_skill says where a slot's skill would
 // land and whom it would affect now, by the step's own targeting code, and
 // companions_get_last_skill_use_count / companions_get_last_skill_use say
-// whom each of the last step's skill uses affected. 1.4.0 was amended in
+// whom each of the last step's skill uses affected, each with what the use
+// does to it (Companions_SkillEffect). 1.4.0 was amended in
 // place before its release: an app built against the amended header refuses
 // an earlier 1.4.0 DLL at load (the DLL lacks these exports).
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
@@ -792,6 +793,23 @@ COMPANIONS_API bool companions_get_skill(const Companions_Env* env, int32_t inde
 COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char* name,
                                           Companions_SkillInfo* out);
 
+// What a skill use does to one agent it affects (since 1.4): bit flags in
+// Companions_SkillPreview.affected_effects / Companions_SkillUseInfo.
+// affected_effects. The skill's tags land on it, its damage hits it, it is
+// rooted, moved by the area motion (a push, or the one thing a pull takes),
+// or revived. The caster, affected under friendly fire, gets only what its
+// self_* flags allow; 0 = affected, but nothing applies to it. Root and
+// motion are decided before the damage: an agent the same use downs or
+// kills is then neither rooted nor moved (a pull then takes the next thing
+// of its ring).
+typedef enum {
+  Companions_SkillEffect_Tags = 1 << 0,
+  Companions_SkillEffect_Damage = 1 << 1,
+  Companions_SkillEffect_Root = 1 << 2,
+  Companions_SkillEffect_Motion = 1 << 3,
+  Companions_SkillEffect_Revive = 1 << 4,
+} Companions_SkillEffect;
+
 // A skill use previewed (since 1.4): what a companion using the skill in a
 // slot, aimed one way, would do NOW, before the next step. The env answers
 // with the same code the step uses (its targeting), so a host previews
@@ -808,12 +826,16 @@ typedef struct {
   char skill[Companions_SKILL_NAME_LEN];
   Companions_Position centre;          // The SkillUsed event's position
   Companions_Position caster_landing;  // Where a dash / teleport puts the caster, else its cell
-  // The agents it would affect (tags, damage, revive; the caster only as its
-  // self_* flags allow), in the order the step processes them: its area
-  // (the centre, then up, right, down, left), then a tag_path dash's path.
-  // The first Companions_MAX_AGENTS of them.
+  // The agents it would affect, in the order the step processes them: its
+  // area (the centre, then up, right, down, left), then a tag_path dash's
+  // path; each with what the use does to it (Companions_SkillEffect flags,
+  // in affected_effects at the same index). The first Companions_MAX_AGENTS
+  // of them: affected_count; affected_total counts them all (more than
+  // affected_count: the list was cut).
   Companions_ObjectId affected[Companions_MAX_AGENTS];
+  uint32_t affected_effects[Companions_MAX_AGENTS];
   int32_t affected_count;
+  int32_t affected_total;
 } Companions_SkillPreview;
 
 // Preview companion `agent`'s slot `slot` (0-based, below
@@ -841,10 +863,13 @@ typedef struct {
   char skill[Companions_SKILL_NAME_LEN];
   int32_t slot;                  // 0-based
   Companions_Position centre;    // The SkillUsed event's position
-  // The agents it affected, in the order it processed them (as
-  // Companions_SkillPreview.affected); the first Companions_MAX_AGENTS
+  // The agents it affected, in the order it processed them, with what it
+  // did to each: as Companions_SkillPreview's affected, affected_effects,
+  // affected_count and affected_total
   Companions_ObjectId affected[Companions_MAX_AGENTS];
+  uint32_t affected_effects[Companions_MAX_AGENTS];
   int32_t affected_count;
+  int32_t affected_total;
 } Companions_SkillUseInfo;
 
 // Number of skill uses of the last step; 0 for a null env ("Invalid environment").
