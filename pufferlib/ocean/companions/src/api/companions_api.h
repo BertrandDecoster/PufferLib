@@ -36,7 +36,12 @@
 // holds what 1.3's skills did (what companions_set_agent_skill or the level
 // put there); skill_cooldowns stay the equipped skills'. The builtin
 // "revive" gets a downed companion up; Companions_Event_AgentRevived reports
-// it.
+// it. 1.4 also added (additive, amended into the unreleased 1.4.0) the skill
+// book query: companions_get_skill_count / companions_get_skill /
+// companions_find_skill fill a Companions_SkillInfo with every field of a
+// skill (the builtins, "attack" and "revive" included, and the level's own or
+// retuned ones), so a host reads the env's skills instead of copying them. A
+// skill lands at most Companions_MAX_SKILL_TAGS tags (the env refuses more).
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -164,6 +169,7 @@ extern "C" {
 // Skill and tag names are at most Companions_SKILL_NAME_LEN - 1 (31) bytes:
 // the env refuses longer ones, so the name buffers below never truncate.
 #define Companions_SKILL_NAME_LEN 32   // Including the terminating '\0'
+#define Companions_MAX_SKILL_TAGS 32   // Tags a skill lands (the env refuses more)
 
 // =============================================================================
 // Basic Types
@@ -694,6 +700,91 @@ COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_
 // Only slot 0 is usable today (Companions_Interact_Skill1); slot 1 can be
 // filled but Skill2 is ignored.
 COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_ObjectId agent, int32_t slot, const char* skill);
+
+// The skill book (since 1.4): every skill the env knows, as data. The
+// builtins ("fireball", "lightningStep", "teleport", "vortex", "revive" and
+// the fixed default "attack"), then the level's own skills in the order its
+// snapshot lists them; a level that retunes a builtin changes it in place.
+// The book changes only when a snapshot loads (companions_load_snapshot*:
+// the builtins plus that snapshot's skills): indices and contents are stable
+// until then. What a skill's tags mean is the host's business.
+typedef enum {
+  Companions_SkillTargeting_Self = 0,        // Centre = the caster (after its own motion)
+  Companions_SkillTargeting_Ground = 1,      // Centre = `range` cells along the aim; a wall stops it on the cell before
+  Companions_SkillTargeting_Projectile = 2,  // Centre = the first agent it affects within `range` (a wall stops it), else the last cell reached
+} Companions_SkillTargeting;
+
+typedef enum {
+  Companions_SkillArea_Single = 0,  // The centre cell
+  Companions_SkillArea_Cross = 1,   // The centre and its 4 orthogonal neighbours
+} Companions_SkillArea;
+
+typedef enum {
+  Companions_SkillMotion_None = 0,
+  Companions_SkillMotion_Dash = 1,      // Caster: up to motion_distance, crossing holes and agents
+  Companions_SkillMotion_Teleport = 2,  // Caster: exactly motion_distance, else closer
+  Companions_SkillMotion_PushOut = 3,   // The area's ring: motion_distance away from the centre
+  Companions_SkillMotion_PullIn = 4,    // One agent of the ring into the centre (needs a Cross area)
+} Companions_SkillMotion;
+
+// Who a skill may affect, by faction (see also friendly_fire)
+typedef enum {
+  Companions_TargetFilter_All = 0,
+  Companions_TargetFilter_Companion = 1,
+  Companions_TargetFilter_Enemy = 2,
+  Companions_TargetFilter_Neutral = 3,
+} Companions_TargetFilter;
+
+typedef struct {
+  char tag[Companions_SKILL_NAME_LEN];  // Opaque name (see companions_get_tag_name)
+  int32_t duration;                     // Steps, -1 = permanent
+} Companions_SkillTag;
+
+// A skill, field for field (PufferLib's SkillConfig).
+typedef struct {
+  char name[Companions_SKILL_NAME_LEN];
+  Companions_SkillTargeting targeting;
+  int32_t range;
+  Companions_TargetFilter filter;
+  Companions_SkillArea area;
+  Companions_SkillMotion motion;
+  int32_t motion_distance;
+  bool tag_path;  // Dash: agents crossed on the way are affected too
+  // Landed on every affected agent, in order: tag_count of them (never
+  // truncated: a skill has at most Companions_MAX_SKILL_TAGS)
+  Companions_SkillTag tags[Companions_MAX_SKILL_TAGS];
+  int32_t tag_count;
+  int32_t damage;      // Health every affected agent loses
+  int32_t root_steps;  // Affected agents are rooted for this many next steps
+  int32_t cooldown;    // Steps blocked after a use (0: none)
+  // Off: only agents not of the caster's faction are affected (a projectile
+  // flies past allies). On: allies too, and the caster in its own area,
+  // unless a self_* flag below spares it that effect.
+  bool friendly_fire;
+  bool self_tags;
+  bool self_motion;
+  bool self_root;
+  bool self_damage;
+  // Off: the skill affects only the standing (alive, not downed). On: only
+  // the downed, which it can only revive (a projectile flies past the rest).
+  bool affects_downed;
+  // A downed agent it affects gets up with this percent of its max HP,
+  // rounded up (0: no revive).
+  int32_t revive_percent;
+} Companions_SkillInfo;
+
+// Number of skills in the book; 0 for a null env ("Invalid environment").
+COMPANIONS_API int32_t companions_get_skill_count(const Companions_Env* env);
+// The skill at `index` (0-based, below companions_get_skill_count). False
+// for a null env or `out` ("Invalid arguments") or an index out of range
+// ("Skill index out of range"), `out` untouched.
+COMPANIONS_API bool companions_get_skill(const Companions_Env* env, int32_t index,
+                                         Companions_SkillInfo* out);
+// The skill named `name`. False for a null env, `name` or `out` ("Invalid
+// arguments") or a name the book does not hold ("Unknown skill: <name>"),
+// `out` untouched.
+COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char* name,
+                                          Companions_SkillInfo* out);
 
 // =============================================================================
 // Configuration Queries

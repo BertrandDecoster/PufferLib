@@ -20,6 +20,7 @@
 #include "../core/fsm/enemies.h"
 #include "../core/object.h"
 #include "../core/object_manager.h"
+#include "../core/skill_config.h"
 #include "../core/snapshot.h"
 #include "../core/snapshot_json.h"
 #include "../core/types.h"
@@ -48,7 +49,8 @@
 // 1.4.0: revives and context skills (Companions_AgentState.skills = the
 // effective skills, equipped_skills = the equipped ones,
 // Companions_Event_AgentRevived); struct layouts changed (consumers must
-// rebuild).
+// rebuild). Amended before release (additive): the skill book query
+// (companions_get_skill_count / _get_skill / _find_skill, Companions_SkillInfo).
 #define COMPANIONS_VERSION "1.4.0"
 
 // =============================================================================
@@ -210,6 +212,37 @@ static_assert(companions::kMaxNameLength == Companions_SKILL_NAME_LEN - 1,
               "kMaxNameLength out of sync with Companions_SKILL_NAME_LEN");
 static_assert(companions::kMaxNameLength <= Companions_EFFECT_NAME_LEN - 1,
               "Event names (effect_name) must hold kMaxNameLength bytes");
+
+// The skill book's enums are numerically 1:1 with the C API's.
+static_assert(static_cast<int>(companions::SkillTargeting::Self) == Companions_SkillTargeting_Self &&
+                  static_cast<int>(companions::SkillTargeting::Ground) ==
+                      Companions_SkillTargeting_Ground &&
+                  static_cast<int>(companions::SkillTargeting::Projectile) ==
+                      Companions_SkillTargeting_Projectile,
+              "SkillTargeting out of sync with C API");
+static_assert(static_cast<int>(companions::SkillArea::Single) == Companions_SkillArea_Single &&
+                  static_cast<int>(companions::SkillArea::Cross) == Companions_SkillArea_Cross,
+              "SkillArea out of sync with C API");
+static_assert(static_cast<int>(companions::SkillMotion::None) == Companions_SkillMotion_None &&
+                  static_cast<int>(companions::SkillMotion::Dash) == Companions_SkillMotion_Dash &&
+                  static_cast<int>(companions::SkillMotion::Teleport) ==
+                      Companions_SkillMotion_Teleport &&
+                  static_cast<int>(companions::SkillMotion::PushOut) ==
+                      Companions_SkillMotion_PushOut &&
+                  static_cast<int>(companions::SkillMotion::PullIn) ==
+                      Companions_SkillMotion_PullIn,
+              "SkillMotion out of sync with C API");
+static_assert(static_cast<int>(companions::TargetFilter::All) == Companions_TargetFilter_All &&
+                  static_cast<int>(companions::TargetFilter::Companion) ==
+                      Companions_TargetFilter_Companion &&
+                  static_cast<int>(companions::TargetFilter::Enemy) ==
+                      Companions_TargetFilter_Enemy &&
+                  static_cast<int>(companions::TargetFilter::Neutral) ==
+                      Companions_TargetFilter_Neutral,
+              "TargetFilter out of sync with C API");
+// The env refuses a skill with more tags, so Companions_SkillInfo never truncates.
+static_assert(companions::kMaxSkillTags == Companions_MAX_SKILL_TAGS,
+              "kMaxSkillTags out of sync with Companions_MAX_SKILL_TAGS");
 
 // Copy `src` into a fixed-size C string, always terminated. Skill and tag
 // names never exceed kMaxNameLength (see the static_asserts above), so the
@@ -1119,6 +1152,77 @@ COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_O
     SetError("companions_set_agent_skill: unknown skill, slot or companion");
     return false;
   }
+  return true;
+}
+
+// Companions_SkillInfo of a book entry. Names and tags fit (the env refuses
+// longer names and more tags than the buffers hold).
+static void ToAPISkillInfo(const companions::SkillConfig& s, Companions_SkillInfo* out) {
+  // Zeroed first, padding included: two copies of a skill compare equal.
+  std::memset(out, 0, sizeof(*out));
+  Companions_SkillInfo& info = *out;
+  CopyName(info.name, s.name);
+  info.targeting = static_cast<Companions_SkillTargeting>(s.targeting);
+  info.range = s.range;
+  info.filter = static_cast<Companions_TargetFilter>(s.filter);
+  info.area = static_cast<Companions_SkillArea>(s.area);
+  info.motion = static_cast<Companions_SkillMotion>(s.motion);
+  info.motion_distance = s.motion_distance;
+  info.tag_path = s.tag_path;
+  const size_t tag_count =
+      std::min(s.tags.size(), static_cast<size_t>(Companions_MAX_SKILL_TAGS));
+  for (size_t i = 0; i < tag_count; ++i) {
+    CopyName(info.tags[i].tag, s.tags[i].tag);
+    info.tags[i].duration = s.tags[i].duration;
+  }
+  info.tag_count = static_cast<int32_t>(tag_count);
+  info.damage = s.damage;
+  info.root_steps = s.root_steps;
+  info.cooldown = s.cooldown;
+  info.friendly_fire = s.friendly_fire;
+  info.self_tags = s.self_tags;
+  info.self_motion = s.self_motion;
+  info.self_root = s.self_root;
+  info.self_damage = s.self_damage;
+  info.affects_downed = s.affects_downed;
+  info.revive_percent = s.revive_percent;
+}
+
+COMPANIONS_API int32_t companions_get_skill_count(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  return static_cast<int32_t>(env->env->GetSkillBook().All().size());
+}
+
+COMPANIONS_API bool companions_get_skill(const Companions_Env* env, int32_t index,
+                                         Companions_SkillInfo* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const std::vector<companions::SkillConfig>& all = env->env->GetSkillBook().All();
+  if (index < 0 || static_cast<size_t>(index) >= all.size()) {
+    SetError("Skill index out of range");
+    return false;
+  }
+  ToAPISkillInfo(all[static_cast<size_t>(index)], out);
+  return true;
+}
+
+COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char* name,
+                                          Companions_SkillInfo* out) {
+  if (!env || !env->env || !name || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const companions::SkillConfig* skill = env->env->GetSkillBook().Find(name);
+  if (!skill) {
+    SetError((std::string("Unknown skill: ") + name).c_str());
+    return false;
+  }
+  ToAPISkillInfo(*skill, out);
   return true;
 }
 

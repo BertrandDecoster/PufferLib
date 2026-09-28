@@ -19,6 +19,10 @@ namespace companions {
 // it: a level may not define it (SkillBook::Define, snapshot validation).
 void RejectDefaultSkillName(const std::string& name);
 
+// Most tags a skill may land (ValidateSkillConfig refuses more), so the C
+// API's fixed-size Companions_SkillInfo.tags never truncates.
+constexpr int kMaxSkillTags = 32;
+
 enum class SkillTargeting {
   Self,        // Centre = the caster (after its own motion)
   Ground,      // Centre = the cell `range` away along the aim; a wall stops it
@@ -131,7 +135,8 @@ TargetFilter TargetFilterFromString(const std::string& s);      // Throws on unk
 // Throws std::runtime_error naming the skill and the field unless `s` is
 // usable: non-empty name of at most kMaxNameLength bytes; range,
 // motion_distance, damage, root_steps and cooldown >= 0; tag names non-empty, of at
-// most kMaxNameLength bytes, with a duration of kPermanentTag or > 0; enums in
+// most kMaxNameLength bytes, with a duration of kPermanentTag or > 0, at most
+// kMaxSkillTags of them; enums in
 // range; revive_percent in [0, 100], and > 0 only with affects_downed; an
 // affects_downed skill without tags, damage, root_steps or motion, with
 // friendly_fire.

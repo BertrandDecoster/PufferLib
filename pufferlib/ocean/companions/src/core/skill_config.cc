@@ -234,6 +234,10 @@ void ValidateSkillConfig(const SkillConfig& s) {
     reject(!s.friendly_fire, "friendly_fire off",
            "only companions go down, the caster's own faction");
   }
+  if (s.tags.size() > static_cast<size_t>(kMaxSkillTags)) {
+    throw std::runtime_error(where + "at most " + std::to_string(kMaxSkillTags) + " tags (got " +
+                             std::to_string(s.tags.size()) + ")");
+  }
   for (size_t i = 0; i < s.tags.size(); ++i) {
     const SkillTagSpec& t = s.tags[i];
     const std::string tag_where = where + "tags[" + std::to_string(i) + "]";

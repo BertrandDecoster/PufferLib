@@ -2048,6 +2048,197 @@ TEST(TestRevivedAndDownedAgainInOneStepThroughTheApi) {
 }
 
 // =============================================================================
+// The skill book (companions_get_skill_count / _get_skill / _find_skill)
+// =============================================================================
+
+// The skill named `name`, found through the API (fails the test if unknown).
+static Companions_SkillInfo SkillNamed(const Companions_Env* env, const char* name) {
+  Companions_SkillInfo info = {};
+  if (!companions_find_skill(env, name, &info)) {
+    throw std::runtime_error(std::string("skill not found: ") + name + ": " +
+                             companions_get_error());
+  }
+  return info;
+}
+
+// A fresh env's book: the builtins, in the book's order, "attack" and
+// "revive" included, with every field of their SkillConfig.
+TEST(TestTheSkillBookHoldsTheBuiltins) {
+  Companions_EnvConfig config = MakeConfig();
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  const char* names[] = {"fireball", "lightningStep", "teleport", "vortex", "revive", "attack"};
+  ASSERT_EQ(companions_get_skill_count(env), 6);
+  for (int32_t i = 0; i < 6; ++i) {
+    Companions_SkillInfo by_index = {};
+    ASSERT_TRUE(companions_get_skill(env, i, &by_index));
+    ASSERT_EQ(std::string(by_index.name), std::string(names[i]));
+    const Companions_SkillInfo by_name = SkillNamed(env, names[i]);
+    ASSERT_TRUE(std::memcmp(&by_index, &by_name, sizeof(by_name)) == 0);
+  }
+
+  const Companions_SkillInfo attack = SkillNamed(env, "attack");
+  ASSERT_EQ(attack.targeting, Companions_SkillTargeting_Projectile);
+  ASSERT_EQ(attack.range, 1);
+  ASSERT_EQ(attack.filter, Companions_TargetFilter_All);
+  ASSERT_EQ(attack.area, Companions_SkillArea_Single);
+  ASSERT_EQ(attack.motion, Companions_SkillMotion_None);
+  ASSERT_EQ(attack.tag_count, 0);
+  ASSERT_EQ(attack.damage, 1);
+  ASSERT_EQ(attack.cooldown, 0);
+  ASSERT_FALSE(attack.friendly_fire);
+  ASSERT_FALSE(attack.affects_downed);
+  ASSERT_EQ(attack.revive_percent, 0);
+
+  const Companions_SkillInfo revive = SkillNamed(env, "revive");
+  ASSERT_EQ(revive.targeting, Companions_SkillTargeting_Projectile);
+  ASSERT_EQ(revive.range, 1);
+  ASSERT_EQ(revive.filter, Companions_TargetFilter_Companion);
+  ASSERT_TRUE(revive.affects_downed);
+  ASSERT_EQ(revive.revive_percent, 50);
+  ASSERT_TRUE(revive.friendly_fire);
+  ASSERT_EQ(revive.damage, 0);
+  ASSERT_EQ(revive.cooldown, 0);
+
+  const Companions_SkillInfo fireball = SkillNamed(env, "fireball");
+  ASSERT_EQ(fireball.targeting, Companions_SkillTargeting_Ground);
+  ASSERT_EQ(fireball.range, 3);
+  ASSERT_EQ(fireball.area, Companions_SkillArea_Cross);
+  ASSERT_EQ(fireball.motion, Companions_SkillMotion_PushOut);
+  ASSERT_EQ(fireball.motion_distance, 1);
+  ASSERT_EQ(fireball.tag_count, 1);
+  ASSERT_EQ(std::string(fireball.tags[0].tag), std::string("burning"));
+  ASSERT_EQ(fireball.tags[0].duration, -1);
+  ASSERT_EQ(fireball.cooldown, 3);
+
+  const Companions_SkillInfo dash = SkillNamed(env, "lightningStep");
+  ASSERT_EQ(dash.targeting, Companions_SkillTargeting_Self);
+  ASSERT_EQ(dash.motion, Companions_SkillMotion_Dash);
+  ASSERT_EQ(dash.motion_distance, 4);
+  ASSERT_TRUE(dash.tag_path);
+  ASSERT_FALSE(dash.self_tags);
+  ASSERT_TRUE(dash.self_motion);
+
+  const Companions_SkillInfo vortex = SkillNamed(env, "vortex");
+  ASSERT_EQ(vortex.motion, Companions_SkillMotion_PullIn);
+  ASSERT_EQ(vortex.root_steps, 1);
+  ASSERT_FALSE(vortex.self_root);
+  ASSERT_TRUE(vortex.self_damage);
+
+  ASSERT_EQ(SkillNamed(env, "teleport").motion, Companions_SkillMotion_Teleport);
+  companions_destroy(env);
+}
+
+// A level's book: its own skills after the builtins, a retuned builtin in
+// place with the level's values; the next load without skills is back to the
+// builtins.
+TEST(TestTheSkillBookFollowsTheLoadedLevel) {
+  const std::string skills =
+      "[{\"name\":\"frost\",\"range\":2,\"filter\":\"enemy\",\"tags\":[{\"tag\":\"chilled\","
+      "\"duration\":2},{\"tag\":\"slowish\"}],\"damage\":1,\"cooldown\":2,\"friendly_fire\":false},"
+      "{\"name\":\"revive\",\"range\":2,\"filter\":\"companion\",\"affects_downed\":true,"
+      "\"revive_percent\":100}]";
+  Companions_Env* env = LoadLevel({{3, 3, ""}}, skills);
+  ASSERT_EQ(companions_get_skill_count(env), 7);
+  Companions_SkillInfo last = {};
+  ASSERT_TRUE(companions_get_skill(env, 6, &last));
+  ASSERT_EQ(std::string(last.name), std::string("frost"));
+  ASSERT_EQ(last.targeting, Companions_SkillTargeting_Projectile);
+  ASSERT_EQ(last.range, 2);
+  ASSERT_EQ(last.filter, Companions_TargetFilter_Enemy);
+  ASSERT_EQ(last.tag_count, 2);
+  ASSERT_EQ(std::string(last.tags[0].tag), std::string("chilled"));
+  ASSERT_EQ(last.tags[0].duration, 2);
+  ASSERT_EQ(std::string(last.tags[1].tag), std::string("slowish"));
+  ASSERT_EQ(last.tags[1].duration, -1);
+  ASSERT_EQ(last.damage, 1);
+  ASSERT_EQ(last.cooldown, 2);
+  ASSERT_FALSE(last.friendly_fire);
+
+  // The retuned revive keeps its place in the book.
+  Companions_SkillInfo fifth = {};
+  ASSERT_TRUE(companions_get_skill(env, 4, &fifth));
+  ASSERT_EQ(std::string(fifth.name), std::string("revive"));
+  ASSERT_EQ(fifth.range, 2);
+  ASSERT_EQ(fifth.revive_percent, 100);
+  ASSERT_TRUE(fifth.affects_downed);
+
+  ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 3, ""}}).c_str()));
+  ASSERT_EQ(companions_get_skill_count(env), 6);
+  ASSERT_EQ(SkillNamed(env, "revive").range, 1);
+  ASSERT_EQ(SkillNamed(env, "revive").revive_percent, 50);
+  Companions_SkillInfo gone = {};
+  ASSERT_FALSE(companions_find_skill(env, "frost", &gone));
+  companions_destroy(env);
+}
+
+// A skill lands at most Companions_MAX_SKILL_TAGS tags: the env refuses more,
+// so Companions_SkillInfo.tags never truncates.
+TEST(TestASkillHoldsAtMostMaxSkillTags) {
+  auto skill_with = [](int n) {
+    std::string tags;
+    for (int i = 0; i < n; ++i) {
+      tags += std::string(i ? "," : "") + "{\"tag\":\"t" + std::to_string(i) + "\"}";
+    }
+    return "[{\"name\":\"many\",\"tags\":[" + tags + "]}]";
+  };
+  Companions_Env* env = LoadLevel({{3, 3, ""}}, skill_with(Companions_MAX_SKILL_TAGS));
+  const Companions_SkillInfo many = SkillNamed(env, "many");
+  ASSERT_EQ(many.tag_count, Companions_MAX_SKILL_TAGS);
+  ASSERT_EQ(std::string(many.tags[Companions_MAX_SKILL_TAGS - 1].tag),
+            std::string("t") + std::to_string(Companions_MAX_SKILL_TAGS - 1));
+  SetErrorProbe();
+  ASSERT_FALSE(companions_load_snapshot_json(
+      env, LevelJson({{3, 3, ""}}, skill_with(Companions_MAX_SKILL_TAGS + 1)).c_str()));
+  const std::string cap = "at most " + std::to_string(Companions_MAX_SKILL_TAGS) + " tags";
+  ASSERT_TRUE(std::string(companions_get_error()).find(cap) != std::string::npos);
+  companions_destroy(env);
+}
+
+// Unknown names, indices out of range and NULLs: false (or 0), the error set,
+// `out` untouched.
+TEST(TestSkillQueriesRejectBadArguments) {
+  Companions_EnvConfig config = MakeConfig();
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  Companions_SkillInfo out = {};
+  std::memset(&out, 0x5A, sizeof(out));
+  Companions_SkillInfo before = out;
+  auto untouched = [&]() { return std::memcmp(&out, &before, sizeof(out)) == 0; };
+
+  SetErrorProbe();
+  ASSERT_EQ(companions_get_skill_count(nullptr), 0);
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid environment"));
+
+  const int32_t count = companions_get_skill_count(env);
+  for (int32_t bad : {-1, count, count + 5}) {
+    SetErrorProbe();
+    ASSERT_FALSE(companions_get_skill(env, bad, &out));
+    ASSERT_EQ(std::string(companions_get_error()), std::string("Skill index out of range"));
+    ASSERT_TRUE(untouched());
+  }
+  // (The last call left "Skill index out of range".)
+  ASSERT_FALSE(companions_get_skill(nullptr, 0, &out));
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid arguments"));
+  ASSERT_FALSE(companions_get_skill(env, 0, nullptr));
+  ASSERT_TRUE(untouched());
+
+  SetErrorProbe();
+  ASSERT_FALSE(companions_find_skill(env, "no_such_skill", &out));
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Unknown skill: no_such_skill"));
+  ASSERT_TRUE(untouched());
+  ASSERT_FALSE(companions_find_skill(env, "", &out));
+  ASSERT_TRUE(untouched());
+  // (The last call left "Unknown skill: ".)
+  ASSERT_FALSE(companions_find_skill(env, nullptr, &out));
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid arguments"));
+  ASSERT_FALSE(companions_find_skill(nullptr, "attack", &out));
+  ASSERT_FALSE(companions_find_skill(env, "attack", nullptr));
+  ASSERT_TRUE(untouched());
+  companions_destroy(env);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {
