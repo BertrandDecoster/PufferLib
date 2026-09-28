@@ -361,8 +361,9 @@ TagSnapshot JsonToTag(const json& j, const std::string& section, const std::stri
 }
 
 // SkillConfig: every field but "name" is optional and takes the SkillConfig
-// default when absent (so "filter" defaults to "all", "friendly_fire" and the
-// "self_*" flags to true). "distance" is motion_distance.
+// default when absent (so "filter" defaults to "all", "damage" to 0,
+// "friendly_fire" and the "self_*" flags to true). "distance" is
+// motion_distance.
 json SkillConfigToJson(const SkillConfig& s) {
   json tags = json::array();
   for (const SkillTagSpec& t : s.tags) tags.push_back(TagToJson(t.tag, t.duration));
@@ -376,12 +377,14 @@ json SkillConfigToJson(const SkillConfig& s) {
     {"distance", s.motion_distance},
     {"tag_path", s.tag_path},
     {"tags", tags},
+    {"damage", s.damage},
     {"root_steps", s.root_steps},
     {"cooldown", s.cooldown},
     {"friendly_fire", s.friendly_fire},
     {"self_tags", s.self_tags},
     {"self_motion", s.self_motion},
-    {"self_root", s.self_root}
+    {"self_root", s.self_root},
+    {"self_damage", s.self_damage}
   };
 }
 
@@ -394,8 +397,8 @@ SkillConfig JsonToSkillConfig(const json& j, const std::string& section) {
   const std::string sec = section + " ('" + s.name + "')";
   const std::string owner = "skill '" + s.name + "'";
   CheckKeys(j, {"name", "targeting", "range", "filter", "area", "motion", "distance", "tag_path",
-                "tags", "root_steps", "cooldown", "friendly_fire", "self_tags", "self_motion",
-                "self_root"},
+                "tags", "damage", "root_steps", "cooldown", "friendly_fire", "self_tags",
+                "self_motion", "self_root", "self_damage"},
             owner);
   // An enum field, parsed by `from_string` (which throws on an unknown value).
   auto enum_field = [&](const char* key, auto& field, auto from_string) {
@@ -421,12 +424,14 @@ SkillConfig JsonToSkillConfig(const json& j, const std::string& section) {
       s.tags.push_back({t.tag, t.duration});
     }
   }
+  s.damage = GetOr<int>(j, "damage", s.damage, sec);
   s.root_steps = GetOr<int>(j, "root_steps", s.root_steps, sec);
   s.cooldown = GetOr<int>(j, "cooldown", s.cooldown, sec);
   s.friendly_fire = GetOr<bool>(j, "friendly_fire", s.friendly_fire, sec);
   s.self_tags = GetOr<bool>(j, "self_tags", s.self_tags, sec);
   s.self_motion = GetOr<bool>(j, "self_motion", s.self_motion, sec);
   s.self_root = GetOr<bool>(j, "self_root", s.self_root, sec);
+  s.self_damage = GetOr<bool>(j, "self_damage", s.self_damage, sec);
   return s;
 }
 

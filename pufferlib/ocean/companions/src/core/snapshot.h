@@ -119,7 +119,8 @@ struct AgentSnapshot {
   int tick = 0;
 
   // Snapshot version 4. Opaque tags (any agent), and a companion's skill slots
-  // (names, "" = empty; at most kMaxSkillSlots, missing slots are empty) and
+  // (names; at most kMaxSkillSlots; a missing slot or "", which older files
+  // wrote for an empty one, loads as kDefaultSkill) and
   // their cooldowns (missing = 0). Slots and cooldowns are empty for
   // non-companions.
   std::vector<TagSnapshot> tags;
@@ -180,8 +181,9 @@ struct Snapshot {
   std::vector<AnnotationSnapshot> annotations;
 
   // Snapshot version 4. The env's whole SkillBook (builtins included: a level
-  // may retune them). Loading resets the book to the builtins, then defines
-  // these, so empty = builtins only.
+  // may retune them), but the fixed kDefaultSkill, which may not appear here.
+  // Loading resets the book to the builtins, then defines these, so empty =
+  // builtins only.
   std::vector<SkillConfig> skills;
 
   // Snapshot version 4. Zones, in the same frame as `cells` and the cell
@@ -205,7 +207,7 @@ struct Snapshot {
   int CountCells(CellKind kind) const;
 
   // Throws std::runtime_error unless the v4 data is loadable: every skill
-  // passes ValidateSkillConfig; agent statuses are known StatusType values (2,
+  // passes ValidateSkillConfig and none is kDefaultSkill; agent statuses are known StatusType values (2,
   // the removed Slowed, is rejected); agent and zone tag names non-empty with a
   // duration positive or kPermanentTag; tag and slot names of at most
   // kMaxNameLength bytes; zones inside the grid; at most kMaxSkillSlots slots /

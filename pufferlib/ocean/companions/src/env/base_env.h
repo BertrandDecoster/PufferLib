@@ -171,11 +171,9 @@ class BaseEnv {
                    Direction direction = Direction::Up,
                    ObjectId source_id = kInvalidObjectId);
 
-  // Companion casts. Off by default: a companion's InteractAction is then
-  // ignored, as it always was (RL envs keep their dynamics). When on, an
-  // attacking companion stays put (the movement part of its action only aims)
-  // and casts the generic "companion_cast" effect on the cell it faces. What
-  // the cast means is up to the host that turned it on.
+  // Legacy companion casts (off by default). When on, a companion whose slot 0
+  // is empty casts the generic "companion_cast" effect on the cell it faces on
+  // Attack. Slots are never empty any more, so this never fires (to be removed).
   void SetCompanionCastEnabled(bool enabled) { companion_cast_enabled_ = enabled; }
   bool IsCompanionCastEnabled() const { return companion_cast_enabled_; }
 
@@ -183,18 +181,20 @@ class BaseEnv {
     ObjectId caster = kInvalidObjectId;
     Position cell;  // The faced cell the cast was spawned on
   };
-  // Casts resolved by the last Step (empty when casts are off).
+  // Casts resolved by the last Step (always empty now).
   const std::vector<CompanionCast>& GetLastCasts() const { return last_casts_; }
 
   // ==========================================================================
   // Skills and tags (data-driven; names are opaque to the env)
   // ==========================================================================
   // A companion's Skill1 uses the skill in its slot 0: the companion stays put
-  // (the movement only aims) and the skill resolves after movement. A skill
-  // that cannot be used (cooldown, disabled slot, empty slot) is dropped and
-  // the movement applies as if no interact had been given; the exception is
-  // an empty slot 0 while the legacy companion cast is enabled, which casts
-  // "companion_cast" instead (see SetCompanionCastEnabled).
+  // (the movement only aims) and the skill resolves after movement. Slots are
+  // never empty: one with nothing else in it holds kDefaultSkill ("attack",
+  // a strike on the faced cell), so every companion, RL envs' included,
+  // strikes on Skill1 unless it holds another skill. A skill that cannot be
+  // used (cooldown, disabled slot, a name the book lacks, rooted for a
+  // self-moving skill) is dropped and the movement applies as if no interact
+  // had been given.
   const TagTable& GetTagTable() const { return tags_; }
   // Intern only: the C API relies on the table only growing and never
   // renaming (it keeps stable copies of the names by id).
@@ -202,9 +202,9 @@ class BaseEnv {
   const SkillBook& GetSkillBook() const { return skills_; }
   SkillBook& GetMutableSkillBook() { return skills_; }
 
-  // Put `skill` in a companion's slot (0-based; "" empties it) and reset the
-  // slot's cooldown. False for an unknown skill, slot or companion, or a name
-  // longer than kMaxNameLength.
+  // Put `skill` in a companion's slot (0-based; "" puts kDefaultSkill back)
+  // and reset the slot's cooldown. False for an unknown skill, slot or
+  // companion, or a name longer than kMaxNameLength.
   bool SetCompanionSkill(ObjectId companion, int slot, const std::string& skill);
 
   // Host primitives: land / remove a tag outside of a step. `duration` is a
@@ -241,7 +241,7 @@ class BaseEnv {
 
   // Zones: a cell may carry one tag, landed (with `duration`, cause "zone",
   // source kInvalidObjectId) on every living agent standing on it after the
-  // regular movement of every Step (before legacy casts and skills), and on any
+  // regular movement of every Step (before skills), and on any
   // agent a skill moves onto it. Each landing is reported; its `fresh` is that
   // of TagApplication (the agent did not carry the tag just before this
   // landing), so it does not tell arrivals apart: tags tick at the start of
@@ -269,11 +269,13 @@ class BaseEnv {
   // ==========================================================================
 
   // Save current state to a snapshot (grid, agents, effects, timing, the skill
-  // book, agent tags / skill slots / cooldowns, zones; tags by name)
+  // book but the fixed kDefaultSkill, agent tags / skill slots / cooldowns,
+  // zones; tags by name)
   virtual Snapshot SaveSnapshot() const;
 
   // Load state from a snapshot. The skill book is reset to the builtins, then
-  // gets the snapshot's skills; the TagTable is kept (ids stay stable).
+  // gets the snapshot's skills; the TagTable is kept (ids stay stable). An
+  // empty or missing slot loads as kDefaultSkill.
   // Throws std::runtime_error if snapshot is incompatible (e.g., wrong
   // dimensions) or its skills / tags / zones are invalid, before any change.
   virtual void LoadSnapshot(const Snapshot& snapshot);
@@ -306,8 +308,8 @@ class BaseEnv {
   // Movement execution
   void ExecuteValidatedMovements();
 
-  // Interaction resolution (attacks, effects, etc.)
-  // Called after movement to apply damage from AttackState agents
+  // Interaction resolution, after movement: companion skills (FSM attacks go
+  // through the effect system)
   void ResolveInteractions();
 
   // Skills (see GetSkillBook)
@@ -320,7 +322,8 @@ class BaseEnv {
   bool CanMoveItself(const Agent& agent) const;
   bool CanUseSkill(const Companion& comp, int slot) const;
   void ResolveSkills();         // After movement, in agent-index order
-  // Resolves one skill (caster motion, area, tags); returns its centre.
+  // Resolves one skill (caster motion, area, tags, damage, root, area
+  // motion); returns its centre.
   Position UseSkill(Companion& caster, const SkillConfig& skill);
   // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for Cross.
   std::vector<Position> AreaCells(Position centre, SkillArea area) const;
@@ -342,10 +345,10 @@ class BaseEnv {
   void ApplyZoneTag(Agent& agent);  // The tag of the cell it stands on, if any
   void ApplyZoneTags();             // Every living agent (after movement)
   // Roots `on_area` (the affected agents on the area, centre included, not the
-  // dash path; the caster only with self_root) before anything moves, then
-  // PushOut (the ring, away from the centre) / PullIn (one ring thing, by
-  // priority, into a free centre); agents only if affected, the caster only
-  // with self_motion.
+  // dash path; the caster only with self_root; not those the damage killed)
+  // before anything moves, then PushOut (the ring, away from the centre) /
+  // PullIn (one ring thing, by priority, into a free centre); living agents
+  // only if affected, the caster only with self_motion.
   void AreaMotion(const SkillConfig& skill, Position centre, const Agent& caster,
                   const std::vector<Agent*>& on_area);
 

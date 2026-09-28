@@ -36,9 +36,8 @@
 // - Companions_Event_AgentMoved: Agent moved to a new position (by walking,
 //   or by a skill: a teleport, dash, push or pull)
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
-// - Companions_Event_EffectSpawned: a companion cast (only with companion
-//   casts on, see companions_set_companion_cast): subject_id = caster,
-//   position = the faced cell, effect_name = "companion_cast".
+// - Companions_Event_EffectSpawned: a legacy companion cast (see
+//   companions_set_companion_cast; never fires now that slots are never empty).
 // - Companions_Event_SkillUsed: a companion used the skill in a slot:
 //   subject_id = caster, position = the skill's centre (the landing cell for
 //   a self-targeted skill such as teleport), effect_id = the slot (0-based),
@@ -60,6 +59,7 @@
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
 // - Companions_Event_FSMTransition, other EffectSpawned sources, etc.
+//   (skill damage is visible in the agents' health, not yet as events)
 
 #ifndef COMPANIONS_API_H_
 #define COMPANIONS_API_H_
@@ -131,10 +131,12 @@ typedef enum {
 } Companions_MovementAction;
 
 // Skill1 / Skill2 use the skill in slot 0 / 1 (see companions_set_agent_skill):
-// the companion stays put and its movement only aims. A skill that cannot be
-// used (empty slot, unknown skill, cooldown, rooted for a self-moving skill)
-// is dropped and the movement applies as with None. Any other value refuses
-// the step (see companions_step).
+// the companion stays put and its movement only aims. A slot is never empty:
+// without another skill it holds "attack" (1 damage to the agent on the faced
+// cell, allies spared), so every companion strikes on Skill1, RL envs'
+// included. A skill that cannot be used (unknown skill, cooldown, rooted for
+// a self-moving skill) is dropped and the movement applies as with None. Any
+// other value refuses the step (see companions_step).
 typedef enum {
   Companions_Interact_None = 0,
   Companions_Interact_Skill1 = 1,
@@ -261,8 +263,9 @@ typedef struct {
   Companions_AgentTag tags[Companions_MAX_TAGS];
   int32_t tag_count;
 
-  // Skill slots (companions only; "" = empty, and all "" / 0 for other
-  // agents). Names always fit: the env refuses longer ones.
+  // Skill slots (companions only, never "": "attack" when nothing else is
+  // there; all "" / 0 for other agents). Names always fit: the env refuses
+  // longer ones.
   char skills[Companions_MAX_SKILL_SLOTS][Companions_SKILL_NAME_LEN];
   int32_t skill_cooldowns[Companions_MAX_SKILL_SLOTS];  // Steps until usable, 0 = ready
 
@@ -548,15 +551,9 @@ COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
                                             Companions_Direction direction,
                                             Companions_ObjectId source_id);
 
-// Companion casts (default: off). The flag only concerns companions whose
-// slot 0 is EMPTY: when on, such a companion whose action is
-// Companions_Interact_Attack (= Skill1) stays put (the movement only aims)
-// and casts "companion_cast" on the cell it faces; each cast yields a
-// Companions_Event_EffectSpawned in its step result. When off, its Skill1
-// acts as None (the movement applies). A companion with a skill in slot 0 uses that skill on Skill1
-// whatever the flag says (see companions_set_agent_skill); RL envs are
-// unaffected only because their slots start empty.
-// The setting survives companions_reset and snapshot loads.
+// Legacy companion casts (default: off). When on, a companion whose slot 0 is
+// EMPTY casts "companion_cast" on Companions_Interact_Attack. Slots are never
+// empty any more ("attack" by default), so this never fires (to be removed).
 COMPANIONS_API void companions_set_companion_cast(Companions_Env* env, bool enabled);
 COMPANIONS_API bool companions_get_companion_cast(const Companions_Env* env);
 
@@ -587,10 +584,11 @@ COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, in
 // The cell's tag id, or -1 when it has none. Out of bounds: -1 with the error
 // set ("Position out of bounds").
 COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_t row, int32_t col);
-// Skill slots (0-based). "" empties the slot; false for an unknown skill/slot/agent.
-// Puts `skill` (a builtin: "fireball", "lightningStep", "teleport", "vortex",
-// or one a JSON snapshot defines) in a companion's slot and makes it ready
-// (cooldown 0). Only slot 0 is usable today (Companions_Interact_Skill1);
+// Skill slots (0-based). "" or NULL puts the default "attack" back; false for
+// an unknown skill/slot/agent.
+// Puts `skill` (a builtin: "attack", "fireball", "lightningStep", "teleport",
+// "vortex", or one a JSON snapshot defines) in a companion's slot and makes it
+// ready (cooldown 0). Only slot 0 is usable today (Companions_Interact_Skill1);
 // slot 1 can be filled but Skill2 is ignored.
 COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_ObjectId agent, int32_t slot, const char* skill);
 

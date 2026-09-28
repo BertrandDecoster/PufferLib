@@ -508,6 +508,8 @@ void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
   ASSERT_EQ(a.self_tags, b.self_tags);
   ASSERT_EQ(a.self_motion, b.self_motion);
   ASSERT_EQ(a.self_root, b.self_root);
+  ASSERT_EQ(a.damage, b.damage);
+  ASSERT_EQ(a.self_damage, b.self_damage);
 }
 
 // One skill per value of every enum, and every scalar off its default.
@@ -540,6 +542,8 @@ std::vector<SkillConfig> EverySkillShape() {
       s.self_tags = (i % 3) != 0;
       s.self_motion = (i % 4) != 1;
       s.self_root = (i % 5) != 2;
+      s.damage = i;
+      s.self_damage = (i % 6) != 4;
       out.push_back(s);
       ++i;
     }
@@ -601,7 +605,7 @@ TEST(TestJsonSnapshotKeys) {
   json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
   ASSERT_EQ(j.at("version").get<int>(), 4);
   const json& agent = j.at("agents").at(0);
-  ASSERT_EQ(agent.at("skills"), json({"teleport", ""}));
+  ASSERT_EQ(agent.at("skills"), json({"teleport", "attack"}));
   ASSERT_EQ(agent.at("cooldowns"), json({0, 0}));
   ASSERT_EQ(agent.at("tags").at(0).at("tag").get<std::string>(), std::string("burning"));
   ASSERT_EQ(agent.at("tags").at(0).at("duration").get<int>(), 3);
@@ -611,8 +615,12 @@ TEST(TestJsonSnapshotKeys) {
   ASSERT_EQ(zone.at("col").get<int>(), 3);
   ASSERT_EQ(zone.at("tag").get<std::string>(), std::string("wet"));
   ASSERT_EQ(zone.at("duration").get<int>(), 4);
-  // Every skill of the book, builtins included (a level may retune them).
-  ASSERT_EQ(j.at("skills").size(), env.GetSkillBook().All().size());
+  // Every skill of the book, builtins included (a level may retune them),
+  // but the fixed default attack.
+  ASSERT_EQ(j.at("skills").size(), env.GetSkillBook().All().size() - 1);
+  for (const json& skill : j.at("skills")) {
+    ASSERT_TRUE(skill.at("name").get<std::string>() != kDefaultSkill);
+  }
   const json& fireball = j.at("skills").at(0);
   ASSERT_EQ(fireball.at("name").get<std::string>(), std::string("fireball"));
   ASSERT_EQ(fireball.at("targeting").get<std::string>(), std::string("ground"));
@@ -627,6 +635,8 @@ TEST(TestJsonSnapshotKeys) {
   ASSERT_EQ(fireball.at("self_tags").get<bool>(), true);
   ASSERT_EQ(fireball.at("self_motion").get<bool>(), true);
   ASSERT_EQ(fireball.at("self_root").get<bool>(), true);
+  ASSERT_EQ(fireball.at("damage").get<int>(), 0);
+  ASSERT_EQ(fireball.at("self_damage").get<bool>(), true);
   const json& step = j.at("skills").at(1);
   ASSERT_EQ(step.at("name").get<std::string>(), std::string("lightningStep"));
   ASSERT_EQ(step.at("self_tags").get<bool>(), false);
@@ -679,8 +689,8 @@ TEST(TestJsonV3SnapshotLoadsWithoutSkillsTagsZones) {
   other.GetMutableSkillBook().Define(frost);
   other.LoadSnapshot(SnapshotFromJson(j.dump()));
   Companion* c = FirstCompanion(other);
-  ASSERT_EQ(c->GetSkill(0), std::string(""));
-  ASSERT_EQ(c->GetSkill(1), std::string(""));
+  ASSERT_EQ(c->GetSkill(0), std::string(kDefaultSkill));  // No slots: the attack
+  ASSERT_EQ(c->GetSkill(1), std::string(kDefaultSkill));
   ASSERT_EQ(c->GetCooldown(0), 0);
   ASSERT_TRUE(c->GetTags().empty());
   ASSERT_EQ(other.GetSkillBook().All().size(), SkillBook().All().size());
@@ -832,7 +842,8 @@ TEST(TestJsonLevelHelperLoads) { SnapshotFromJson(LevelJson().dump()); }
 
 TEST(TestJsonRejectsNegativeSkillNumbers) {
   const char* fields[][2] = {{"cooldown", "cooldown"}, {"range", "range"},
-                             {"distance", "motion_distance"}, {"root_steps", "root_steps"}};
+                             {"distance", "motion_distance"}, {"root_steps", "root_steps"},
+                             {"damage", "damage"}};
   for (const auto& f : fields) {
     json j = LevelJson();
     Frost(j)[f[0]] = -1;
@@ -852,11 +863,47 @@ TEST(TestJsonFriendlyFireAndSelfFlags) {
   ASSERT_FALSE(frost.self_motion);
   ASSERT_TRUE(frost.self_root);
 
-  for (const char* key : {"friendly_fire", "self_tags", "self_motion", "self_root"}) {
+  for (const char* key : {"friendly_fire", "self_tags", "self_motion", "self_root", "self_damage"}) {
     j = LevelJson();
     Frost(j)[key] = "no";
     AssertJsonErrorMentions(j, {FrostSection(j) + ": " + key + ": type must be boolean"});
   }
+}
+
+TEST(TestJsonDamageKeys) {
+  json j = LevelJson();
+  Frost(j)["damage"] = 2;
+  Frost(j)["self_damage"] = false;
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_EQ(s.skills.back().damage, 2);
+  ASSERT_FALSE(s.skills.back().self_damage);
+  Frost(j).erase("damage");
+  Frost(j).erase("self_damage");
+  s = SnapshotFromJson(j.dump());
+  ASSERT_EQ(s.skills.back().damage, 0);  // Absent: 0 / true
+  ASSERT_TRUE(s.skills.back().self_damage);
+}
+
+// The default attack is fixed: a level cannot define a skill named "attack".
+TEST(TestJsonRejectsTheAttackSkill) {
+  json j = LevelJson();
+  j.at("skills").push_back(json{{"name", "attack"}, {"damage", 3}});
+  AssertJsonErrorMentions(j, {"skills[" + std::to_string(j.at("skills").size() - 1) + "]",
+                              "'attack' is the fixed default skill"});
+}
+
+// v3 / v4 files wrote "" for an empty slot: it loads as the attack.
+TEST(TestJsonEmptySlotsLoadAsTheAttack) {
+  json j = LevelJson();
+  j.at("agents").at(0)["skills"] = json({"", ""});
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.LoadSnapshot(SnapshotFromJson(j.dump()));
+  Companion* c = FirstCompanion(env);
+  ASSERT_EQ(c->GetSkill(0), std::string(kDefaultSkill));
+  ASSERT_EQ(c->GetSkill(1), std::string(kDefaultSkill));
+  // And a save writes the attack back by name, never "".
+  json saved = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  ASSERT_EQ(saved.at("agents").at(0).at("skills"), json({"attack", "attack"}));
 }
 
 TEST(TestJsonErrorsNameTheSection) {

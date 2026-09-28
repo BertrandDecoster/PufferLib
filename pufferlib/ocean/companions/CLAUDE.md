@@ -70,11 +70,13 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
    `EncodeAction` / `DecodeAction` flatten / unflatten for other frameworks
  - Using a skill: the companion stays put, the movement only aims (sets its
    facing; Stay keeps it)
- - A skill that can't be used (empty slot, unknown skill, cooldown, disabled slot,
-   rooted + self-moving skill) is dropped and the movement applies as with `None`:
-   companions without skills behave exactly as before
- - Legacy: with `SetCompanionCastEnabled(true)`, `Skill1` on an EMPTY slot 0 casts the
-   generic `companion_cast` effect on the faced cell instead (to be removed)
+ - Slots are never empty: without another skill a slot holds the fixed default
+   `attack` (`kDefaultSkill`), so every companion, RL envs' included, strikes the
+   faced cell on `Skill1` (1 damage, allies spared) instead of moving
+ - A skill that can't be used (a name the book lacks, cooldown, disabled slot,
+   rooted + self-moving skill, dead caster) is dropped and the movement applies as with `None`
+ - Legacy: `SetCompanionCastEnabled(true)` only cast `companion_cast` for an EMPTY
+   slot 0, which no longer exists: unreachable (being removed)
 
 ### Collision Resolution
 Fixed-point iteration algorithm in `base_env.cc:ResolveCollisions()`:
@@ -118,6 +120,17 @@ tags, roots, cooldowns. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 | `lightningStep` | self | cross around the landing cell | dash 4, `tag_path` | `electrified` on agents crossed on the path and on the 4 cells orthogonal to the landing cell; `self_tags=false` | 3 |
 | `teleport` | self | single | teleport 3, else 2, else 1 | - | 4 |
 | `vortex` | ground, range 3 | cross | pull_in: one ring thing, priority up/right/down/left | roots the affected agents on the cross (pulled one included) for the next step; `self_root=false` | 4 |
+| `attack` | projectile, range 1 (the faced cell; a wall stops it) | single | - | `damage` 1; `friendly_fire=false` (allies and caster spared) | 0 |
+
+**Default skill `attack`** (`kDefaultSkill`, `skill_config.h`): every companion slot
+holds a skill, and one with nothing else in it holds `attack`. It is FIXED:
+- `SkillBook::Define` of a skill named `attack` throws ("'attack' is the fixed default
+  skill"); `Reset` keeps it; a snapshot whose `skills` contain it is rejected;
+  `SaveSnapshot` never writes it
+- Clearing a slot puts it back: `Companion` starts with it in both slots,
+  `SetCompanionSkill(id, slot, "")`, a snapshot slot `""` (as v3 / v4 files wrote for
+  an empty one) or a missing slot, `companions_set_agent_skill(..., "" or NULL)`;
+  agent state reports `"attack"`, never `""`
 
 Cooldown: used at step t, usable again at step t + cooldown (0 and 1 both mean every step).
 
@@ -134,16 +147,21 @@ Cooldown: used at step t, usable again at step t + cooldown (0 and 1 both mean e
 | `motion_distance` (`distance`) | 0 | Dash / teleport / push distance (pull is always 1) |
 | `tag_path` | false | Dash: agents crossed on the way are affected too |
 | `tags` | [] | `{tag, duration}` landed on every affected agent |
+| `damage` | 0 | Health every affected agent (area and dash path) loses, via `Agent::TakeDamage` (Marked ×1.5; 0 HP = dead, as with effects) |
 | `root_steps` | 0 | Affected agents on the area are rooted for this many next steps |
 | `cooldown` | 0 | See above |
-| `friendly_fire` | true | Off: only agents NOT of the caster's faction are affected (allies and caster get no tag, push/pull or root; a projectile flies past them) |
-| `self_tags` / `self_motion` / `self_root` | true | With friendly fire, the caster is affected when it stands in its own area (after its own motion); each flag can spare it that effect |
+| `friendly_fire` | true | Off: only agents NOT of the caster's faction are affected (allies and caster get no tag, damage, push/pull or root; a projectile flies past them) |
+| `self_tags` / `self_motion` / `self_root` / `self_damage` | true | With friendly fire, the caster is affected when it stands in its own area (after its own motion); each flag can spare it that effect |
 
 - "Affected" (`BaseEnv::Affects`) = living, passes `filter`, and `friendly_fire` or not of
   the caster's faction. Push / pull also move living non-agent actors (no faction check)
 - Resolution of one skill (`UseSkill`): caster motion and centre → affected agents
-  (area, then dash path) → tags → root (area only, before anything moves) → push / pull
-- `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, root_steps,
+  (area, then dash path) → tags → damage → root (area only, before anything moves) →
+  push / pull. An agent the damage kills keeps the tags (reported) but is neither
+  rooted nor moved, and is no longer affected by anything (dead)
+- Damage is not reported as events yet (`Companions_Event_AgentDamaged` is declared,
+  not implemented): read it from the agents' health
+- `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, damage, root_steps,
   cooldown ≥ 0; tag names non-empty ≤ 31 bytes with duration -1 or > 0; enums in range
 
 **Multiple casters** resolve sequentially, in agent-index order, each from its CURRENT
@@ -188,7 +206,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   duration-1 zone is re-landed fresh every step)
 - Event order in a step: AgentMoved, AgentBlocked, EffectSpawned, SkillUsed, TagApplied,
   EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
-- C API (`src/api/companions_api.h`): `companions_set_agent_skill`, `companions_apply_tag` /
+- C API (`src/api/companions_api.h`): `companions_set_agent_skill` (`""` / NULL = `attack`), `companions_apply_tag` /
   `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`, `companions_get_tag_name` /
   `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;
   name buffers are 32 bytes (31 + NUL)
@@ -196,14 +214,15 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 **Levels** bring their skills, zones and slots through snapshot JSON v4 (`core/snapshot_json.cc`):
 - Top level `"skills"`: SkillConfig objects (keys above; all but `name` optional)
 - Top level `"cell_tags"`: `{row, col, tag, duration}` (duration absent = -1)
-- Per agent: `"tags"` (`{tag, duration}`), `"skills"` (slot names), `"cooldowns"`;
+- Per agent: `"tags"` (`{tag, duration}`), `"skills"` (slot names; `""` or missing =
+  `attack`), `"cooldowns"`;
   statuses as `"status_type": "stunned" | "marked" | "rooted"`
 - Unknown keys in a skill / tag / zone are rejected; `Snapshot::ValidateSkillsTagsZones`
   runs before any change. Slot names are not checked against the book (an undefined
   skill loads and is simply unusable)
 - `LoadSnapshot` resets the SkillBook to the builtins, then defines the snapshot's skills
-  (they may retune builtins), so a level's skills never leak into the next load.
-  `SaveSnapshot` writes the whole book, builtins included
+  (they may retune builtins, but not `attack`), so a level's skills never leak into
+  the next load. `SaveSnapshot` writes the whole book, builtins included, but `attack`
 
 ### Pathfinding
 A* with Euclidean heuristic in `pathfinder.cc`:

@@ -14,6 +14,14 @@
 
 namespace companions {
 
+// The fixed default skill: a melee strike on the faced cell (projectile,
+// range 1, single, damage 1, no friendly fire, cooldown 0). Every companion
+// skill slot always holds a skill, and a slot with nothing else in it holds
+// this one ("" is never a slot's value: clearing a slot puts it back). A
+// level cannot redefine it (SkillBook::Define throws, a snapshot carrying it
+// is rejected, SaveSnapshot never writes it).
+constexpr char kDefaultSkill[] = "attack";
+
 enum class SkillTargeting {
   Self,        // Centre = the caster (after its own motion)
   Ground,      // Centre = the cell `range` away along the aim; a wall stops it
@@ -57,6 +65,9 @@ struct SkillConfig {
   int motion_distance = 0;
   bool tag_path = false;           // Dash: agents crossed on the way are affected too
   std::vector<SkillTagSpec> tags;  // Landed on every affected agent
+  // Health every affected agent loses (Agent::TakeDamage, so Marked applies
+  // and 0 HP kills), after the tags and before root / area motion.
+  int damage = 0;
   int root_steps = 0;              // Affected agents are rooted for this many next steps
   // Used at step t, usable again at step t + cooldown (0 and 1 both mean
   // every step).
@@ -71,6 +82,7 @@ struct SkillConfig {
   bool self_tags = true;    // The caster gets the skill's tags
   bool self_motion = true;  // PushOut / PullIn may move the caster
   bool self_root = true;    // root_steps roots the caster
+  bool self_damage = true;  // damage hurts the caster
 };
 
 // Does this skill move its caster (so a rooted caster cannot use it)?
@@ -81,10 +93,11 @@ inline bool SkillMovesCaster(const SkillConfig& s) {
 // Per-env set of skills: the builtins, plus whatever the level defines.
 class SkillBook {
  public:
-  SkillBook();   // Builtins only
+  SkillBook();   // Builtins only (kDefaultSkill included)
   void Reset();  // Back to builtins only
   // Adds, or replaces a skill of the same name; ignores an empty name. Throws
-  // std::runtime_error (book unchanged) unless ValidateSkillConfig accepts it.
+  // std::runtime_error (book unchanged) unless ValidateSkillConfig accepts it,
+  // and for kDefaultSkill, which is fixed.
   void Define(SkillConfig config);
   // Invalidated by Define / Reset: do not hold the pointer across them.
   const SkillConfig* Find(const std::string& name) const;
@@ -107,7 +120,7 @@ TargetFilter TargetFilterFromString(const std::string& s);      // Throws on unk
 
 // Throws std::runtime_error naming the skill and the field unless `s` is
 // usable: non-empty name of at most kMaxNameLength bytes; range,
-// motion_distance, root_steps and cooldown >= 0; tag names non-empty, of at
+// motion_distance, damage, root_steps and cooldown >= 0; tag names non-empty, of at
 // most kMaxNameLength bytes, with a duration of kPermanentTag or > 0; enums in
 // range.
 void ValidateSkillConfig(const SkillConfig& s);

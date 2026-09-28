@@ -291,7 +291,8 @@ static void ExtractAgentState(const companions::Agent* agent,
     out->tags[i].duration = tags[i].duration;
   }
 
-  // Skill slots: companions only, "" / 0 for everyone else
+  // Skill slots: companions only (never "": "attack" by default), "" / 0 for
+  // everyone else
   const auto* slots = dynamic_cast<const companions::Companion*>(agent);
   for (int slot = 0; slot < Companions_MAX_SKILL_SLOTS; slot++) {
     CopyName(out->skills[slot], slots ? slots->GetSkill(slot) : std::string());
@@ -440,7 +441,7 @@ static void AddMovementEvents(Companions_Env* wrapper) {
 }
 
 // One EffectSpawned event per companion cast of this step (casts must be
-// enabled): subject is the caster, position the cell it cast on.
+// enabled; legacy, never fires now that slots are never empty).
 static void AddCastEvents(Companions_Env* wrapper) {
   auto* env = wrapper->env.get();
   for (const auto& cast : env->GetLastCasts()) {
@@ -1044,11 +1045,12 @@ COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_
 
 COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_ObjectId agent,
                                                int32_t slot, const char* skill) {
-  if (!env || !env->env || !skill) {
+  if (!env || !env->env) {
     SetError("Invalid arguments");
     return false;
   }
-  if (!env->env->SetCompanionSkill(agent, slot, skill)) {
+  // NULL, like "", puts the default skill back.
+  if (!env->env->SetCompanionSkill(agent, slot, skill ? skill : "")) {
     SetError("companions_set_agent_skill: unknown skill, slot or companion");
     return false;
   }

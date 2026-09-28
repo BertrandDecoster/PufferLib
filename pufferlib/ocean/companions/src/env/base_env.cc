@@ -546,9 +546,9 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
 
     DecodedAction decoded = DecodeAction(actions[i]);
 
-    // A companion using a skill stays put: the movement only aims (Stay keeps
-    // the facing). A skill it cannot use is dropped and the move applies, as
-    // before skills existed.
+    // A companion using a skill (its slot's, kDefaultSkill when nothing else
+    // is there) stays put: the movement only aims (Stay keeps the facing). A
+    // skill it cannot use is dropped and the move applies.
     if (decoded.interact != InteractAction::None) {
       if (Companion* comp = dynamic_cast<Companion*>(agent)) {
         if (CanUseSkill(*comp, SkillSlotOf(decoded.interact))) {
@@ -558,7 +558,7 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
         }
         if (companion_cast_enabled_ && decoded.interact == InteractAction::Attack &&
             comp->GetSkill(0).empty()) {
-          // Legacy generic cast (removed in a later task).
+          // Legacy generic cast: slots are never empty, so unreachable (to be removed).
           if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
           agent->SetIntention({MovementAction::Stay, InteractAction::Attack});
           continue;
@@ -804,10 +804,9 @@ std::vector<Position> BaseEnv::FindEmptyCells(
 
 void BaseEnv::ResolveInteractions() {
   // FSM attack damage is handled via the Effect system (AttackState::OnEnter
-  // spawns the effect). When companion casts are on, a companion's Attack
-  // casts the generic "companion_cast" effect on the cell it faces: the env
-  // does not know which skill this is; the host interprets the cast. Only
-  // companions with an empty slot 0 cast it (legacy, removed in a later task).
+  // spawns the effect); companions act through their skills. The legacy
+  // generic "companion_cast" below only fired for an empty slot 0, which no
+  // longer exists (to be removed).
   last_casts_.clear();
   if (companion_cast_enabled_) {
     for (Agent* agent : object_manager_->GetAllAgents()) {
@@ -860,10 +859,9 @@ void BaseEnv::TickTagsAndCooldowns() {
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
 
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
-  if (slot < 0 || slot >= kEnabledSkillSlots) return false;
-  const std::string& name = comp.GetSkill(slot);
-  if (name.empty() || comp.GetCooldown(slot) != 0) return false;
-  const SkillConfig* skill = skills_.Find(name);
+  if (!comp.IsAlive() || slot < 0 || slot >= kEnabledSkillSlots) return false;
+  if (comp.GetCooldown(slot) != 0) return false;
+  const SkillConfig* skill = skills_.Find(comp.GetSkill(slot));
   if (!skill) return false;
   // A skill that moves its caster is movement: Rooted forbids it too.
   return !SkillMovesCaster(*skill) || CanMoveItself(comp);
@@ -874,7 +872,7 @@ bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill)
   auto* comp = dynamic_cast<Companion*>(object_manager_->GetActor(id));
   if (!comp) return false;
   if (!skill.empty() && !skills_.Find(skill)) return false;
-  comp->SetSkill(slot, skill);
+  comp->SetSkill(slot, skill);  // "" puts kDefaultSkill back
   comp->SetCooldown(slot, 0);
   return true;
 }
@@ -977,9 +975,7 @@ void BaseEnv::ResolveSkills() {
     if (!comp) continue;
     int slot = SkillSlotOf(agent->GetExecutedAction().interact);
     if (slot < 0 || slot >= kEnabledSkillSlots) continue;
-    const std::string& name = comp->GetSkill(slot);
-    if (name.empty()) continue;  // Empty slot (legacy generic cast, if any)
-    const SkillConfig* found = skills_.Find(name);
+    const SkillConfig* found = skills_.Find(comp->GetSkill(slot));
     if (!found) continue;
     // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
     const SkillConfig skill = *found;
@@ -1045,7 +1041,16 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
     }
   }
 
-  // 4. Root (the area only) and area motions.
+  // 4. Damage, on the same agents (after the tags: an agent it kills still got
+  // them). Deaths are the health system's (Agent::TakeDamage), as for effects.
+  if (skill.damage > 0) {
+    for (Agent* a : affected) {
+      if (a == &caster && !skill.self_damage) continue;
+      a->TakeDamage(skill.damage);
+    }
+  }
+
+  // 5. Root (the area only) and area motions; the dead are neither.
   AreaMotion(skill, centre, caster, on_area);
   return centre;
 }
@@ -1072,6 +1077,7 @@ void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, const Agent&
   // N steps" is applied as N + 1. Push / pull never read Rooted.
   if (skill.root_steps > 0) {
     for (Agent* a : on_area) {
+      if (!a->IsAlive()) continue;  // Killed by the skill's damage
       if (a == &caster && !skill.self_root) continue;
       a->ApplyStatus(StatusType::Rooted, skill.root_steps + 1);
     }
@@ -1253,8 +1259,11 @@ Snapshot BaseEnv::SaveSnapshot() const {
   // Semantic annotations
   snap.annotations = annotations_.Serialize();
 
-  // Every skill of the book, builtins included (a level may retune them)
-  snap.skills = skills_.All();
+  // Every skill of the book, builtins included (a level may retune them), but
+  // the fixed default one (a snapshot carrying it is rejected)
+  for (const SkillConfig& skill : skills_.All()) {
+    if (skill.name != kDefaultSkill) snap.skills.push_back(skill);
+  }
 
   // Zones, by name, in current coordinates (as the cells and annotations above)
   for (int r = 0; r < rows_ && !cell_tags_.empty(); ++r) {
@@ -1365,7 +1374,8 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
       comp->SetDirection(static_cast<Direction>(as.direction));
       comp->SetColor(static_cast<ActorColor>(as.color));
       // Slots as saved, without checking the book: a skill the book lacks
-      // stays in its slot and is simply unusable (CanUseSkill).
+      // stays in its slot and is simply unusable (CanUseSkill). An empty
+      // ("" in older files) or missing slot is kDefaultSkill (SetSkill).
       for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
         const size_t i = static_cast<size_t>(slot);
         comp->SetSkill(slot, i < as.skills.size() ? as.skills[i] : std::string());

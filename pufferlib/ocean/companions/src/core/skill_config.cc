@@ -47,7 +47,17 @@ std::vector<SkillConfig> Builtins() {
   vortex.cooldown = 4;
   vortex.self_root = false;  // Pulled into its own vortex, the caster is not rooted
 
-  return {fireball, lightning_step, teleport, vortex};
+  // The fixed default skill (kDefaultSkill): strikes the faced cell.
+  SkillConfig attack;
+  attack.name = kDefaultSkill;
+  attack.targeting = SkillTargeting::Projectile;
+  attack.range = 1;
+  attack.area = SkillArea::Single;
+  attack.damage = 1;
+  attack.friendly_fire = false;
+  attack.cooldown = 0;
+
+  return {fireball, lightning_step, teleport, vortex, attack};
 }
 }  // namespace
 
@@ -56,7 +66,10 @@ SkillBook::SkillBook() { Reset(); }
 void SkillBook::Reset() { skills_ = Builtins(); }
 
 void SkillBook::Define(SkillConfig config) {
-  if (config.name.empty()) return;  // "" is the empty slot, never a skill
+  if (config.name.empty()) return;  // Never a skill
+  if (config.name == kDefaultSkill) {
+    throw std::runtime_error(std::string("'") + kDefaultSkill + "' is the fixed default skill");
+  }
   ValidateSkillConfig(config);      // Throws before any change
   for (SkillConfig& s : skills_) {
     if (s.name == config.name) {
@@ -179,6 +192,7 @@ void ValidateSkillConfig(const SkillConfig& s) {
   };
   check_non_negative("range", s.range);
   check_non_negative("motion_distance", s.motion_distance);
+  check_non_negative("damage", s.damage);
   check_non_negative("root_steps", s.root_steps);
   check_non_negative("cooldown", s.cooldown);
   for (size_t i = 0; i < s.tags.size(); ++i) {

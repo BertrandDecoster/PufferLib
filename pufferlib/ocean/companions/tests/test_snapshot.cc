@@ -826,6 +826,8 @@ void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
   ASSERT_EQ(a.self_tags, b.self_tags);
   ASSERT_EQ(a.self_motion, b.self_motion);
   ASSERT_EQ(a.self_root, b.self_root);
+  ASSERT_EQ(a.damage, b.damage);
+  ASSERT_EQ(a.self_damage, b.self_damage);
 }
 
 // One skill per value of every enum, and every scalar off its default.
@@ -858,6 +860,8 @@ std::vector<SkillConfig> EverySkillShape() {
       s.self_tags = (i % 3) != 0;
       s.self_motion = (i % 4) != 1;
       s.self_root = (i % 5) != 2;
+      s.damage = i;
+      s.self_damage = (i % 6) != 4;
       out.push_back(s);
       ++i;
     }
@@ -957,24 +961,31 @@ TEST(TestBinaryEverySkillConfigFieldRoundTrips) {
 
 // The v4 skill record: name (length + bytes), targeting, range, filter, area,
 // motion, motion_distance (ints), tag_path (bool), tag count, the tags,
-// root_steps, cooldown (ints), friendly_fire, self_tags, self_motion,
-// self_root (bools). Without tags: 45 bytes plus the name.
+// root_steps, cooldown, damage (ints), friendly_fire, self_tags, self_motion,
+// self_root, self_damage (bools). Without tags: 50 bytes plus the name.
 TEST(TestBinarySkillRecordLayout) {
   Snapshot s = MinimalSnapshot();
   const size_t without = s.Serialize().size();
   SkillConfig frost;
   frost.name = "frost";
+  frost.damage = 7;
   frost.friendly_fire = false;
   frost.self_root = false;
+  frost.self_damage = false;
   s.skills.push_back(frost);
   std::vector<uint8_t> bytes = s.Serialize();
-  ASSERT_EQ(bytes.size(), without + 45 + frost.name.size());
-  // The four flags close the record, just before the zone count.
-  const size_t flags_at = bytes.size() - 4 - 4;
+  ASSERT_EQ(bytes.size(), without + 50 + frost.name.size());
+  // The five flags close the record, just before the zone count; the damage
+  // comes right before them.
+  const size_t flags_at = bytes.size() - 4 - 5;
+  int damage = 0;
+  std::memcpy(&damage, bytes.data() + flags_at - sizeof(int), sizeof(int));
+  ASSERT_EQ(damage, 7);
   ASSERT_EQ(bytes[flags_at + 0], 0);  // friendly_fire
   ASSERT_EQ(bytes[flags_at + 1], 1);  // self_tags
   ASSERT_EQ(bytes[flags_at + 2], 1);  // self_motion
   ASSERT_EQ(bytes[flags_at + 3], 0);  // self_root
+  ASSERT_EQ(bytes[flags_at + 4], 0);  // self_damage
   AssertSkillEq(Snapshot::Deserialize(bytes).skills[0], frost);
 }
 
@@ -1088,7 +1099,7 @@ TEST(TestSnapshotRejectsNegativeSkillNumbers) {
   const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
   SkillConfig frost;
   frost.name = "frost";
-  for (int field = 0; field < 4; ++field) {
+  for (int field = 0; field < 5; ++field) {
     Snapshot s = good;
     SkillConfig bad = frost;
     const char* name = "";
@@ -1097,10 +1108,59 @@ TEST(TestSnapshotRejectsNegativeSkillNumbers) {
       case 1: bad.range = -1; name = "range"; break;
       case 2: bad.motion_distance = -1; name = "motion_distance"; break;
       case 3: bad.root_steps = -1; name = "root_steps"; break;
+      case 4: bad.damage = -1; name = "damage"; break;
     }
     s.skills.push_back(bad);
     AssertSnapshotRejected(s, "skill 'frost': " + std::string(name) + " must be >= 0 (got -1)");
   }
+}
+
+// The default attack is fixed: a snapshot cannot carry (so cannot redefine) it.
+TEST(TestSnapshotRejectsTheAttackSkill) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  Snapshot s = good;
+  SkillConfig attack = *SkillBook().Find(kDefaultSkill);
+  s.skills.push_back(attack);
+  AssertSnapshotRejected(s, "skills[" + std::to_string(good.skills.size()) + "]");
+  AssertSnapshotRejected(s, "'attack' is the fixed default skill");
+}
+
+// SaveSnapshot writes every skill of the book but the fixed attack; slots
+// holding it keep it.
+TEST(TestSaveSnapshotLeavesTheAttackOut) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  Agent* a = FirstAgent(env);
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 1, "vortex"));
+  Snapshot s = env.SaveSnapshot();
+  ASSERT_EQ(s.skills.size(), env.GetSkillBook().All().size() - 1);
+  for (const SkillConfig& skill : s.skills) ASSERT_TRUE(skill.name != kDefaultSkill);
+  ASSERT_TRUE(s.agents[0].skills == (std::vector<std::string>{kDefaultSkill, "vortex"}));
+
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  other.LoadSnapshot(BinaryRoundTrip(s));
+  auto* c = dynamic_cast<Companion*>(FirstAgent(other));
+  ASSERT_EQ(c->GetSkill(0), std::string(kDefaultSkill));
+  ASSERT_EQ(c->GetSkill(1), std::string("vortex"));
+  ASSERT_TRUE(other.GetSkillBook().Find(kDefaultSkill) != nullptr);
+}
+
+// Older files wrote "" for an empty slot: it loads as the attack, and so do
+// missing slots.
+TEST(TestEmptyOrMissingSlotsLoadAsTheAttack) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  Snapshot s = env.SaveSnapshot();
+  s.agents[0].skills = {"", ""};
+  env.LoadSnapshot(Snapshot::Deserialize(s.Serialize()));
+  auto* c = dynamic_cast<Companion*>(FirstAgent(env));
+  ASSERT_EQ(c->GetSkill(0), std::string(kDefaultSkill));
+  ASSERT_EQ(c->GetSkill(1), std::string(kDefaultSkill));
+  s.agents[0].skills = {"teleport"};
+  env.LoadSnapshot(s);
+  c = dynamic_cast<Companion*>(FirstAgent(env));
+  ASSERT_EQ(c->GetSkill(0), std::string("teleport"));
+  ASSERT_EQ(c->GetSkill(1), std::string(kDefaultSkill));
 }
 
 TEST(TestValidateSkillConfig) {

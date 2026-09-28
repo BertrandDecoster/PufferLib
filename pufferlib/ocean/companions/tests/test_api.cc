@@ -932,45 +932,21 @@ static int32_t FindAgentIndex(Companions_Env* env, Companions_Faction faction) {
   return -1;
 }
 
-// Default (RL) behaviour is unchanged: without companion casts, Attack is
-// ignored, the companion moves and nothing is cast.
-TEST(TestAttackIsIgnoredWhenCompanionCastsAreOff) {
+// Every companion slot holds a skill: without one set, it is the default
+// "attack", so Attack (= Skill1) aims without moving and strikes the faced
+// cell. There is no generic cast (no EffectSpawned).
+TEST(TestAttackUsesTheDefaultSkill) {
   Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
   Companions_Env* env = companions_create(&config);
   companions_reset(env, 42);
-  ASSERT_FALSE(companions_get_companion_cast(env));
 
   Companions_AgentState before;
   ASSERT_TRUE(companions_get_agent_by_index(env, 0, &before));
-  Companions_MovementAction move = before.position.col > 1
-      ? Companions_Movement_Left : Companions_Movement_Right;
-  Companions_Action action = {move, Companions_Interact_Attack};
-  Companions_StepResult result;
-  companions_step(env, &action, 1, &result);
-
-  Companions_AgentState after;
-  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &after));
-  ASSERT_NE(after.position.col, before.position.col);
-  for (int32_t i = 0; i < result.event_count; ++i) {
-    ASSERT_NE(result.events[i].type, Companions_Event_EffectSpawned);
-  }
-  companions_destroy(env);
-}
-
-TEST(TestAttackAimsWithoutMovingAndEmitsCastEvent) {
-  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
-  Companions_Env* env = companions_create(&config);
-  companions_reset(env, 42);
-  companions_set_companion_cast(env, true);
-  ASSERT_TRUE(companions_get_companion_cast(env));
-
-  Companions_AgentState before;
-  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &before));
+  ASSERT_EQ(std::string(before.skills[0]), std::string("attack"));
+  ASSERT_EQ(std::string(before.skills[1]), std::string("attack"));
   // Aim at whichever horizontal neighbour is inside the grid.
-  Companions_MovementAction aim = before.position.col > 0
+  Companions_MovementAction aim = before.position.col > 1
       ? Companions_Movement_Left : Companions_Movement_Right;
-  int32_t dc = aim == Companions_Movement_Left ? -1 : 1;
-
   Companions_Action action = {aim, Companions_Interact_Attack};
   Companions_StepResult result;
   companions_step(env, &action, 1, &result);
@@ -981,18 +957,17 @@ TEST(TestAttackAimsWithoutMovingAndEmitsCastEvent) {
   ASSERT_EQ(after.position.col, before.position.col);
   ASSERT_EQ(after.facing, aim == Companions_Movement_Left
       ? Companions_Direction_Left : Companions_Direction_Right);
-
-  bool found = false;
+  bool used = false;
   for (int32_t i = 0; i < result.event_count; ++i) {
     const Companions_Event& e = result.events[i];
-    if (e.type != Companions_Event_EffectSpawned) continue;
-    found = true;
+    ASSERT_NE(e.type, Companions_Event_EffectSpawned);
+    if (e.type != Companions_Event_SkillUsed) continue;
+    used = true;
     ASSERT_EQ(e.subject_id, before.id);
-    ASSERT_EQ(e.position.row, before.position.row);
-    ASSERT_EQ(e.position.col, before.position.col + dc);
-    ASSERT_EQ(std::string(e.effect_name), std::string("companion_cast"));
+    ASSERT_EQ(std::string(e.effect_name), std::string("attack"));
+    ASSERT_EQ(e.effect_id, 0);
   }
-  ASSERT_TRUE(found);
+  ASSERT_TRUE(used);
   companions_destroy(env);
 }
 
@@ -1143,7 +1118,7 @@ static bool HasStatus(const Companions_AgentState& a, Companions_StatusType type
 TEST(TestSkill1TeleportsAndReportsSkillUsed) {
   Companions_Env* env = LoadLevel({{3, 1, ""}});
   Companions_AgentState a = AgentAt(env, 0);
-  ASSERT_EQ(std::string(a.skills[0]), std::string(""));
+  ASSERT_EQ(std::string(a.skills[0]), std::string("attack"));
   ASSERT_TRUE(companions_set_agent_skill(env, a.id, 0, "teleport"));
   a = AgentAt(env, 0);
   ASSERT_EQ(std::string(a.skills[0]), std::string("teleport"));
@@ -1157,7 +1132,7 @@ TEST(TestSkill1TeleportsAndReportsSkillUsed) {
   ASSERT_EQ(after.position.row, 3);
   ASSERT_EQ(after.position.col, 4);  // Teleported 3 cells
   ASSERT_EQ(std::string(after.skills[0]), std::string("teleport"));
-  ASSERT_EQ(std::string(after.skills[1]), std::string(""));
+  ASSERT_EQ(std::string(after.skills[1]), std::string("attack"));
   ASSERT_EQ(after.skill_cooldowns[0], 4);
   ASSERT_EQ(after.skill_cooldowns[1], 0);
   ASSERT_EQ(result.state.agents[0].skill_cooldowns[0], 4);
@@ -1350,14 +1325,17 @@ TEST(TestSetAgentSkillRejectsUnknowns) {
   ASSERT_FALSE(companions_set_agent_skill(env, id, -1, "teleport"));
   ASSERT_FALSE(companions_set_agent_skill(env, id, Companions_MAX_SKILL_SLOTS, "teleport"));
   ASSERT_FALSE(companions_set_agent_skill(env, 999, 0, "teleport"));
-  ASSERT_FALSE(companions_set_agent_skill(env, id, 0, nullptr));
   ASSERT_FALSE(companions_set_agent_skill(nullptr, id, 0, "teleport"));
-  ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string(""));
+  ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string("attack"));
 
+  // "" and NULL put the default attack back.
   ASSERT_TRUE(companions_set_agent_skill(env, id, 0, "fireball"));
   ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string("fireball"));
   ASSERT_TRUE(companions_set_agent_skill(env, id, 0, ""));
-  ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string(""));
+  ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string("attack"));
+  ASSERT_TRUE(companions_set_agent_skill(env, id, 1, "vortex"));
+  ASSERT_TRUE(companions_set_agent_skill(env, id, 1, nullptr));
+  ASSERT_EQ(std::string(AgentAt(env, 0).skills[1]), std::string("attack"));
   companions_destroy(env);
 
   // Only companions have slots; other agents show empty ones.

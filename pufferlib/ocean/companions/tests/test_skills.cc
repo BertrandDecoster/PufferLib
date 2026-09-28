@@ -145,10 +145,13 @@ TEST(TestSkillBookBuiltins) {
   ASSERT_TRUE(vortex->motion == SkillMotion::PullIn);
   ASSERT_EQ(vortex->root_steps, 1);
 
-  // Friendly fire everywhere; the caster spares itself only where noted.
+  // Friendly fire everywhere but the default attack; the caster spares itself
+  // only where noted.
   for (const SkillConfig& s : book.All()) {
-    ASSERT_TRUE(s.friendly_fire);
+    ASSERT_EQ(s.friendly_fire, s.name != kDefaultSkill);
     ASSERT_TRUE(s.self_motion);
+    ASSERT_TRUE(s.self_damage);
+    ASSERT_EQ(s.damage, s.name == kDefaultSkill ? 1 : 0);
   }
   ASSERT_TRUE(fireball->self_tags && fireball->self_root);
   ASSERT_FALSE(step->self_tags);  // It lands on the centre of its own cross
@@ -172,16 +175,17 @@ TEST(TestSkillBookDefineReplaces) {
   frost.tags = {{"chilled", kPermanentTag}};
   book.Define(frost);
   ASSERT_EQ(book.Find("frost")->range, 2);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(6));
   SkillConfig short_fireball = *book.Find("fireball");
   short_fireball.range = 2;
   book.Define(short_fireball);                  // a level retunes a builtin
   ASSERT_EQ(book.Find("fireball")->range, 2);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));  // replaced, not appended
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(6));  // replaced, not appended
   book.Reset();                                 // back to builtins only
   ASSERT_EQ(book.Find("fireball")->range, 3);
   ASSERT_TRUE(book.Find("frost") == nullptr);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(4));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
+  ASSERT_TRUE(book.Find(kDefaultSkill) != nullptr);  // Reset keeps the attack
 }
 
 TEST(TestSkillEnumStringsRoundTrip) {
@@ -539,14 +543,18 @@ TEST(TestSkillOnCooldownIsDroppedAndMovementApplies) {
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
 }
 
-TEST(TestEmptySlotKeepsLegacyDynamics) {
+// No skill set: the slot holds the default attack, so Skill1 strikes the faced
+// cell instead of moving.
+TEST(TestUnsetSlotAttacksInsteadOfMoving) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 1});
-  env.Step({Use(MovementAction::Right)});  // no skill: interact ignored
-  ASSERT_TRUE(a->GetPosition() == (Position{3, 2}));
-  ASSERT_TRUE(env.GetLastSkillUses().empty());
-  ASSERT_TRUE(env.GetLastCasts().empty());
+  env.Step({Use(MovementAction::Right)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
+  ASSERT_TRUE(AsCompanion(a)->GetDirection() == Direction::Right);  // aimed
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string(kDefaultSkill));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 2}));
 }
 
 TEST(TestSetCompanionSkillValidates) {
@@ -559,8 +567,15 @@ TEST(TestSetCompanionSkillValidates) {
   ASSERT_FALSE(env.SetCompanionSkill(kInvalidObjectId, 0, "vortex"));
   ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 1, "vortex"));   // slot 2 exists
   ASSERT_EQ(AsCompanion(a)->GetSkill(1), std::string("vortex"));
-  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, ""));         // clears
-  ASSERT_TRUE(AsCompanion(a)->GetSkill(0).empty());
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 1, ""));         // clears: back to attack
+  ASSERT_EQ(AsCompanion(a)->GetSkill(1), std::string(kDefaultSkill));
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "vortex"));
+  AsCompanion(a)->SetCooldown(0, 3);
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, ""));
+  ASSERT_EQ(AsCompanion(a)->GetSkill(0), std::string(kDefaultSkill));
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 0);
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, kDefaultSkill));  // explicitly, too
+  ASSERT_EQ(AsCompanion(a)->GetSkill(0), std::string(kDefaultSkill));
 }
 
 TEST(TestTwoDashersSameLandingFirstIndexWins) {
@@ -630,33 +645,6 @@ TEST(TestStunnedCompanionCannotUseSkill) {
   ASSERT_TRUE(env.GetLastSkillUses().empty());
 }
 
-TEST(TestLegacyCastWithEmptySlot) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
-  MakeArena(env);
-  env.SetCompanionCastEnabled(true);
-  Agent* a = Place(env, 0, {3, 1});
-  env.Step({EncodeAction(MovementAction::Right, InteractAction::Attack)});
-  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
-  ASSERT_EQ(env.GetLastCasts().size(), static_cast<size_t>(1));
-  ASSERT_TRUE(env.GetLastCasts()[0].cell == (Position{3, 2}));
-  ASSERT_TRUE(env.GetLastSkillUses().empty());
-}
-
-TEST(TestSkillReplacesLegacyCast) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
-  MakeArena(env);
-  env.SetCompanionCastEnabled(true);
-  Agent* a = Place(env, 0, {3, 1});
-  env.SetCompanionSkill(a->GetId(), 0, "teleport");
-  env.Step({EncodeAction(MovementAction::Right, InteractAction::Attack)});
-  ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
-  ASSERT_TRUE(env.GetLastCasts().empty());
-  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
-  env.Step({EncodeAction(MovementAction::Left, InteractAction::Attack)});  // cooldown
-  ASSERT_TRUE(a->GetPosition() == (Position{3, 3}));  // dropped: no legacy cast either
-  ASSERT_TRUE(env.GetLastCasts().empty());
-}
-
 TEST(TestHostTagPrimitives) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -691,7 +679,7 @@ TEST(TestHostPrimitivesRejectOverlongNames) {
   wordy.name = too_long;
   ASSERT_TRUE(DefineThrows(env.GetMutableSkillBook(), wordy));
   ASSERT_FALSE(env.SetCompanionSkill(a->GetId(), 0, too_long));
-  ASSERT_TRUE(AsCompanion(a)->GetSkill(0).empty());
+  ASSERT_EQ(AsCompanion(a)->GetSkill(0), std::string(kDefaultSkill));
 
   ASSERT_TRUE(env.ApplyTagTo(a->GetId(), max_name, 2));
   ASSERT_TRUE(env.SetCellTag({3, 2}, max_name, 2));
@@ -732,17 +720,15 @@ TEST(TestCloneKeepsSkillsTagsAndCooldowns) {
   ASSERT_TRUE(Has(assigned, assigned.GetObjectManager().GetAllAgents()[1], "chilled"));
 }
 
-// One step filling all three per-step reports: companion 0 (empty slot) does
-// the legacy cast, companion 1 fireballs companion 2.
+// One step filling both per-step reports: companion 0 attacks (its default
+// slot), companion 1 fireballs companion 2.
 static void StepFillingReports(SynchroEnv& env) {
-  env.SetCompanionCastEnabled(true);
   Place(env, 0, {3, 1});
   Agent* caster = Place(env, 1, {5, 1});  // target (5,4)
   Place(env, 2, {5, 4});
   env.SetCompanionSkill(caster->GetId(), 0, "fireball");
   env.Step({Use(MovementAction::Right), Use(MovementAction::Right), kStay});
-  ASSERT_EQ(env.GetLastCasts().size(), static_cast<size_t>(1));
-  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
   ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
 }
 
@@ -751,7 +737,6 @@ TEST(TestResetClearsStepReports) {
   MakeArena(env);
   StepFillingReports(env);
   env.Reset();  // ids are re-issued: old reports would name the new world's agents
-  ASSERT_TRUE(env.GetLastCasts().empty());
   ASSERT_TRUE(env.GetLastSkillUses().empty());
   ASSERT_TRUE(env.GetLastTagsApplied().empty());
 }
@@ -762,7 +747,6 @@ TEST(TestLoadSnapshotClearsStepReports) {
   Snapshot saved = env.SaveSnapshot();
   StepFillingReports(env);
   env.LoadSnapshot(saved);
-  ASSERT_TRUE(env.GetLastCasts().empty());
   ASSERT_TRUE(env.GetLastSkillUses().empty());
   ASSERT_TRUE(env.GetLastTagsApplied().empty());
 }
@@ -774,7 +758,7 @@ TEST(TestSkillBookIgnoresEmptyName) {
   book.Define(unnamed);
   unnamed.range = -1;  // Invalid too, but unnamed: still silently ignored
   book.Define(unnamed);
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(4));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
   ASSERT_TRUE(book.Find("") == nullptr);
 }
 
@@ -792,27 +776,35 @@ TEST(TestSkillBookDefineValidates) {
   bad_fireball = *book.Find("fireball");
   bad_fireball.name = std::string(kMaxNameLength + 1, 'f');
   ASSERT_TRUE(DefineThrows(book, bad_fireball));
-  ASSERT_EQ(book.All().size(), static_cast<size_t>(4));
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
+  frost.range = 2;
+  frost.damage = -1;
+  ASSERT_TRUE(DefineThrows(book, frost));
+  ASSERT_TRUE(book.Find("frost") == nullptr);
+  frost.damage = 0;
   frost.range = 2;
   ASSERT_FALSE(DefineThrows(book, frost));
   ASSERT_EQ(book.Find("frost")->range, 2);
 }
 
-TEST(TestEmptyNamedSkillNeverFiresForLegacyCaster) {
+// An empty-named skill is never defined, and a cleared slot is the attack: it
+// never fires.
+TEST(TestEmptyNamedSkillNeverFires) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
-  env.SetCompanionCastEnabled(true);
   SkillConfig unnamed;
   unnamed.range = 3;
   unnamed.tags = {{"ghost", kPermanentTag}};
   env.GetMutableSkillBook().Define(unnamed);
-  Place(env, 0, {3, 1});  // empty slot: legacy cast only
+  Agent* caster = Place(env, 0, {3, 1});
   Agent* target = Place(env, 1, {3, 2});
+  ASSERT_TRUE(env.SetCompanionSkill(caster->GetId(), 0, ""));
   env.Step({EncodeAction(MovementAction::Right, InteractAction::Attack), kStay});
-  ASSERT_EQ(env.GetLastCasts().size(), static_cast<size_t>(1));
-  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string(kDefaultSkill));
   ASSERT_TRUE(env.GetLastTagsApplied().empty());
   ASSERT_FALSE(Has(env, target, "ghost"));
+  ASSERT_EQ(target->GetHealth(), target->GetMaxHealth());  // An ally: no friendly fire
 }
 
 // A skill tag of duration 0 would land nothing: Define refuses the skill.
@@ -1521,6 +1513,212 @@ TEST(TestCloneKeepsCellTags) {
   env.SetCellTag({3, 2}, "", 0);  // Deep copies: they keep theirs
   ASSERT_TRUE(assigned.GetCellTag({3, 2}).tag != kInvalidTag);
   ASSERT_TRUE(copy->GetCellTag({3, 2}).tag != kInvalidTag);
+}
+
+// =============================================================================
+// Default attack (no empty slots) and skill damage
+// =============================================================================
+
+// Throws a std::runtime_error whose message contains `needle`.
+static bool DefineThrowsMentioning(SkillBook& book, const SkillConfig& s, const std::string& needle) {
+  try {
+    book.Define(s);
+  } catch (const std::runtime_error& e) {
+    return std::string(e.what()).find(needle) != std::string::npos;
+  }
+  return false;
+}
+
+TEST(TestAttackBuiltin) {
+  ASSERT_EQ(std::string(kDefaultSkill), std::string("attack"));
+  SkillBook book;
+  const SkillConfig* a = book.Find(kDefaultSkill);
+  ASSERT_TRUE(a != nullptr);
+  ASSERT_TRUE(a->targeting == SkillTargeting::Projectile);
+  ASSERT_EQ(a->range, 1);
+  ASSERT_TRUE(a->area == SkillArea::Single);
+  ASSERT_TRUE(a->filter == TargetFilter::All);
+  ASSERT_TRUE(a->motion == SkillMotion::None);
+  ASSERT_EQ(a->damage, 1);
+  ASSERT_FALSE(a->friendly_fire);
+  ASSERT_EQ(a->cooldown, 0);
+  ASSERT_TRUE(a->tags.empty());
+  ASSERT_EQ(a->root_steps, 0);
+  ValidateSkillConfig(*a);  // The builtin itself is a valid config
+}
+
+TEST(TestEveryCompanionStartsWithTheAttackInBothSlots) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  env.Reset();
+  for (Agent* agent : env.GetMutableObjectManager().GetAllAgents()) {
+    Companion* c = AsCompanion(agent);
+    ASSERT_TRUE(c != nullptr);
+    ASSERT_EQ(c->GetSkill(0), std::string(kDefaultSkill));
+    ASSERT_EQ(c->GetSkill(1), std::string(kDefaultSkill));
+  }
+  Companion fresh(0, {0, 0});
+  ASSERT_EQ(fresh.GetSkill(0), std::string(kDefaultSkill));
+  ASSERT_EQ(fresh.GetSkill(1), std::string(kDefaultSkill));
+}
+
+// The attack is fixed: a level cannot redefine it, and the book is unchanged.
+TEST(TestAttackCannotBeRedefined) {
+  SkillBook book;
+  const size_t before = book.All().size();
+  SkillConfig strong = *book.Find(kDefaultSkill);
+  strong.damage = 5;
+  ASSERT_TRUE(DefineThrowsMentioning(book, strong, "'attack' is the fixed default skill"));
+  ASSERT_EQ(book.Find(kDefaultSkill)->damage, 1);
+  ASSERT_EQ(book.All().size(), before);
+  SkillConfig same = *book.Find(kDefaultSkill);  // Even unchanged
+  ASSERT_TRUE(DefineThrows(book, same));
+}
+
+TEST(TestDefaultAttackStrikesTheFacedEnemyEveryStep) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* enemy = AddAgent(env, {3, 2}, Faction::ENEMY);
+  ASSERT_EQ(enemy->GetHealth(), 3);
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));  // stays put
+  ASSERT_EQ(enemy->GetHealth(), 2);
+  ASSERT_EQ(caster->GetHealth(), caster->GetMaxHealth());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string(kDefaultSkill));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 2}));
+  ASSERT_EQ(env.GetLastSkillUses()[0].slot, 0);
+  ASSERT_EQ(AsCompanion(caster)->GetCooldown(0), 0);
+  env.Step({Use(MovementAction::Right), kStay});  // cooldown 0: again at once
+  ASSERT_EQ(enemy->GetHealth(), 1);
+  ASSERT_TRUE(enemy->IsAlive());
+}
+
+TEST(TestDefaultAttackKillsAndADeadEnemyIsNoTarget) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* enemy = AddAgent(env, {3, 2}, Faction::ENEMY);
+  enemy->SetMaxHealth(1);
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_EQ(enemy->GetHealth(), 0);
+  ASSERT_FALSE(enemy->IsAlive());
+  env.Step({Use(MovementAction::Right), kStay});  // strikes the empty air
+  ASSERT_EQ(enemy->GetHealth(), 0);
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
+}
+
+TEST(TestDefaultAttackSparesAnAdjacentAlly) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* ally = Place(env, 1, {3, 2});
+  Agent* enemy = AddAgent(env, {3, 3}, Faction::ENEMY);  // Range 1: out of reach
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
+  ASSERT_EQ(ally->GetHealth(), ally->GetMaxHealth());
+  ASSERT_EQ(enemy->GetHealth(), enemy->GetMaxHealth());
+  ASSERT_EQ(caster->GetHealth(), caster->GetMaxHealth());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+}
+
+TEST(TestDefaultAttackIntoAWallDoesNothing) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});  // (3,0) is a wall
+  env.Step({Use(MovementAction::Left)});
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
+  ASSERT_TRUE(AsCompanion(caster)->GetDirection() == Direction::Left);
+  ASSERT_EQ(caster->GetHealth(), caster->GetMaxHealth());
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 1}));  // Stopped on its cell
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+}
+
+TEST(TestASkillInSlotZeroReplacesTheAttack) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* enemy = AddAgent(env, {3, 2}, Faction::ENEMY);
+  ASSERT_TRUE(env.SetCompanionSkill(caster->GetId(), 0, "teleport"));
+  env.Step({Use(MovementAction::Right), kStay});  // Slot 0: teleport
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string("teleport"));
+  ASSERT_EQ(enemy->GetHealth(), enemy->GetMaxHealth());
+}
+
+// damage lands on everyone the skill affects (friendly fire on by default).
+TEST(TestSkillDamageHitsEveryoneAffected) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig quake;
+  quake.name = "quake";
+  quake.targeting = SkillTargeting::Ground;
+  quake.range = 3;
+  quake.area = SkillArea::Cross;
+  quake.damage = 2;
+  env.GetMutableSkillBook().Define(quake);
+  Agent* caster = Place(env, 0, {3, 1});  // centre (3,4)
+  Agent* centre = Place(env, 1, {3, 4});
+  Agent* up = Place(env, 2, {2, 4});
+  Agent* enemy = AddAgent(env, {3, 5}, Faction::ENEMY);
+  Agent* far = AddAgent(env, {3, 6}, Faction::ENEMY);
+  env.SetCompanionSkill(caster->GetId(), 0, "quake");
+  env.Step({Use(MovementAction::Right), kStay, kStay, kStay, kStay});
+  ASSERT_EQ(centre->GetHealth(), 1);
+  ASSERT_EQ(up->GetHealth(), 1);
+  ASSERT_EQ(enemy->GetHealth(), 1);
+  ASSERT_EQ(far->GetHealth(), 3);
+  ASSERT_EQ(caster->GetHealth(), 3);
+}
+
+// With friendly fire, a caster standing in its own area takes the damage,
+// unless self_damage spares it.
+TEST(TestSelfDamage) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig nova;
+  nova.name = "nova";
+  nova.targeting = SkillTargeting::Self;
+  nova.area = SkillArea::Cross;
+  nova.damage = 1;
+  env.GetMutableSkillBook().Define(nova);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* ally = Place(env, 1, {3, 2});
+  env.SetCompanionSkill(caster->GetId(), 0, "nova");
+  env.Step({Use(MovementAction::Stay), kStay});
+  ASSERT_EQ(caster->GetHealth(), 2);
+  ASSERT_EQ(ally->GetHealth(), 2);
+
+  nova.self_damage = false;
+  env.GetMutableSkillBook().Define(nova);
+  env.Step({Use(MovementAction::Stay), kStay});
+  ASSERT_EQ(caster->GetHealth(), 2);  // spared
+  ASSERT_EQ(ally->GetHealth(), 1);
+}
+
+// Order inside a skill: tags, then damage, then root and area motion. An agent
+// the damage kills still got the tags, but is neither rooted nor moved.
+TEST(TestDamageAfterTagsBeforeRootAndMotion) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig blast = DefineCopy(env, "fireball", "blast");  // cross, push_out 1
+  blast.damage = 3;
+  blast.root_steps = 1;
+  env.GetMutableSkillBook().Define(blast);
+  Agent* caster = Place(env, 0, {3, 1});                  // centre (3,4)
+  Agent* doomed = AddAgent(env, {2, 4}, Faction::ENEMY);  // up ring cell, 3 HP
+  Agent* tough = AddAgent(env, {3, 5}, Faction::ENEMY);   // right ring cell
+  tough->SetMaxHealth(5);
+  env.SetCompanionSkill(caster->GetId(), 0, "blast");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_FALSE(doomed->IsAlive());
+  ASSERT_TRUE(Has(env, doomed, "burning"));
+  ASSERT_TRUE(doomed->GetPosition() == (Position{2, 4}));  // not pushed
+  ASSERT_FALSE(doomed->IsRooted());
+  ASSERT_EQ(tough->GetHealth(), 2);
+  ASSERT_TRUE(Has(env, tough, "burning"));
+  ASSERT_TRUE(tough->GetPosition() == (Position{3, 6}));   // pushed
+  ASSERT_TRUE(tough->IsRooted());
 }
 
 // =============================================================================

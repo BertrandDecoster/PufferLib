@@ -95,6 +95,9 @@ std::string CellText(const Position& p) {
 void Snapshot::ValidateSkillsTagsZones() const {
   for (size_t i = 0; i < skills.size(); ++i) {
     try {
+      if (skills[i].name == kDefaultSkill) {
+        throw std::runtime_error(std::string("'") + kDefaultSkill + "' is the fixed default skill");
+      }
       ValidateSkillConfig(skills[i]);
     } catch (const std::runtime_error& e) {
       // The index says which skill when it has no name.
@@ -297,10 +300,12 @@ void WriteSkill(std::vector<uint8_t>& buffer, const SkillConfig& s) {
   }
   WriteValue(buffer, s.root_steps);
   WriteValue(buffer, s.cooldown);
+  WriteValue(buffer, s.damage);
   WriteValue(buffer, s.friendly_fire);
   WriteValue(buffer, s.self_tags);
   WriteValue(buffer, s.self_motion);
   WriteValue(buffer, s.self_root);
+  WriteValue(buffer, s.self_damage);
 }
 
 SkillConfig ReadSkill(const uint8_t*& ptr, const uint8_t* end) {
@@ -324,10 +329,12 @@ SkillConfig ReadSkill(const uint8_t*& ptr, const uint8_t* end) {
   }
   s.root_steps = ReadValue<int>(ptr, end);
   s.cooldown = ReadValue<int>(ptr, end);
+  s.damage = ReadValue<int>(ptr, end);
   s.friendly_fire = ReadValue<bool>(ptr, end);
   s.self_tags = ReadValue<bool>(ptr, end);
   s.self_motion = ReadValue<bool>(ptr, end);
   s.self_root = ReadValue<bool>(ptr, end);
+  s.self_damage = ReadValue<bool>(ptr, end);
   return s;
 }
 
@@ -698,9 +705,9 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     if (num_skills > 100000) {
       throw std::runtime_error("Snapshot buffer corrupt: unreasonable skill count");
     }
-    // name length, 8 ints (targeting .. cooldown), tag count, 5 bools (tag_path,
-    // friendly_fire, self_tags, self_motion, self_root)
-    CheckCountFits(num_skills, sizeof(uint32_t) + 8 * sizeof(int) + sizeof(uint32_t) + 5 * sizeof(bool),
+    // name length, 9 ints (targeting .. damage), tag count, 6 bools (tag_path,
+    // friendly_fire, self_tags, self_motion, self_root, self_damage)
+    CheckCountFits(num_skills, sizeof(uint32_t) + 9 * sizeof(int) + sizeof(uint32_t) + 6 * sizeof(bool),
                    ptr, end, "skill count");
     snap.skills.reserve(num_skills);
     for (uint32_t i = 0; i < num_skills; ++i) snap.skills.push_back(ReadSkill(ptr, end));

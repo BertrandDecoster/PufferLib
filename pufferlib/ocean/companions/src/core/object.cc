@@ -242,6 +242,7 @@ void AgentFSM::MoveTo(Position target, const BaseEnv& /*env*/) {
 // =============================================================================
 Companion::Companion(ObjectId id, Position pos) : Agent(id, pos) {
   faction_ = Faction::COMPANION;
+  skills_.fill(kDefaultSkill);  // No empty slots
 }
 
 // =============================================================================
