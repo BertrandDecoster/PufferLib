@@ -315,8 +315,8 @@ class BaseEnv {
   // ObjectIds are re-issued by a new world.
   void ClearStepReports();
   void TickTagsAndCooldowns();  // Start of Step
-  // Not rooted, and not slowed on a tick where slow forbids walking. Walking
-  // and caster-moving skills both need it.
+  // Not rooted. Walking and caster-moving skills both need it (being pushed /
+  // pulled does not).
   bool CanMoveItself(const Agent& agent) const;
   bool CanUseSkill(const Companion& comp, int slot) const;
   void ResolveSkills();         // After movement, in agent-index order

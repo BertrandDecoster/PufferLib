@@ -1964,16 +1964,16 @@ TEST(TestStatusEffectApplyAndHas) {
 
   // No status initially
   ASSERT_FALSE(agent.IsStunned());
-  ASSERT_FALSE(agent.IsSlowed());
+  ASSERT_FALSE(agent.IsRooted());
   ASSERT_FALSE(agent.IsMarked());
 
   // Apply statuses
   agent.ApplyStatus(StatusType::Stunned, 2);
-  agent.ApplyStatus(StatusType::Slowed, 3);
+  agent.ApplyStatus(StatusType::Rooted, 3);
   agent.ApplyStatus(StatusType::Marked, 1);
 
   ASSERT_TRUE(agent.IsStunned());
-  ASSERT_TRUE(agent.IsSlowed());
+  ASSERT_TRUE(agent.IsRooted());
   ASSERT_TRUE(agent.IsMarked());
 }
 
@@ -2016,21 +2016,21 @@ TEST(TestStatusEffectRefresh) {
 TEST(TestStatusEffectClear) {
   Agent agent(1, Position{5, 5});
   agent.ApplyStatus(StatusType::Stunned, 5);
-  agent.ApplyStatus(StatusType::Slowed, 5);
+  agent.ApplyStatus(StatusType::Rooted, 5);
 
   ASSERT_TRUE(agent.IsStunned());
-  ASSERT_TRUE(agent.IsSlowed());
+  ASSERT_TRUE(agent.IsRooted());
 
   // Clear only stunned
   agent.ClearStatus(StatusType::Stunned);
   ASSERT_FALSE(agent.IsStunned());
-  ASSERT_TRUE(agent.IsSlowed());
+  ASSERT_TRUE(agent.IsRooted());
 
   // Clear all
   agent.ApplyStatus(StatusType::Marked, 5);
   agent.ClearAllStatuses();
   ASSERT_FALSE(agent.IsStunned());
-  ASSERT_FALSE(agent.IsSlowed());
+  ASSERT_FALSE(agent.IsRooted());
   ASSERT_FALSE(agent.IsMarked());
 }
 
@@ -2077,46 +2077,13 @@ TEST(TestStatusStunnedPreventsMovement) {
   // Step 3: not stunned, can move
 }
 
-TEST(TestStatusSlowedReducesMovement) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
-
-  // Place agent in center where movement is guaranteed to work
-  auto& obj_mgr = env.GetMutableObjectManager();
-  obj_mgr.Clear();
-  obj_mgr.CreateActor<NPCCompanion>(Position{5, 5});
-
-  auto agents = obj_mgr.GetAllAgents();
-  Agent* agent = agents[0];
-  Position initial_pos = agent->GetPosition();
-
-  // Apply slow
-  agent->ApplyStatus(StatusType::Slowed, 4);
-
-  // Slowed agents can only move on even ticks (tick 0, 2, 4...)
-  // Tick 0 (before step): can move
-  std::vector<Action> actions = {EncodeAction(MovementAction::Right)};
-  env.Step(actions);  // tick 0 -> 1
-  Position pos_after_1 = agent->GetPosition();
-  // Should have moved (tick was 0 = even)
-  ASSERT_EQ(pos_after_1.col, initial_pos.col + 1);
-
-  // Tick 1: odd, cannot move
-  env.Step(actions);  // tick 1 -> 2
-  Position pos_after_2 = agent->GetPosition();
-  ASSERT_EQ(pos_after_2, pos_after_1);  // No movement on odd tick
-
-  // Tick 2: even, can move
-  env.Step(actions);  // tick 2 -> 3
-  Position pos_after_3 = agent->GetPosition();
-  ASSERT_EQ(pos_after_3.col, pos_after_1.col + 1);  // Moved on even tick
-}
-
 TEST(TestStatusTypeFromString) {
   ASSERT_EQ(StatusTypeFromString("stunned"), StatusType::Stunned);
   ASSERT_EQ(StatusTypeFromString("STUNNED"), StatusType::Stunned);
   ASSERT_EQ(StatusTypeFromString("stun"), StatusType::Stunned);
-  ASSERT_EQ(StatusTypeFromString("slowed"), StatusType::Slowed);
-  ASSERT_EQ(StatusTypeFromString("slow"), StatusType::Slowed);
+  // Slowed was removed: its names are unknown now.
+  ASSERT_EQ(StatusTypeFromString("slowed"), StatusType::None);
+  ASSERT_EQ(StatusTypeFromString("slow"), StatusType::None);
   ASSERT_EQ(StatusTypeFromString("marked"), StatusType::Marked);
   ASSERT_EQ(StatusTypeFromString("mark"), StatusType::Marked);
   ASSERT_EQ(StatusTypeFromString("invalid"), StatusType::None);
@@ -2125,9 +2092,18 @@ TEST(TestStatusTypeFromString) {
 
 TEST(TestStatusTypeToString) {
   ASSERT_EQ(StatusTypeToString(StatusType::Stunned), "stunned");
-  ASSERT_EQ(StatusTypeToString(StatusType::Slowed), "slowed");
   ASSERT_EQ(StatusTypeToString(StatusType::Marked), "marked");
   ASSERT_EQ(StatusTypeToString(StatusType::None), "none");
+  ASSERT_EQ(StatusTypeToString(static_cast<StatusType>(2)), "none");  // Was Slowed
+}
+
+// The values are persisted (snapshots) and exported (C API): removing Slowed
+// (2) renumbered nothing.
+TEST(TestStatusTypeValuesAreStable) {
+  ASSERT_EQ(static_cast<int>(StatusType::None), 0);
+  ASSERT_EQ(static_cast<int>(StatusType::Stunned), 1);
+  ASSERT_EQ(static_cast<int>(StatusType::Marked), 3);
+  ASSERT_EQ(static_cast<int>(StatusType::Rooted), 4);
 }
 
 TEST(TestStatusEffectAppliedByEffect) {

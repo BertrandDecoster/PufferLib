@@ -3,6 +3,8 @@
 
 #include "snapshot.h"
 
+#include "object.h"  // StatusType
+
 #include <cstring>
 #include <stdexcept>
 
@@ -72,6 +74,18 @@ void CheckTag(const std::string& tag, int duration, const std::string& what) {
   }
 }
 
+// A StatusType value this build knows (2, the removed Slowed, is not one).
+bool IsKnownStatus(int type) {
+  switch (static_cast<StatusType>(type)) {
+    case StatusType::None:
+    case StatusType::Stunned:
+    case StatusType::Marked:
+    case StatusType::Rooted:
+      return true;
+  }
+  return false;
+}
+
 std::string CellText(const Position& p) {
   return "(" + std::to_string(p.row) + ", " + std::to_string(p.col) + ")";
 }
@@ -91,6 +105,13 @@ void Snapshot::ValidateSkillsTagsZones() const {
     const AgentSnapshot& agent = agents[i];
     const std::string who = "agent #" + std::to_string(i) + " (id " + std::to_string(agent.id) + ")";
     for (const TagSnapshot& t : agent.tags) CheckTag(t.tag, t.duration, who);
+    for (size_t k = 0; k < agent.statuses.size(); ++k) {
+      const int type = agent.statuses[k].type;
+      if (IsKnownStatus(type)) continue;
+      const std::string where = "Snapshot: " + who + ": statuses[" + std::to_string(k) + "]: ";
+      if (type == 2) throw std::runtime_error(where + "status 2 (slowed) was removed");
+      throw std::runtime_error(where + "unknown status " + std::to_string(type));
+    }
     if (agent.skills.size() > static_cast<size_t>(kMaxSkillSlots) ||
         agent.cooldowns.size() > static_cast<size_t>(kMaxSkillSlots)) {
       throw std::runtime_error("Snapshot: " + who + " has " + std::to_string(agent.skills.size()) +

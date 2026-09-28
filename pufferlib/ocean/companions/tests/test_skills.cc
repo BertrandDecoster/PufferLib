@@ -963,34 +963,6 @@ TEST(TestRootedCanStillBePushed) {
   ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));
 }
 
-TEST(TestSlowedCannotTeleportOnOddTicks) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
-  MakeArena(env);
-  Agent* a = Place(env, 0, {3, 1});
-  env.SetCompanionSkill(a->GetId(), 0, "teleport");
-  env.Step({kStay});
-  ASSERT_EQ(env.GetTick() % 2, 1);                // the next step walks on an odd tick
-  a->ApplyStatus(StatusType::Slowed, 3);
-  env.Step({Use(MovementAction::Right)});         // odd: teleport dropped, no walk
-  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
-  ASSERT_TRUE(env.GetLastSkillUses().empty());
-  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 0);
-  env.Step({Use(MovementAction::Right)});         // even: teleports
-  ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
-  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
-}
-
-TEST(TestSlowedCanCastNonMovingSkillOnOddTicks) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
-  MakeArena(env);
-  Agent* a = Place(env, 0, {3, 1});
-  env.SetCompanionSkill(a->GetId(), 0, "fireball");
-  env.Step({kStay});
-  a->ApplyStatus(StatusType::Slowed, 3);
-  env.Step({Use(MovementAction::Right)});         // odd tick
-  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
-}
-
 TEST(TestRootedStatusStrings) {
   ASSERT_TRUE(StatusTypeFromString("rooted") == StatusType::Rooted);
   ASSERT_TRUE(StatusTypeFromString("ROOTED") == StatusType::Rooted);

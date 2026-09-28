@@ -567,7 +567,7 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
       decoded.interact = InteractAction::None;
     }
 
-    // Slowed agents only move on even ticks; rooted agents cannot move by themselves
+    // Rooted agents cannot move by themselves
     if (!CanMoveItself(*agent)) {
       decoded.movement = MovementAction::Stay;
     }
@@ -857,10 +857,7 @@ void BaseEnv::TickTagsAndCooldowns() {
   }
 }
 
-bool BaseEnv::CanMoveItself(const Agent& agent) const {
-  if (agent.IsRooted()) return false;
-  return !(agent.IsSlowed() && (tick_ % 2) == 1);  // Slowed: even ticks only
-}
+bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
 
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
   if (slot < 0 || slot >= kEnabledSkillSlots) return false;
@@ -868,7 +865,7 @@ bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
   if (name.empty() || comp.GetCooldown(slot) != 0) return false;
   const SkillConfig* skill = skills_.Find(name);
   if (!skill) return false;
-  // A skill that moves its caster is movement: rooted / slow forbid it too.
+  // A skill that moves its caster is movement: Rooted forbids it too.
   return !SkillMovesCaster(*skill) || CanMoveItself(comp);
 }
 

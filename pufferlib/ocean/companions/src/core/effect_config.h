@@ -44,7 +44,7 @@ struct EffectConfig {
   int push_dx = 0;          // Push direction X (relative to NORTH)
   int push_dy = 0;          // Push direction Y (relative to NORTH)
   int push_distance = 0;    // Cells to push (blocked by walls)
-  std::string status_applied;  // "stunned", "slowed", "marked", or ""
+  std::string status_applied;  // "stunned", "marked", "rooted", or ""
   int status_duration = 0;     // Ticks the status lasts
 
   // When true, push_dx/push_dy are IGNORED for non-center cells: each

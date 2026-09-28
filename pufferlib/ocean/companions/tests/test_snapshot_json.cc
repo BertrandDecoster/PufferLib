@@ -446,18 +446,16 @@ TEST(TestJsonRoundTripStatuses) {
   env.Reset();
   Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
   a->ApplyStatus(StatusType::Stunned, 2);
-  a->ApplyStatus(StatusType::Slowed, 3);
-  a->ApplyStatus(StatusType::Marked, 4);
-  a->ApplyStatus(StatusType::Rooted, 5);
+  a->ApplyStatus(StatusType::Marked, 3);
+  a->ApplyStatus(StatusType::Rooted, 4);
 
   SynchroEnv other(8, 8, 1, 1, 0, 7);
   other.Reset();
   other.LoadSnapshot(SnapshotFromJson(SnapshotToJson(env.SaveSnapshot())));
 
   const Agent* b = other.GetObjectManager().GetAllAgents()[0];
-  const StatusType types[] = {StatusType::Stunned, StatusType::Slowed,
-                              StatusType::Marked, StatusType::Rooted};
-  for (int i = 0; i < 4; ++i) {
+  const StatusType types[] = {StatusType::Stunned, StatusType::Marked, StatusType::Rooted};
+  for (int i = 0; i < 3; ++i) {
     bool found = false;
     for (const auto& st : b->GetStatuses()) {
       if (st.type == types[i] && st.IsActive()) {
@@ -899,6 +897,12 @@ TEST(TestJsonRejectsUnknownStatus) {
   j.at("agents").at(0)["statuses"] =
       json::array({json{{"status_type", "frozen"}, {"duration", 2}}});
   AssertJsonErrorMentions(j, {"agents[0].statuses[0]", "'frozen'"});
+  // Slowed was removed: "slowed" (any case) and "slow" are unknown now.
+  for (const char* removed : {"slowed", "Slowed", "slow"}) {
+    j.at("agents").at(0)["statuses"] =
+        json::array({json{{"status_type", removed}, {"duration", 2}}});
+    AssertJsonErrorMentions(j, {"agents[0].statuses[0]", "unknown status '" + std::string(removed)});
+  }
 
   j.at("agents").at(0)["statuses"] =
       json::array({json{{"status_type", "None"}, {"duration", 0}},

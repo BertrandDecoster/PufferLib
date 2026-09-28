@@ -205,7 +205,8 @@ struct Snapshot {
   int CountCells(CellKind kind) const;
 
   // Throws std::runtime_error unless the v4 data is loadable: every skill
-  // passes ValidateSkillConfig; agent and zone tag names non-empty with a
+  // passes ValidateSkillConfig; agent statuses are known StatusType values (2,
+  // the removed Slowed, is rejected); agent and zone tag names non-empty with a
   // duration positive or kPermanentTag; tag and slot names of at most
   // kMaxNameLength bytes; zones inside the grid; at most kMaxSkillSlots slots /
   // cooldowns per agent, cooldowns >= 0. Messages name the skill, agent (index

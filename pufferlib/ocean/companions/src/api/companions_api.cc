@@ -157,8 +157,6 @@ static Companions_StatusType ToAPIStatusType(companions::StatusType type) {
       return Companions_Status_None;
     case companions::StatusType::Stunned:
       return Companions_Status_Stunned;
-    case companions::StatusType::Slowed:
-      return Companions_Status_Slowed;
     case companions::StatusType::Marked:
       return Companions_Status_Marked;
     case companions::StatusType::Rooted:
@@ -171,8 +169,6 @@ static_assert(static_cast<int>(companions::StatusType::None) == Companions_Statu
               "StatusType::None out of sync with C API");
 static_assert(static_cast<int>(companions::StatusType::Stunned) == Companions_Status_Stunned,
               "StatusType::Stunned out of sync with C API");
-static_assert(static_cast<int>(companions::StatusType::Slowed) == Companions_Status_Slowed,
-              "StatusType::Slowed out of sync with C API");
 static_assert(static_cast<int>(companions::StatusType::Marked) == Companions_Status_Marked,
               "StatusType::Marked out of sync with C API");
 static_assert(static_cast<int>(companions::StatusType::Rooted) == Companions_Status_Rooted,

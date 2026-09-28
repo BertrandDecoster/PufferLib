@@ -1179,6 +1179,30 @@ TEST(TestSnapshotValidationErrorsSayWhere) {
   AssertSnapshotRejected(s, "without a name");
 }
 
+// Statuses are StatusType values; Slowed (2) was removed and is reserved.
+TEST(TestSnapshotRejectsRemovedOrUnknownStatus) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const std::string agent0 = "agent #0 (id " + std::to_string(good.agents[0].id) + ")";
+
+  Snapshot s = good;
+  s.agents[0].statuses = {{1, 2}, {2, 3}};
+  AssertSnapshotRejected(s, "status 2 (slowed) was removed");
+  AssertSnapshotRejected(s, agent0);
+  for (int type : {-1, 5, 99}) {
+    s.agents[0].statuses = {{type, 3}};
+    AssertSnapshotRejected(s, "unknown status " + std::to_string(type));
+  }
+
+  s = good;  // Every remaining status loads
+  s.agents[0].statuses = {{0, 0}, {1, 2}, {3, 2}, {4, 2}};
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.LoadSnapshot(Snapshot::Deserialize(s.Serialize()));
+  const Agent* a = env.GetObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(a->IsStunned());
+  ASSERT_TRUE(a->IsMarked());
+  ASSERT_TRUE(a->IsRooted());
+}
+
 TEST(TestDeserializeRejectsOversizedV4Counts) {
   // Nothing in the snapshot after the skill book: the buffer ends with the
   // skill count, then the zone count.

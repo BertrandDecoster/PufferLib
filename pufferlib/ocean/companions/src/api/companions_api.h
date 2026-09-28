@@ -178,7 +178,7 @@ typedef enum {
 typedef enum {
   Companions_Status_None = 0,
   Companions_Status_Stunned = 1,
-  Companions_Status_Slowed = 2,
+  // 2 was Companions_Status_Slowed (removed); reserved, never reused.
   Companions_Status_Marked = 3,
   Companions_Status_Rooted = 4,  // Cannot move by itself (walking, self-moving skills)
 } Companions_StatusType;
