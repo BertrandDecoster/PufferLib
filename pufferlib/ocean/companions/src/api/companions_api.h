@@ -48,7 +48,10 @@
 // whom each of the last step's skill uses affected, each with what the use
 // does to it (Companions_SkillEffect). 1.4.0 was amended in
 // place before its release: an app built against the amended header refuses
-// an earlier 1.4.0 DLL at load (the DLL lacks these exports).
+// an earlier 1.4.0 DLL at load (the DLL lacks these exports). DLLs built from
+// earlier 1.4.0 commits of this branch are NOT compatible with this header
+// either, even when they load: the struct sizes changed
+// (Companions_SkillPreview, Companions_SkillUseInfo). Rebuild both sides.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -796,12 +799,15 @@ COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char*
 // What a skill use does to one agent it affects (since 1.4): bit flags in
 // Companions_SkillPreview.affected_effects / Companions_SkillUseInfo.
 // affected_effects. The skill's tags land on it, its damage hits it, it is
-// rooted, moved by the area motion (a push, or the one thing a pull takes),
-// or revived. The caster, affected under friendly fire, gets only what its
-// self_* flags allow; 0 = affected, but nothing applies to it. Root and
-// motion are decided before the damage: an agent the same use downs or
-// kills is then neither rooted nor moved (a pull then takes the next thing
-// of its ring).
+// rooted, moved by the area motion (Motion: it really changes cell; a push
+// against a wall moves nothing), or revived. The caster, affected under
+// friendly fire, gets only what its self_* flags allow; 0 = affected, but
+// nothing applies to it.
+// A preview's flags are what the use would do now, predicted before its
+// damage; a skill use's are what it DID: an agent its own damage downed or
+// killed is neither rooted nor moved (no Root, no Motion), and a pull that
+// then took the next thing of its ring reports that one with Motion. Tags
+// and Damage are the same in both.
 typedef enum {
   Companions_SkillEffect_Tags = 1 << 0,
   Companions_SkillEffect_Damage = 1 << 1,

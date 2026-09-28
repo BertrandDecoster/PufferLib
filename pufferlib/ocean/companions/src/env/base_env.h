@@ -283,13 +283,17 @@ class BaseEnv {
   // companion that cannot act and for a slot out of range)
   bool IsContextSkill(const Companion& comp, int slot) const;
 
-  // What a skill use does to one agent it affects (bit flags, as UseSkill
-  // decides them when it resolves the use): the skill's tags land on it, its
-  // damage hits it, it is revived, rooted, or moved by the area motion (a
-  // push, or the one thing a pull takes). The caster, affected with friendly
-  // fire, gets only what its self_* flags allow. Root and motion are decided
-  // before the damage: an agent the same use downs or kills is then neither
-  // rooted nor moved, and a pull then takes the next thing of its ring.
+  // What a skill use does to one agent it affects (bit flags): the skill's
+  // tags land on it, its damage hits it, it is revived, rooted, or moved by
+  // the area motion (Motion: it really changes cell; a push against a wall
+  // moves nothing). The caster, affected with friendly fire, gets only what
+  // its self_* flags allow.
+  // In a SkillPreview the flags are what the use would do now, predicted
+  // before its damage. In a SkillUse they are what the use DID: an agent its
+  // own damage downed or killed is neither rooted nor moved (no Root, no
+  // Motion), and a pull that then took the next thing of its ring reports
+  // that one with Motion. Tags and Damage are the same in both, and Revive
+  // too unless the ally got up before (an earlier caster).
   enum SkillEffect : unsigned {
     kSkillEffectTags = 1u << 0,
     kSkillEffectDamage = 1u << 1,
@@ -349,9 +353,10 @@ class BaseEnv {
     int slot = 0;     // The caster's slot it was used from (0-based)
     // The agents it affected, in the order it processed them: those on its
     // area (cell order: the centre, then up, right, down, left for a Cross),
-    // then those on a tag_path dash's path, each with the effects the use
-    // applied to it (SkillEffect). The same list PreviewSkill gives before
-    // the step (ResolveSkillTargets).
+    // then those on a tag_path dash's path, each with what the use did to it
+    // (SkillEffect). The same agents PreviewSkill gives before the step
+    // (ResolveSkillTargets); their Root / Motion / Revive may differ from the
+    // preview's prediction (see SkillEffect).
     std::vector<AffectedAgent> affected;
   };
   struct TagApplication {
@@ -511,7 +516,8 @@ class BaseEnv {
   struct SkillTargets {
     Position landing;                // The caster's cell after its own motion
     Position centre;                 // By the skill's targeting
-    // On the area (cell order), then on a tag_path dash's path, with their effects
+    // On the area (cell order), then on a tag_path dash's path, with the
+    // effects decided before the use (UseSkill then reports what it did)
     std::vector<AffectedAgent> affected;
   };
   // Pure: reads the world as it is, with the caster already on its landing
@@ -560,12 +566,11 @@ class BaseEnv {
   void MoveActor(Actor& actor, Position to);
   void ApplyZoneTag(Agent& agent);  // The tag of the cell it stands on, if any
   void ApplyZoneTags();             // Every living agent (after movement)
-  // Roots `rooted` (the affected agents given kSkillEffectRoot; not those
-  // the damage downed or killed) before anything moves, then PushOut (each
-  // ring MotionThingAt, away from the centre) / PullIn (PullFrom's thing into
-  // the centre), read from the world as it is then.
-  void AreaMotion(const SkillConfig& skill, Position centre, const Agent& caster,
-                  const std::vector<Agent*>& rooted);
+  // PushOut (each ring MotionThingAt, away from the centre) / PullIn
+  // (PullFrom's thing into the centre), read from the world as it is then;
+  // returns the ids of the actors it really moved.
+  std::vector<ObjectId> AreaMotion(const SkillConfig& skill, Position centre,
+                                   const Agent& caster);
 
   int rows_;
   int cols_;

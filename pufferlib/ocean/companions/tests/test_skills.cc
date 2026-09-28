@@ -2221,9 +2221,38 @@ TEST(TestPreviewUsableFollowsTheStep) {
   ASSERT_TRUE(p.affected.empty());
 }
 
-// A dash of 1 whose cross covers the cell it left: the caster is counted on
-// its landing (the centre, first), the vacated cell holds nobody.
+// A lunge: the caster dashes 3 cells while its skill lands 1 cell ahead, so
+// the cross around the centre covers the cell the caster left, not the one it
+// lands on. That cell is empty when the skill lands: the caster (friendly
+// fire on) is not affected there, which only the vacated-cell rule sees.
 TEST(TestPreviewSeesTheCellADashLeftEmpty) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig lunge;
+  lunge.name = "lunge";
+  lunge.targeting = SkillTargeting::Ground;
+  lunge.range = 1;
+  lunge.area = SkillArea::Cross;
+  lunge.motion = SkillMotion::Dash;
+  lunge.motion_distance = 3;
+  lunge.tags = {{"lunged", kPermanentTag}};
+  env.GetMutableSkillBook().Define(lunge);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* above = Place(env, 1, {2, 2});  // Above the centre (3,2)
+  env.SetCompanionSkill(caster->GetId(), 0, "lunge");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 2);
+  ASSERT_TRUE(p.caster_landing == (Position{3, 4}));
+  ASSERT_TRUE(p.centre == (Position{3, 2}));
+  // (3,1), left of the centre, is where the caster was: nobody there now
+  ASSERT_TRUE(p.affected == (Affected{{above->GetId(), kTagsFx}}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 4}));
+  ASSERT_FALSE(Has(env, caster, "lunged"));
+  ASSERT_TRUE(Has(env, above, "lunged"));
+}
+
+// A dash of 1 whose cross is centred on its landing: the caster is counted
+// there (the centre, first), before its ring.
+TEST(TestPreviewCountsTheCasterOnItsLanding) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   SkillConfig hop;
@@ -2239,9 +2268,7 @@ TEST(TestPreviewSeesTheCellADashLeftEmpty) {
   env.SetCompanionSkill(caster->GetId(), 0, "hop");
   BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 2);
   ASSERT_TRUE(p.caster_landing == (Position{3, 3}));
-  // The centre (the caster, landed), then up; (3,2), left of the centre, is empty
   ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), kTagsFx}, {above->GetId(), kTagsFx}}));
-  ASSERT_TRUE(caster->GetPosition() == (Position{3, 3}));
   ASSERT_TRUE(TaggedBySkill(env) == WithEffect(p.affected, kTagsFx));
 }
 
@@ -2289,6 +2316,76 @@ TEST(TestPreviewCasterEffectsFollowItsSelfFlags) {
   ASSERT_EQ(caster->GetHealth(), 4);
   ASSERT_TRUE(TaggedBySkill(env).empty());
   ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
+}
+
+// A use reports what it DID; the preview, what it would do. An agent the
+// use's own damage kills or downs is neither rooted nor moved: the preview
+// predicted Root and Motion, the use reports neither.
+TEST(TestAUseReportsThatItsDamageStoppedRootAndPush) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig blast = DefineCopy(env, "fireball", "blast");  // cross, push_out 1
+  blast.damage = 3;
+  blast.root_steps = 1;
+  env.GetMutableSkillBook().Define(blast);
+  Agent* caster = Place(env, 0, {3, 1});                  // centre (3,4)
+  Agent* ally = Place(env, 1, {4, 4});                    // down ring cell, 3 HP: downed
+  ally->SetMaxHealth(3);
+  Agent* doomed = AddAgent(env, {2, 4}, Faction::ENEMY);  // up ring cell, 3 HP: killed
+  Agent* tough = AddAgent(env, {3, 5}, Faction::ENEMY);   // right ring cell
+  tough->SetMaxHealth(5);
+  env.SetCompanionSkill(caster->GetId(), 0, "blast");
+  const unsigned all = kTagsFx | kDamageFx | kRootFx | kMotionFx;
+  BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(caster), 0, Direction::Right);
+  ASSERT_TRUE(p.affected ==
+              (Affected{{doomed->GetId(), all}, {tough->GetId(), all}, {ally->GetId(), all}}));
+  env.Step({Use(MovementAction::Right), kStay, kStay, kStay});
+  ASSERT_FALSE(doomed->IsAlive());
+  ASSERT_TRUE(ally->IsDowned());
+  ASSERT_TRUE(tough->GetPosition() == (Position{3, 6}));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].affected ==
+              (Affected{{doomed->GetId(), kTagsFx | kDamageFx},
+                        {tough->GetId(), all},
+                        {ally->GetId(), kTagsFx | kDamageFx}}));
+}
+
+// A pull whose first ring thing the use's damage kills takes the next one:
+// the use reports that one moved.
+TEST(TestAUseReportsThePullThatTookTheNextThing) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig drag = DefineCopy(env, "vortex", "drag");  // cross, pull_in, root 1
+  drag.damage = 3;
+  env.GetMutableSkillBook().Define(drag);
+  Agent* caster = Place(env, 0, {3, 1});                  // centre (3,4)
+  Agent* doomed = AddAgent(env, {2, 4}, Faction::ENEMY);  // up: first by priority, killed
+  Agent* tough = AddAgent(env, {3, 5}, Faction::ENEMY);   // right: pulled instead
+  tough->SetMaxHealth(5);
+  env.SetCompanionSkill(caster->GetId(), 0, "drag");
+  BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(caster), 0, Direction::Right);
+  ASSERT_TRUE(p.affected == (Affected{{doomed->GetId(), kDamageFx | kRootFx | kMotionFx},
+                                      {tough->GetId(), kDamageFx | kRootFx}}));
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_FALSE(doomed->IsAlive());
+  ASSERT_TRUE(tough->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].affected ==
+              (Affected{{doomed->GetId(), kDamageFx},
+                        {tough->GetId(), kDamageFx | kRootFx | kMotionFx}}));
+}
+
+// A push against a wall moves nothing: no Motion, predicted or done.
+TEST(TestAPushIntoAWallIsNoMotion) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {2, 1});                 // fireball right: centre (2,4)
+  Agent* walled = AddAgent(env, {1, 4}, Faction::ENEMY);  // up ring cell, the wall above
+  Agent* free = AddAgent(env, {2, 5}, Faction::ENEMY);    // right ring cell
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 3);
+  ASSERT_TRUE(p.affected ==
+              (Affected{{walled->GetId(), kTagsFx}, {free->GetId(), kTagsFx | kMotionFx}}));
+  ASSERT_TRUE(walled->GetPosition() == (Position{1, 4}));
+  ASSERT_TRUE(free->GetPosition() == (Position{2, 6}));
 }
 
 // The step's SkillUse lists whom it affected: a later caster reaches what an
