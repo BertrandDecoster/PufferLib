@@ -1257,16 +1257,19 @@ TEST(TestResetClearsCellTags) {
   env.Reset();
   ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
 
+  // A snapshot carries its zones: loading replaces the env's with them.
   env.SetCellTag({3, 2}, "wet", kPermanentTag);
   Snapshot saved = env.SaveSnapshot();
+  env.SetCellTag({4, 4}, "oil", kPermanentTag);
   env.LoadSnapshot(saved);
-  ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, env.GetTagTable().Find("wet"));
+  ASSERT_EQ(env.GetCellTag({4, 4}).tag, kInvalidTag);
 }
 
 TEST(TestResetWithD4ClearsCellTags) {
   SynchroEnv env(10, 10, 1, 1, 0, 42, 1);  // A rotation
   env.SetCellTag({2, 3}, "wet", kPermanentTag);
-  env.Reset();  // Cleared (by LoadSnapshot) before the transform, which asserts it
+  env.Reset();  // A generated level has no zones: LoadSnapshot clears them
   for (int r = 0; r < env.GetRows(); ++r) {
     for (int c = 0; c < env.GetCols(); ++c) {
       ASSERT_EQ(env.GetCellTag({r, c}).tag, kInvalidTag);

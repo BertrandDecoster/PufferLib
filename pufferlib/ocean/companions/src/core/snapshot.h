@@ -16,6 +16,7 @@
 #include "annotations.h"
 #include "cell.h"
 #include "fsm/fsm_state.h"
+#include "skill_config.h"
 #include "types.h"
 
 namespace companions {
@@ -34,6 +35,23 @@ struct CellSnapshot {
 struct StatusSnapshot {
   int type = 0;      // StatusType as int
   int duration = 0;
+};
+
+// =============================================================================
+// TagSnapshot - An opaque agent tag, by name (TagTable ids are per env)
+// =============================================================================
+struct TagSnapshot {
+  std::string tag;
+  int duration = kPermanentTag;  // Positive ticks left, or kPermanentTag
+};
+
+// =============================================================================
+// CellTagSnapshot - A zone: a cell's tag, by name (snapshot version 4)
+// =============================================================================
+struct CellTagSnapshot {
+  Position cell;
+  std::string tag;
+  int duration = kPermanentTag;  // Landed on agents: positive ticks, or kPermanentTag
 };
 
 // =============================================================================
@@ -99,6 +117,14 @@ struct AgentSnapshot {
   // Cadence (for AgentFSM)
   std::vector<int> cadence;
   int tick = 0;
+
+  // Snapshot version 4. Opaque tags (any agent), and a companion's skill slots
+  // (names, "" = empty; at most kMaxSkillSlots, missing slots are empty) and
+  // their cooldowns (missing = 0). Slots and cooldowns are empty for
+  // non-companions.
+  std::vector<TagSnapshot> tags;
+  std::vector<std::string> skills;
+  std::vector<int> cooldowns;
 };
 
 // =============================================================================
@@ -153,6 +179,15 @@ struct Snapshot {
   // data so CellKind stays pure terrain. Added in v2; absent in v1 snapshots.
   std::vector<AnnotationSnapshot> annotations;
 
+  // Snapshot version 4. The env's whole SkillBook (builtins included: a level
+  // may retune them). Loading resets the book to the builtins, then defines
+  // these, so empty = builtins only.
+  std::vector<SkillConfig> skills;
+
+  // Snapshot version 4. Zones, in the same frame as `cells` and the cell
+  // annotations: on load, d4_transform moves them with the grid.
+  std::vector<CellTagSnapshot> cell_tags;
+
   // ==========================================================================
   // Validation helpers
   // ==========================================================================
@@ -168,6 +203,13 @@ struct Snapshot {
 
   // Count cells of a given kind
   int CountCells(CellKind kind) const;
+
+  // Throws std::runtime_error unless the v4 data is loadable: tag durations
+  // positive or kPermanentTag, tag and skill names non-empty, skill enums in
+  // range, zones inside the grid, at most kMaxSkillSlots slots / cooldowns per
+  // agent, cooldowns >= 0. Slot names are not checked against `skills`: an
+  // undefined skill loads and is simply unusable.
+  void ValidateSkillsTagsZones() const;
 
   // ==========================================================================
   // Serialization (binary format)

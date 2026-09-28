@@ -2,6 +2,7 @@
 // Test suite for Snapshot system
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include "../src/core/annotations.h"
+#include "../src/core/d4_transform.h"
 #include "../src/core/snapshot.h"
 #include "../src/core/types.h"
 #include "../src/core/cell.h"
@@ -752,12 +754,12 @@ TEST(TestSnapshotV1MigrationRoundTripsAsV2) {
   Snapshot migrated = Snapshot::Deserialize(buf_v1);
 
   std::vector<uint8_t> buf_v2 = migrated.Serialize();
-  // Serialize always writes the current version (3: v2 + agent kind/attack).
+  // Serialize always writes the current version (4: v3 + skills, tags, zones).
   uint32_t magic = 0, version = 0;
   std::memcpy(&magic, buf_v2.data(), sizeof(magic));
   std::memcpy(&version, buf_v2.data() + sizeof(magic), sizeof(version));
   ASSERT_EQ(magic, (uint32_t)0x534E4150);
-  ASSERT_EQ(version, (uint32_t)3);
+  ASSERT_EQ(version, (uint32_t)4);
 
   Snapshot round = Snapshot::Deserialize(buf_v2);
   ASSERT_EQ(round.cells.size(), migrated.cells.size());
@@ -782,6 +784,333 @@ TEST(TestSnapshotV1MigrationRejectsUnknownCellKind) {
   std::vector<int> kinds_v1 = {0, 99, 0, 0};
   std::vector<uint8_t> buf = BuildV1Snapshot(2, 2, kinds_v1);
   ASSERT_THROW(Snapshot::Deserialize(buf), std::runtime_error);
+}
+
+// =============================================================================
+// Snapshot v4: skills, agent tags / slots / cooldowns, zone tags
+// =============================================================================
+
+namespace {
+
+Snapshot BinaryRoundTrip(const Snapshot& s) { return Snapshot::Deserialize(s.Serialize()); }
+
+Agent* FirstAgent(BaseEnv& env) { return env.GetMutableObjectManager().GetAllAgents()[0]; }
+
+int CountZones(const BaseEnv& env) {
+  int n = 0;
+  for (int r = 0; r < env.GetRows(); ++r) {
+    for (int c = 0; c < env.GetCols(); ++c) {
+      if (env.GetCellTag({r, c}).tag != kInvalidTag) ++n;
+    }
+  }
+  return n;
+}
+
+void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
+  ASSERT_EQ(a.name, b.name);
+  ASSERT_TRUE(a.targeting == b.targeting);
+  ASSERT_EQ(a.range, b.range);
+  ASSERT_TRUE(a.filter == b.filter);
+  ASSERT_TRUE(a.area == b.area);
+  ASSERT_TRUE(a.motion == b.motion);
+  ASSERT_EQ(a.motion_distance, b.motion_distance);
+  ASSERT_EQ(a.tag_path, b.tag_path);
+  ASSERT_EQ(a.tags.size(), b.tags.size());
+  for (size_t i = 0; i < a.tags.size(); ++i) {
+    ASSERT_EQ(a.tags[i].tag, b.tags[i].tag);
+    ASSERT_EQ(a.tags[i].duration, b.tags[i].duration);
+  }
+  ASSERT_EQ(a.root_steps, b.root_steps);
+  ASSERT_EQ(a.cooldown, b.cooldown);
+}
+
+// One skill per value of every enum, and every scalar off its default.
+std::vector<SkillConfig> EverySkillShape() {
+  std::vector<SkillConfig> out;
+  const SkillTargeting targetings[] = {SkillTargeting::Self, SkillTargeting::Ground,
+                                       SkillTargeting::Projectile};
+  const TargetFilter filters[] = {TargetFilter::All, TargetFilter::Companion,
+                                  TargetFilter::Enemy, TargetFilter::Neutral};
+  const SkillArea areas[] = {SkillArea::Single, SkillArea::Cross};
+  const SkillMotion motions[] = {SkillMotion::None, SkillMotion::Dash, SkillMotion::Teleport,
+                                 SkillMotion::PushOut, SkillMotion::PullIn};
+  int i = 0;
+  for (SkillMotion m : motions) {
+    for (SkillArea ar : areas) {
+      SkillConfig s;
+      s.name = "shape" + std::to_string(i);
+      s.targeting = targetings[i % 3];
+      s.filter = filters[i % 4];
+      s.area = ar;
+      s.motion = m;
+      s.range = 2 + i;
+      s.motion_distance = 1 + i;
+      s.tag_path = (i % 2) == 0;
+      s.tags = {{"t" + std::to_string(i), 1 + i}, {"perm", kPermanentTag}};
+      s.root_steps = i;
+      s.cooldown = 3 + i;
+      out.push_back(s);
+      ++i;
+    }
+  }
+  return out;
+}
+
+// 2x2 snapshot, one companion, nothing v4-specific in it.
+Snapshot MinimalSnapshot() {
+  Snapshot s;
+  s.rows = 2;
+  s.cols = 2;
+  s.cells.resize(4);
+  AgentSnapshot a;
+  a.id = 0;
+  a.type = static_cast<int>(ObjectType::Companion);
+  a.position = {1, 1};
+  s.agents.push_back(a);
+  return s;
+}
+
+}  // namespace
+
+TEST(TestBinaryRoundTripSkillsTagsZones) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.targeting = SkillTargeting::Projectile;
+  frost.range = 2;
+  frost.filter = TargetFilter::Enemy;
+  frost.tags = {{"chilled", kPermanentTag}};
+  env.GetMutableSkillBook().Define(frost);
+  SkillConfig far_fireball = *env.GetSkillBook().Find("fireball");
+  far_fireball.range = 5;  // a level retunes a builtin
+  env.GetMutableSkillBook().Define(far_fireball);
+  Agent* a = FirstAgent(env);
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "frost"));
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 1, "vortex"));
+  dynamic_cast<Companion*>(a)->SetCooldown(1, 2);
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "blessed", kPermanentTag));
+  a->ApplyStatus(StatusType::Rooted, 2);
+  ASSERT_TRUE(env.SetCellTag({2, 2}, "wet", kPermanentTag));
+  ASSERT_TRUE(env.SetCellTag({5, 6}, "oil", 2));
+
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  other.Reset();
+  other.GetMutableTagTable().Intern("unrelated");  // Ids differ between envs: names travel
+  other.LoadSnapshot(BinaryRoundTrip(env.SaveSnapshot()));
+
+  const SkillConfig* f = other.GetSkillBook().Find("frost");
+  ASSERT_TRUE(f != nullptr);
+  AssertSkillEq(*f, frost);
+  ASSERT_EQ(other.GetSkillBook().Find("fireball")->range, 5);
+  ASSERT_EQ(other.GetSkillBook().All().size(), env.GetSkillBook().All().size());
+  auto* c = dynamic_cast<Companion*>(FirstAgent(other));
+  ASSERT_EQ(c->GetSkill(0), std::string("frost"));
+  ASSERT_EQ(c->GetSkill(1), std::string("vortex"));
+  ASSERT_EQ(c->GetCooldown(0), 0);
+  ASSERT_EQ(c->GetCooldown(1), 2);
+  ASSERT_EQ(c->GetTags().size(), 2u);
+  ASSERT_EQ(c->GetTags()[0].id, other.GetTagTable().Find("burning"));
+  ASSERT_EQ(c->GetTags()[0].duration, 3);
+  ASSERT_EQ(c->GetTags()[1].id, other.GetTagTable().Find("blessed"));
+  ASSERT_EQ(c->GetTags()[1].duration, kPermanentTag);
+  ASSERT_TRUE(c->IsRooted());
+  ASSERT_EQ(other.GetCellTag({2, 2}).tag, other.GetTagTable().Find("wet"));
+  ASSERT_EQ(other.GetCellTag({2, 2}).duration, kPermanentTag);
+  ASSERT_EQ(other.GetCellTag({5, 6}).tag, other.GetTagTable().Find("oil"));
+  ASSERT_EQ(other.GetCellTag({5, 6}).duration, 2);
+  ASSERT_EQ(CountZones(other), 2);
+}
+
+TEST(TestBinaryEverySkillConfigFieldRoundTrips) {
+  Snapshot s = MinimalSnapshot();
+  s.skills = EverySkillShape();
+  s.agents[0].tags = {{"burning", 3}, {"blessed", kPermanentTag}};
+  s.agents[0].skills = {"shape1", ""};
+  s.agents[0].cooldowns = {4, 0};
+  s.cell_tags = {{Position{0, 1}, "wet", 5}};
+  Snapshot back = BinaryRoundTrip(s);
+  ASSERT_EQ(back.skills.size(), s.skills.size());
+  for (size_t i = 0; i < s.skills.size(); ++i) AssertSkillEq(s.skills[i], back.skills[i]);
+  const AgentSnapshot& a = back.agents[0];
+  ASSERT_EQ(a.tags.size(), 2u);
+  ASSERT_EQ(a.tags[0].tag, std::string("burning"));
+  ASSERT_EQ(a.tags[0].duration, 3);
+  ASSERT_EQ(a.tags[1].duration, kPermanentTag);
+  ASSERT_TRUE(a.skills == s.agents[0].skills);
+  ASSERT_TRUE(a.cooldowns == s.agents[0].cooldowns);
+  ASSERT_EQ(back.cell_tags.size(), 1u);
+  ASSERT_TRUE(back.cell_tags[0].cell == (Position{0, 1}));
+  ASSERT_EQ(back.cell_tags[0].tag, std::string("wet"));
+  ASSERT_EQ(back.cell_tags[0].duration, 5);
+}
+
+TEST(TestBinaryV3SnapshotStillLoads) {
+  // Everything v4 adds is empty here, so a v3 buffer is the v4 one minus the
+  // agent's three empty counts (tags, skills, cooldowns) and the two trailing
+  // empty counts (skills, cell tags), with version 3.
+  std::vector<uint8_t> v4 = MinimalSnapshot().Serialize();
+  // After the agent: effects count, tick, horizon, rng x2, d4, patrol count,
+  // annotations count, skills count, cell tags count.
+  const size_t tail = 4 + 4 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4;
+  std::vector<uint8_t> v3(v4.begin(), v4.end() - tail - 12);
+  v3.insert(v3.end(), v4.end() - tail, v4.end() - 8);
+  uint32_t three = 3;
+  std::memcpy(v3.data() + 4, &three, sizeof(three));
+
+  Snapshot s = Snapshot::Deserialize(v3);
+  ASSERT_EQ(s.agents.size(), 1u);
+  ASSERT_TRUE(s.agents[0].position == (Position{1, 1}));
+  ASSERT_TRUE(s.agents[0].tags.empty());
+  ASSERT_TRUE(s.agents[0].skills.empty());
+  ASSERT_TRUE(s.agents[0].cooldowns.empty());
+  ASSERT_TRUE(s.skills.empty());
+  ASSERT_TRUE(s.cell_tags.empty());
+  ASSERT_EQ(s.horizon, 100);
+  // And the v4 buffer itself is exactly that plus the empty v4 counts.
+  ASSERT_EQ(v4.size(), v3.size() + 20);
+}
+
+TEST(TestLoadSnapshotRejectsInvalidSkillsTagsZones) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  const Snapshot good = env.SaveSnapshot();
+  env.LoadSnapshot(good);  // Sanity
+
+  std::vector<Snapshot> bad;
+  for (int d : {0, -2}) {
+    Snapshot s = good;
+    s.agents[0].tags = {{"burning", d}};
+    bad.push_back(s);
+    s = good;
+    s.cell_tags = {{Position{2, 2}, "wet", d}};
+    bad.push_back(s);
+    s = good;
+    s.skills[0].tags = {{"burning", d}};
+    bad.push_back(s);
+  }
+  Snapshot s = good;
+  s.skills[0].name = "";
+  bad.push_back(s);
+  s = good;
+  s.skills[0].tags = {{"", 2}};
+  bad.push_back(s);
+  s = good;
+  s.agents[0].tags = {{"", 2}};
+  bad.push_back(s);
+  s = good;
+  s.cell_tags = {{Position{2, 2}, "", 2}};
+  bad.push_back(s);
+  s = good;
+  s.cell_tags = {{Position{8, 0}, "wet", 2}};  // Out of the grid
+  bad.push_back(s);
+  s = good;
+  s.agents[0].skills = {"", "", ""};  // More than kMaxSkillSlots
+  bad.push_back(s);
+  s = good;
+  s.agents[0].cooldowns = {-1, 0};
+  bad.push_back(s);
+  s = good;
+  s.skills[0].targeting = static_cast<SkillTargeting>(9);
+  bad.push_back(s);
+  s = good;
+  s.skills[0].filter = static_cast<TargetFilter>(9);
+  bad.push_back(s);
+
+  for (const Snapshot& b : bad) {
+    ASSERT_THROW(env.LoadSnapshot(b), std::runtime_error);
+    ASSERT_THROW(Snapshot::Deserialize(b.Serialize()), std::runtime_error);
+  }
+}
+
+TEST(TestZoneSaveLoadRoundTripAtIdentity) {
+  SynchroEnv env(6, 9, 1, 1, 0, 42, 0);
+  ASSERT_TRUE(env.SetCellTag({1, 7}, "wet", 3));
+  SynchroEnv other(6, 9, 1, 1, 0, 7, 0);
+  other.LoadSnapshot(BinaryRoundTrip(env.SaveSnapshot()));
+  ASSERT_EQ(CountZones(other), 1);
+  ASSERT_EQ(other.GetCellTag({1, 7}).tag, other.GetTagTable().Find("wet"));
+  ASSERT_EQ(other.GetCellTag({1, 7}).duration, 3);
+}
+
+// Snapshots hold the untransformed world plus the d4 to apply: a zone lands on
+// the same physical cell as a cell annotation saved on the same cell.
+TEST(TestZoneFollowsD4LikeAnnotations) {
+  const int kRows = 6, kCols = 9;
+  const Position wall{2, 4}, zone{2, 5}, start{3, 5};  // Wall left of the zone, agent below
+  for (int t : {1, 4, 6}) {  // Rot90, FlipH, FlipD (transpose)
+    SynchroEnv src(kRows, kCols, 1, 1, 0, 42, 0);
+    Snapshot snap = src.SaveSnapshot();
+    for (int r = 1; r < kRows - 1; ++r) {
+      for (int c = 1; c < kCols - 1; ++c) snap.cells[r * kCols + c].kind = CellKind::Floor;
+    }
+    snap.cells[wall.row * kCols + wall.col].kind = CellKind::Wall;
+    snap.annotations.clear();
+    AnnotationSnapshot goal;
+    goal.target_type = 0;
+    goal.pos = zone;
+    goal.agent_id = kInvalidObjectId;
+    goal.tag = SemanticTag::SynchroGoal;
+    goal.owner_lens_id = -1;
+    snap.annotations.push_back(goal);
+    snap.agents[0].position = start;
+    snap.agents[0].prev_position = start;
+    snap.cell_tags = {{zone, "wet", kPermanentTag}};
+    snap.d4_transform = t;
+
+    SynchroEnv dst(kRows, kCols, 1, 1, 0, 42, 0);
+    dst.LoadSnapshot(BinaryRoundTrip(snap));
+
+    const D4Transform tr = static_cast<D4Transform>(t);
+    const Position z = TransformPosition(zone, kRows, kCols, tr);
+    const Position w = TransformPosition(wall, kRows, kCols, tr);
+    auto goals = dst.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal);
+    ASSERT_EQ(goals.size(), 1u);
+    ASSERT_TRUE(goals[0] == z);
+    const TagId wet = dst.GetTagTable().Find("wet");
+    ASSERT_EQ(CountZones(dst), 1);
+    ASSERT_EQ(dst.GetCellTag(z).tag, wet);
+    ASSERT_TRUE(dst.GetGrid().GetCell(w).GetKind() == CellKind::Wall);
+    ASSERT_EQ(std::abs(w.row - z.row) + std::abs(w.col - z.col), 1);
+
+    Agent* agent = FirstAgent(dst);
+    const Position p = agent->GetPosition();
+    ASSERT_TRUE(p == TransformPosition(start, kRows, kCols, tr));
+    MovementAction mv = z.row < p.row   ? MovementAction::Up
+                        : z.row > p.row ? MovementAction::Down
+                        : z.col < p.col ? MovementAction::Left
+                                        : MovementAction::Right;
+    ASSERT_FALSE(agent->HasTag(wet));
+    dst.Step({EncodeAction(mv)});
+    ASSERT_TRUE(agent->GetPosition() == z);
+    ASSERT_TRUE(agent->HasTag(wet));
+  }
+}
+
+// Zones and tags restored before the next Step land as usual: fresh for an
+// agent without the tag, not fresh for one saved carrying it.
+TEST(TestZoneRestoredByLoadLandsOnNextStep) {
+  const Action kStay = EncodeAction(MovementAction::Stay);
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  ASSERT_TRUE(env.SetCellTag(FirstAgent(env)->GetPosition(), "wet", 2));
+
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  other.LoadSnapshot(BinaryRoundTrip(env.SaveSnapshot()));
+  ASSERT_TRUE(other.GetLastTagsApplied().empty());
+  other.Step({kStay});
+  ASSERT_EQ(other.GetLastTagsApplied().size(), 1u);
+  const auto& first = other.GetLastTagsApplied()[0];
+  ASSERT_EQ(first.tag, other.GetTagTable().Find("wet"));
+  ASSERT_EQ(first.duration, 2);
+  ASSERT_EQ(first.cause, std::string("zone"));
+  ASSERT_TRUE(first.fresh);
+
+  SynchroEnv third(8, 8, 1, 1, 0, 9);
+  third.LoadSnapshot(BinaryRoundTrip(other.SaveSnapshot()));
+  ASSERT_TRUE(FirstAgent(third)->HasTag(third.GetTagTable().Find("wet")));
+  third.Step({kStay});  // The tag ticks 2 -> 1, then the zone re-lands it
+  ASSERT_EQ(third.GetLastTagsApplied().size(), 1u);
+  ASSERT_FALSE(third.GetLastTagsApplied()[0].fresh);
 }
 
 // =============================================================================

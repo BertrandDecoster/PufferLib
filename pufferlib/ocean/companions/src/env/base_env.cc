@@ -185,8 +185,6 @@ void BaseEnv::UpdateAgentFSM() {
 
 void BaseEnv::ApplyD4Transform() {
   if (d4_transform_ == 0) return;  // Identity - no transformation needed
-  // Runs at the end of LoadSnapshot, which cleared them.
-  assert(cell_tags_.empty() && "cell tags are not D4-transformed");
 
   D4Transform transform = ToD4Transform(d4_transform_);
   int old_rows = rows_;
@@ -216,6 +214,20 @@ void BaseEnv::ApplyD4Transform() {
       [transform, old_rows, old_cols](Position pos) {
         return TransformPosition(pos, old_rows, old_cols, transform);
       });
+
+  // Zones are cell-keyed like those annotations: same mapping (row-major in
+  // the old dimensions -> row-major in the new ones).
+  if (!cell_tags_.empty()) {
+    std::vector<CellTag> moved(cell_tags_.size());
+    for (int r = 0; r < old_rows; ++r) {
+      for (int c = 0; c < old_cols; ++c) {
+        Position to = TransformPosition(Position{r, c}, old_rows, old_cols, transform);
+        moved[static_cast<size_t>(to.row * new_cols + to.col)] =
+            cell_tags_[static_cast<size_t>(r * old_cols + c)];
+      }
+    }
+    cell_tags_ = std::move(moved);
+  }
 }
 
 std::string BaseEnv::ToString() const {
@@ -1147,10 +1159,19 @@ Snapshot BaseEnv::SaveSnapshot() const {
       }
     }
 
-    // Direction for Companions
+    // Tags, by name (ids are only meaningful within this env)
+    for (const AgentTag& t : agent->GetTags()) {
+      as.tags.push_back({tags_.Name(t.id), t.duration});
+    }
+
+    // Direction, skill slots and cooldowns for Companions
     if (const Companion* comp = dynamic_cast<const Companion*>(agent)) {
       as.direction = static_cast<int>(comp->GetDirection());
       as.color = static_cast<int>(comp->GetColor());
+      for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
+        as.skills.push_back(comp->GetSkill(slot));
+        as.cooldowns.push_back(comp->GetCooldown(slot));
+      }
     }
 
     // FSM data for AgentFSM
@@ -1224,6 +1245,17 @@ Snapshot BaseEnv::SaveSnapshot() const {
   // Semantic annotations
   snap.annotations = annotations_.Serialize();
 
+  // Every skill of the book, builtins included (a level may retune them)
+  snap.skills = skills_.All();
+
+  // Zones, by name, in current coordinates (as the cells and annotations above)
+  for (int r = 0; r < rows_ && !cell_tags_.empty(); ++r) {
+    for (int c = 0; c < cols_; ++c) {
+      const CellTag& z = cell_tags_[static_cast<size_t>(r * cols_ + c)];
+      if (z.tag != kInvalidTag) snap.cell_tags.push_back({Position{r, c}, tags_.Name(z.tag), z.duration});
+    }
+  }
+
   return snap;
 }
 
@@ -1236,8 +1268,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
                              std::to_string(snapshot.cols));
   }
 
-  // Validate for this environment type
+  // Validate for this environment type, and the v4 data (before any change)
   ValidateSnapshot(snapshot);
+  snapshot.ValidateSkillsTagsZones();
 
   // Load grid cells
   std::vector<std::pair<CellKind, CellOrigin>> cell_data;
@@ -1251,7 +1284,18 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   object_manager_->Clear();
   effect_system_->Clear();
   ClearStepReports();  // They name the old world's ObjectIds
-  ClearCellTags();     // World state (and ApplyD4Transform below expects none)
+  ClearCellTags();     // World state: replaced by the snapshot's zones below
+
+  // The level's skill book: builtins, then the snapshot's skills (which may
+  // retune builtins). A snapshot without skills leaves the builtins only, so
+  // a level's skills never leak into the next one.
+  skills_.Reset();
+  for (const SkillConfig& skill : snapshot.skills) skills_.Define(skill);
+
+  // The TagTable is deliberately NOT cleared: snapshots carry tag names and
+  // re-intern them, and keeping the table keeps every id stable across loads
+  // and resets for hosts that cache ids (a cleared table would hand an old id
+  // to a different name). It only grows by the names the env has ever seen.
 
   // Load agents
   for (const auto& as : snapshot.agents) {
@@ -1303,10 +1347,22 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
       agent->ApplyStatus(static_cast<StatusType>(ss.type), ss.duration);
     }
 
+    // Restore tags (validated above), by name
+    for (const TagSnapshot& t : as.tags) {
+      agent->ApplyTag(tags_.Intern(t.tag), t.duration);
+    }
+
     // Restore Companion-specific state
     if (Companion* comp = dynamic_cast<Companion*>(agent)) {
       comp->SetDirection(static_cast<Direction>(as.direction));
       comp->SetColor(static_cast<ActorColor>(as.color));
+      // Slots as saved, without checking the book: a skill the book lacks
+      // stays in its slot and is simply unusable (CanUseSkill).
+      for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
+        const size_t i = static_cast<size_t>(slot);
+        comp->SetSkill(slot, i < as.skills.size() ? as.skills[i] : std::string());
+        comp->SetCooldown(slot, i < as.cooldowns.size() ? as.cooldowns[i] : 0);
+      }
     }
 
     // Restore AgentFSM-specific state
@@ -1385,6 +1441,14 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
 
   // Restore semantic annotations (present in v2+ snapshots; empty vector in v1).
   annotations_.Deserialize(snapshot.annotations);
+
+  // Restore zones (v4+), in the snapshot's frame like the cells and cell
+  // annotations: ApplyD4Transform below moves all three together.
+  for (const CellTagSnapshot& z : snapshot.cell_tags) {
+    const bool set = SetCellTag(z.cell, z.tag, z.duration);  // Validated above
+    assert(set && "validated zone rejected");
+    (void)set;
+  }
 
   // Apply D4 symmetry transformation if specified
   // (Snapshot contains pre-transform positions, so we apply transform after loading)

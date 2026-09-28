@@ -15,6 +15,9 @@
 #include "../src/core/cell.h"
 #include "../src/env/synchro_env.h"
 #include "../src/env/aggro_env.h"
+#include "../third_party/nlohmann/json.hpp"
+
+using json = nlohmann::json;
 
 using namespace companions;
 
@@ -423,9 +426,9 @@ TEST(TestJsonSnapshotVersionRejection) {
 
   // Tamper the version field.
   std::string tampered = json_str;
-  size_t pos = tampered.find("\"version\": 2");
+  size_t pos = tampered.find("\"version\": 4");
   ASSERT_TRUE(pos != std::string::npos);
-  tampered.replace(pos, 12, "\"version\": 99");
+  tampered.replace(pos, 12, "\"version\": 5");  // One above current
 
   bool threw = false;
   try {
@@ -462,6 +465,300 @@ TEST(TestJsonRoundTripStatuses) {
       }
     }
     ASSERT_TRUE(found);
+  }
+}
+
+// =============================================================================
+// Snapshot v4: skills, agent tags / slots / cooldowns, zone tags
+// =============================================================================
+
+namespace {
+
+Snapshot JsonRoundTrip(const Snapshot& s) { return SnapshotFromJson(SnapshotToJson(s)); }
+
+Companion* FirstCompanion(BaseEnv& env) {
+  return dynamic_cast<Companion*>(env.GetMutableObjectManager().GetAllAgents()[0]);
+}
+
+bool HasAnyZone(const BaseEnv& env) {
+  for (int r = 0; r < env.GetRows(); ++r) {
+    for (int c = 0; c < env.GetCols(); ++c) {
+      if (env.GetCellTag({r, c}).tag != kInvalidTag) return true;
+    }
+  }
+  return false;
+}
+
+void AssertSkillEq(const SkillConfig& a, const SkillConfig& b) {
+  ASSERT_EQ(a.name, b.name);
+  ASSERT_TRUE(a.targeting == b.targeting);
+  ASSERT_EQ(a.range, b.range);
+  ASSERT_TRUE(a.filter == b.filter);
+  ASSERT_TRUE(a.area == b.area);
+  ASSERT_TRUE(a.motion == b.motion);
+  ASSERT_EQ(a.motion_distance, b.motion_distance);
+  ASSERT_EQ(a.tag_path, b.tag_path);
+  ASSERT_EQ(a.tags.size(), b.tags.size());
+  for (size_t i = 0; i < a.tags.size(); ++i) {
+    ASSERT_EQ(a.tags[i].tag, b.tags[i].tag);
+    ASSERT_EQ(a.tags[i].duration, b.tags[i].duration);
+  }
+  ASSERT_EQ(a.root_steps, b.root_steps);
+  ASSERT_EQ(a.cooldown, b.cooldown);
+}
+
+// One skill per value of every enum, and every scalar off its default.
+std::vector<SkillConfig> EverySkillShape() {
+  std::vector<SkillConfig> out;
+  const SkillTargeting targetings[] = {SkillTargeting::Self, SkillTargeting::Ground,
+                                       SkillTargeting::Projectile};
+  const TargetFilter filters[] = {TargetFilter::All, TargetFilter::Companion,
+                                  TargetFilter::Enemy, TargetFilter::Neutral};
+  const SkillArea areas[] = {SkillArea::Single, SkillArea::Cross};
+  const SkillMotion motions[] = {SkillMotion::None, SkillMotion::Dash, SkillMotion::Teleport,
+                                 SkillMotion::PushOut, SkillMotion::PullIn};
+  int i = 0;
+  for (SkillMotion m : motions) {
+    for (SkillArea ar : areas) {
+      SkillConfig s;
+      s.name = "shape" + std::to_string(i);
+      s.targeting = targetings[i % 3];
+      s.filter = filters[i % 4];
+      s.area = ar;
+      s.motion = m;
+      s.range = 2 + i;
+      s.motion_distance = 1 + i;
+      s.tag_path = (i % 2) == 0;
+      s.tags = {{"t" + std::to_string(i), 1 + i}, {"perm", kPermanentTag}};
+      s.root_steps = i;
+      s.cooldown = 3 + i;
+      out.push_back(s);
+      ++i;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST(TestJsonRoundTripSkillsTagsZones) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.targeting = SkillTargeting::Projectile;
+  frost.range = 2;
+  frost.filter = TargetFilter::Enemy;
+  frost.tags = {{"chilled", kPermanentTag}};
+  env.GetMutableSkillBook().Define(frost);
+  SkillConfig far_fireball = *env.GetSkillBook().Find("fireball");
+  far_fireball.range = 5;  // a level retunes a builtin
+  env.GetMutableSkillBook().Define(far_fireball);
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "frost"));
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 1, "vortex"));
+  dynamic_cast<Companion*>(a)->SetCooldown(1, 2);
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
+  a->ApplyStatus(StatusType::Rooted, 2);
+  ASSERT_TRUE(env.SetCellTag({2, 2}, "wet", kPermanentTag));
+
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  other.Reset();
+  other.LoadSnapshot(JsonRoundTrip(env.SaveSnapshot()));
+
+  const SkillConfig* f = other.GetSkillBook().Find("frost");
+  ASSERT_TRUE(f && f->range == 2 && f->filter == TargetFilter::Enemy);
+  ASSERT_TRUE(f->targeting == SkillTargeting::Projectile);
+  ASSERT_EQ(f->tags[0].tag, std::string("chilled"));
+  ASSERT_EQ(other.GetSkillBook().Find("fireball")->range, 5);
+  const SkillConfig* v = other.GetSkillBook().Find("vortex");
+  ASSERT_TRUE(v->motion == SkillMotion::PullIn && v->area == SkillArea::Cross && v->root_steps == 1);
+  auto* c = dynamic_cast<Companion*>(other.GetMutableObjectManager().GetAllAgents()[0]);
+  ASSERT_EQ(c->GetSkill(0), std::string("frost"));
+  ASSERT_EQ(c->GetSkill(1), std::string("vortex"));
+  ASSERT_EQ(c->GetCooldown(1), 2);
+  ASSERT_TRUE(c->HasTag(other.GetTagTable().Find("burning")));
+  ASSERT_EQ(c->GetTags()[0].duration, 3);
+  ASSERT_TRUE(c->IsRooted());
+  ASSERT_EQ(other.GetCellTag({2, 2}).tag, other.GetTagTable().Find("wet"));
+  ASSERT_EQ(other.GetCellTag({2, 2}).duration, kPermanentTag);
+}
+
+TEST(TestJsonSnapshotKeys) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "teleport"));
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
+  ASSERT_TRUE(env.SetCellTag({2, 3}, "wet", 4));
+  json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  ASSERT_EQ(j.at("version").get<int>(), 4);
+  const json& agent = j.at("agents").at(0);
+  ASSERT_EQ(agent.at("skills"), json({"teleport", ""}));
+  ASSERT_EQ(agent.at("cooldowns"), json({0, 0}));
+  ASSERT_EQ(agent.at("tags").at(0).at("tag").get<std::string>(), std::string("burning"));
+  ASSERT_EQ(agent.at("tags").at(0).at("duration").get<int>(), 3);
+  ASSERT_EQ(j.at("cell_tags").size(), 1u);
+  const json& zone = j.at("cell_tags").at(0);
+  ASSERT_EQ(zone.at("row").get<int>(), 2);
+  ASSERT_EQ(zone.at("col").get<int>(), 3);
+  ASSERT_EQ(zone.at("tag").get<std::string>(), std::string("wet"));
+  ASSERT_EQ(zone.at("duration").get<int>(), 4);
+  // Every skill of the book, builtins included (a level may retune them).
+  ASSERT_EQ(j.at("skills").size(), env.GetSkillBook().All().size());
+  const json& fireball = j.at("skills").at(0);
+  ASSERT_EQ(fireball.at("name").get<std::string>(), std::string("fireball"));
+  ASSERT_EQ(fireball.at("targeting").get<std::string>(), std::string("ground"));
+  ASSERT_EQ(fireball.at("filter").get<std::string>(), std::string("all"));
+  ASSERT_EQ(fireball.at("area").get<std::string>(), std::string("cross"));
+  ASSERT_EQ(fireball.at("motion").get<std::string>(), std::string("push_out"));
+  ASSERT_EQ(fireball.at("distance").get<int>(), 1);
+  ASSERT_EQ(fireball.at("tag_path").get<bool>(), false);
+  ASSERT_EQ(fireball.at("root_steps").get<int>(), 0);
+  ASSERT_EQ(fireball.at("cooldown").get<int>(), 3);
+}
+
+TEST(TestJsonEverySkillConfigFieldRoundTrips) {
+  Snapshot s;
+  s.rows = 3;
+  s.cols = 3;
+  s.cells.resize(9);
+  s.skills = EverySkillShape();
+  Snapshot back = JsonRoundTrip(s);
+  ASSERT_EQ(back.skills.size(), s.skills.size());
+  for (size_t i = 0; i < s.skills.size(); ++i) AssertSkillEq(s.skills[i], back.skills[i]);
+}
+
+TEST(TestJsonSkillFieldsDefaultWhenAbsent) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  j["skills"] = json::array({json{{"name", "bare"}}});
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_EQ(s.skills.size(), 1u);
+  SkillConfig expected;
+  expected.name = "bare";  // filter defaults to "all" like SkillConfig
+  AssertSkillEq(s.skills[0], expected);
+}
+
+TEST(TestJsonV3SnapshotLoadsWithoutSkillsTagsZones) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "vortex"));
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
+  ASSERT_TRUE(env.SetCellTag({2, 2}, "wet", kPermanentTag));
+  json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  j["version"] = 3;
+  j.erase("skills");
+  j.erase("cell_tags");
+  for (json& agent : j.at("agents")) {
+    agent.erase("tags");
+    agent.erase("skills");
+    agent.erase("cooldowns");
+  }
+
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  SkillConfig frost;
+  frost.name = "frost";
+  other.GetMutableSkillBook().Define(frost);
+  other.LoadSnapshot(SnapshotFromJson(j.dump()));
+  Companion* c = FirstCompanion(other);
+  ASSERT_EQ(c->GetSkill(0), std::string(""));
+  ASSERT_EQ(c->GetSkill(1), std::string(""));
+  ASSERT_EQ(c->GetCooldown(0), 0);
+  ASSERT_TRUE(c->GetTags().empty());
+  ASSERT_EQ(other.GetSkillBook().All().size(), SkillBook().All().size());
+  ASSERT_TRUE(other.GetSkillBook().Find("frost") == nullptr);
+  ASSERT_FALSE(HasAnyZone(other));
+}
+
+TEST(TestJsonV2AndUnversionedSnapshotsStillLoad) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  j["version"] = 2;
+  SnapshotFromJson(j.dump());
+  j.erase("version");
+  SnapshotFromJson(j.dump());
+  j["version"] = 1;
+  ASSERT_THROW(SnapshotFromJson(j.dump()), std::runtime_error);
+}
+
+TEST(TestJsonMissingSkillsResetsBookToBuiltins) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  j.erase("skills");
+
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  SkillConfig frost;
+  frost.name = "frost";
+  other.GetMutableSkillBook().Define(frost);
+  SkillConfig far_fireball = *other.GetSkillBook().Find("fireball");
+  far_fireball.range = 9;
+  other.GetMutableSkillBook().Define(far_fireball);
+  other.LoadSnapshot(SnapshotFromJson(j.dump()));
+  // A level's skills never leak into the next level.
+  ASSERT_TRUE(other.GetSkillBook().Find("frost") == nullptr);
+  ASSERT_EQ(other.GetSkillBook().Find("fireball")->range, 3);
+}
+
+TEST(TestJsonUndefinedSkillNameStillLoads) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  j.at("agents").at(0)["skills"] = json({"meteor", ""});
+  env.LoadSnapshot(SnapshotFromJson(j.dump()));
+  Companion* c = FirstCompanion(env);
+  ASSERT_EQ(c->GetSkill(0), std::string("meteor"));
+  // Not usable: the step drops the skill and the movement applies.
+  Position before = c->GetPosition();
+  env.Step({EncodeAction(MovementAction::Stay, InteractAction::Skill1)});
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_TRUE(c->GetPosition() == before);
+}
+
+TEST(TestJsonRejectsInvalidSkillsTagsZones) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
+  ASSERT_TRUE(env.SetCellTag({2, 2}, "wet", kPermanentTag));
+  const json good = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  SnapshotFromJson(good.dump());  // Sanity: the untouched one loads
+
+  std::vector<json> bad;
+  for (int d : {0, -2}) {
+    json j = good;
+    j.at("agents").at(0).at("tags").at(0)["duration"] = d;
+    bad.push_back(j);
+    j = good;
+    j.at("cell_tags").at(0)["duration"] = d;
+    bad.push_back(j);
+    j = good;
+    j.at("skills").at(0).at("tags").at(0)["duration"] = d;  // fireball's "burning"
+    bad.push_back(j);
+  }
+  const char* enum_keys[][2] = {{"targeting", "sideways"}, {"area", "blob"},
+                                {"motion", "fly"}, {"filter", "friends"}};
+  for (const auto& kv : enum_keys) {
+    json j = good;
+    j.at("skills").at(0)[kv[0]] = kv[1];
+    bad.push_back(j);
+  }
+  {
+    json j = good;
+    j.at("skills").at(0).erase("name");
+    bad.push_back(j);
+    j = good;
+    j.at("skills").at(0)["name"] = "";
+    bad.push_back(j);
+    j = good;
+    j.at("cell_tags").at(0)["tag"] = "";
+    bad.push_back(j);
+    j = good;
+    j.at("cell_tags").at(0)["row"] = 8;  // Out of the 8x8 grid
+    bad.push_back(j);
+    j = good;
+    j.at("agents").at(0)["skills"] = json({"", "", ""});  // More than kMaxSkillSlots
+    bad.push_back(j);
+  }
+  for (const json& j : bad) {
+    ASSERT_THROW(SnapshotFromJson(j.dump()), std::runtime_error);
   }
 }
 

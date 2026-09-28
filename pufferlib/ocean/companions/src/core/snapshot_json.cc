@@ -10,6 +10,7 @@
 #include "annotations.h"
 #include "cell.h"
 #include "object.h"
+#include "skill_config.h"
 #include "types.h"
 
 using json = nlohmann::json;
@@ -90,6 +91,26 @@ SemanticTag StringToSemanticTag(const std::string& str) {
   if (str == "HtnName")     return SemanticTag::HtnName;
   if (str == "Room")        return SemanticTag::Room;
   return SemanticTag::SynchroGoal;  // Fallback
+}
+
+// TargetFilter of a skill: "all" / "companion" / "enemy" / "neutral"
+// (strict: an unknown string is an error, unlike ParseTargetFilter).
+std::string TargetFilterToString(TargetFilter f) {
+  switch (f) {
+    case TargetFilter::All: return "all";
+    case TargetFilter::Companion: return "companion";
+    case TargetFilter::Enemy: return "enemy";
+    case TargetFilter::Neutral: return "neutral";
+  }
+  return "all";
+}
+
+TargetFilter TargetFilterFromString(const std::string& s) {
+  if (s == "all") return TargetFilter::All;
+  if (s == "companion") return TargetFilter::Companion;
+  if (s == "enemy") return TargetFilter::Enemy;
+  if (s == "neutral") return TargetFilter::Neutral;
+  throw std::runtime_error("Unknown skill filter: " + s);
 }
 
 // Position serialization
@@ -235,6 +256,57 @@ FSMSnapshot JsonToFSMSnapshot(const json& j) {
   return fsm;
 }
 
+// Tags by name: {"tag", "duration"} (duration absent = permanent, -1). Values
+// are validated by Snapshot::ValidateSkillsTagsZones.
+json TagToJson(const std::string& tag, int duration) {
+  return json{{"tag", tag}, {"duration", duration}};
+}
+
+std::string JsonTagName(const json& j) { return j.at("tag").get<std::string>(); }
+int JsonTagDuration(const json& j) { return j.value("duration", kPermanentTag); }
+
+// SkillConfig: every field but "name" is optional and takes the SkillConfig
+// default when absent (so "filter" defaults to "all"). "distance" is
+// motion_distance.
+json SkillConfigToJson(const SkillConfig& s) {
+  json tags = json::array();
+  for (const SkillTagSpec& t : s.tags) tags.push_back(TagToJson(t.tag, t.duration));
+  return json{
+    {"name", s.name},
+    {"targeting", SkillTargetingToString(s.targeting)},
+    {"range", s.range},
+    {"filter", TargetFilterToString(s.filter)},
+    {"area", SkillAreaToString(s.area)},
+    {"motion", SkillMotionToString(s.motion)},
+    {"distance", s.motion_distance},
+    {"tag_path", s.tag_path},
+    {"tags", tags},
+    {"root_steps", s.root_steps},
+    {"cooldown", s.cooldown}
+  };
+}
+
+SkillConfig JsonToSkillConfig(const json& j) {
+  if (!j.contains("name")) throw std::runtime_error("Snapshot: skill without a name");
+  SkillConfig s;
+  s.name = j.at("name").get<std::string>();
+  if (j.contains("targeting")) {
+    s.targeting = SkillTargetingFromString(j.at("targeting").get<std::string>());
+  }
+  s.range = j.value("range", s.range);
+  if (j.contains("filter")) s.filter = TargetFilterFromString(j.at("filter").get<std::string>());
+  if (j.contains("area")) s.area = SkillAreaFromString(j.at("area").get<std::string>());
+  if (j.contains("motion")) s.motion = SkillMotionFromString(j.at("motion").get<std::string>());
+  s.motion_distance = j.value("distance", s.motion_distance);
+  s.tag_path = j.value("tag_path", s.tag_path);
+  if (j.contains("tags")) {
+    for (const json& t : j.at("tags")) s.tags.push_back({JsonTagName(t), JsonTagDuration(t)});
+  }
+  s.root_steps = j.value("root_steps", s.root_steps);
+  s.cooldown = j.value("cooldown", s.cooldown);
+  return s;
+}
+
 // AgentSnapshot serialization
 json AgentSnapshotToJson(const AgentSnapshot& agent) {
   json j{
@@ -272,6 +344,13 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
   j["cadence"] = agent.cadence;
   j["tick"] = agent.tick;
 
+  // Tags, skill slots and cooldowns (v4; slots only for companions)
+  json tags = json::array();
+  for (const TagSnapshot& t : agent.tags) tags.push_back(TagToJson(t.tag, t.duration));
+  j["tags"] = tags;
+  if (!agent.skills.empty()) j["skills"] = agent.skills;
+  if (!agent.cooldowns.empty()) j["cooldowns"] = agent.cooldowns;
+
   return j;
 }
 
@@ -306,6 +385,13 @@ AgentSnapshot JsonToAgentSnapshot(const json& j) {
   // Cadence
   agent.cadence = j.at("cadence").get<std::vector<int>>();
   agent.tick = j.at("tick").get<int>();
+
+  // Tags, skill slots and cooldowns (v4; absent = none / empty / 0)
+  if (j.contains("tags")) {
+    for (const json& t : j.at("tags")) agent.tags.push_back({JsonTagName(t), JsonTagDuration(t)});
+  }
+  if (j.contains("skills")) agent.skills = j.at("skills").get<std::vector<std::string>>();
+  if (j.contains("cooldowns")) agent.cooldowns = j.at("cooldowns").get<std::vector<int>>();
 
   return agent;
 }
@@ -389,7 +475,11 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j) {
 
 // Keep this in sync with the binary version check in snapshot.cc:Serialize.
 // Audit F4: JSON path must be version-gated just like binary.
-static constexpr int kJsonSnapshotVersion = 2;
+// 2: annotations (agent kind / attack config are optional keys); 4: skills,
+// agent tags / skill slots / cooldowns, cell_tags (zones). There never was a
+// JSON 3: the number follows the binary format. Versions 2..4 load.
+static constexpr int kJsonSnapshotVersion = 4;
+static constexpr int kMinJsonSnapshotVersion = 2;
 static constexpr const char* kJsonSnapshotMagic = "SNAP";
 
 std::string SnapshotToJson(const Snapshot& snapshot) {
@@ -452,6 +542,17 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
   }
   j["annotations"] = annotations;
 
+  // Skill book (builtins included) and zones
+  json skills = json::array();
+  for (const SkillConfig& skill : snapshot.skills) skills.push_back(SkillConfigToJson(skill));
+  j["skills"] = skills;
+  json cell_tags = json::array();
+  for (const CellTagSnapshot& z : snapshot.cell_tags) {
+    cell_tags.push_back(json{{"row", z.cell.row}, {"col", z.cell.col},
+                             {"tag", z.tag}, {"duration", z.duration}});
+  }
+  j["cell_tags"] = cell_tags;
+
   return j.dump(2);  // Pretty-print with 2-space indent
 }
 
@@ -468,7 +569,7 @@ Snapshot SnapshotFromJson(const std::string& json_str) {
   }
   if (j.contains("version")) {
     int version = j.at("version").get<int>();
-    if (version != kJsonSnapshotVersion) {
+    if (version < kMinJsonSnapshotVersion || version > kJsonSnapshotVersion) {
       throw std::runtime_error(
           "Unsupported snapshot version: " + std::to_string(version));
     }
@@ -524,6 +625,20 @@ Snapshot SnapshotFromJson(const std::string& json_str) {
     }
   }
 
+  // Skill book and zones (v4; absent = builtins only / no zones)
+  if (j.contains("skills")) {
+    for (const json& skill_json : j.at("skills")) {
+      snapshot.skills.push_back(JsonToSkillConfig(skill_json));
+    }
+  }
+  if (j.contains("cell_tags")) {
+    for (const json& z : j.at("cell_tags")) {
+      snapshot.cell_tags.push_back({Position{z.at("row").get<int>(), z.at("col").get<int>()},
+                                    JsonTagName(z), JsonTagDuration(z)});
+    }
+  }
+
+  snapshot.ValidateSkillsTagsZones();
   return snapshot;
 }
 

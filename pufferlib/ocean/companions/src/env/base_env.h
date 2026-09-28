@@ -240,8 +240,10 @@ class BaseEnv {
   // landing), so it does not tell arrivals apart: tags tick at the start of
   // Step, so an agent standing on a duration-1 zone is re-landed fresh every
   // step, and one already carrying the tag (from any source) arrives not fresh.
-  // Cell tags are world state: copied with the env, cleared by LoadSnapshot (so
-  // by every Reset).
+  // Cell tags are world state: copied with the env, saved in snapshots (by tag
+  // name) and replaced by LoadSnapshot with the snapshot's own (a generated
+  // level has none, so every Reset clears them). Like cell annotations, they
+  // follow the snapshot's D4 transform.
   struct CellTag {
     TagId tag = kInvalidTag;
     // The duration landed on agents. The zone itself never expires: it stays
@@ -258,11 +260,14 @@ class BaseEnv {
   // Snapshot Support - Save/Load complete world state
   // ==========================================================================
 
-  // Save current state to a snapshot (grid, agents, effects, timing)
+  // Save current state to a snapshot (grid, agents, effects, timing, the skill
+  // book, agent tags / skill slots / cooldowns, zones; tags by name)
   virtual Snapshot SaveSnapshot() const;
 
-  // Load state from a snapshot
-  // Throws std::runtime_error if snapshot is incompatible (e.g., wrong dimensions)
+  // Load state from a snapshot. The skill book is reset to the builtins, then
+  // gets the snapshot's skills; the TagTable is kept (ids stay stable).
+  // Throws std::runtime_error if snapshot is incompatible (e.g., wrong
+  // dimensions) or its skills / tags / zones are invalid, before any change.
   virtual void LoadSnapshot(const Snapshot& snapshot);
 
   // Validate that snapshot has required cell types for this environment
@@ -279,7 +284,8 @@ class BaseEnv {
   void UpdateAgentFSM();
 
   // D4 symmetry transform - call at end of Reset() in subclasses
-  // Transforms grid cells and actor positions according to d4_transform_
+  // Transforms grid cells, actor positions, cell annotations and zones
+  // according to d4_transform_
   void ApplyD4Transform();
 
   // Collision resolution (the new system)
