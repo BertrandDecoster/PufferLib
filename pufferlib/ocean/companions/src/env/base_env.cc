@@ -975,8 +975,9 @@ const ContextSkillRule* BaseEnv::ActiveContextRule(const Companion& comp, int sl
     // A rule the book no longer allows (its skill gone or given a cooldown
     // behind the rules' back: a Define, a generated Reset reloading the
     // builtins) is skipped: it never disables a slot, and a context skill
-    // never has a cooldown.
-    if (rule.slot == slot && IsUsableWith(rule, skills_) && ContextHolds(rule.condition, comp)) {
+    // never has a cooldown. The (cheap) condition first: the book is only
+    // searched when it holds.
+    if (rule.slot == slot && ContextHolds(rule.condition, comp) && IsUsableWith(rule, skills_)) {
       return &rule;
     }
   }

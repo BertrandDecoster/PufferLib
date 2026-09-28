@@ -715,9 +715,11 @@ COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_O
 // builtins ("fireball", "lightningStep", "teleport", "vortex", "revive" and
 // the fixed default "attack"), then the level's own skills in the order its
 // snapshot lists them; a level that retunes a builtin changes it in place.
-// The book changes only when a snapshot loads (companions_load_snapshot*:
-// the builtins plus that snapshot's skills): indices and contents are stable
-// until then. What a skill's tags mean is the host's business.
+// The book changes when a snapshot loads (companions_load_snapshot*: the
+// builtins plus that snapshot's skills) and on companions_reset, which
+// generates a level (the builtins only: a loaded level's skills are dropped).
+// Indices and contents are stable in between. What a skill's tags mean is
+// the host's business.
 typedef enum {
   Companions_SkillTargeting_Self = 0,        // Centre = the caster (after its own motion)
   Companions_SkillTargeting_Ground = 1,      // Centre = `range` cells along the aim; a wall stops it on the cell before
