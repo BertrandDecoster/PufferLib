@@ -351,8 +351,12 @@ as `Horizon`. The reason is fixed when done first becomes true (latched by `Step
 or after loading a snapshot at the horizon, keeps `Horizon`. C API (1.2.1, additive,
 no struct layout change): `Companions_EndReason` (same values: None 0, Success 1,
 Horizon 2, TaskFailed 3) from `companions_get_end_reason(env)`, fixed on the step or
-lens change where done becomes true, kept while a host plays on, cleared by reset and
-snapshot loads; the EpisodeEnd event carries it in `effect_id`
+lens change where done becomes true, kept while a host plays on; reset and snapshot
+loads take the env's (done / success / reason: a snapshot loaded at the horizon is done
+at once, as `Horizon`, and the next step reports EpisodeEnd); the EpisodeEnd event
+carries it in `effect_id`. A derived `Reset` / `LoadSnapshot` that changes state after
+`BaseEnv::LoadSnapshot` latched calls `RelatchEndReasonAfterLoad` (AggroEnv's `Reset`
+spawns its enemy then: under the Aggro lens, no stale `TaskFailed`)
 
 ### Known issue: D4 transform
 - `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)

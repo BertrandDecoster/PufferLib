@@ -196,6 +196,11 @@ void BaseEnv::LatchEndReason() {
   }
 }
 
+void BaseEnv::RelatchEndReasonAfterLoad() {
+  end_reason_ = EndReason::None;
+  LatchEndReason();
+}
+
 void BaseEnv::PreStep() {
   // Run FSM updates BEFORE movement resolution so FSM agents set their intentions
   for (Agent* agent : object_manager_->GetAllAgents()) {
@@ -1533,6 +1538,13 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
 
   // A state loaded already done (at or past the horizon) ended there: a
   // later kill keeps that reason, as after a Step.
+  // The latch reads IsDone() on the state as loaded so far: a derived
+  // LoadSnapshot override, or a Reset that loads a generated level, must
+  // finish its own state first, then latch again (RelatchEndReasonAfterLoad).
+  // AggroEnv's Reset spawns its enemy after this: under the Aggro lens its
+  // level, with no living enemy yet, is done here and would keep a stale
+  // TaskFailed. DodgeEnv has no override; its any_dead_ is not cleared by a
+  // load (its Reset clears it).
   LatchEndReason();
 }
 

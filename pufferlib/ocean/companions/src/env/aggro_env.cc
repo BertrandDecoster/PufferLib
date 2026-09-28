@@ -145,6 +145,10 @@ void AggroEnv::Reset() {
 
   // Now spawn companions outside the enemy's aggro range
   SpawnCompanions();
+
+  // LoadSnapshot latched before the enemy lived (under the Aggro lens: done,
+  // TaskFailed): latch the level as it now is
+  RelatchEndReasonAfterLoad();
 }
 
 void AggroEnv::Reset(unsigned int seed) {
@@ -416,6 +420,9 @@ void AggroEnv::LoadSnapshot(const Snapshot& snapshot) {
 
   // Extract patrol_path_ from snapshot
   patrol_path_ = snapshot.patrol_path;
+
+  // BaseEnv::LoadSnapshot latched without this env's own state
+  RelatchEndReasonAfterLoad();
 }
 
 }  // namespace companions

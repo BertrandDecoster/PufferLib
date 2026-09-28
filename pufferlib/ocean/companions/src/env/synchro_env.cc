@@ -138,6 +138,10 @@ void SynchroEnv::Reset() {
         AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
         Annotation{SemanticTag::SynchroGoal, {}, -1});
   }
+
+  // LoadSnapshot latched before the goals were annotated (IsDone ignores
+  // them today): latch the level as it now is
+  RelatchEndReasonAfterLoad();
 }
 
 void SynchroEnv::Reset(unsigned int seed) {

@@ -1,7 +1,9 @@
 // Copyright 2024
 // Test suite for the C API
 
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -1579,6 +1581,78 @@ TEST(TestEndReasonAggroEnemyDead) {
   companions_reset(env, 42);
   ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
   ASSERT_EQ(companions_get_end_reason(nullptr), Companions_End_None);
+  companions_destroy(env);
+}
+
+// An Aggro reset starts with no end reason: the first step's end is its own
+// (here the horizon), whatever the level load saw before the enemy spawned.
+TEST(TestEndReasonAfterAnAggroResetIsTheStepsOwn) {
+  Companions_Env* env = MakeAggroZombieEnv(1);  // Reset once already
+  const int32_t n = companions_get_agent_count(env);
+  std::vector<Companions_Action> stay(n, {Companions_Movement_Stay, Companions_Interact_None});
+  Companions_StepResult result = {};
+  for (int i = 0; i < 2; ++i) {
+    companions_reset(env, 42);
+    ASSERT_FALSE(companions_is_done(env));
+    ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+    companions_step(env, stay.data(), n, &result);
+    ExpectEnd(env, result, Companions_End_Horizon);
+  }
+  companions_destroy(env);
+}
+
+// A snapshot loaded at the horizon is done at once, as Horizon (as the env
+// says), on every load path; the next step reports its EpisodeEnd.
+TEST(TestSnapshotLoadedAtTheHorizonIsDone) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}}, "[]", 2);
+  std::string json = LevelJson({{3, 1, ""}}, "[]", 2);
+  const std::string tick0 = "\"tick\":0,\"horizon\"";
+  const size_t at = json.find(tick0);
+  ASSERT_TRUE(at != std::string::npos);
+  json.replace(at, tick0.size(), "\"tick\":2,\"horizon\"");
+  Companions_Action stay = {Companions_Movement_Stay, Companions_Interact_None};
+  Companions_StepResult result = {};
+  auto expect_done_at_horizon = [&]() {
+    ASSERT_TRUE(companions_is_done(env));
+    ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
+    Companions_GameState state = {};
+    companions_get_state(env, &state);
+    ASSERT_TRUE(state.done);
+    ASSERT_FALSE(state.success);
+    companions_step(env, &stay, 1, &result);
+    ExpectEnd(env, result, Companions_End_Horizon);
+    ASSERT_EQ(CountEpisodeEnds(result), 1);
+  };
+
+  // JSON string
+  ASSERT_TRUE(companions_load_snapshot_json(env, json.c_str()));
+  expect_done_at_horizon();
+
+  // Binary buffer (saved from a state loaded at the horizon)
+  ASSERT_TRUE(companions_load_snapshot_json(env, json.c_str()));
+  const int32_t size = companions_get_snapshot_size(env);
+  ASSERT_TRUE(size > 0);
+  std::vector<uint8_t> buffer(size);
+  ASSERT_TRUE(companions_save_snapshot(env, buffer.data(), size));
+  ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 1, ""}}, "[]", 2).c_str()));
+  ASSERT_FALSE(companions_is_done(env));
+  ASSERT_TRUE(companions_load_snapshot(env, buffer.data(), size));
+  expect_done_at_horizon();
+
+  // JSON file
+  const std::string path = "test_api_snapshot_at_horizon.json";
+  {
+    std::ofstream out(path);
+    out << json;
+  }
+  ASSERT_TRUE(companions_load_snapshot_json_file(env, path.c_str()));
+  std::remove(path.c_str());
+  expect_done_at_horizon();
+
+  // A reset starts over
+  companions_reset(env, 42);
+  ASSERT_FALSE(companions_is_done(env));
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
   companions_destroy(env);
 }
 

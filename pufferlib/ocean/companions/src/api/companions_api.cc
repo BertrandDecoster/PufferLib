@@ -71,7 +71,8 @@ struct Companions_Env {
   // Cleared by reset and snapshot loads (a new episode).
   bool last_step_done = false;
   // Why the episode ended: set when done becomes true (a step or a lens
-  // change), kept while a host plays on, cleared with done.
+  // change), kept while a host plays on; reset and snapshot loads take the
+  // env's (a snapshot loaded at the horizon is done, as Horizon).
   Companions_EndReason end_reason = Companions_End_None;
   std::vector<double> last_rewards;
 
@@ -599,6 +600,16 @@ static Companions_EndReason CurrentEndReason(const Companions_Env& env) {
   return static_cast<Companions_EndReason>(env.env->GetEndReason());
 }
 
+// A new episode (reset, snapshot load): done / success / end reason as the
+// env latched them (a state loaded at the horizon is done, as Horizon). The
+// EpisodeEnd event is still to report: the next step does.
+static void StartEpisode(Companions_Env& env) {
+  env.done = env.env->IsDone();
+  env.success = env.env->IsSuccess();
+  env.last_step_done = false;
+  env.end_reason = CurrentEndReason(env);
+}
+
 // =============================================================================
 // Task Lens API
 // =============================================================================
@@ -722,10 +733,7 @@ COMPANIONS_API void companions_reset(Companions_Env* env,
   }
 
   env->env->Reset(seed);
-  env->done = false;
-  env->success = false;
-  env->last_step_done = false;
-  env->end_reason = Companions_End_None;
+  StartEpisode(*env);
   std::fill(env->last_rewards.begin(), env->last_rewards.end(), 0.0);
   env->events.clear();
 
@@ -1299,10 +1307,7 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
     env->env->LoadSnapshot(snap);
 
     // Update wrapper state
-    env->done = false;
-    env->success = false;
-    env->last_step_done = false;
-    env->end_reason = Companions_End_None;
+    StartEpisode(*env);
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();
@@ -1431,10 +1436,7 @@ COMPANIONS_API bool companions_load_snapshot_json(
     env->env->LoadSnapshot(snap);
 
     // Update wrapper state
-    env->done = false;
-    env->success = false;
-    env->last_step_done = false;
-    env->end_reason = Companions_End_None;
+    StartEpisode(*env);
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();
@@ -1480,10 +1482,7 @@ COMPANIONS_API bool companions_load_snapshot_json_file(
     env->env->LoadSnapshot(snap);
 
     // Update wrapper state
-    env->done = false;
-    env->success = false;
-    env->last_step_done = false;
-    env->end_reason = Companions_End_None;
+    StartEpisode(*env);
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();

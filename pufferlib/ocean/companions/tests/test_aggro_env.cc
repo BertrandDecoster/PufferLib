@@ -909,6 +909,23 @@ TEST(TestAKillOnTheHorizonStepIsATaskFailure) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
 }
 
+// A Reset under the Aggro lens loads its level before spawning the enemy: the
+// end reason is fixed with the enemy there, not while none lived (a stale
+// TaskFailed would name a later horizon's end).
+TEST(TestAResetUnderTheAggroLensLatchesNoStaleEndReason) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 1);
+  ASSERT_TRUE(env.GetTaskLens()->GetKind() == TaskLens::kAggro);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  for (int i = 0; i < 2; ++i) {
+    env.Reset();
+    ASSERT_FALSE(env.IsDone());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+    ASSERT_TRUE(env.Step({stay, stay}).done);
+    ASSERT_FALSE(env.IsTaskFailed());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  }
+}
+
 // A snapshot loaded at the horizon is done there: a kill on the next step
 // keeps Horizon, as after a Step.
 TEST(TestASnapshotLoadedAtTheHorizonKeepsTheHorizonEndReason) {

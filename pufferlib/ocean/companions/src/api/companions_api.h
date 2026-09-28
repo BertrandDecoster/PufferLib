@@ -628,9 +628,11 @@ COMPANIONS_API bool companions_is_done(const Companions_Env* env);
 COMPANIONS_API bool companions_is_success(const Companions_Env* env);
 // Why the episode is done (Companions_End_None while companions_is_done is
 // false, and for a null env). Fixed on the step (or lens change) where done
-// becomes true: steps played on afterwards keep it; reset and snapshot loads
-// clear it. A host that keeps playing on a task failure (a game layer) can
-// tell Companions_End_TaskFailed from a time out. Since 1.2.1.
+// becomes true: steps played on afterwards keep it. Reset and snapshot loads
+// start a new episode with the env's own: None, or Horizon for a snapshot
+// loaded at the horizon (done at once; the next step reports EpisodeEnd).
+// A host that keeps playing on a task failure (a game layer) can tell
+// Companions_End_TaskFailed from a time out. Since 1.2.1.
 COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env);
 
 // =============================================================================

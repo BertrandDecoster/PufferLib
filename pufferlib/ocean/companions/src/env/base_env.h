@@ -328,6 +328,11 @@ class BaseEnv {
   EndReason ComputeEndReason() const;
   // Fixes the end reason once done becomes true; None while not done
   void LatchEndReason();
+  // Latches the end reason of a state just loaded, afresh: for a derived
+  // Reset / LoadSnapshot that changes state after BaseEnv::LoadSnapshot
+  // latched (AggroEnv spawns its enemy then). Not after a Step: the reason
+  // fixed then must stay.
+  void RelatchEndReasonAfterLoad();
 
   // D4 symmetry transform - call at end of Reset() in subclasses
   // Transforms grid cells, actor positions, cell annotations and zones
