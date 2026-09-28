@@ -1516,9 +1516,10 @@ TEST(TestDeadAttackersActiveEffectRunsItsCourse) {
   Agent* enemy = PendingStrikeScene(env, 0, 3);  // Active at once: 1 damage
   Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
   const int hp = companion->GetHealth();
-  ASSERT_EQ(companion->GetHealth(), hp);  // Spawn-time hit already counted in hp
-  env.Step({kStrikeRight, kIdle});        // Kills the source, the effect ticks on
+  ASSERT_EQ(hp, companion->GetMaxHealth() - 1);  // Active at spawn: it hit already
+  env.Step({kStrikeRight, kIdle});               // Kills the source, the effect ticks on
   ASSERT_FALSE(enemy->IsAlive());
+  ASSERT_FALSE(env.GetActiveEffects().empty());
   ASSERT_EQ(companion->GetHealth(), hp - 1);
   env.Step({kIdle, kIdle});
   ASSERT_EQ(companion->GetHealth(), hp - 2);

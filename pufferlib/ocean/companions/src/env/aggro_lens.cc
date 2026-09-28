@@ -29,7 +29,7 @@ bool AggroLens::IsDone(const BaseEnv& env) const {
          !HasLivingEnemy(env);
 }
 
-bool AggroLens::HasLivingEnemy(const BaseEnv& env) const {
+bool AggroLens::HasLivingEnemy(const BaseEnv& env) {
   for (const AgentFSM* fsm_agent : env.GetObjectManager().GetAllAgentFSMs()) {
     if (fsm_agent->IsAlive()) return true;
   }

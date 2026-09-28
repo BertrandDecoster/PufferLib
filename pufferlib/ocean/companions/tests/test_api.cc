@@ -1415,9 +1415,6 @@ TEST(TestOverlongNamesAreRejected) {
   companions_destroy(env);
 }
 
-// A step reports at most Companions_MAX_EVENTS events and counts the others
-// in events_dropped; the EpisodeEnd of a step that ends the episode is always
-// reported, as the last event.
 // A slot naming a skill neither builtin nor in the level is refused, with a
 // message naming the agent and the skill.
 TEST(TestSnapshotUnknownSlotSkillIsRejected) {
@@ -1435,6 +1432,9 @@ TEST(TestSnapshotUnknownSlotSkillIsRejected) {
   companions_destroy(env);
 }
 
+// A step reports at most Companions_MAX_EVENTS events and counts the others
+// in events_dropped; the EpisodeEnd of a step that ends the episode is always
+// reported, as the last event.
 TEST(TestEventCapKeepsEpisodeEnd) {
   // "splash" lands 20 tags on each of the 4 agents around its caster (spared:
   // self_tags off): 80 TagApplied + 1 SkillUsed per step (+ EpisodeEnd on
@@ -1478,6 +1478,47 @@ TEST(TestEventCapKeepsEpisodeEnd) {
   ASSERT_EQ(result.events[Companions_MAX_EVENTS - 2].type, Companions_Event_TagApplied);
   ASSERT_EQ(count(result, Companions_Event_EpisodeEnd), 1);
   ASSERT_EQ(count(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 2);
+  companions_destroy(env);
+}
+
+static int CountEpisodeEnds(const Companions_StepResult& r) {
+  int n = 0;
+  for (int32_t i = 0; i < r.event_count; ++i) n += r.events[i].type == Companions_Event_EpisodeEnd;
+  return n;
+}
+
+// EpisodeEnd is reported once, on the step where the episode became done; the
+// steps a host keeps playing afterwards do not repeat it. Reset and loading a
+// snapshot start a new episode that reports its own end.
+TEST(TestEpisodeEndIsReportedOnce) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  config.horizon = 2;
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  Companions_Action stay = {Companions_Movement_Stay, Companions_Interact_None};
+  Companions_StepResult result = {};
+  auto play_to_horizon = [&]() {
+    companions_step(env, &stay, 1, &result);
+    ASSERT_FALSE(result.state.done);
+    ASSERT_EQ(CountEpisodeEnds(result), 0);
+    companions_step(env, &stay, 1, &result);
+    ASSERT_TRUE(result.state.done);
+    ASSERT_EQ(CountEpisodeEnds(result), 1);
+    for (int i = 0; i < 2; ++i) {  // Playing on past the end
+      companions_step(env, &stay, 1, &result);
+      ASSERT_TRUE(result.state.done);
+      ASSERT_EQ(CountEpisodeEnds(result), 0);
+    }
+  };
+  play_to_horizon();
+  companions_reset(env, 42);
+  play_to_horizon();
+  companions_destroy(env);
+
+  env = LoadLevel({{3, 1, ""}}, "[]", 2);
+  play_to_horizon();
+  ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 1, ""}}, "[]", 2).c_str()));
+  play_to_horizon();
   companions_destroy(env);
 }
 

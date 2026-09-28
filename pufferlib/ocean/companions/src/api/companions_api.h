@@ -52,7 +52,9 @@
 //   effect_name = tag name, status_duration = duration (-1 = permanent),
 //   health_source_id = caster (-1 for a zone), tag_fresh = the agent did not
 //   carry the tag just before this landing.
-// - Companions_Event_EpisodeEnd: Episode completed (success or timeout)
+// - Companions_Event_EpisodeEnd: Episode completed (success or failure),
+//   reported once, on the step where done becomes true: the steps a host
+//   keeps playing afterwards (done stays true) do not repeat it.
 // A step reports at most Companions_MAX_EVENTS events, in the order above.
 // When there are more, the ones past the cap are dropped, except EpisodeEnd:
 // a step that ends the episode always reports it, as the last event (the

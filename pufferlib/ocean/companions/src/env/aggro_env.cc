@@ -303,10 +303,11 @@ void AggroEnv::SpawnCompanions() {
 
 
 bool AggroEnv::IsDone() const {
-  // The active lens may end the episode earlier (AggroLens: no living enemy
-  // left, a failure).
+  // The Aggro task also ends, as a failure, once no living enemy remains.
+  // Other lenses' own verdicts are not consulted.
+  const bool aggro_task = task_lens_ && task_lens_->GetKind() == TaskLens::kAggro;
   return success_ || tick_ >= horizon_ ||
-         (task_lens_ && task_lens_->IsDone(*this));
+         (aggro_task && !AggroLens::HasLivingEnemy(*this));
 }
 
 // =============================================================================

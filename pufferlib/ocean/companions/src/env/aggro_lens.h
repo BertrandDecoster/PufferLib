@@ -38,10 +38,12 @@ class AggroLens : public TaskLens {
                        std::vector<float>& obs) const override;
   int AdditionalVectorObsSize() const override { return 8; }
 
+  // Any living FSM agent. AggroEnv ends the Aggro task without one.
+  static bool HasLivingEnemy(const BaseEnv& env);
+
  private:
   Position FindTargetCell(const BaseEnv& env) const;
   bool HasPatrolPath(const BaseEnv& env) const;
-  bool HasLivingEnemy(const BaseEnv& env) const;  // Any living FSM agent
 };
 
 }  // namespace companions

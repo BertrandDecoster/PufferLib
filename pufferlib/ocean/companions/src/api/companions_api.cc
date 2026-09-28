@@ -65,6 +65,10 @@ struct Companions_Env {
   Companions_EnvConfig config;
   bool done = false;
   bool success = false;
+  // The done of the last step: EpisodeEnd is reported only on the step where
+  // done becomes true, not on the steps a host keeps playing afterwards.
+  // Cleared by reset and snapshot loads (a new episode).
+  bool last_step_done = false;
   std::vector<double> last_rewards;
 
   // Previous positions for tracking movement (for animation)
@@ -702,6 +706,7 @@ COMPANIONS_API void companions_reset(Companions_Env* env,
   env->env->Reset(seed);
   env->done = false;
   env->success = false;
+  env->last_step_done = false;
   std::fill(env->last_rewards.begin(), env->last_rewards.end(), 0.0);
   env->events.clear();
 
@@ -759,6 +764,8 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   auto result = env->env->Step(cpp_actions);
 
   // Update wrapper state
+  const bool episode_ended = result.done && !env->last_step_done;
+  env->last_step_done = result.done;
   env->done = result.done;
   env->success = env->env->IsSuccess();
   env->last_rewards = result.rewards;
@@ -767,8 +774,8 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   AddMovementEvents(env);
   AddSkillAndTagEvents(env);
 
-  // Add episode end event if done
-  if (env->done) {
+  // Add the episode end event on the step that ends the episode
+  if (episode_ended) {
     Companions_Event evt = {};
     evt.type = Companions_Event_EpisodeEnd;
     evt.tick = env->env->GetTick();
@@ -789,7 +796,7 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   const int total = static_cast<int>(env->events.size());
   const int count = std::min(total, static_cast<int>(Companions_MAX_EVENTS));
   std::copy_n(env->events.begin(), count, out_result->events);
-  if (env->done && total > count) out_result->events[count - 1] = env->events.back();
+  if (episode_ended && total > count) out_result->events[count - 1] = env->events.back();
   out_result->event_count = count;
   out_result->events_dropped = total - count;
 }
@@ -1267,6 +1274,7 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
     // Update wrapper state
     env->done = false;
     env->success = false;
+    env->last_step_done = false;
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();
@@ -1397,6 +1405,7 @@ COMPANIONS_API bool companions_load_snapshot_json(
     // Update wrapper state
     env->done = false;
     env->success = false;
+    env->last_step_done = false;
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();
@@ -1444,6 +1453,7 @@ COMPANIONS_API bool companions_load_snapshot_json_file(
     // Update wrapper state
     env->done = false;
     env->success = false;
+    env->last_step_done = false;
 
     // Reset prev_positions for event tracking
     auto agents = env->env->GetObjectManager().GetAllAgents();

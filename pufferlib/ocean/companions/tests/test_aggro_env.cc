@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -17,6 +18,8 @@
 #include "../src/core/object_manager.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/aggro_lens.h"
+#include "../src/env/dodge_lens.h"
+#include "../src/env/synchro_lens.h"
 
 using namespace companions;
 
@@ -778,6 +781,42 @@ TEST(TestAWoundedEnemyKeepsTheEpisodeGoing) {
   ASSERT_FALSE(result.done);
   ASSERT_FALSE(env.IsDone());
   for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
+}
+
+// Only the Aggro task ends on a dead enemy: under another lens, AggroEnv is
+// done on a latched success or at the horizon, whatever that lens says.
+TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 1);
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
+  StepResult result = AttackRight(env);
+  ASSERT_FALSE(goblin->IsAlive());
+  ASSERT_FALSE(result.done);
+  ASSERT_FALSE(env.IsDone());
+}
+
+TEST(TestADeadCompanionDoesNotEndAggroEnvUnderDodgeLens) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
+  Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
+  companion->TakeDamage(companion->GetHealth());
+  ASSERT_FALSE(companion->IsAlive());
+  ASSERT_TRUE(env.GetTaskLens()->IsDone(env));  // The lens alone would say done
+  ASSERT_FALSE(env.IsDone());
+  StepResult result = env.Step({EncodeAction(MovementAction::Stay),
+                                EncodeAction(MovementAction::Stay)});
+  ASSERT_FALSE(result.done);
+  ASSERT_FALSE(env.IsDone());
+}
+
+TEST(TestSynchroLensSwappedOntoGoalsIsNotDoneBeforeAStep) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  LensParams params;
+  params.positions = {env.GetObjectManager().GetAllCompanions()[0]->GetPosition()};
+  ASSERT_TRUE(env.SetTaskLensWithParams(std::make_unique<SynchroLens>(), params));
+  ASSERT_TRUE(env.GetTaskLens()->IsDone(env));  // The companion stands on the goal
+  ASSERT_FALSE(env.IsDone());                   // but nothing is latched yet
+  ASSERT_FALSE(env.IsSuccess());
 }
 
 // =============================================================================

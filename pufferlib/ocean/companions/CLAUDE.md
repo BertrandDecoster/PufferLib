@@ -298,7 +298,8 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 - Episode end: success when a living FSM enemy stands on the target; failure at the
   horizon or as soon as no living FSM enemy remains (killed: the lure can't succeed
   any more), rewarded `AggroLens::kEnemyDeadPenalty` (-1, the mirror of the +1 win)
-  instead of the time penalty. `AggroEnv::IsDone` also asks the active lens
+  instead of the time penalty. `AggroEnv::IsDone` applies the dead-enemy rule only
+  while the active lens is the Aggro lens; it never consults another lens's `IsDone`
 - `done` is a verdict for RL episodes, never a stop: the env keeps stepping. A host
   that keeps playing after a kill (a game layer) ignores `done` for that reason
   (`IsSuccess` false, tick below the horizon, no living enemy)
