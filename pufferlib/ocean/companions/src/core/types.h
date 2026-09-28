@@ -40,6 +40,22 @@ inline bool IsValidNameLength(const std::string& name) {
   return name.size() <= static_cast<size_t>(kMaxNameLength);
 }
 
+// A zone by name, as a host (BaseEnv::SetCellTag) or level data gives it: the
+// tag a cell lands on whoever stands there, how long the zone itself lasts,
+// what it becomes then, and what each landing hurts.
+struct ZoneSpec {
+  std::string tag;               // "" = no zone (clears the cell)
+  int duration = kPermanentTag;  // The tag's duration as it lands: steps, or kPermanentTag
+  // The zone's own lifetime, a step timer (see BaseEnv::CellTag): steps, or
+  // kPermanentTag (never expires)
+  int steps = kPermanentTag;
+  // The tag the cell gets when the zone expires ("" = the cell loses its
+  // zone). The successor is a zone with the default fields: permanent,
+  // landing a permanent tag, harmless, without successor.
+  std::string then;
+  int damage = 0;  // Health each landing takes (Agent::TakeDamage), >= 0
+};
+
 // =============================================================================
 // Position
 // =============================================================================

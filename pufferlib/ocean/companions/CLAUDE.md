@@ -42,6 +42,8 @@ companions/                    # Standalone pure C++ implementation
   the revive report, v6 context rules: `companions_revive_test` (`tests/test_revive.cc`);
   `PreviewSkill` and `SkillUse::affected`: `companions_skills_test`; their C API side:
   `tests/test_api.cc`
+- Zones' lifetime, successor and damage per landing: `companions_zones_test`
+  (`tests/test_zones.cc`)
 - A test that registers its own effects holds a `ScopedEffectRegistry`
   (`tests/effect_registry_guard.h`), declared before its envs: it clears the global
   `EffectConfigRegistry` back to the builtins on entry and on exit, even when an
@@ -126,18 +128,20 @@ tags, roots, cooldowns, revives. Code: `core/skill_config.{h,cc}`, `core/tag_tab
 2. `PreStep` (enemy FSM) → `GatherIntentions` (fixes each skill use's effective skill:
    the context rules are read here, once, before anyone moves) → `ResolveCollisions` →
    `ExecuteValidatedMovements`
-3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed)
+3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed; the tag,
+   then the zone's damage)
 4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
    order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
-5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), the downs
-   since the last report (`GetLastDowns`, after `EndStep`), `tick_++`, `PostStep`,
-   rewards (TaskLens)
+5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), `TickZones`
+   (zone lifetimes tick, expired zones become their successor), the downs since the
+   last report (`GetLastDowns`, after `EndStep`), `tick_++`, `PostStep`, rewards (TaskLens)
 
-**Step timers** (`Agent::BeginStep` / `EndStep`): tag and status durations and cooldowns all
-count steps and all tick at the END of `Step`. A timer of n is in effect for the n next
-steps: set between two steps (host primitives, snapshots), it reads n; set during a step,
-it also covers the rest of that step (kept as n + 1 inside the step) and reads n after it.
-What a host reads between steps is always the number of steps to come it covers.
+**Step timers** (`Agent::BeginStep` / `EndStep`; zones: `BaseEnv::TickZones`): tag and
+status durations, cooldowns and zone lifetimes all count steps and all tick at the END of
+`Step`. A timer of n is in effect for the n next steps: set between two steps (host
+primitives, snapshots), it reads n; set during a step, it also covers the rest of that
+step (kept as n + 1 inside the step) and reads n after it. What a host reads between
+steps is always the number of steps to come it covers.
 
 **Line and landing rules** (`env/skill_motion.h`):
 - Line rule: a line travels along the facing; a wall (not pathable) or the grid edge
@@ -290,13 +294,32 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 - No gameplay effect in the env. Host primitives: `ApplyTagTo` / `RemoveTagFrom`
   (`ApplyTagTo` refuses a downed or dead agent and then interns nothing, like `LandTag`)
 
-**Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`):
-- One tag per cell ("" clears), with the duration it lands with; the zone itself never expires
+**Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`; tests: `tests/test_zones.cc`):
+- One zone per cell (`CellTag`; set by name with a `ZoneSpec`, `core/types.h`; "" clears):
+  `tag`, `duration` (what it lands with), `steps` (its own lifetime), `then` (its
+  successor), `damage` (per landing). `SetCellTag(cell, tag, duration)` gives the
+  defaults: permanent, no successor, harmless. Refused (cell unchanged, nothing
+  interned): out of bounds, a name over 31 bytes, a duration or steps of 0 or below -1,
+  a negative damage
 - Landed (cause `"zone"`, source -1) on every affectable agent standing there after regular
   movement (before casts and skills), and on any agent a skill motion lands there
   (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
-- World state: copied with the env, saved in snapshots, replaced by `LoadSnapshot`
-  (generated levels have none, so every `Reset` clears them)
+- Damage: each landing, right after the tag, deals `damage` through `Agent::TakeDamage`
+  (Marked applies, a companion goes down and keeps the tag, the downed and the dead get
+  no landing at all), reported as the landing's `damage` (the zone's, before Marked).
+  A caster its landing zone downs or kills gets nothing from its own skill (its
+  `SkillUse` reports no Tags / Damage on it)
+- Lifetime: `steps` is a step timer (see Step timers): set between two steps, the zone
+  lands during the n next steps; set during a step (a rule of the env), it also covers
+  the rest of that step (kept as n + 1) and reads n after it. `-1` = never expires.
+  Zones tick in `TickZones`, right after the agents' `EndStep`; an expired zone becomes
+  its successor `then`, a zone with the default fields (permanent, landing a permanent
+  tag, harmless, without successor: kept minimal until level data needs more), which
+  lands from the next step; without one the cell loses its zone
+- World state: copied with the env (timers included), saved in snapshots, replaced by
+  `LoadSnapshot` (generated levels have none, so every `Reset` clears them). Snapshots
+  carry the tag and its duration only until snapshot v7: a saved zone loads permanent,
+  harmless and without successor
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
 (damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
@@ -313,7 +336,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 | BaseEnv | Content | C API event |
 |---------|---------|-------------|
 | `GetLastSkillUses()` | caster, skill (the effective one), target (centre; landing cell for a self skill), slot, `affected` (the agents it affected, in processing order, with what it did to each: see Previews) | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill); the whole use, `affected` included: `companions_get_last_skill_use_count` / `companions_get_last_skill_use` (not an event: never cut by the event cap) |
-| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
+| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh`, `damage` (a zone's per landing; 0 for a skill's, not in the C API yet) | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
 | `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
 
