@@ -25,7 +25,15 @@ bool AggroLens::CanOperateOn(const BaseEnv& env) const {
 }
 
 bool AggroLens::IsDone(const BaseEnv& env) const {
-  return IsSuccess(env) || env.GetTick() >= env.GetHorizon();
+  return IsSuccess(env) || env.GetTick() >= env.GetHorizon() ||
+         !HasLivingEnemy(env);
+}
+
+bool AggroLens::HasLivingEnemy(const BaseEnv& env) const {
+  for (const AgentFSM* fsm_agent : env.GetObjectManager().GetAllAgentFSMs()) {
+    if (fsm_agent->IsAlive()) return true;
+  }
+  return false;
 }
 
 bool AggroLens::IsSuccess(const BaseEnv& env) const {
@@ -48,6 +56,9 @@ double AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
 
   if (IsSuccess(env)) {
     return kWinReward;
+  }
+  if (!HasLivingEnemy(env)) {
+    return kEnemyDeadPenalty;  // The lure can no longer succeed
   }
   return kTimePenalty;
 }

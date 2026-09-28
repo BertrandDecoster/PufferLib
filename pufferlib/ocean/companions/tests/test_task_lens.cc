@@ -267,6 +267,21 @@ TEST(TestAggroLensRewardStructure) {
   ASSERT_EQ(reward, AggroLens::kTimePenalty);
 }
 
+// No living FSM enemy left: the lens is done, as a failure, with the penalty.
+TEST(TestAggroLensDoneAsFailureWithoutALivingEnemy) {
+  AggroEnv env(10, 1, EnemyType::Zombie, 42);
+  AggroLens lens;
+  ASSERT_FALSE(lens.IsDone(env));
+  ASSERT_EQ(lens.ComputeReward(env, 0), AggroLens::kTimePenalty);
+  for (AgentFSM* enemy : env.GetMutableObjectManager().GetAllAgentFSMs()) {
+    enemy->TakeDamage(enemy->GetHealth());
+  }
+  ASSERT_TRUE(lens.IsDone(env));
+  ASSERT_FALSE(lens.IsSuccess(env));
+  ASSERT_EQ(lens.ComputeReward(env, 0), AggroLens::kEnemyDeadPenalty);
+  ASSERT_TRUE(AggroLens::kEnemyDeadPenalty < 0.0);
+}
+
 TEST(TestAggroLensAdditionalObsSize) {
   AggroLens lens;
   ASSERT_EQ(lens.AdditionalVectorObsSize(), 8);

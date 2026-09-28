@@ -277,6 +277,13 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 - 3x3 patrol square (8 cells perimeter, clockwise)
 - Aggro range: 3, Return range: 5
 - Smart spawning: companions and target outside aggro range
+- Episode end: success when a living FSM enemy stands on the target; failure at the
+  horizon or as soon as no living FSM enemy remains (killed: the lure can't succeed
+  any more), rewarded `AggroLens::kEnemyDeadPenalty` (-1, the mirror of the +1 win)
+  instead of the time penalty. `AggroEnv::IsDone` also asks the active lens
+- `done` is a verdict for RL episodes, never a stop: the env keeps stepping. A host
+  that keeps playing after a kill (a game layer) ignores `done` for that reason
+  (`IsSuccess` false, tick below the horizon, no living enemy)
 
 ### Known issue: D4 transform
 - `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)

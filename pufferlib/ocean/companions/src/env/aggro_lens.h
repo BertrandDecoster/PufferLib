@@ -8,10 +8,22 @@
 
 namespace companions {
 
+// Lure the enemy (an FSM agent) onto the AggroTarget cell.
+//
+// Termination: success when a living FSM agent stands on the target; failure
+// at the horizon, or as soon as no living FSM agent remains (the enemy was
+// killed: the lure can no longer succeed). The dead-enemy step is rewarded
+// kEnemyDeadPenalty (the mirror of kWinReward) instead of the time penalty.
+//
+// "Done" is a verdict for RL episodes, not a stop: the env never refuses to
+// step. A host that keeps playing after a kill (a game layer) just ignores
+// done for that reason (IsSuccess false, tick below the horizon, no living
+// enemy); every further step is rewarded kEnemyDeadPenalty again.
 class AggroLens : public TaskLens {
  public:
   static constexpr double kWinReward = 1.0;
   static constexpr double kTimePenalty = -0.01;
+  static constexpr double kEnemyDeadPenalty = -1.0;
 
   Kind GetKind() const override { return kAggro; }
   bool CanOperateOn(const BaseEnv& env) const override;
@@ -29,6 +41,7 @@ class AggroLens : public TaskLens {
  private:
   Position FindTargetCell(const BaseEnv& env) const;
   bool HasPatrolPath(const BaseEnv& env) const;
+  bool HasLivingEnemy(const BaseEnv& env) const;  // Any living FSM agent
 };
 
 }  // namespace companions

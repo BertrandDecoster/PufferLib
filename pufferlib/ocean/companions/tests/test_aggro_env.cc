@@ -14,6 +14,7 @@
 #include "../src/core/grid.h"
 #include "../src/core/object_manager.h"
 #include "../src/env/aggro_env.h"
+#include "../src/env/aggro_lens.h"
 
 using namespace companions;
 
@@ -723,6 +724,61 @@ TEST(TestRootedGoblinStillThinksButDoesNotMove) {
 }
 
 // =============================================================================
+// A dead enemy ends the episode as a failure
+// =============================================================================
+
+// Open floor, the companion on (5,3) facing a 1-HP goblin on (5,4) whose FSM
+// is off (it stays put). Returns the goblin.
+static AgentFSM* GoblinNextToCompanion(AggroEnv& env, int goblin_health) {
+  Grid& grid = env.GetMutableGrid();
+  for (int r = 1; r < grid.GetRows() - 1; ++r) {
+    for (int c = 1; c < grid.GetCols() - 1; ++c) grid.SetCell({r, c}, CellKind::Floor);
+  }
+  auto& obj_mgr = env.GetMutableObjectManager();
+  AgentFSM* goblin = obj_mgr.GetAllAgentFSMs()[0];
+  obj_mgr.UpdatePosition(obj_mgr.GetAllCompanions()[0]->GetId(), {5, 3});
+  obj_mgr.UpdatePosition(goblin->GetId(), {5, 4});
+  goblin->SetCurrentState(nullptr);
+  goblin->SetMaxHealth(goblin_health);
+  ASSERT_FALSE(env.GetTargetPosition() == (Position{5, 4}));
+  return goblin;
+}
+
+// AggroEnv spawns the enemy first: agent 0 is the goblin, agent 1 the companion.
+static StepResult AttackRight(AggroEnv& env) {
+  return env.Step({EncodeAction(MovementAction::Stay),
+                   EncodeAction(MovementAction::Right, InteractAction::Skill1)});
+}
+
+TEST(TestKillingTheEnemyEndsTheEpisodeAsFailure) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 1);
+  StepResult result = AttackRight(env);
+  ASSERT_FALSE(goblin->IsAlive());
+  ASSERT_TRUE(result.done);
+  ASSERT_TRUE(env.IsDone());
+  ASSERT_FALSE(env.IsSuccess());
+  for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kEnemyDeadPenalty);
+  // The env never stops by itself: a host that keeps playing just steps on
+  const int tick = env.GetTick();
+  env.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Up)});
+  ASSERT_EQ(env.GetTick(), tick + 1);
+  ASSERT_TRUE(env.IsDone());
+  ASSERT_FALSE(env.IsSuccess());
+}
+
+TEST(TestAWoundedEnemyKeepsTheEpisodeGoing) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 3);
+  StepResult result = AttackRight(env);
+  ASSERT_TRUE(goblin->IsAlive());
+  ASSERT_EQ(goblin->GetHealth(), 2);
+  ASSERT_FALSE(result.done);
+  ASSERT_FALSE(env.IsDone());
+  for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32
@@ -747,6 +803,9 @@ int main() {
       test.func();
       std::cout << "PASSED\n";
       passed++;
+    } catch (const std::exception& e) {
+      std::cout << "FAILED: " << e.what() << "\n";
+      failed++;
     } catch (...) {
       std::cout << "FAILED\n";
       failed++;

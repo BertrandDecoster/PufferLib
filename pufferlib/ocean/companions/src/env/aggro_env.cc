@@ -303,7 +303,10 @@ void AggroEnv::SpawnCompanions() {
 
 
 bool AggroEnv::IsDone() const {
-  return success_ || tick_ >= horizon_;
+  // The active lens may end the episode earlier (AggroLens: no living enemy
+  // left, a failure).
+  return success_ || tick_ >= horizon_ ||
+         (task_lens_ && task_lens_->IsDone(*this));
 }
 
 // =============================================================================
