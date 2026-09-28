@@ -272,7 +272,9 @@ class BaseEnv {
   // reason in `error` (when given), unless ValidateContextSkills accepts them
   // with the current skill book.
   bool SetContextSkills(std::vector<ContextSkillRule> rules, std::string* error = nullptr);
-  // The skill `comp`'s slot (0-based, < kMaxSkillSlots) uses now
+  // The skill `comp`'s slot uses now. `slot` must be in [0, kMaxSkillSlots)
+  // (asserted). The reference points into the rules or the companion's slot:
+  // SetContextSkills, SetCompanionSkill and a load invalidate it.
   const std::string& EffectiveSkill(const Companion& comp, int slot) const;
   // Whether a rule gives that slot its effective skill now
   bool IsContextSkill(const Companion& comp, int slot) const;
@@ -503,17 +505,21 @@ class BaseEnv {
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;
 
-  // The skill each companion's use settled on when the step read the
-  // intentions (GatherIntentions), for ResolveSkills; rebuilt every step.
+ private:
+  // CanUseSkill, also giving the rule that gives the slot its effective skill
+  // (nullptr: the equipped one): the context is evaluated once per use.
+  bool CanUseSkill(const Companion& comp, int slot, const ContextSkillRule*& rule) const;
+
+  // The skill each agent's use settled on when the step read the intentions
+  // (GatherIntentions), for ResolveSkills: indexed like GetAllAgents() (the
+  // action vector), rebuilt every step.
   struct IntendedSkill {
     ObjectId caster = kInvalidObjectId;
-    int slot = 0;
-    std::string skill;     // The effective skill
-    bool context = false;  // Given by a rule: the slot's cooldown is not spent
+    int slot = -1;  // -1: no skill use
+    int rule = -1;  // Index in context_skills_ of the rule that gave it; -1: equipped
   };
   std::vector<IntendedSkill> intended_skills_;
 
- private:
   int max_downs_ = kDefaultMaxDowns;  // Level data (SetMaxDowns)
   // Level data (SetContextSkills)
   std::vector<ContextSkillRule> context_skills_ = DefaultContextSkills();

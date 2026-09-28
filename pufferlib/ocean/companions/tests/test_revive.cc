@@ -458,6 +458,11 @@ TEST(TestContextConditionNames) {
             std::string("adjacent_downed_ally"));
   ASSERT_TRUE(ContextConditionFromString("adjacent_downed_ally") ==
               ContextCondition::AdjacentDownedAlly);
+  ASSERT_TRUE(IsKnown(ContextCondition::AdjacentDownedAlly));
+  for (int bad : {-1, 1, 99}) {
+    ASSERT_FALSE(IsKnown(static_cast<ContextCondition>(bad)));
+    ASSERT_EQ(ContextConditionToString(static_cast<ContextCondition>(bad)), std::string("unknown"));
+  }
   bool threw = false;
   try {
     ContextConditionFromString("next_to_a_friend");
@@ -604,6 +609,54 @@ TEST(TestTheContextIsReadWithTheIntentions) {
   ASSERT_TRUE(env.GetLastTagsApplied().empty());  // No fireball
   ASSERT_EQ(first->GetCooldown(0), 0);
   ASSERT_EQ(second->GetCooldown(0), 0);
+}
+
+// Regression: the second reviver's equipped fireball is cooling down. The
+// first revives the ally; the second still uses revive (affects nothing): its
+// fireball is neither cast nor restarted, its cooldown keeps ticking.
+TEST(TestALateReviverKeepsItsCooldown) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Companion* first = AsCompanion(Place(env, 0, {3, 1}));
+  Agent* down = Place(env, 1, {3, 2});
+  Companion* second = AsCompanion(Place(env, 2, {3, 3}));
+  ASSERT_TRUE(env.SetCompanionSkill(second->GetId(), 0, "fireball"));
+  second->SetCooldown(0, 2);
+  DownCompanion(env, 1);
+  ASSERT_EQ(CountSkill1(env.LegalActions(2)), static_cast<size_t>(kNumMovementActions));
+  env.Step({Use(MovementAction::Right), kStay, Use(MovementAction::Left)});
+  ASSERT_FALSE(down->IsDowned());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
+  ASSERT_EQ(env.GetLastSkillUses()[0].caster, first->GetId());
+  ASSERT_EQ(env.GetLastSkillUses()[1].caster, second->GetId());
+  ASSERT_EQ(env.GetLastSkillUses()[1].skill, std::string("revive"));
+  ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastRevives()[0].reviver, first->GetId());
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());  // No fireball
+  ASSERT_EQ(second->GetCooldown(0), 1);           // Ticked, not restarted
+  ASSERT_TRUE(second->GetPosition() == (Position{3, 3}));
+  ASSERT_EQ(env.EffectiveSkill(*second, 0), std::string("fireball"));
+  ASSERT_EQ(CountSkill1(env.LegalActions(2)), static_cast<size_t>(0));
+}
+
+// A rule giving a slot the skill it already holds is still a context use:
+// neither reads nor spends the slot's cooldown (the origin decides).
+TEST(TestARuleForTheEquippedSkillIsStillAContextUse) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  env.GetMutableSkillBook().Define(mend);
+  ASSERT_TRUE(env.SetContextSkills({{ContextCondition::AdjacentDownedAlly, 0, "mend"}}));
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Agent* b = Place(env, 1, {3, 2});
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "mend"));
+  a->SetCooldown(0, 3);  // A host's cooldown on the equipped mend
+  DownCompanion(env, 1);
+  ASSERT_TRUE(env.IsContextSkill(*a, 0));
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_FALSE(b->IsDowned());
+  ASSERT_EQ(a->GetCooldown(0), 2);
 }
 
 // "" when accepted; else the message (the rules must be left unchanged).

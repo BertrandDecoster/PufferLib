@@ -7,15 +7,38 @@
 
 namespace companions {
 
-std::string ContextConditionToString(ContextCondition c) {
-  switch (c) {
-    case ContextCondition::AdjacentDownedAlly: return "adjacent_downed_ally";
+namespace {
+
+// Every condition and its JSON name: IsKnown, ToString and FromString all
+// read it.
+struct ConditionName {
+  ContextCondition condition;
+  const char* name;
+};
+constexpr ConditionName kConditionNames[] = {
+    {ContextCondition::AdjacentDownedAlly, "adjacent_downed_ally"},
+};
+
+const ConditionName* FindCondition(ContextCondition c) {
+  for (const ConditionName& entry : kConditionNames) {
+    if (entry.condition == c) return &entry;
   }
-  return "unknown";
+  return nullptr;
+}
+
+}  // namespace
+
+bool IsKnown(ContextCondition c) { return FindCondition(c) != nullptr; }
+
+std::string ContextConditionToString(ContextCondition c) {
+  const ConditionName* entry = FindCondition(c);
+  return entry ? entry->name : "unknown";
 }
 
 ContextCondition ContextConditionFromString(const std::string& s) {
-  if (s == "adjacent_downed_ally") return ContextCondition::AdjacentDownedAlly;
+  for (const ConditionName& entry : kConditionNames) {
+    if (s == entry.name) return entry.condition;
+  }
   throw std::runtime_error("unknown context condition '" + s + "'");
 }
 
@@ -29,7 +52,7 @@ void ValidateContextSkills(const std::vector<ContextSkillRule>& rules, const Ski
     const std::string where = "context_skills[" + std::to_string(i) + "] (" +
                               ContextConditionToString(r.condition) + ", slot " +
                               std::to_string(r.slot) + ", '" + r.skill + "'): ";
-    if (ContextConditionToString(r.condition) == "unknown") {
+    if (!IsKnown(r.condition)) {
       throw std::runtime_error(where + "condition: unknown value " +
                                std::to_string(static_cast<int>(r.condition)));
     }

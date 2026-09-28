@@ -613,8 +613,8 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
 }
 
 void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
-  intended_skills_.clear();
   auto agents = object_manager_->GetAllAgents();
+  intended_skills_.assign(agents.size(), IntendedSkill{});
   for (size_t i = 0; i < agents.size() && i < actions.size(); ++i) {
     Agent* agent = agents[i];
 
@@ -645,11 +645,10 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
     if (decoded.interact != InteractAction::None) {
       if (Companion* comp = dynamic_cast<Companion*>(agent)) {
         const int slot = SkillSlotOf(decoded.interact);
-        if (CanUseSkill(*comp, slot)) {
-          const ContextSkillRule* rule = ActiveContextRule(*comp, slot);
-          intended_skills_.push_back({comp->GetId(), slot,
-                                      rule ? rule->skill : comp->GetSkill(slot),
-                                      rule != nullptr});
+        const ContextSkillRule* rule = nullptr;
+        if (CanUseSkill(*comp, slot, rule)) {
+          intended_skills_[i] = {comp->GetId(), slot,
+                                 rule ? static_cast<int>(rule - context_skills_.data()) : -1};
           if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
           agent->SetIntention({MovementAction::Stay, decoded.interact});
           continue;
@@ -925,9 +924,17 @@ void BaseEnv::ClearStepReports() {
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
 
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
+  const ContextSkillRule* rule = nullptr;
+  return CanUseSkill(comp, slot, rule);
+}
+
+bool BaseEnv::CanUseSkill(const Companion& comp, int slot, const ContextSkillRule*& rule) const {
+  rule = nullptr;
   if (!comp.IsAffectable() || slot < 0 || slot >= kEnabledSkillSlots) return false;
-  const ContextSkillRule* rule = ActiveContextRule(comp, slot);
-  // The cooldown belongs to the equipped skill: a rule's skill does not read it
+  rule = ActiveContextRule(comp, slot);
+  // The cooldown belongs to the equipped skill: a rule's skill does not read
+  // it, even when the rule gives the very skill the slot holds (the origin
+  // decides, not the name)
   if (!rule && comp.GetCooldown(slot) != 0) return false;
   const SkillConfig* skill = skills_.Find(rule ? rule->skill : comp.GetSkill(slot));
   if (!skill) return false;
@@ -1093,7 +1100,9 @@ std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const 
 // dash / teleport: whether it may use a skill was decided when intentions were
 // gathered, and the root blocks from the next step.
 void BaseEnv::ResolveSkills() {
-  for (Agent* agent : object_manager_->GetAllAgents()) {
+  const std::vector<Agent*> agents = object_manager_->GetAllAgents();
+  for (size_t i = 0; i < agents.size(); ++i) {
+    Agent* agent = agents[i];
     if (!agent->IsAffectable()) continue;
     auto* comp = dynamic_cast<Companion*>(agent);
     if (!comp) continue;
@@ -1101,22 +1110,22 @@ void BaseEnv::ResolveSkills() {
     if (slot < 0 || slot >= kEnabledSkillSlots) continue;
     // The skill GatherIntentions fixed (whoever an earlier caster revived or
     // downed since, the context read then holds)
-    const IntendedSkill* intended = nullptr;
-    for (const IntendedSkill& i : intended_skills_) {
-      if (i.caster == comp->GetId() && i.slot == slot) {
-        intended = &i;
-        break;
-      }
-    }
-    assert(intended && "a skill use GatherIntentions did not record");
-    if (!intended) continue;
-    const SkillConfig* found = skills_.Find(intended->skill);
+    const bool recorded = i < intended_skills_.size() &&
+                          intended_skills_[i].caster == comp->GetId() &&
+                          intended_skills_[i].slot == slot &&
+                          intended_skills_[i].rule < static_cast<int>(context_skills_.size());
+    assert(recorded && "a skill use GatherIntentions did not record");
+    if (!recorded) continue;
+    const int rule = intended_skills_[i].rule;
+    const std::string& name = rule >= 0 ? context_skills_[static_cast<size_t>(rule)].skill
+                                        : comp->GetSkill(slot);
+    const SkillConfig* found = skills_.Find(name);
     if (!found) continue;
     // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
     const SkillConfig skill = *found;
     Position target = UseSkill(*comp, skill);
     // Cooldowns belong to the equipped skill: a context skill does not spend it
-    if (!intended->context) comp->SetCooldown(slot, skill.cooldown);
+    if (rule < 0) comp->SetCooldown(slot, skill.cooldown);
     last_skill_uses_.push_back({comp->GetId(), skill.name, target, slot});
   }
 }

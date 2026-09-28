@@ -16,15 +16,19 @@
 namespace companions {
 
 // When a rule applies. Evaluated by BaseEnv::ContextHolds, one case per value:
-// a new condition is a new value, its name below and its case there.
+// a new condition is a new value, its entry in the name table
+// (context_skill.cc) and its case there.
 enum class ContextCondition {
   // A downed agent of the companion's faction on one of its 4 orthogonal
   // neighbours ("adjacent_downed_ally")
   AdjacentDownedAlly = 0,
 };
 
-// The JSON names. FromString throws std::runtime_error naming an unknown
-// string; ToString gives "unknown" for a value out of range.
+// A value this build knows (one read from a file may not be).
+bool IsKnown(ContextCondition c);
+
+// The JSON names, from one table. FromString throws std::runtime_error naming
+// an unknown string; ToString gives "unknown" for an unknown value.
 std::string ContextConditionToString(ContextCondition c);
 ContextCondition ContextConditionFromString(const std::string& s);
 
