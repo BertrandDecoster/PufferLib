@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/core/annotations.h"
 #include "../src/core/snapshot.h"
 #include "../src/core/snapshot_json.h"
 #include "../src/core/types.h"
@@ -905,6 +906,199 @@ TEST(TestJsonRejectsUnknownStatus) {
   Snapshot s = SnapshotFromJson(j.dump());
   ASSERT_EQ(s.agents[0].statuses.size(), 2u);
   ASSERT_EQ(s.agents[0].statuses[1].type, static_cast<int>(StatusType::Stunned));
+}
+
+// =============================================================================
+// Hardening: grid bounds, arrays, strict enum names
+// =============================================================================
+
+namespace {
+
+// An AggroEnv snapshot as JSON: an FSM enemy with a patrol path.
+json AggroJson() {
+  AggroEnv env(10, 2, EnemyType::Zombie, 42, 0, 100);
+  env.Reset(42);
+  return json::parse(SnapshotToJson(env.SaveSnapshot()));
+}
+
+json& FsmAgent(json& j) {
+  for (json& agent : j.at("agents")) {
+    if (!agent.at("fsm").is_null()) return agent;
+  }
+  throw std::runtime_error("no FSM agent in the AggroEnv snapshot");
+}
+
+}  // namespace
+
+TEST(TestJsonRejectsBadGridDimensions) {
+  const int dims[][2] = {{0, 8}, {8, 0}, {-1, 8}, {8, -3}};
+  for (const auto& d : dims) {
+    json j = LevelJson();
+    j.at("grid")["rows"] = d[0];
+    j.at("grid")["cols"] = d[1];
+    AssertJsonErrorMentions(j, {"grid", "must be > 0"});
+  }
+  // 65536 * 65536 overflows an int; 2048 * 1024 is just too big.
+  const int huge[][2] = {{65536, 65536}, {2048, 1024}, {2147483647, 2}};
+  for (const auto& d : huge) {
+    json j = LevelJson();
+    j.at("grid")["rows"] = d[0];
+    j.at("grid")["cols"] = d[1];
+    j.at("grid")["cells"] = json::array();
+    AssertJsonErrorMentions(j, {"grid", "too many cells"});
+  }
+  json j = LevelJson();
+  j.at("grid")["rows"] = 1024;  // 1024 * 1024 is at the cap: fine
+  j.at("grid")["cols"] = 1024;
+  j.at("grid")["cells"] = json::array();
+  j["cell_tags"] = json::array();
+  ASSERT_EQ(SnapshotFromJson(j.dump()).cells.size(), 1024u * 1024u);
+}
+
+TEST(TestJsonRejectsCellsOutsideGrid) {
+  // LevelJson is 8x8; entry 5 is (0, 5).
+  const int bad[][2] = {{8, 0}, {0, 8}, {-1, 0}, {0, -1}, {1, -1}, {100000, 100000}};
+  for (const auto& rc : bad) {
+    json j = LevelJson();
+    j.at("grid").at("cells").at(5)["row"] = rc[0];
+    j.at("grid").at("cells").at(5)["col"] = rc[1];
+    AssertJsonErrorMentions(j, {"grid.cells[5]: (" + std::to_string(rc[0]) + ", " +
+                                std::to_string(rc[1]) + ") outside 8x8"});
+  }
+  json j = LevelJson();
+  j.at("grid")["rows"] = 6;
+  j.at("grid")["cols"] = 9;
+  j.at("grid")["cells"] = json::array({json{{"row", 5}, {"col", 8}, {"cell_kind", "Wall"},
+                                            {"cell_origin", "Default"}},
+                                       json{{"row", 6}, {"col", 0}, {"cell_kind", "Wall"},
+                                            {"cell_origin", "Default"}}});
+  j["cell_tags"] = json::array();
+  AssertJsonErrorMentions(j, {"grid.cells[1]: (6, 0) outside 6x9"});
+  j.at("grid").at("cells").erase(1);
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_TRUE(s.cells[5 * 9 + 8].kind == CellKind::Wall);
+}
+
+TEST(TestJsonRequiresArrays) {
+  json j = LevelJson();
+  j.at("grid")["cells"] = json::object({{"a", j.at("grid").at("cells").at(0)}});
+  AssertJsonErrorMentions(j, {"grid", "cells: type must be array, but is object"});
+
+  j = LevelJson();
+  j["annotations"] = json::object();
+  AssertJsonErrorMentions(j, {"annotations: type must be array, but is object"});
+  j.erase("annotations");  // Absent (v1) still loads
+  SnapshotFromJson(j.dump());
+
+  j = AggroJson();
+  SnapshotFromJson(j.dump());  // Sanity
+  json& fsm = FsmAgent(j).at("fsm");
+  fsm["patrol_path"] = json::object({{"p", json{{"row", 1}, {"col", 1}}}});
+  AssertJsonErrorMentions(j, {"agents[", "patrol_path: type must be array, but is object"});
+}
+
+TEST(TestJsonRejectsUnknownEnumNames) {
+  // The key, a bad value, and the section the error must name.
+  struct Case {
+    const char* key;
+    const char* bad;
+    const char* where;
+  };
+  const Case cases[] = {
+      {"cell_kind", "Lava", "grid.cells[3]"},     {"cell_origin", "Cave", "grid.cells[3]"},
+      {"agent_type", "Dragon", "agents[0]"},      {"faction", "FOE", "agents[0]"},
+      {"direction", "North", "agents[0]"},        {"color", "Purple", "agents[0]"},
+  };
+  for (const Case& c : cases) {
+    json j = LevelJson();
+    json& target = std::string(c.where) == "agents[0]" ? j.at("agents").at(0)
+                                                      : j.at("grid").at("cells").at(3);
+    target[c.key] = c.bad;
+    AssertJsonErrorMentions(j, {c.where, "'" + std::string(c.bad) + "'"});
+  }
+
+  json j = LevelJson();
+  j["annotations"] = json::array({json{{"target", "Cell"}, {"tag", "Goal"},
+                                       {"pos", json{{"row", 1}, {"col", 1}}}}});
+  AssertJsonErrorMentions(j, {"annotations[0]", "'Goal'"});
+  j.at("annotations").at(0)["tag"] = "SynchroGoal";
+  j.at("annotations").at(0)["target"] = "Wall";
+  AssertJsonErrorMentions(j, {"annotations[0]", "'Wall'"});
+
+  j = AggroJson();
+  FsmAgent(j).at("fsm")["state_type"] = "Sleeping";
+  AssertJsonErrorMentions(j, {"agents[", "'Sleeping'"});
+
+  j = LevelJson();
+  j["effects"] = json::array({json{{"effect_name", "hit"}, {"target_type", 0},
+                                   {"target_cell", json{{"row", 1}, {"col", 1}}},
+                                   {"target_actor_id", -1}, {"target_actors", json::array()},
+                                   {"direction", "North"}, {"ticks_remaining", 1},
+                                   {"in_telegraph", false}, {"loops_remaining", 0},
+                                   {"source_id", -1}}});
+  AssertJsonErrorMentions(j, {"effects[0]", "'North'"});
+  j.at("effects").at(0)["direction"] = "Left";
+  SnapshotFromJson(j.dump());
+}
+
+TEST(TestJsonAcceptsEveryWrittenEnumName) {
+  // Every name the writers emit loads back (including "Object" and FSM
+  // "None"), and legacy v1 "Synchro"/"Target" cells become Floor.
+  json j = LevelJson();
+  const char* kinds[] = {"Floor", "Wall", "Hazard", "HealArea", "Synchro", "Target"};
+  const char* origins[] = {"Default", "Room", "Corridor", "Obstacle"};
+  for (int i = 0; i < 6; ++i) j.at("grid").at("cells").at(10 + i)["cell_kind"] = kinds[i];
+  for (int i = 0; i < 4; ++i) j.at("grid").at("cells").at(20 + i)["cell_origin"] = origins[i];
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_TRUE(s.cells[13].kind == CellKind::HealArea);
+  ASSERT_TRUE(s.cells[14].kind == CellKind::Floor);
+  ASSERT_TRUE(s.cells[15].kind == CellKind::Floor);
+  ASSERT_TRUE(s.cells[22].origin == CellOrigin::Corridor);
+
+  const char* types[] = {"Object", "Actor", "Agent", "AgentFSM", "Companion", "Player",
+                         "NPCCompanion"};
+  for (int i = 0; i < 7; ++i) {
+    j = LevelJson();
+    j.at("agents").at(0)["agent_type"] = types[i];
+    ASSERT_EQ(SnapshotFromJson(j.dump()).agents[0].type, i);
+  }
+  const char* factions[] = {"COMPANION", "ENEMY", "NEUTRAL"};
+  const char* directions[] = {"Up", "Down", "Left", "Right"};
+  const char* colors[] = {"None", "Red", "Green", "Blue"};
+  for (int i = 0; i < 4; ++i) {
+    j = LevelJson();
+    j.at("agents").at(0)["faction"] = factions[i % 3];
+    j.at("agents").at(0)["direction"] = directions[i];
+    j.at("agents").at(0)["color"] = colors[i];
+    s = SnapshotFromJson(j.dump());
+    ASSERT_EQ(s.agents[0].faction, i % 3);
+    ASSERT_EQ(s.agents[0].direction, i);
+    ASSERT_EQ(s.agents[0].color, i);
+  }
+  const char* states[] = {"None", "Patrol", "Aggro", "ReturnToPatrol", "Telegraph", "Attack",
+                          "Recovery"};
+  for (int i = 0; i < 7; ++i) {
+    j = AggroJson();
+    FsmAgent(j).at("fsm")["state_type"] = states[i];
+    s = SnapshotFromJson(j.dump());
+    bool found = false;
+    for (const AgentSnapshot& a : s.agents) {
+      if (a.has_fsm) found = static_cast<int>(a.fsm.state_type) == i;
+    }
+    ASSERT_TRUE(found);
+  }
+  for (int t = 0; t < static_cast<int>(SemanticTag::_Count); ++t) {
+    j = LevelJson();
+    const std::string name = SemanticTagToString(static_cast<SemanticTag>(t));
+    j["annotations"] = json::array({json{{"target", "Agent"}, {"tag", name}, {"agent_id", 0}}});
+    ASSERT_TRUE(SnapshotFromJson(j.dump()).annotations[0].tag == static_cast<SemanticTag>(t));
+  }
+}
+
+TEST(TestJsonEmptySkillNameSaysWhichSkill) {
+  json j = LevelJson();
+  j.at("skills").at(1)["name"] = "";
+  AssertJsonErrorMentions(j, {"skills[1]", "without a name"});
 }
 
 int main() {

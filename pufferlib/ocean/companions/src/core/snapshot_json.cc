@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <initializer_list>
 #include <stdexcept>
@@ -88,6 +89,12 @@ std::string Indexed(const std::string& section, size_t i) {
   return section + "[" + std::to_string(i) + "]";
 }
 
+// The strict name parsers below throw this on a name no writer emits.
+[[noreturn]] void UnknownName(const std::string& section, const char* key,
+                              const std::string& name) {
+  throw std::runtime_error(section + ": unknown " + key + " '" + name + "'");
+}
+
 // Throws on a key of `j` (an object) not in `allowed`; `owner` names the
 // object. No aliases: "motion_distance" only gets a hint towards "distance".
 void CheckKeys(const json& j, std::initializer_list<const char*> allowed,
@@ -116,54 +123,64 @@ std::string ActorColorToString(ActorColor color) {
   }
 }
 
-ActorColor StringToActorColor(const std::string& str) {
+// Strict name parsers: exactly the spellings the *ToString writers emit
+// (case-sensitive); anything else throws naming `section`. No silent
+// fallback, so a typo in a hand-authored level is an error, not Floor / Up.
+ActorColor StringToActorColor(const std::string& str, const std::string& section) {
+  if (str == "None") return ActorColor::None;
   if (str == "Red") return ActorColor::Red;
   if (str == "Green") return ActorColor::Green;
   if (str == "Blue") return ActorColor::Blue;
-  return ActorColor::None;
+  UnknownName(section, "color", str);
 }
 
-CellKind StringToCellKind(const std::string& str) {
+CellKind StringToCellKind(const std::string& str, const std::string& section) {
+  if (str == "Floor") return CellKind::Floor;
   if (str == "Wall") return CellKind::Wall;
   if (str == "Hazard") return CellKind::Hazard;
   if (str == "HealArea") return CellKind::HealArea;
   // Legacy v1 JSON: Synchro/Target cells now flatten to Floor; their
   // task-semantic role lives in the annotations array.
-  return CellKind::Floor;
+  if (str == "Synchro" || str == "Target") return CellKind::Floor;
+  UnknownName(section, "cell_kind", str);
 }
 
-CellOrigin StringToCellOrigin(const std::string& str) {
+CellOrigin StringToCellOrigin(const std::string& str, const std::string& section) {
+  if (str == "Default") return CellOrigin::Default;
   if (str == "Room") return CellOrigin::Room;
   if (str == "Corridor") return CellOrigin::Corridor;
   if (str == "Obstacle") return CellOrigin::Obstacle;
-  return CellOrigin::Default;
+  UnknownName(section, "cell_origin", str);
 }
 
-ObjectType StringToObjectType(const std::string& str) {
+ObjectType StringToObjectType(const std::string& str, const std::string& section) {
+  if (str == "Object") return ObjectType::Object;
   if (str == "Actor") return ObjectType::Actor;
   if (str == "Agent") return ObjectType::Agent;
   if (str == "AgentFSM") return ObjectType::AgentFSM;
   if (str == "Companion") return ObjectType::Companion;
   if (str == "Player") return ObjectType::Player;
   if (str == "NPCCompanion") return ObjectType::NPCCompanion;
-  return ObjectType::Object;
+  UnknownName(section, "agent_type", str);
 }
 
-Faction StringToFaction(const std::string& str) {
+Faction StringToFaction(const std::string& str, const std::string& section) {
+  if (str == "COMPANION") return Faction::COMPANION;
   if (str == "ENEMY") return Faction::ENEMY;
   if (str == "NEUTRAL") return Faction::NEUTRAL;
-  return Faction::COMPANION;
+  UnknownName(section, "faction", str);
 }
 
-Direction StringToDirection(const std::string& str) {
+Direction StringToDirection(const std::string& str, const std::string& section) {
+  if (str == "Up") return Direction::Up;
   if (str == "Down") return Direction::Down;
   if (str == "Left") return Direction::Left;
   if (str == "Right") return Direction::Right;
-  return Direction::Up;
+  UnknownName(section, "direction", str);
 }
 
 // SemanticTag string conversion (symmetric with Python SEMANTIC_TAG_NAMES).
-SemanticTag StringToSemanticTag(const std::string& str) {
+SemanticTag StringToSemanticTag(const std::string& str, const std::string& section) {
   if (str == "SynchroGoal") return SemanticTag::SynchroGoal;
   if (str == "AggroTarget") return SemanticTag::AggroTarget;
   if (str == "QuestPickup") return SemanticTag::QuestPickup;
@@ -173,7 +190,7 @@ SemanticTag StringToSemanticTag(const std::string& str) {
   if (str == "Escort")      return SemanticTag::Escort;
   if (str == "HtnName")     return SemanticTag::HtnName;
   if (str == "Room")        return SemanticTag::Room;
-  return SemanticTag::SynchroGoal;  // Fallback
+  UnknownName(section, "annotation tag", str);
 }
 
 // Position serialization
@@ -195,10 +212,10 @@ json CellSnapshotToJson(const CellSnapshot& cell, int row, int col) {
   };
 }
 
-CellSnapshot JsonToCellSnapshot(const json& j) {
+CellSnapshot JsonToCellSnapshot(const json& j, const std::string& section) {
   CellSnapshot cell;
-  cell.kind = StringToCellKind(j.at("cell_kind").get<std::string>());
-  cell.origin = StringToCellOrigin(j.at("cell_origin").get<std::string>());
+  cell.kind = StringToCellKind(j.at("cell_kind").get<std::string>(), section);
+  cell.origin = StringToCellOrigin(j.at("cell_origin").get<std::string>(), section);
   return cell;
 }
 
@@ -240,14 +257,15 @@ std::string FSMStateTypeToString(FSMStateType type) {
   }
 }
 
-FSMStateType StringToFSMStateType(const std::string& s) {
+FSMStateType StringToFSMStateType(const std::string& s, const std::string& section) {
+  if (s == "None") return FSMStateType::None;
   if (s == "Patrol") return FSMStateType::Patrol;
   if (s == "Aggro") return FSMStateType::Aggro;
   if (s == "ReturnToPatrol") return FSMStateType::ReturnToPatrol;
   if (s == "Telegraph") return FSMStateType::Telegraph;
   if (s == "Attack") return FSMStateType::Attack;
   if (s == "Recovery") return FSMStateType::Recovery;
-  return FSMStateType::None;
+  UnknownName(section, "FSM state_type", s);
 }
 
 // FSMSnapshot serialization
@@ -283,9 +301,10 @@ json FSMSnapshotToJson(const FSMSnapshot& fsm) {
   return j;
 }
 
-FSMSnapshot JsonToFSMSnapshot(const json& j) {
+// `section` is "agents[i].fsm".
+FSMSnapshot JsonToFSMSnapshot(const json& j, const std::string& section) {
   FSMSnapshot fsm;
-  fsm.state_type = StringToFSMStateType(j.at("state_type").get<std::string>());
+  fsm.state_type = StringToFSMStateType(j.at("state_type").get<std::string>(), section);
   fsm.target_id = j.at("target_id").get<int>();
   fsm.patrol_index = j.at("patrol_index").get<int>();
   fsm.patrol_forward = j.at("patrol_forward").get<bool>();
@@ -294,7 +313,7 @@ FSMSnapshot JsonToFSMSnapshot(const json& j) {
   fsm.rng_state = j.at("rng_state").get<uint64_t>();
   fsm.rng_inc = j.at("rng_inc").get<uint64_t>();
 
-  for (const auto& pos_json : j.at("patrol_path")) {
+  for (const auto& pos_json : GetArray(j, "patrol_path", section)) {
     fsm.patrol_path.push_back(JsonToPosition(pos_json));
   }
 
@@ -453,15 +472,17 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
 AgentSnapshot JsonToAgentSnapshot(const json& j, const std::string& section) {
   AgentSnapshot agent;
   agent.id = j.at("id").get<int>();
-  agent.type = static_cast<int>(StringToObjectType(j.at("agent_type").get<std::string>()));
+  agent.type =
+      static_cast<int>(StringToObjectType(j.at("agent_type").get<std::string>(), section));
   agent.position = JsonToPosition(j.at("position"));
   agent.prev_position = JsonToPosition(j.at("prev_position"));
   agent.health = j.at("health").get<int>();
   agent.max_health = j.at("max_health").get<int>();
   agent.agent_index = j.at("agent_index").get<int>();
-  agent.faction = static_cast<int>(StringToFaction(j.at("faction").get<std::string>()));
-  agent.direction = static_cast<int>(StringToDirection(j.at("direction").get<std::string>()));
-  agent.color = static_cast<int>(StringToActorColor(j.at("color").get<std::string>()));
+  agent.faction = static_cast<int>(StringToFaction(j.at("faction").get<std::string>(), section));
+  agent.direction =
+      static_cast<int>(StringToDirection(j.at("direction").get<std::string>(), section));
+  agent.color = static_cast<int>(StringToActorColor(j.at("color").get<std::string>(), section));
   agent.alive = j.at("alive").get<bool>();
   agent.kind = j.value("kind", std::string());
 
@@ -476,7 +497,7 @@ AgentSnapshot JsonToAgentSnapshot(const json& j, const std::string& section) {
     agent.has_fsm = false;
   } else {
     agent.has_fsm = true;
-    agent.fsm = JsonToFSMSnapshot(j.at("fsm"));
+    agent.fsm = JsonToFSMSnapshot(j.at("fsm"), section + ".fsm");
   }
 
   // Cadence
@@ -514,14 +535,15 @@ json EffectSnapshotToJson(const EffectSnapshot& effect) {
   return j;
 }
 
-EffectSnapshot JsonToEffectSnapshot(const json& j) {
+EffectSnapshot JsonToEffectSnapshot(const json& j, const std::string& section) {
   EffectSnapshot effect;
   effect.effect_name = j.at("effect_name").get<std::string>();
   effect.target_type = j.at("target_type").get<int>();
   effect.target_cell = JsonToPosition(j.at("target_cell"));
   effect.target_actor_id = j.at("target_actor_id").get<int>();
   effect.target_actors = j.at("target_actors").get<std::vector<int>>();
-  effect.direction = static_cast<int>(StringToDirection(j.at("direction").get<std::string>()));
+  effect.direction =
+      static_cast<int>(StringToDirection(j.at("direction").get<std::string>(), section));
   effect.ticks_remaining = j.at("ticks_remaining").get<int>();
   effect.in_telegraph = j.at("in_telegraph").get<bool>();
   effect.loops_remaining = j.at("loops_remaining").get<int>();
@@ -548,11 +570,12 @@ json AnnotationSnapshotToJson(const AnnotationSnapshot& a) {
   return j;
 }
 
-AnnotationSnapshot JsonToAnnotationSnapshot(const json& j) {
+AnnotationSnapshot JsonToAnnotationSnapshot(const json& j, const std::string& section) {
   AnnotationSnapshot a;
   std::string target = j.at("target").get<std::string>();
+  if (target != "Agent" && target != "Cell") UnknownName(section, "annotation target", target);
   a.target_type = (target == "Agent") ? 1 : 0;
-  a.tag = StringToSemanticTag(j.at("tag").get<std::string>());
+  a.tag = StringToSemanticTag(j.at("tag").get<std::string>(), section);
   a.owner_lens_id = j.value("owner_lens_id", -1);
   if (a.target_type == 0 && j.contains("pos")) {
     a.pos = JsonToPosition(j.at("pos"));
@@ -582,6 +605,8 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j) {
 static constexpr int kJsonSnapshotVersion = 4;
 static constexpr int kMinJsonSnapshotVersion = 2;
 static constexpr const char* kJsonSnapshotMagic = "SNAP";
+// rows * cols cap, so a hand-authored level can not make us allocate gigabytes.
+static constexpr int64_t kMaxJsonGridCells = int64_t{1} << 20;
 
 std::string SnapshotToJson(const Snapshot& snapshot) {
   json j;
@@ -680,24 +705,34 @@ Snapshot ReadSnapshot(const json& j) {
 
   Snapshot snapshot;
 
-  // Grid
-  InSection("grid", [&] {
-    snapshot.rows = j.at("grid").at("rows").get<int>();
-    snapshot.cols = j.at("grid").at("cols").get<int>();
-  });
+  // Grid: positive dimensions, at most kMaxJsonGridCells cells
+  const json& grid = Key(j, "grid", "snapshot");
+  snapshot.rows = Get<int>(grid, "rows", "grid");
+  snapshot.cols = Get<int>(grid, "cols", "grid");
+  const std::string dims = std::to_string(snapshot.rows) + "x" + std::to_string(snapshot.cols);
+  if (snapshot.rows <= 0 || snapshot.cols <= 0) {
+    throw std::runtime_error("grid: rows and cols must be > 0 (got " + dims + ")");
+  }
+  if (int64_t{snapshot.rows} * int64_t{snapshot.cols} > kMaxJsonGridCells) {
+    throw std::runtime_error("grid: " + dims + " is too many cells (at most " +
+                             std::to_string(kMaxJsonGridCells) + ")");
+  }
+  snapshot.cells.resize(static_cast<size_t>(snapshot.rows) * static_cast<size_t>(snapshot.cols));
 
-  // Pre-allocate cells
-  snapshot.cells.resize(snapshot.rows * snapshot.cols);
-
-  // Parse cells
-  const json& cells = InSection("grid", [&]() -> const json& { return j.at("grid").at("cells"); });
+  // Cells: {row, col, ...} entries inside the grid (absent cells stay Floor)
+  const json& cells = GetArray(grid, "cells", "grid");
   for (size_t i = 0; i < cells.size(); ++i) {
-    InSection(Indexed("grid.cells", i), [&] {
+    const std::string section = Indexed("grid.cells", i);
+    InSection(section, [&] {
       const json& cell_json = cells[i];
-      int row = cell_json.at("row").get<int>();
-      int col = cell_json.at("col").get<int>();
-      int idx = row * snapshot.cols + col;
-      snapshot.cells[idx] = JsonToCellSnapshot(cell_json);
+      const int row = cell_json.at("row").get<int>();
+      const int col = cell_json.at("col").get<int>();
+      if (row < 0 || row >= snapshot.rows || col < 0 || col >= snapshot.cols) {
+        throw std::runtime_error(section + ": (" + std::to_string(row) + ", " +
+                                 std::to_string(col) + ") outside " + dims);
+      }
+      snapshot.cells[static_cast<size_t>(row) * snapshot.cols + col] =
+          JsonToCellSnapshot(cell_json, section);
     });
   }
 
@@ -712,8 +747,9 @@ Snapshot ReadSnapshot(const json& j) {
   // Effects
   const json& effects = GetArray(j, "effects", "snapshot");
   for (size_t i = 0; i < effects.size(); ++i) {
+    const std::string section = Indexed("effects", i);
     snapshot.effects.push_back(
-        InSection(Indexed("effects", i), [&] { return JsonToEffectSnapshot(effects[i]); }));
+        InSection(section, [&] { return JsonToEffectSnapshot(effects[i], section); }));
   }
 
   // Timing
@@ -737,11 +773,12 @@ Snapshot ReadSnapshot(const json& j) {
   }
 
   // Semantic annotations (optional: absent in v1-format JSON)
-  if (j.contains("annotations") && j.at("annotations").is_array()) {
-    const json& annotations = j.at("annotations");
+  if (j.contains("annotations")) {
+    const json& annotations = GetArray(j, "annotations", "snapshot");
     for (size_t i = 0; i < annotations.size(); ++i) {
-      snapshot.annotations.push_back(InSection(
-          Indexed("annotations", i), [&] { return JsonToAnnotationSnapshot(annotations[i]); }));
+      const std::string section = Indexed("annotations", i);
+      snapshot.annotations.push_back(
+          InSection(section, [&] { return JsonToAnnotationSnapshot(annotations[i], section); }));
     }
   }
 

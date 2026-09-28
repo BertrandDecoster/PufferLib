@@ -1119,6 +1119,10 @@ TEST(TestSnapshotValidationErrorsSayWhere) {
   s = good;
   s.agents[0].tags = {{"burning", 0}};
   AssertSnapshotRejected(s, agent0);
+  s = good;
+  s.skills.push_back(SkillConfig{});  // No name
+  AssertSnapshotRejected(s, "skills[" + std::to_string(good.skills.size()) + "]");
+  AssertSnapshotRejected(s, "without a name");
 }
 
 TEST(TestDeserializeRejectsOversizedV4Counts) {

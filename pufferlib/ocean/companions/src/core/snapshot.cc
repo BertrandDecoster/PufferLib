@@ -74,11 +74,12 @@ std::string CellText(const Position& p) {
 }  // namespace
 
 void Snapshot::ValidateSkillsTagsZones() const {
-  for (const SkillConfig& skill : skills) {
+  for (size_t i = 0; i < skills.size(); ++i) {
     try {
-      ValidateSkillConfig(skill);
+      ValidateSkillConfig(skills[i]);
     } catch (const std::runtime_error& e) {
-      throw std::runtime_error(std::string("Snapshot: ") + e.what());
+      // The index says which skill when it has no name.
+      throw std::runtime_error("Snapshot: skills[" + std::to_string(i) + "]: " + e.what());
     }
   }
   for (size_t i = 0; i < agents.size(); ++i) {
