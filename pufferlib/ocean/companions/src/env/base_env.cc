@@ -968,6 +968,9 @@ bool BaseEnv::ContextHolds(ContextCondition condition, const Companion& comp) co
 }
 
 const ContextSkillRule* BaseEnv::ActiveContextRule(const Companion& comp, int slot) const {
+  // A companion that cannot act (downed, dead) has no context: a downed one
+  // lying next to a downed ally shows its equipped skill
+  if (!comp.IsAffectable()) return nullptr;
   for (const ContextSkillRule& rule : context_skills_) {
     // A rule the book no longer allows (its skill gone or given a cooldown
     // behind the rules' back: a Define, a generated Reset reloading the
@@ -981,7 +984,8 @@ const ContextSkillRule* BaseEnv::ActiveContextRule(const Companion& comp, int sl
 }
 
 const std::string& BaseEnv::EffectiveSkill(const Companion& comp, int slot) const {
-  assert(slot >= 0 && slot < kMaxSkillSlots && "skill slot out of range");
+  static const std::string kNoSkill;
+  if (slot < 0 || slot >= kMaxSkillSlots) return kNoSkill;
   const ContextSkillRule* rule = ActiveContextRule(comp, slot);
   return rule ? rule->skill : comp.GetSkill(slot);
 }

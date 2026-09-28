@@ -1969,6 +1969,7 @@ TEST(TestReviveThroughTheApi) {
   const Companions_Event& e = result.events[revived];
   ASSERT_EQ(e.health_source_id, a.id);
   ASSERT_EQ(e.health_new, 2);  // ceil(3 * 50%)
+  ASSERT_EQ(e.health_amount, 2);  // Gained from 0
   ASSERT_EQ(e.position.row, 3);
   ASSERT_EQ(e.position.col, 4);
   ASSERT_EQ(e.tick, 1);
@@ -1987,6 +1988,62 @@ TEST(TestReviveThroughTheApi) {
   act[0] = {Companions_Movement_Stay, Companions_Interact_None};
   companions_step(env, act, 2, &result);
   ASSERT_EQ(CountEvents(result, Companions_Event_AgentRevived), 0);
+  companions_destroy(env);
+}
+
+// A downed companion has no context skill: lying next to a downed ally, it
+// shows its equipped skill.
+TEST(TestADownedCompanionShowsItsEquippedSkill) {
+  Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"fireball\"]"}, {3, 4, ""}});
+  for (int32_t i = 1; i >= 0; --i) {
+    const Companions_AgentState x = AgentAt(env, i);
+    ASSERT_TRUE(companions_spawn_effect(env, "kill", x.position.row, x.position.col,
+                                        Companions_Direction_Up, -1));
+    if (i == 1) ASSERT_EQ(std::string(AgentAt(env, 0).skills[0]), std::string("revive"));
+  }
+  const Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_TRUE(a.downed);
+  ASSERT_EQ(std::string(a.skills[0]), std::string("fireball"));
+  ASSERT_EQ(std::string(a.equipped_skills[0]), std::string("fireball"));
+  const Companions_AgentState b = AgentAt(env, 1);
+  ASSERT_EQ(std::string(b.skills[0]), std::string("attack"));
+  companions_destroy(env);
+}
+
+// Revived and downed again in the same step (two strikes wound up before the
+// step land in its effect tick, after the revive): the step reports both
+// downs, grouped before the AgentRevived (events are grouped by kind); the
+// state has it down with both downs counted.
+TEST(TestRevivedAndDownedAgainInOneStepThroughTheApi) {
+  Companions_Env* env = LoadLevel({{3, 3, ""}, {3, 4, ""}});
+  const Companions_AgentState a = AgentAt(env, 0);
+  const Companions_AgentState b = AgentAt(env, 1);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", 3, 4, Companions_Direction_Up, -1));
+  // goblin_attack: a 1-step wind-up, then 1 damage; two of them take the
+  // revived companion's 2 HP
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(companions_spawn_effect(env, "goblin_attack", 3, 4, Companions_Direction_Up, -1));
+  }
+  Companions_Action act[2] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, act, 2, &result);
+
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 2);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentRevived), 1);
+  const int revived = EventIndex(result, Companions_Event_AgentRevived, b.id);
+  ASSERT_TRUE(revived >= 0);
+  ASSERT_EQ(result.events[revived].health_source_id, a.id);
+  ASSERT_EQ(result.events[revived].health_new, 2);
+  for (int32_t i = 0; i < result.event_count; ++i) {
+    if (result.events[i].type != Companions_Event_AgentDowned) continue;
+    ASSERT_EQ(result.events[i].subject_id, b.id);
+    ASSERT_TRUE(i < revived);  // The second down too
+  }
+  const Companions_AgentState& rb = result.state.agents[1];
+  ASSERT_TRUE(rb.downed);
+  ASSERT_EQ(rb.health, 0);
+  ASSERT_EQ(result.state.downs, 2);
   companions_destroy(env);
 }
 

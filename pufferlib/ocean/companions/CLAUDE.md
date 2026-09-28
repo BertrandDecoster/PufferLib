@@ -239,12 +239,12 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 | `GetLastSkillUses()` | caster, skill, target (centre; landing cell for a self skill), slot | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill) |
 | `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
-| `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health, position = its cell after the step) |
+| `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
-- Event order in a step: AgentMoved, AgentBlocked, AgentDowned, AgentRevived, SkillUsed,
-  TagApplied, EpisodeEnd (grouped by kind, not in time order: a companion revived then
+- Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
+  AgentDowned, AgentRevived, SkillUsed, TagApplied, EpisodeEnd (grouped by kind, not in time order: a companion revived then
   downed again in one step has its second AgentDowned before its AgentRevived); at most
   `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest.
   The state changes (movement, down, revive) come first, so SkillUsed / TagApplied are cut
@@ -256,7 +256,8 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
   `Companions_GameState.downs` / `max_downs` / `team_down`, `Companions_End_TeamDown` (4),
   `Companions_Event_AgentDowned` (17); 1.4 added revives and context skills:
-  `Companions_AgentState.skills` = the effective skills (`EffectiveSkill`),
+  `Companions_AgentState.skills` = the effective skills (`EffectiveSkill`: the equipped
+  ones for a downed companion, "" for a slot out of range),
   `equipped_skills` = the slots' own (`GetSkill`), `skill_cooldowns` = the equipped skills',
   `Companions_Event_AgentRevived` (18); 1.3 and 1.4 changed struct layouts, consumers
   rebuild): `companions_set_agent_skill` (`""` / NULL = `attack`; sets the equipped skill),

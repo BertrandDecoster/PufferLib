@@ -518,7 +518,7 @@ static void AddDownEvents(Companions_Env* wrapper) {
 
 // One AgentRevived event per revive of this step, in resolution order
 // (subject = the revived companion, at its cell; health_source_id = the
-// reviver; health_new = the HP it got up with).
+// reviver; health_new = health_amount = the HP it got up with).
 static void AddReviveEvents(Companions_Env* wrapper) {
   const companions::BaseEnv* env = wrapper->env.get();
   for (const companions::BaseEnv::Revival& revival : env->GetLastRevives()) {
@@ -530,6 +530,7 @@ static void AddReviveEvents(Companions_Env* wrapper) {
     evt.position = actor ? ToAPIPosition(actor->GetPosition()) : Companions_Position{-1, -1};
     evt.health_source_id = revival.reviver;
     evt.health_new = revival.health;
+    evt.health_amount = revival.health;  // Gained from 0
     wrapper->events.push_back(evt);
   }
 }

@@ -67,7 +67,9 @@
 // =============================================================================
 // Event System (Partial Implementation)
 // =============================================================================
-// Currently implemented events, in this order within a step:
+// Currently implemented events, in this order within a step: the movement
+// events (AgentMoved / AgentBlocked, per agent in agent order), then
+// AgentDowned, AgentRevived, SkillUsed, TagApplied, EpisodeEnd:
 // - Companions_Event_AgentMoved: Agent moved to a new position (by walking,
 //   or by a skill: a teleport, dash, push or pull)
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
@@ -78,7 +80,8 @@
 // - Companions_Event_AgentRevived: a downed companion got up (a skill that
 //   revives, such as "revive", reported as a SkillUsed too): subject_id = the
 //   revived companion, health_source_id = the reviver (the skill's caster),
-//   health_new = the HP it got up with, position = its cell after the step
+//   health_new = health_amount = the HP it got up with (gained from 0),
+//   position = its cell after the step
 //   (a later skill may push it). One per revive, in resolution order. A
 //   companion revived and downed again in the same step (by a later skill or
 //   an effect) has its AgentRevived here and its second AgentDowned among the
@@ -333,7 +336,8 @@ typedef struct {
   //   context rules may replace the equipped skill while their condition
   //   holds (by default: next to a downed ally, slot 0 is "revive"); computed
   //   for the state as it is now, so it can change between two steps (a host
-  //   effect downing an ally).
+  //   effect downing an ally). A companion that cannot act (downed) has no
+  //   context: its effective skills are its equipped ones.
   // - equipped_skills: what companions_set_agent_skill, a snapshot or a level
   //   put in the slot (what skills held before 1.4). Equal to skills when
   //   no rule applies.
@@ -426,7 +430,8 @@ typedef struct {
   Companions_MovementAction move_action;
 
   // For AgentDamaged/AgentHealed (and AgentRevived: health_new = the HP it
-  // got up with, health_source_id = the reviver):
+  // got up with, health_amount = the same (gained from 0), health_source_id
+  // = the reviver):
   int32_t health_amount;
   int32_t health_new;
   Companions_ObjectId health_source_id;

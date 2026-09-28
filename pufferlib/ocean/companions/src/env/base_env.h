@@ -273,11 +273,14 @@ class BaseEnv {
   // reason in `error` (when given), unless ValidateContextSkills accepts them
   // with the current skill book.
   bool SetContextSkills(std::vector<ContextSkillRule> rules, std::string* error = nullptr);
-  // The skill `comp`'s slot uses now. `slot` must be in [0, kMaxSkillSlots)
-  // (asserted). The reference points into the rules or the companion's slot:
-  // SetContextSkills, SetCompanionSkill and a load invalidate it.
+  // The skill `comp`'s slot uses now. A companion that cannot act (downed,
+  // dead) has no context: its equipped skill. A slot outside
+  // [0, kMaxSkillSlots) has none: "" (a static empty string). The reference
+  // points into the rules or the companion's slot: SetContextSkills,
+  // SetCompanionSkill and a load invalidate it.
   const std::string& EffectiveSkill(const Companion& comp, int slot) const;
-  // Whether a rule gives that slot its effective skill now
+  // Whether a rule gives that slot its effective skill now (false for a
+  // companion that cannot act and for a slot out of range)
   bool IsContextSkill(const Companion& comp, int slot) const;
 
   // Host primitives: land / remove a tag outside of a step. `duration` is a

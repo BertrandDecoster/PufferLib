@@ -522,6 +522,45 @@ TEST(TestSlot0IsReviveNextToADownedAlly) {
   ASSERT_EQ(env.LegalActions(1).size(), static_cast<size_t>(1));
 }
 
+// A companion that cannot act (downed, dead) has no context skill: a downed
+// one lying next to a downed ally shows its equipped skill.
+TEST(TestADownedCompanionHasNoContextSkill) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Companion* b = AsCompanion(Place(env, 1, {3, 2}));
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "fireball"));
+  DownCompanion(env, 1);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("revive"));
+  DownCompanion(env, 0);  // Both down, side by side
+  ASSERT_TRUE(a->IsDowned());
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("fireball"));
+  ASSERT_FALSE(env.IsContextSkill(*a, 0));
+  ASSERT_EQ(env.EffectiveSkill(*b, 0), std::string(kDefaultSkill));
+  ASSERT_FALSE(env.IsContextSkill(*b, 0));
+  // Revived: the context applies again (b still lies next to it)
+  ASSERT_TRUE(a->Revive(1));
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("revive"));
+  // Dead: none either
+  a->SetAlive(false);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("fireball"));
+  ASSERT_FALSE(env.IsContextSkill(*a, 0));
+}
+
+// A slot out of range has no skill: "" (as the C API reports for an agent
+// without slots), never undefined behaviour.
+TEST(TestEffectiveSkillOutOfRangeIsEmpty) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Place(env, 1, {3, 2});
+  DownCompanion(env, 1);  // A rule applies to slot 0
+  ASSERT_EQ(env.EffectiveSkill(*a, -1), std::string(""));
+  ASSERT_EQ(env.EffectiveSkill(*a, kMaxSkillSlots), std::string(""));
+  ASSERT_FALSE(env.IsContextSkill(*a, -1));
+  ASSERT_FALSE(env.IsContextSkill(*a, kMaxSkillSlots));
+}
+
 // Using it in a step: whatever is equipped, the use is a revive, reported as
 // such, and the equipped skill's cooldown is not spent.
 TEST(TestAContextReviveInAStep) {

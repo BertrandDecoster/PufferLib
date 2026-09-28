@@ -770,7 +770,10 @@ TEST(ParityTest_Annotations_After_SetTaskLens_With_Params) {
 // companion on both sides at fixed steps, so downed / downs / AgentDowned are
 // compared with downs in them; a companion whose slot 0 is revive (next to a
 // downed ally) uses it on that ally, so effective vs equipped skills and
-// AgentRevived are compared with revives in them.
+// AgentRevived are compared with revives in them. That revive / context
+// coverage depends on the seed (the snapshot's and the actions') and on the
+// kill schedule: a companion must happen to stand next to a downed ally. The
+// test asserts it saw both; after changing either, check it still does.
 TEST(ParityTest_SkillsTagsZones) {
   const int rows = 8, cols = 8, agents = 3, synchro = 1;
   SynchroEnv cpp_env(rows, cols, agents, synchro, 0, 7, 0, 100);
