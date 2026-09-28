@@ -79,7 +79,9 @@ companions_load_snapshot(env, buffer.data(), buffer.size());
 **Notes:**
 - Returns `false`/`0` on error, check `companions_get_error()`
 - Contains: grid, agents, effects, tick, RNG state (~2-5 KB)
-- Binary format: magic `0x534E4150` ("SNAP"), version 1
+- Binary format: magic `0x534E4150` ("SNAP"), version 6 (1..6 load; 4 added skills,
+  tags and zones, 5 downs, 6 context skills and the revive fields: see the companions
+  `CLAUDE.md`, "Levels")
 
 ## JSON API
 

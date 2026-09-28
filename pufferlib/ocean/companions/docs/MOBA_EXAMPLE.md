@@ -47,7 +47,7 @@ This document lists features from PufferLib's MOBA environment (`pufferlib/ocean
 
 | Feature | MOBA Implementation | Why Not Relevant |
 |---------|---------------------|------------------|
-| **Respawning** | Dead players respawn at base after timer | A companion at 0 HP goes down (no respawn; revive: phase 2); episodes end on the goal, the horizon or the team being down |
+| **Respawning** | Dead players respawn at base after timer | A companion at 0 HP goes down (no respawn: an ally beside it revives it, the default `revive` context skill); episodes end on the goal, the horizon or the team being down |
 | **Wave-Based Spawning** | Creeps spawn every 150 ticks (5 per lane) | No persistent world |
 | **Lane System** | 6 lanes with waypoints for creep pathing | Grid-based environments have no lanes |
 

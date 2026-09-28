@@ -38,6 +38,10 @@ companions/                    # Standalone pure C++ implementation
   sides live in `tests/test_snapshot_json.cc`, `tests/test_snapshot.cc`, `tests/test_api.cc`
 - Downs, `IsAffectable`, the team counter, `TeamDown`, down reports, v5 snapshots:
   `companions_downs_test` (`tests/test_downs.cc`)
+- Revive (`affects_downed`, `revive_percent`, the `revive` builtin), context skills,
+  the revive report, v6 context rules: `companions_revive_test` (`tests/test_revive.cc`);
+  `PreviewSkill` and `SkillUse::affected`: `companions_skills_test`; their C API side:
+  `tests/test_api.cc`
 - A test that registers its own effects holds a `ScopedEffectRegistry`
   (`tests/effect_registry_guard.h`), declared before its envs: it clears the global
   `EffectConfigRegistry` back to the builtins on entry and on exit, even when an
@@ -77,7 +81,8 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
  - Movement has 5 options (Stay, Up, Down, Left, Right)
  - Interaction (`InteractAction`, `core/types.h`):
    - `None`
-   - `Skill1`: use the skill in slot 0 (`Attack` is its historical alias)
+   - `Skill1`: use slot 0's effective skill (see Context skills; `Attack` is its
+     historical alias)
    - `Skill2`: slot 1. Declared (data, snapshots, C API all carry 2 slots) but not
      in the flat space until `kEnabledSkillSlots = 2` (the space then grows from
      10 to 15). The C API accepts `Skill2` and treats it as `None`
@@ -88,8 +93,9 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
  - Slots are never empty: without another skill a slot holds the fixed default
    `attack` (`kDefaultSkill`), so every companion, RL envs' included, strikes the
    faced cell on `Skill1` (1 damage, allies spared) instead of moving
- - A skill that can't be used (a name the book lacks, cooldown, disabled slot,
-   rooted + self-moving skill, dead or downed caster) is dropped and the movement applies as with `None`
+ - A skill that can't be used (a name the book lacks, cooldown (an equipped skill's
+   only), disabled slot, rooted + self-moving skill, dead or downed caster) is dropped
+   and the movement applies as with `None`
  - `BaseEnv::LegalActions`: Stay and each move onto an in-bounds walkable cell (interact
    `None`), plus, for a companion, each enabled slot (`slot < kEnabledSkillSlots`) it
    `CanUseSkill`, as `Skill1` / `Skill2` with each of the 5 aims (a wall-facing aim
@@ -111,14 +117,18 @@ Fixed-point iteration algorithm in `base_env.cc:ResolveCollisions()`:
 The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque data
 (at most `kMaxNameLength` = 31 bytes), a level may retune or add skills, and what a tag
 *does* is the host's business. But the env simulates every mechanic: targeting, motion,
-tags, roots, cooldowns. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
-`env/skill_motion.{h,cc}`, `env/base_env.cc` (`ResolveSkills`, `UseSkill`, `Affects`, `AreaMotion`).
+tags, roots, cooldowns, revives. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
+`core/context_skill.{h,cc}`, `env/skill_motion.{h,cc}`, `env/base_env.cc` (`ResolveSkills`,
+`UseSkill`, `ResolveSkillTargets`, `PreviewSkill`, `EffectiveSkill`, `Affects`, `AreaMotion`).
 
 **Step order** (`BaseEnv::Step`):
 1. Clear the per-step reports, `BeginStep` on every agent
-2. `PreStep` (enemy FSM) → `GatherIntentions` → `ResolveCollisions` → `ExecuteValidatedMovements`
+2. `PreStep` (enemy FSM) → `GatherIntentions` (fixes each skill use's effective skill:
+   the context rules are read here, once, before anyone moves) → `ResolveCollisions` →
+   `ExecuteValidatedMovements`
 3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed)
-4. `ResolveInteractions` → `ResolveSkills`
+4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
+   order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
 5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), the downs
    since the last report (`GetLastDowns`, after `EndStep`), `tick_++`, `PostStep`,
    rewards (TaskLens)
@@ -136,7 +146,7 @@ What a host reads between steps is always the number of steps to come it covers.
 - Landing rule: something moved never ends on a hole or on another living actor
 - Ground target: the cell `range` away by the line rule (may be a hole)
 - Projectile: the first agent the skill affects within `range` (a downed one is passed
-  over), else the last cell reached
+  over; by an `affects_downed` skill, a standing one), else the last cell reached
 - Dash: up to `distance` by the line rule, lands on the furthest valid cell (else stays)
 - Teleport: exactly `distance`, else `distance - 1`, ... 1 (ignores what lies between,
   walls included), else stays
@@ -151,6 +161,7 @@ What a host reads between steps is always the number of steps to come it covers.
 | `lightningStep` | self | cross around the landing cell | dash 4, `tag_path` | `electrified` on agents crossed on the path and on the 4 cells orthogonal to the landing cell; `self_tags=false` | 3 |
 | `teleport` | self | single | teleport 3, else 2, else 1 | - | 4 |
 | `vortex` | ground, range 3 | cross | pull_in: one ring thing, priority up/right/down/left | roots the affected agents on the cross (pulled one included) for the next step; `self_root=false` | 4 |
+| `revive` | projectile, range 1, filter `companion` | single | - | `affects_downed`, `revive_percent` 50: a downed ally on the faced cell gets up with half its max HP, rounded up. Retunable by a level (unlike `attack`); the default context rule gives it (see Context skills) | 0 |
 | `attack` | projectile, range 1 (the faced cell; a wall stops it) | single | - | `damage` 1; `friendly_fire=false` (allies and caster spared) | 0 |
 
 **Default skill `attack`** (`kDefaultSkill`, `core/types.h`; its config is a
@@ -186,24 +197,89 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
 | `cooldown` | 0 | See above |
 | `friendly_fire` | true | Off: only agents NOT of the caster's faction are affected (allies and caster get no tag, damage, push/pull or root; a projectile flies past them) |
 | `self_tags` / `self_motion` / `self_root` / `self_damage` | true | With friendly fire, the caster is affected when it stands in its own area (after its own motion); each flag can spare it that effect |
+| `affects_downed` | false | Off: affects the standing only (alive, not downed). On: the downed only (alive and down), which it can only revive: no tags, damage, `root_steps` or motion, and `friendly_fire` on (validated) |
+| `revive_percent` | 0 | A downed companion it affects gets up (`Companion::Revive`) with this percent of its max HP, rounded up (at least 1); in [0, 100], > 0 needs `affects_downed` |
 
-- "Affected" (`BaseEnv::Affects`) = affectable (alive, not downed), passes `filter`, and
-  `friendly_fire` or not of the caster's faction. Push / pull also move living non-agent
-  actors (no faction check)
-- Resolution of one skill (`UseSkill`): caster motion and centre → affected agents
-  (area, then dash path) → tags → damage → root (area only, before anything moves) →
-  push / pull. An agent the damage kills or downs keeps the tags (reported) but is
-  neither rooted nor moved, and is no longer affected by anything
+- "Affected" (`BaseEnv::Affects`) = affectable (alive, not downed; for an
+  `affects_downed` skill: alive and downed), passes `filter`, and `friendly_fire` or not
+  of the caster's faction. Push / pull also move living non-agent actors (no faction check)
+- Resolution of one skill (`UseSkill`): `ResolveSkillTargets` (pure, shared with
+  `PreviewSkill`: the caster's landing, the centre, the affected agents (area in cell
+  order, then a `tag_path` dash's path) and what the use will do to each, read with the
+  caster already on its landing cell) → caster motion → tags → damage → revive → root
+  (area only, before anything moves) → push / pull. An agent the damage kills or downs
+  keeps the tags (reported) but is neither rooted nor moved, and is no longer affected by
+  anything
 - Damage is not reported as events yet (`Companions_Event_AgentDamaged` is declared,
   not implemented): read it from the agents' health
 - `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, damage, root_steps,
-  cooldown ≥ 0; tag names non-empty ≤ 31 bytes with duration -1 or > 0; enums in range
+  cooldown ≥ 0; tag names non-empty ≤ 31 bytes with duration -1 or > 0, at most
+  `kMaxSkillTags` (32, the C API's `Companions_MAX_SKILL_TAGS`) tags; enums in range;
+  `revive_percent` and `affects_downed` as above
 
 **Multiple casters** resolve sequentially, in agent-index order, each from its CURRENT
 position: an earlier push / pull can move a later caster before it acts (aim, range and
 area start from its new cell), and earlier casters claim landing cells first. A caster
 rooted earlier in the pass still resolves its skill this step (usability is decided in
 `GatherIntentions`; the root blocks from the next step).
+
+**Revive** (a skill with `revive_percent` > 0; the builtin `revive`):
+- `Companion::Revive(health)`: the downed companion gets up where it lies, with
+  `ceil(max_health * revive_percent / 100)` HP (clamped to [1, max]); its statuses are
+  already clear (cleared as it went down), its tags kept, `times_downed` unchanged (the
+  team's counter never goes back). It acts from the next step, and its cell's zone lands
+  on it from the next step (zones apply before skills)
+- A revive is a skill use: a `SkillUse` (the revived agent with the `Revive` effect) plus
+  a `GetLastRevives()` entry (reviver, revived, health). Several revivers of one ally in
+  a step: the first in agent-index order gets it up, the later ones find it standing and
+  affect nobody. Revived then downed again in the same step: a revive, then a down
+
+**Context skills** (`core/context_skill.{h,cc}`; `BaseEnv::EffectiveSkill`,
+`IsContextSkill`, `GetContextSkills` / `SetContextSkills`):
+- A slot holds its EQUIPPED skill (what `SetCompanionSkill`, snapshots and the C API
+  setter write: `Companion::GetSkill`) and an EFFECTIVE one: the skill of the first rule
+  `{condition, slot, skill}` for that slot whose condition holds for the companion, else
+  the equipped one. Computed whenever read, never stored or swapped. A companion that
+  cannot act (downed, dead) has no context (effective = equipped); a slot outside
+  [0, `kMaxSkillSlots`) has `""`
+- Conditions (`ContextCondition`, evaluated by `BaseEnv::ContextHolds`):
+  `adjacent_downed_ally` = a downed agent of the companion's faction on one of its 4
+  neighbours. A new condition is an enum value, its name in `context_skill.cc`'s table
+  and its case in `ContextHolds`
+- Default rules (`DefaultContextSkills()`: a fresh env, a level without
+  `"context_skills"`): `[{adjacent_downed_ally, slot 0, revive}]`, so every level has revive
+- Cooldowns belong to the equipped skill: a rule's skill must have cooldown 0
+  (`ValidateContextSkills`), and a context use neither reads nor spends the slot's
+  cooldown (usable whatever it says; it keeps ticking), even when the rule names the
+  equipped skill itself (the origin decides, not the name)
+- `GatherIntentions` fixes each use's skill (the rule, if any): an ally revived or downed
+  later in the step does not change it
+- Validation: `SetContextSkills` returns false (rules unchanged, the reason in `error`)
+  unless `ValidateContextSkills` accepts them with the current book (a known condition,
+  a slot in range, a skill of the book with cooldown 0); snapshots, see Levels. A rule
+  the book no longer allows (`IsUsableWith`: its skill gone, or given a cooldown later
+  through `GetMutableSkillBook` / a generated Reset reloading the builtins) is skipped at
+  run time (it never disables a slot) and left out by `SaveSnapshot`
+- Level data, like `max_downs`: see Levels
+
+**Previews and what a use did** (`BaseEnv::PreviewSkill`, `SkillUse::affected`):
+- `PreviewSkill(caster, slot, aim)`: what that slot's effective skill, aimed `aim`, would
+  do NOW (a pure query: nothing moves, lands, hurts, revives or is interned): `usable`
+  (the step would use it: not stunned, `CanUseSkill`), `skill`, `centre`,
+  `caster_landing`, `affected`. Same code as the step (`ResolveSkillTargets`), so
+  preview and use cannot drift; computed whatever `usable` says. The step may still
+  differ: it moves everyone first (enemies too), then resolves casters one by one, so an
+  earlier caster's push / pull / damage / revive changes what a later one reaches; a use
+  whose movement is Stay keeps the caster's facing. It says whom the skill affects, not
+  where a push / pull then moves them
+- `AffectedAgent { id, effects }`, `SkillEffect` bit flags: `Tags` 1, `Damage` 2,
+  `Root` 4, `Motion` 8 (it really changes cell: a push against a wall is no Motion),
+  `Revive` 16; 0 = affected, nothing applies (the caster gets only what its `self_*`
+  flags allow). In a preview they are a prediction made before the damage; in a
+  `SkillUse` they are what the use DID: an agent its own damage downed or killed has no
+  Root / Motion, a pull that then took the next ring thing reports that one with Motion,
+  and an ally an earlier caster got up first is not revived again (standing, it is not
+  affected at all). Tags and Damage agree
 
 **Tags** (`TagTable`, `Agent::ApplyTag`):
 - Opaque names interned per env; ids stay stable (the table only grows, never cleared
@@ -236,7 +312,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 
 | BaseEnv | Content | C API event |
 |---------|---------|-------------|
-| `GetLastSkillUses()` | caster, skill, target (centre; landing cell for a self skill), slot | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill) |
+| `GetLastSkillUses()` | caster, skill (the effective one), target (centre; landing cell for a self skill), slot, `affected` (the agents it affected, in processing order, with what it did to each: see Previews) | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill); the whole use, `affected` included: `companions_get_last_skill_use_count` / `companions_get_last_skill_use` (not an event: never cut by the event cap) |
 | `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
 | `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
@@ -259,13 +335,26 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   `Companions_AgentState.skills` = the effective skills (`EffectiveSkill`: the equipped
   ones for a downed companion, "" for a slot out of range),
   `equipped_skills` = the slots' own (`GetSkill`), `skill_cooldowns` = the equipped skills',
-  `Companions_Event_AgentRevived` (18); 1.3 and 1.4 changed struct layouts, consumers
-  rebuild): `companions_set_agent_skill` (`""` / NULL = `attack`; sets the equipped skill),
+  `Companions_Event_AgentRevived` (18), and three queries: the skill book
+  (`companions_get_skill_count` / `companions_get_skill` / `companions_find_skill` fill a
+  `Companions_SkillInfo`, every SkillConfig field, tags up to `Companions_MAX_SKILL_TAGS`
+  = `kMaxSkillTags` (32, so never truncated); builtins first, `attack` and `revive`
+  included, then the level's own in snapshot order, a retuned builtin in place; changes
+  only when a snapshot loads, a generated Reset's included), the preview (`companions_preview_skill` →
+  `Companions_SkillPreview`: `PreviewSkill`) and the last step's uses
+  (`companions_get_last_skill_use_count` / `companions_get_last_skill_use` →
+  `Companions_SkillUseInfo`); both list the affected agents with their
+  `Companions_SkillEffect` flags (same values as `SkillEffect`), the first
+  `Companions_MAX_AGENTS` (8) in `affected_count`, all of them in `affected_total`.
+  1.3 and 1.4 changed struct layouts, consumers rebuild; 1.4.0 was amended in place
+  before release (the queries), so a consumer built against the final header refuses,
+  or mis-reads, a DLL from an earlier 1.4.0 commit: rebuild both sides):
+  `companions_set_agent_skill` (`""` / NULL = `attack`; sets the equipped skill),
   `companions_apply_tag` / `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`,
   `companions_get_tag_name` / `find_tag`; `Companions_AgentState` carries tags (first 8),
   2 skill slots (effective and equipped) and cooldowns; name buffers are 32 bytes
   (31 + NUL). The context rules themselves are not exposed (a host reads their effect in
-  `skills`; level tools read them in the snapshot JSON)
+  `skills`, or in a preview's `skill`; level tools read them in the snapshot JSON)
 
 **Levels** bring their skills, zones, slots, downs and context skills through snapshot
 JSON v6 (`core/snapshot_json.cc`; versions 2..6 load, binary snapshots follow the same
@@ -308,20 +397,23 @@ number, binary 1..6):
 
 ### Downs
 A companion at 0 HP goes DOWN instead of dying; the team's downs can lose the level.
-Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/test_downs.cc`.
+Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/test_downs.cc`
+(revive: `tests/test_revive.cc`).
 
 - **Going down** (`Agent::TakeDamage` → `OnZeroHealth`: an agent dies, a `Companion`
   goes down): alive (`IsAlive()`), 0 HP, `IsDowned()`, `times_downed + 1`; its statuses
   are cleared, its tags and skills kept; its timers keep running (`EndStep` ticks it: tags
   expire, cooldowns recover). Skill damage, effects (enemy strikes, the host's `kill` /
-  `hit`) all go through it. Nothing gets a companion up yet (revive: phase 2): it stays
-  down until `Reset` / `LoadSnapshot`
+  `hit`) all go through it. It stays down until a skill revives it (see Revive: by
+  default, an ally beside it finds its slot 0 is `revive`, a context skill) or
+  `Reset` / `LoadSnapshot`
 - **Inert and untouched.** `Agent::IsAffectable()` = alive and not downed: the check
   for everything that hits, heals, tags, statuses, pushes / pulls or targets an agent
   (`TakeDamage`, `Heal`, `ApplyTag` / `LandTag` / `ApplyTagTo` (false, interns nothing),
   `ApplyStatus`, zones, `Affects`, `AreaMotion`, effects and effect pushes, projectiles
-  pass over it). The downed does not act (`GatherIntentions`: Stay; `CanUseSkill` false;
-  `LegalActions`: Stay only).
+  pass over it). The one exception: an `affects_downed` skill reaches the downed only
+  (and can only revive them). The downed does not act (`GatherIntentions`: Stay;
+  `CanUseSkill` false; `LegalActions`: Stay only; no context skill).
   Enemies ignore it (`FindClosestCompanion`) and drop it as a target (`AggroState`, a
   wind-up locks no downed target). It still blocks its cell (collisions, landing)
 - **Objectives: only standing companions control them; physical presence (occupancy)
@@ -345,7 +437,8 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   downs, `IsDone()` can turn false again)
 - **Reports**: `GetLastDowns()`, one companion id per down, filled after `EndStep`
   (`Companion::TakeUnreportedDowns`): a down between two steps (a host effect) is
-  reported once, by the next step. Downs a snapshot loads count as reported
+  reported once, by the next step. Downs a snapshot loads count as reported. Getting up:
+  `GetLastRevives()` (see Revive)
 - **Snapshots** (v5): per companion `downed` / `times_downed` (companion types only:
   Companion, Player, NPCCompanion; `IsCompanionType`), top-level `max_downs`.
   `ValidateSkillsTagsZones` rejects max_downs < 1, downs on a non-companion,
@@ -356,8 +449,8 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   `max_downs` and `team_down` (the live `IsTeamDown()`, independent of the latched end
   reason: a team down after the horizon stays `Horizon`, `team_down` says it);
   `Companions_End_TeamDown` (4); `Companions_Event_AgentDowned` (17, subject_id,
-  position), after the movement events and before SkillUsed (so the event cap never drops
-  it)
+  position), after the movement events and before AgentRevived / SkillUsed (the event cap
+  drops it only in a step reviving a companion twice: see Per-step reports)
 
 ### Pathfinding
 A* with Euclidean heuristic in `pathfinder.cc`:
@@ -475,12 +568,12 @@ spawns its enemy then: under the Aggro lens, no stale `TaskFailed`)
 
 ### Known issue: D4 transform
 - `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)
-  together with `d4_transform` (`base_env.cc:1136`, `:1251`), but `LoadSnapshot` treats a
-  snapshot as pre-transform and transforms it again (`base_env.cc:1461-1465`): Save→Load
-  is not a round trip when `d4 != 0`
-- `ApplyD4Transform` swaps `rows_` / `cols_` for rotations / transposes
-  (`base_env.cc:197-199`), and each `Reset` generates a level with the current
-  `rows_` / `cols_` then transforms it (e.g. `synchro_env.cc:96-113`): on non-square
+  together with `d4_transform` (`snap.d4_transform` in `BaseEnv::SaveSnapshot`), but
+  `LoadSnapshot` treats a snapshot as pre-transform and transforms it again (its
+  `ApplyD4Transform()` call): Save→Load is not a round trip when `d4 != 0`
+- `ApplyD4Transform` swaps `rows_` / `cols_` for rotations / transposes, and each
+  `Reset` generates a level with the current `rows_` / `cols_` then transforms it (e.g.
+  `SynchroEnv::Reset`): on non-square
   grids, rows/cols alternate on every Reset
 
 ## Exporting the game

@@ -72,7 +72,25 @@ Events returned by `companions_step()` for animation:
 |-------|-------------|
 | `Companions_Event_AgentMoved` | Agent successfully moved to new position |
 | `Companions_Event_AgentBlocked` | Agent tried to move but was blocked |
-| `Companions_Event_EpisodeEnd` | Episode completed (success or timeout) |
+| `Companions_Event_AgentDowned` | A companion went down (1.3) |
+| `Companions_Event_AgentRevived` | A downed companion got up (1.4: reviver, HP) |
+| `Companions_Event_SkillUsed` | A companion used a skill slot (caster, centre, slot, skill) |
+| `Companions_Event_TagApplied` | A tag landed on an agent (skill or zone) |
+| `Companions_Event_EpisodeEnd` | Episode ended (`effect_id` = the end reason) |
+
+The header's "Versioning" and "Event System" comments are the reference (order,
+event cap, what each version changed); the companions `CLAUDE.md` summarizes them.
+
+## Skills and tags
+
+Setters: `companions_set_agent_skill` (the equipped skill), `companions_apply_tag` /
+`remove_tag`, `companions_set_cell_tag`. Queries (1.4): the skill book
+(`companions_get_skill_count` / `get_skill` / `find_skill` → `Companions_SkillInfo`),
+`companions_preview_skill` (→ `Companions_SkillPreview`: what a slot would do now) and
+the last step's uses (`companions_get_last_skill_use_count` / `get_last_skill_use` →
+`Companions_SkillUseInfo`, the affected agents with `Companions_SkillEffect` flags).
+`Companions_AgentState.skills` are the effective skills (context rules applied),
+`equipped_skills` the slots' own.
 
 ## Thread Safety
 
