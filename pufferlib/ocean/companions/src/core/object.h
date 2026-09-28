@@ -10,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "skill_config.h"  // kDefaultSkill
 #include "types.h"
 
 // Forward declare FSM types

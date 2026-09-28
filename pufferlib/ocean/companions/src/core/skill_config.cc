@@ -61,15 +61,19 @@ std::vector<SkillConfig> Builtins() {
 }
 }  // namespace
 
+void RejectDefaultSkillName(const std::string& name) {
+  if (name == kDefaultSkill) {
+    throw std::runtime_error(std::string("'") + kDefaultSkill + "' is the fixed default skill");
+  }
+}
+
 SkillBook::SkillBook() { Reset(); }
 
 void SkillBook::Reset() { skills_ = Builtins(); }
 
 void SkillBook::Define(SkillConfig config) {
   if (config.name.empty()) return;  // Never a skill
-  if (config.name == kDefaultSkill) {
-    throw std::runtime_error(std::string("'") + kDefaultSkill + "' is the fixed default skill");
-  }
+  RejectDefaultSkillName(config.name);
   ValidateSkillConfig(config);      // Throws before any change
   for (SkillConfig& s : skills_) {
     if (s.name == config.name) {

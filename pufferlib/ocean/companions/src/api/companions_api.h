@@ -13,6 +13,8 @@
 // getter, and its EffectSpawned events): every companion skill slot now holds
 // a skill, the fixed "attack" by default, so Companions_Interact_Attack
 // strikes the faced cell (struct layouts unchanged).
+// A minor bump may break the ABI (1.1 did): consumers pin major.minor, not
+// just major, and rebuild against the matching header.
 //
 // =============================================================================
 // Thread Safety
@@ -136,9 +138,10 @@ typedef enum {
 // the companion stays put and its movement only aims. A slot is never empty:
 // without another skill it holds "attack" (1 damage to the agent on the faced
 // cell, allies spared), so every companion strikes on Skill1, RL envs'
-// included. A skill that cannot be used (unknown skill, cooldown, rooted for
-// a self-moving skill) is dropped and the movement applies as with None. Any
-// other value refuses the step (see companions_step).
+// included. A skill that cannot be used (unknown skill, cooldown, slot not
+// enabled yet (Skill2), rooted for a self-moving skill, stunned or dead
+// caster) is dropped and the movement applies as with None. Any other value
+// refuses the step (see companions_step).
 typedef enum {
   Companions_Interact_None = 0,
   Companions_Interact_Skill1 = 1,

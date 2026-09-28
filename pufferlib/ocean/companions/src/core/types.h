@@ -102,6 +102,15 @@ enum class InteractAction {
 };
 
 constexpr int kMaxSkillSlots = 2;
+
+// The fixed default skill: a melee strike on the faced cell (projectile,
+// range 1, single, damage 1, no friendly fire, cooldown 0; defined in
+// SkillBook's builtins). Every companion skill slot always holds a skill, and
+// a slot with nothing else in it holds this one ("" is never a slot's value:
+// clearing a slot puts it back). A level cannot redefine it (SkillBook::Define
+// throws, a snapshot carrying it is rejected, SaveSnapshot never writes it;
+// see RejectDefaultSkillName in skill_config.h).
+inline constexpr char kDefaultSkill[] = "attack";
 // Slots the flat action space exposes. Slot 2 exists everywhere else (data,
 // snapshots, C API) but is not trainable yet: set to 2 to enable it (the
 // action space grows from 10 to 15).

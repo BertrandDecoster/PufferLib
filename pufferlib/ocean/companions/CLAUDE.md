@@ -134,11 +134,12 @@ tags, roots, cooldowns. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 | `vortex` | ground, range 3 | cross | pull_in: one ring thing, priority up/right/down/left | roots the affected agents on the cross (pulled one included) for the next step; `self_root=false` | 4 |
 | `attack` | projectile, range 1 (the faced cell; a wall stops it) | single | - | `damage` 1; `friendly_fire=false` (allies and caster spared) | 0 |
 
-**Default skill `attack`** (`kDefaultSkill`, `skill_config.h`): every companion slot
-holds a skill, and one with nothing else in it holds `attack`. It is FIXED:
+**Default skill `attack`** (`kDefaultSkill`, `core/types.h`; its config is a
+`SkillBook` builtin): every companion slot holds a skill, and one with nothing else in
+it holds `attack`. It is FIXED:
 - `SkillBook::Define` of a skill named `attack` throws ("'attack' is the fixed default
-  skill"); `Reset` keeps it; a snapshot whose `skills` contain it is rejected;
-  `SaveSnapshot` never writes it
+  skill", `RejectDefaultSkillName`, shared with snapshot validation); `Reset` keeps it;
+  a snapshot whose `skills` contain it is rejected; `SaveSnapshot` never writes it
 - Clearing a slot puts it back: `Companion` starts with it in both slots,
   `SetCompanionSkill(id, slot, "")`, a snapshot slot `""` (as v3 / v4 files wrote for
   an empty one) or a missing slot, `companions_set_agent_skill(..., "" or NULL)`;
@@ -159,7 +160,7 @@ Cooldown: used at step t, usable again at step t + cooldown (0 and 1 both mean e
 | `motion_distance` (`distance`) | 0 | Dash / teleport / push distance (pull is always 1) |
 | `tag_path` | false | Dash: agents crossed on the way are affected too |
 | `tags` | [] | `{tag, duration}` landed on every affected agent |
-| `damage` | 0 | Health every affected agent (area and dash path) loses, via `Agent::TakeDamage` (Marked ×1.5; 0 HP = dead, as with effects) |
+| `damage` | 0 | Health every affected agent (area and dash path) loses, via `Agent::TakeDamage` (Marked ×1.5, truncated: 1 stays 1, 2 → 3; 0 HP = dead, as with effects) |
 | `root_steps` | 0 | Affected agents on the area are rooted for this many next steps |
 | `cooldown` | 0 | See above |
 | `friendly_fire` | true | Off: only agents NOT of the caster's faction are affected (allies and caster get no tag, damage, push/pull or root; a projectile flies past them) |
@@ -198,7 +199,8 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 - World state: copied with the env, saved in snapshots, replaced by `LoadSnapshot`
   (generated levels have none, so every `Reset` clears them)
 
-**Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3),
+**Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
+(damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
 `Rooted`(4). `Slowed` was removed: value 2 is reserved (never reused, a snapshot carrying
 it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - Rooted: can't move by itself (walking becomes Stay, dash / teleport skills are

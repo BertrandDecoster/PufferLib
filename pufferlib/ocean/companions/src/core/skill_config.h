@@ -14,13 +14,10 @@
 
 namespace companions {
 
-// The fixed default skill: a melee strike on the faced cell (projectile,
-// range 1, single, damage 1, no friendly fire, cooldown 0). Every companion
-// skill slot always holds a skill, and a slot with nothing else in it holds
-// this one ("" is never a slot's value: clearing a slot puts it back). A
-// level cannot redefine it (SkillBook::Define throws, a snapshot carrying it
-// is rejected, SaveSnapshot never writes it).
-constexpr char kDefaultSkill[] = "attack";
+// kDefaultSkill ("attack", types.h) is the fixed default skill. Throws
+// std::runtime_error("'attack' is the fixed default skill") when `name` is
+// it: a level may not define it (SkillBook::Define, snapshot validation).
+void RejectDefaultSkillName(const std::string& name);
 
 enum class SkillTargeting {
   Self,        // Centre = the caster (after its own motion)
@@ -66,7 +63,8 @@ struct SkillConfig {
   bool tag_path = false;           // Dash: agents crossed on the way are affected too
   std::vector<SkillTagSpec> tags;  // Landed on every affected agent
   // Health every affected agent loses (Agent::TakeDamage, so Marked applies
-  // and 0 HP kills), after the tags and before root / area motion.
+  // and 0 HP kills), after the tags and before root / area motion. Marked's
+  // x1.5 truncates toward zero: 1 damage stays 1, 2 becomes 3, 3 becomes 4.
   int damage = 0;
   int root_steps = 0;              // Affected agents are rooted for this many next steps
   // Used at step t, usable again at step t + cooldown (0 and 1 both mean

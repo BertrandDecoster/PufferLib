@@ -97,9 +97,7 @@ void Snapshot::ValidateSkillsTagsZones() const {
   SkillBook book;
   for (size_t i = 0; i < skills.size(); ++i) {
     try {
-      if (skills[i].name == kDefaultSkill) {
-        throw std::runtime_error(std::string("'") + kDefaultSkill + "' is the fixed default skill");
-      }
+      RejectDefaultSkillName(skills[i].name);
       ValidateSkillConfig(skills[i]);
       book.Define(skills[i]);
     } catch (const std::runtime_error& e) {
