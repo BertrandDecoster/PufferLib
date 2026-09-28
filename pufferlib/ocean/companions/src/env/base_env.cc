@@ -513,9 +513,13 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
       continue;
     }
 
-    // Skip agents with FSM - they set their own intentions in PreStep via UpdateFSM
+    // Skip agents with FSM - they set their own intentions in PreStep via UpdateFSM.
+    // A rooted one still acts (its attack), it just does not move.
     if (AgentFSM* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
       if (fsm_agent->HasFSM()) {
+        if (agent->IsRooted()) {
+          agent->SetIntention({MovementAction::Stay, agent->GetIntention().interact});
+        }
         continue;
       }
     }
@@ -543,8 +547,8 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
       decoded.interact = InteractAction::None;
     }
 
-    // Slowed agents can only move on even ticks
-    if (agent->IsSlowed() && (tick_ % 2) == 1) {
+    // Slowed agents only move on even ticks; rooted agents cannot move by themselves
+    if (!CanMoveItself(*agent)) {
       decoded.movement = MovementAction::Stay;
     }
 
@@ -833,11 +837,19 @@ void BaseEnv::TickTagsAndCooldowns() {
   }
 }
 
+bool BaseEnv::CanMoveItself(const Agent& agent) const {
+  if (agent.IsRooted()) return false;
+  return !(agent.IsSlowed() && (tick_ % 2) == 1);  // Slowed: even ticks only
+}
+
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
   if (slot < 0 || slot >= kEnabledSkillSlots) return false;
   const std::string& name = comp.GetSkill(slot);
   if (name.empty() || comp.GetCooldown(slot) != 0) return false;
-  return skills_.Find(name) != nullptr;
+  const SkillConfig* skill = skills_.Find(name);
+  if (!skill) return false;
+  // A skill that moves its caster is movement: rooted / slow forbid it too.
+  return !SkillMovesCaster(*skill) || CanMoveItself(comp);
 }
 
 bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill) {
@@ -972,14 +984,61 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
     }
   }
 
-  // 4. Area motions and root (next task).
-  AreaMotion(skill, centre, dr, dc, caster.GetId());
+  // 4. Area motions and root.
+  AreaMotion(skill, centre, caster.GetId());
   return centre;
 }
 
-void BaseEnv::AreaMotion(const SkillConfig& /*skill*/, Position /*centre*/,
-                         int /*aim_dr*/, int /*aim_dc*/, ObjectId /*caster*/) {
-  // PushOut / PullIn and root: next task (P6).
+void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster) {
+  std::vector<Position> cells = AreaCells(centre, skill.area);
+  std::vector<Position> ring(cells.begin() + 1, cells.end());  // Up, right, down, left
+
+  // Who is rooted: the agents in the area before anything moves.
+  std::vector<Agent*> to_root;
+  if (skill.root_steps > 0) {
+    for (const Position& p : cells) {
+      auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
+      if (a && a->IsAlive() && a->GetId() != caster && PassesFilter(*a, skill.filter)) {
+        to_root.push_back(a);
+      }
+    }
+  }
+
+  // A thing the motion may move: any living actor but the caster; the filter
+  // applies to agents.
+  auto thing_at = [&](Position p) -> Actor* {
+    Actor* a = object_manager_->GetActorAt(p);
+    if (!a || !a->IsAlive() || a->GetId() == caster) return nullptr;
+    if (auto* ag = dynamic_cast<Agent*>(a); ag && !PassesFilter(*ag, skill.filter)) {
+      return nullptr;
+    }
+    return a;
+  };
+
+  if (skill.motion == SkillMotion::PushOut) {
+    // Ring cells push in 4 different directions: no two pushes compete.
+    for (const Position& p : ring) {
+      Actor* a = thing_at(p);
+      if (!a) continue;
+      int dr = p.row - centre.row, dc = p.col - centre.col;
+      MoveActor(*a, ResolveDash(*grid_, *object_manager_, p, dr, dc,
+                                skill.motion_distance, a->GetId()));
+    }
+  } else if (skill.motion == SkillMotion::PullIn) {
+    // Only into a free, walkable centre; one thing, by ring priority.
+    if (CanLand(*grid_, *object_manager_, centre, kInvalidObjectId)) {
+      for (const Position& p : ring) {
+        if (Actor* a = thing_at(p)) {
+          MoveActor(*a, centre);
+          break;
+        }
+      }
+    }
+  }
+
+  // Statuses tick at the end of Step (after this), so "rooted for the next
+  // N steps" is applied as N + 1.
+  for (Agent* a : to_root) a->ApplyStatus(StatusType::Rooted, skill.root_steps + 1);
 }
 
 // =============================================================================

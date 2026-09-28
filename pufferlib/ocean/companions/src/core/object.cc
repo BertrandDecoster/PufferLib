@@ -313,6 +313,7 @@ StatusType StatusTypeFromString(const std::string& name) {
   if (lower == "stunned" || lower == "stun") return StatusType::Stunned;
   if (lower == "slowed" || lower == "slow") return StatusType::Slowed;
   if (lower == "marked" || lower == "mark") return StatusType::Marked;
+  if (lower == "rooted" || lower == "root") return StatusType::Rooted;
   return StatusType::None;
 }
 
@@ -324,6 +325,8 @@ std::string StatusTypeToString(StatusType type) {
       return "slowed";
     case StatusType::Marked:
       return "marked";
+    case StatusType::Rooted:
+      return "rooted";
     case StatusType::None:
     default:
       return "none";

@@ -151,6 +151,8 @@ static Companions_StatusType ToAPIStatusType(companions::StatusType type) {
       return Companions_Status_Slowed;
     case companions::StatusType::Marked:
       return Companions_Status_Marked;
+    case companions::StatusType::Rooted:
+      return Companions_Status_None;  // No C API value yet (Companions_Status_Rooted: P9)
   }
   return Companions_Status_None;
 }

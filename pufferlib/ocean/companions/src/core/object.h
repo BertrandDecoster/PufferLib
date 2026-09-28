@@ -131,7 +131,8 @@ enum class StatusType {
   None,
   Stunned,  // Cannot move (forced Stay)
   Slowed,   // Moves every other tick
-  Marked    // Takes bonus damage
+  Marked,   // Takes bonus damage
+  Rooted    // Cannot move by itself (walking, self-moving skills)
 };
 
 struct StatusEffect {
@@ -215,6 +216,7 @@ class Agent : public Actor {
   bool IsStunned() const { return HasStatus(StatusType::Stunned); }
   bool IsSlowed() const { return HasStatus(StatusType::Slowed); }
   bool IsMarked() const { return HasStatus(StatusType::Marked); }
+  bool IsRooted() const { return HasStatus(StatusType::Rooted); }
 
   // Get active status effects for observation/rendering
   const std::vector<StatusEffect>& GetStatuses() const { return statuses_; }

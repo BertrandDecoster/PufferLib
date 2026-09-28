@@ -689,6 +689,40 @@ TEST(TestAggroEnvFullGameLoopWinScenario) {
 }
 
 // =============================================================================
+// Rooted Tests
+// =============================================================================
+
+// A goblin 2 cells from a companion on open floor, stepped once.
+static AgentFSM* StepGoblinTowardCompanion(AggroEnv& env, bool rooted) {
+  Grid& grid = env.GetMutableGrid();
+  for (int r = 1; r < grid.GetRows() - 1; ++r) {
+    for (int c = 1; c < grid.GetCols() - 1; ++c) grid.SetCell({r, c}, CellKind::Floor);
+  }
+  auto& obj_mgr = env.GetMutableObjectManager();
+  AgentFSM* enemy = nullptr;
+  for (Agent* agent : obj_mgr.GetAllAgents()) {
+    if (auto* e = dynamic_cast<AgentFSM*>(agent)) enemy = e;
+  }
+  obj_mgr.UpdatePosition(obj_mgr.GetAllCompanions()[0]->GetId(), {5, 3});
+  obj_mgr.UpdatePosition(enemy->GetId(), {5, 5});
+  if (rooted) enemy->ApplyStatus(StatusType::Rooted, 2);
+  env.Step(std::vector<Action>(env.NumAgents(), EncodeAction(MovementAction::Stay)));
+  return enemy;
+}
+
+TEST(TestRootedGoblinStillThinksButDoesNotMove) {
+  AggroEnv free_env(12, 1, EnemyType::Goblin, 7777);
+  AgentFSM* free_goblin = StepGoblinTowardCompanion(free_env, false);
+  ASSERT_EQ(free_goblin->GetCurrentState()->GetName(), "Aggro");
+  ASSERT_TRUE(free_goblin->GetPosition() == (Position{5, 4}));  // Chases
+
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  AgentFSM* goblin = StepGoblinTowardCompanion(env, true);
+  ASSERT_EQ(goblin->GetCurrentState()->GetName(), "Aggro");     // The FSM still ran
+  ASSERT_TRUE(goblin->GetPosition() == (Position{5, 5}));       // but it did not move
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

@@ -774,6 +774,205 @@ TEST(TestApplyTagToRejectsBadDurations) {
 }
 
 // =============================================================================
+// Push out, pull in, Rooted
+// =============================================================================
+
+TEST(TestFireballPushesTheRingOut) {
+  SynchroEnv env(10, 10, 5, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});   // target (3,4)
+  Agent* center = Place(env, 1, {3, 4});
+  Agent* up = Place(env, 2, {2, 4});
+  Agent* right = Place(env, 3, {3, 5});
+  Agent* down = Place(env, 4, {4, 4});
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), kStay, kStay, kStay, kStay});
+  ASSERT_TRUE(center->GetPosition() == (Position{3, 4}));  // the centre stays
+  ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));
+  ASSERT_TRUE(right->GetPosition() == (Position{3, 6}));
+  ASSERT_TRUE(down->GetPosition() == (Position{5, 4}));
+  for (Agent* a : {center, up, right, down}) ASSERT_TRUE(Has(env, a, "burning"));
+}
+
+TEST(TestFireballPushNeverLandsInHole) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({1, 4}, CellKind::Hazard);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* up = Place(env, 1, {2, 4});
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(up->GetPosition() == (Position{2, 4}));
+}
+
+TEST(TestFireballPushBlockedByAnotherActor) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* up = Place(env, 1, {2, 4});
+  Agent* blocker = Place(env, 2, {1, 4});  // outside the cross: not pushed
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(up->GetPosition() == (Position{2, 4}));
+  ASSERT_TRUE(blocker->GetPosition() == (Position{1, 4}));
+}
+
+TEST(TestVortexPullsTheOneAboveFirst) {
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});   // target (3,4), empty
+  Agent* up = Place(env, 1, {2, 4});
+  Agent* right = Place(env, 2, {3, 5});
+  Agent* down = Place(env, 3, {4, 4});
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  env.Step({Use(MovementAction::Right), kStay, kStay, kStay});
+  ASSERT_TRUE(up->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(right->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(down->GetPosition() == (Position{4, 4}));
+  for (Agent* a : {up, right, down}) ASSERT_TRUE(a->HasStatus(StatusType::Rooted));
+  ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
+}
+
+TEST(TestVortexPriorityRightThenDownThenLeft) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* down = Place(env, 1, {4, 4});
+  Agent* right = Place(env, 2, {3, 5});
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(right->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(down->GetPosition() == (Position{4, 4}));
+}
+
+TEST(TestVortexPullsDownBeforeLeft) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {1, 4});   // aims down: target (4,4)
+  Agent* left = Place(env, 1, {4, 3});
+  Agent* down = Place(env, 2, {5, 4});
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  env.Step({Use(MovementAction::Down), kStay, kStay});
+  ASSERT_TRUE(down->GetPosition() == (Position{4, 4}));
+  ASSERT_TRUE(left->GetPosition() == (Position{4, 3}));
+}
+
+TEST(TestVortexOccupiedOrHoleCentrePullsNobody) {
+  {
+    SynchroEnv env(10, 10, 3, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});
+    Agent* center = Place(env, 1, {3, 4});
+    Agent* up = Place(env, 2, {2, 4});
+    env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+    env.Step({Use(MovementAction::Right), kStay, kStay});
+    ASSERT_TRUE(up->GetPosition() == (Position{2, 4}));
+    ASSERT_TRUE(center->HasStatus(StatusType::Rooted));  // the centre is in the area too
+    ASSERT_TRUE(up->HasStatus(StatusType::Rooted));
+  }
+  {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    env.GetMutableGrid().SetCell({3, 4}, CellKind::Hazard);
+    Agent* caster = Place(env, 0, {3, 1});
+    Agent* up = Place(env, 1, {2, 4});
+    env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+    env.Step({Use(MovementAction::Right), kStay});
+    ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 4}));
+    ASSERT_TRUE(up->GetPosition() == (Position{2, 4}));  // never into a hole
+    ASSERT_TRUE(up->HasStatus(StatusType::Rooted));
+  }
+}
+
+TEST(TestRootedForExactlyTheNextStep) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* target = Place(env, 1, {2, 4});
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  env.Step({Use(MovementAction::Right), kStay});             // t: pulled to (3,4), rooted
+  ASSERT_TRUE(target->GetPosition() == (Position{3, 4}));
+  env.Step({kStay, EncodeAction(MovementAction::Right)});    // t+1: can't move
+  ASSERT_TRUE(target->GetPosition() == (Position{3, 4}));
+  env.Step({kStay, EncodeAction(MovementAction::Right)});    // t+2: free again
+  ASSERT_TRUE(target->GetPosition() == (Position{3, 5}));
+}
+
+TEST(TestRootedCanCastButNotMoveBySkill) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  Agent* b = Place(env, 1, {5, 5});
+  env.SetCompanionSkill(a->GetId(), 0, "teleport");
+  env.SetCompanionSkill(b->GetId(), 0, "fireball");
+  a->ApplyStatus(StatusType::Rooted, 2);
+  b->ApplyStatus(StatusType::Rooted, 2);
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Left)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));        // teleport dropped, walking blocked
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 0);
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string("fireball"));
+}
+
+TEST(TestRootedCannotLightningStep) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(a->GetId(), 0, "lightningStep");
+  a->ApplyStatus(StatusType::Rooted, 2);
+  env.Step({Use(MovementAction::Right)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+}
+
+TEST(TestRootedCanStillBePushed) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* up = Place(env, 1, {2, 4});
+  up->ApplyStatus(StatusType::Rooted, 2);
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));
+}
+
+TEST(TestSlowedCannotTeleportOnOddTicks) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(a->GetId(), 0, "teleport");
+  env.Step({kStay});
+  ASSERT_EQ(env.GetTick() % 2, 1);                // the next step walks on an odd tick
+  a->ApplyStatus(StatusType::Slowed, 3);
+  env.Step({Use(MovementAction::Right)});         // odd: teleport dropped, no walk
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 1}));
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+  ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 0);
+  env.Step({Use(MovementAction::Right)});         // even: teleports
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+}
+
+TEST(TestSlowedCanCastNonMovingSkillOnOddTicks) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  env.SetCompanionSkill(a->GetId(), 0, "fireball");
+  env.Step({kStay});
+  a->ApplyStatus(StatusType::Slowed, 3);
+  env.Step({Use(MovementAction::Right)});         // odd tick
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+}
+
+TEST(TestRootedStatusStrings) {
+  ASSERT_TRUE(StatusTypeFromString("rooted") == StatusType::Rooted);
+  ASSERT_TRUE(StatusTypeFromString("ROOTED") == StatusType::Rooted);
+  ASSERT_EQ(StatusTypeToString(StatusType::Rooted), std::string("rooted"));
+  ASSERT_TRUE(StatusTypeFromString(StatusTypeToString(StatusType::Rooted)) ==
+              StatusType::Rooted);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

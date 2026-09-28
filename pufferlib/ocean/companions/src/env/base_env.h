@@ -277,6 +277,9 @@ class BaseEnv {
   // ObjectIds are re-issued by a new world.
   void ClearStepReports();
   void TickTagsAndCooldowns();  // Start of Step
+  // Not rooted, and not slowed on a tick where slow forbids walking. Walking
+  // and caster-moving skills both need it.
+  bool CanMoveItself(const Agent& agent) const;
   bool CanUseSkill(const Companion& comp, int slot) const;
   void ResolveSkills();         // After movement, in agent-index order
   // Resolves one skill (caster motion, area, tags); returns its centre.
@@ -286,8 +289,9 @@ class BaseEnv {
   void LandTag(Agent& agent, const std::string& tag, int duration,
                ObjectId source, const std::string& cause);
   void MoveActor(Actor& actor, Position to);  // Skill motions (zone tags follow in a later task)
-  void AreaMotion(const SkillConfig& skill, Position centre, int aim_dr, int aim_dc,
-                  ObjectId caster);  // PushOut / PullIn: next task (P6); empty stub now
+  // PushOut (the ring, away from the centre) / PullIn (one ring thing, by
+  // priority, into a free centre), then roots the agents that were on the area.
+  void AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster);
 
   int rows_;
   int cols_;

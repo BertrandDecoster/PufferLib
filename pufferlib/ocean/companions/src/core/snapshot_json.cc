@@ -82,6 +82,7 @@ StatusType StringToStatusType(const std::string& str) {
   if (str == "Stunned") return StatusType::Stunned;
   if (str == "Slowed") return StatusType::Slowed;
   if (str == "Marked") return StatusType::Marked;
+  if (str == "Rooted") return StatusType::Rooted;
   return StatusType::None;
 }
 
