@@ -258,6 +258,29 @@ class Agent : public Actor {
   void TickTags();  // Timed tags lose a tick; expired ones are removed
   const std::vector<AgentTag>& GetTags() const { return tags_; }
 
+  // ==========================================================================
+  // Weaknesses and immunities (tag ids of the env's TagTable; set through
+  // BaseEnv::SetWeaknesses / SetImmunities, which validate and intern the
+  // names). Per agent: copied with it, gone with it (a load re-creates agents).
+  // ==========================================================================
+  struct WeakTo {
+    TagId zone = kInvalidTag;  // P: the zone of the cell it stands on provides it
+    TagId tag = kInvalidTag;   // S: the tag landing on it
+  };
+  const std::vector<WeakTo>& GetWeakTo() const { return weak_to_; }
+  void SetWeakTo(std::vector<WeakTo> weak_to) { weak_to_ = std::move(weak_to); }
+  // Tags that never land on it (any source)
+  const std::vector<TagId>& GetImmune() const { return immune_; }
+  void SetImmune(std::vector<TagId> immune) { immune_ = std::move(immune); }
+  bool IsImmuneTo(TagId tag) const {
+    return std::find(immune_.begin(), immune_.end(), tag) != immune_.end();
+  }
+
+  // Defeated (a weakness): the env's `kill`, 0 HP at once, whatever its health
+  // and statuses: an agent dies, a companion goes down. Nothing for an agent
+  // that is not affectable.
+  void Defeat();
+
   std::unique_ptr<Object> Clone() const override {
     return std::make_unique<Agent>(*this);
   }
@@ -278,6 +301,8 @@ class Agent : public Actor {
   int max_health_ = 3;
   std::vector<StatusEffect> statuses_;  // Active status effects
   std::vector<AgentTag> tags_;          // Opaque tags (see TagTable)
+  std::vector<WeakTo> weak_to_;         // Its weaknesses (P, S)
+  std::vector<TagId> immune_;           // Tags that never land on it
 
  private:
   bool in_step_ = false;  // Between BeginStep and EndStep

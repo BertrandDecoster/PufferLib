@@ -683,11 +683,14 @@ COMPANIONS_API const char* companions_get_tag_name(const Companions_Env* env, in
 COMPANIONS_API int32_t companions_find_tag(const Companions_Env* env, const char* name);        // -1 if unknown
 // Land `tag` on an agent for `duration` steps (-1 = permanent). False for an
 // unknown, downed or dead agent (nothing lands on them, the tag is not
-// interned), a NULL / "" tag or one over 31 bytes, or a duration of 0 or
-// below -1. Durations, statuses' and cooldowns included, tick at the end of
-// each step: applied between two steps with duration d, the tag is there for
-// the d next steps (d = 1: gone after the next step). Landed during a step
-// with duration d, it reads d after that step (the same step timer).
+// interned), an agent immune to the tag (nothing lands), a NULL / "" tag or
+// one over 31 bytes, or a duration of 0 or below -1. It is a landing like a
+// skill's or a zone's: the level's tag statuses, the agent's weaknesses and
+// the reactions apply (the env's rules, set by the level). Durations,
+// statuses' and cooldowns included, tick at the end of each step: applied
+// between two steps with duration d, the tag is there for the d next steps
+// (d = 1: gone after the next step). Landed during a step with duration d,
+// it reads d after that step (the same step timer).
 COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectId agent, const char* tag, int32_t duration);
 // Remove `tag` from an agent (true even if it did not carry it). False for an
 // unknown agent or a NULL tag.

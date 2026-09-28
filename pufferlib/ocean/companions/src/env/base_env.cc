@@ -58,7 +58,13 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       in_step_(other.in_step_),
       intended_skills_(other.intended_skills_),
       max_downs_(other.max_downs_),
-      context_skills_(other.context_skills_) {
+      context_skills_(other.context_skills_),
+      reactions_(other.reactions_),
+      resolved_reactions_(other.resolved_reactions_),
+      tag_statuses_(other.tag_statuses_),
+      tag_status_ids_(other.tag_status_ids_),
+      last_reactions_(other.last_reactions_),
+      last_defeats_(other.last_defeats_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -90,6 +96,12 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     intended_skills_ = other.intended_skills_;
     max_downs_ = other.max_downs_;
     context_skills_ = other.context_skills_;
+    reactions_ = other.reactions_;
+    resolved_reactions_ = other.resolved_reactions_;
+    tag_statuses_ = other.tag_statuses_;
+    tag_status_ids_ = other.tag_status_ids_;
+    last_reactions_ = other.last_reactions_;
+    last_defeats_ = other.last_defeats_;
   }
   return *this;
 }
@@ -927,6 +939,8 @@ bool PassesFilter(const Agent& a, TargetFilter f) {
 void BaseEnv::ClearStepReports() {
   last_skill_uses_.clear();
   last_tags_applied_.clear();
+  last_reactions_.clear();
+  last_defeats_.clear();
   last_downs_.clear();
   last_revives_.clear();
 }
@@ -1028,8 +1042,8 @@ bool BaseEnv::ApplyTagTo(ObjectId id, const std::string& tag, int duration) {
   auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
   if (!agent || tag.empty() || !IsValidNameLength(tag)) return false;
   if (!agent->IsAffectable()) return false;  // Downed or dead: lands and interns nothing
-  agent->ApplyTag(tags_.Intern(tag), duration);
-  return true;
+  // A landing like any other (immunity, status, weakness, reaction), reported
+  return LandTag(*agent, tag, duration, kInvalidObjectId, "host", TagSource::Host);
 }
 
 bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
@@ -1041,23 +1055,260 @@ bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
 }
 
 bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
-                      const std::string& cause) {
+                      const std::string& cause, TagSource kind, int reaction) {
   if (duration == 0 || !agent.IsAffectable()) return false;  // Lands nothing, so reports nothing
-  // 1. Immunity (reactions, to come): an immune agent gets nothing, so false.
-  // 2. The tag.
-  bool fresh = !agent.HasTag(tag);
+  // 1. Immunity: an immune agent gets nothing (no report, no zone damage).
+  if (agent.IsImmuneTo(tag)) return false;
+  // 2. The tag, and the status bound to it (a step timer, like the tag's).
+  TagApplication landed;
+  landed.agent = agent.GetId();
+  landed.tag = tag;
+  landed.duration = duration;
+  landed.source = source;
+  landed.cause = cause;
+  landed.fresh = !agent.HasTag(tag);
+  landed.kind = kind;
+  landed.reaction = reaction;
   agent.ApplyTag(tag, duration);
-  last_tags_applied_.push_back({agent.GetId(), tag, duration, source, cause, fresh});
-  // 3. Weakness (to come): a defeated agent stops here (no reaction, and no
-  //    zone damage: ApplyZoneTag finds it no longer affectable).
-  // 4. Reaction (to come): result, damage, spread, zone_becomes.
+  last_tags_applied_.push_back(std::move(landed));
+  for (size_t i = 0; i < tag_status_ids_.size(); ++i) {
+    if (tag_status_ids_[i] == tag) {
+      agent.ApplyStatus(tag_statuses_[i].status, tag_statuses_[i].steps);
+      break;
+    }
+  }
+  // 3. Weakness: a defeated agent stops here (no reaction, and no zone
+  //    damage: ApplyZoneTag finds it no longer affectable).
+  if (ResolveWeakness(agent, tag, source, cause, kind)) return true;
+  // 4. Reaction: results never trigger one.
+  if (kind != TagSource::Reaction) ResolveReaction(agent, tag, source, cause, kind);
   return true;
 }
 
-bool BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration,
-                      ObjectId source, const std::string& cause) {
+bool BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration, ObjectId source,
+                      const std::string& cause, TagSource kind) {
   if (duration == 0 || !agent.IsAffectable()) return false;  // Lands nothing, so interns nothing
-  return LandTag(agent, tags_.Intern(tag), duration, source, cause);
+  // An agent is only immune to interned tags: one never interned lands
+  const TagId known = tags_.Find(tag);
+  if (known != kInvalidTag && agent.IsImmuneTo(known)) return false;
+  return LandTag(agent, tags_.Intern(tag), duration, source, cause, kind);
+}
+
+bool BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
+                              TagSource kind) {
+  const std::vector<Agent::WeakTo>& weak_to = agent.GetWeakTo();
+  if (weak_to.empty()) return false;
+  // P is asked of the map (the zone it stands on now), never of its tags
+  const TagId here = GetCellTag(agent.GetPosition()).tag;
+  if (here == kInvalidTag) return false;
+  for (const Agent::WeakTo& w : weak_to) {
+    if (w.tag != tag || w.zone != here) continue;
+    agent.Defeat();
+    Defeat d;
+    d.agent = agent.GetId();
+    d.zone = w.zone;
+    d.tag = w.tag;
+    d.source = source;
+    d.cause = cause;
+    d.kind = kind;
+    last_defeats_.push_back(std::move(d));
+    return true;
+  }
+  return false;
+}
+
+std::vector<char> BaseEnv::ZoneRegion(Position start) const {
+  const TagId zone = GetCellTag(start).tag;
+  if (zone == kInvalidTag) return {};
+  auto index = [this](Position p) { return static_cast<size_t>(p.row * cols_ + p.col); };
+  std::vector<char> region(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), 0);
+  std::vector<Position> open{start};
+  region[index(start)] = 1;
+  while (!open.empty()) {
+    const Position p = open.back();
+    open.pop_back();
+    for (Direction d : {Direction::Up, Direction::Right, Direction::Down, Direction::Left}) {
+      int dr = 0, dc = 0;
+      DirectionDelta(d, dr, dc);
+      const Position n{p.row + dr, p.col + dc};
+      if (!grid_->IsInBounds(n) || region[index(n)] || cell_tags_[index(n)].tag != zone) continue;
+      region[index(n)] = 1;
+      open.push_back(n);
+    }
+  }
+  return region;
+}
+
+void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
+                              TagSource kind) {
+  // The first rule, in level order, pairing `tag` with a tag the agent carries
+  int rule = -1;
+  for (size_t i = 0; i < resolved_reactions_.size() && rule < 0; ++i) {
+    const ResolvedReaction& r = resolved_reactions_[i];
+    if ((r.a == tag && agent.HasTag(r.b)) || (r.b == tag && agent.HasTag(r.a))) {
+      rule = static_cast<int>(i);
+    }
+  }
+  if (rule < 0) return;
+  const ReactionRule& spec = reactions_[static_cast<size_t>(rule)];
+  const ResolvedReaction& r = resolved_reactions_[static_cast<size_t>(rule)];
+
+  // Who: the region of the zone it stands on, when that zone provides a or b
+  // (asked of the map), else the agent alone
+  const TagId here = GetCellTag(agent.GetPosition()).tag;
+  const bool spread = spec.spread && here != kInvalidTag && (here == r.a || here == r.b);
+  std::vector<char> region;
+  std::vector<Agent*> affected;
+  if (spread) {
+    region = ZoneRegion(agent.GetPosition());
+    for (Agent* a : object_manager_->GetAllAgents()) {  // Agent-index order
+      const Position p = a->GetPosition();
+      if (a->IsAffectable() && region[static_cast<size_t>(p.row * cols_ + p.col)]) {
+        affected.push_back(a);
+      }
+    }
+  } else {
+    affected.push_back(&agent);
+  }
+
+  const int index = static_cast<int>(last_reactions_.size());
+  Reaction fired;
+  fired.rule = rule;
+  fired.trigger = agent.GetId();
+  fired.tag = tag;
+  fired.source = source;
+  fired.cause = cause;
+  fired.kind = kind;
+  fired.spread = spread;
+  last_reactions_.push_back(std::move(fired));
+
+  // The outcome, agent by agent (each read on the map as it is: the region
+  // changes last)
+  for (Agent* a : affected) {
+    if (!a->IsAffectable()) continue;  // Nothing reaches it any more
+    ReactionOutcome outcome;
+    outcome.agent = a->GetId();
+    if (!r.keep_a) a->RemoveTag(r.a);
+    if (!r.keep_b) a->RemoveTag(r.b);
+    const size_t defeats = last_defeats_.size();
+    outcome.result_landed =
+        LandTag(*a, r.result, kPermanentTag, source, cause, TagSource::Reaction, index);
+    outcome.defeated = last_defeats_.size() > defeats;
+    if (spec.damage > 0 && a->IsAffectable()) {
+      outcome.damage = spec.damage;
+      a->TakeDamage(spec.damage);
+    }
+    last_reactions_[static_cast<size_t>(index)].affected.push_back(outcome);
+  }
+
+  // The region becomes zone_becomes (a zone by name: the table's fields; a
+  // step timer, so set during a step it also covers the rest of it)
+  if (spread && !spec.zone_becomes.empty()) {
+    const CellTag becomes =
+        ResolveZone(tags_.Intern(spec.zone_becomes), GetZoneDef(spec.zone_becomes));
+    for (size_t i = 0; i < region.size(); ++i) {
+      if (region[i]) cell_tags_[i] = becomes;
+    }
+  }
+}
+
+bool BaseEnv::SetReactions(std::vector<ReactionRule> rules, std::string* error) {
+  try {
+    ValidateReactions(rules);
+  } catch (const std::runtime_error& e) {
+    if (error) *error = e.what();
+    return false;
+  }
+  std::vector<ResolvedReaction> resolved;
+  resolved.reserve(rules.size());
+  for (const ReactionRule& rule : rules) {
+    ResolvedReaction r;
+    r.a = tags_.Intern(rule.a);
+    r.b = tags_.Intern(rule.b);
+    r.result = tags_.Intern(rule.result);
+    for (const std::string& k : rule.keep) {
+      if (k == rule.a) r.keep_a = true;
+      if (k == rule.b) r.keep_b = true;
+    }
+    if (!rule.zone_becomes.empty()) tags_.Intern(rule.zone_becomes);
+    resolved.push_back(r);
+  }
+  reactions_ = std::move(rules);
+  resolved_reactions_ = std::move(resolved);
+  return true;
+}
+
+bool BaseEnv::SetTagStatuses(std::vector<TagStatusRule> rules, std::string* error) {
+  try {
+    ValidateTagStatuses(rules);
+  } catch (const std::runtime_error& e) {
+    if (error) *error = e.what();
+    return false;
+  }
+  std::vector<TagId> ids;
+  ids.reserve(rules.size());
+  for (const TagStatusRule& rule : rules) ids.push_back(tags_.Intern(rule.tag));
+  tag_statuses_ = std::move(rules);
+  tag_status_ids_ = std::move(ids);
+  return true;
+}
+
+bool BaseEnv::SetWeaknesses(ObjectId id, const std::vector<TagWeakness>& weak_to,
+                            std::string* error) {
+  auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
+  if (!agent) {
+    if (error) *error = "no agent " + std::to_string(id);
+    return false;
+  }
+  try {
+    ValidateWeaknesses(weak_to);
+  } catch (const std::runtime_error& e) {
+    if (error) *error = e.what();
+    return false;
+  }
+  std::vector<Agent::WeakTo> ids;
+  ids.reserve(weak_to.size());
+  for (const TagWeakness& w : weak_to) ids.push_back({tags_.Intern(w.zone), tags_.Intern(w.tag)});
+  agent->SetWeakTo(std::move(ids));
+  return true;
+}
+
+std::vector<TagWeakness> BaseEnv::GetWeaknesses(ObjectId id) const {
+  const auto* agent = dynamic_cast<const Agent*>(object_manager_->GetActor(id));
+  std::vector<TagWeakness> out;
+  if (!agent) return out;
+  for (const Agent::WeakTo& w : agent->GetWeakTo()) {
+    out.push_back({tags_.Name(w.zone), tags_.Name(w.tag)});
+  }
+  return out;
+}
+
+bool BaseEnv::SetImmunities(ObjectId id, const std::vector<std::string>& immune,
+                            std::string* error) {
+  auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
+  if (!agent) {
+    if (error) *error = "no agent " + std::to_string(id);
+    return false;
+  }
+  try {
+    ValidateImmunities(immune);
+  } catch (const std::runtime_error& e) {
+    if (error) *error = e.what();
+    return false;
+  }
+  std::vector<TagId> ids;
+  ids.reserve(immune.size());
+  for (const std::string& tag : immune) ids.push_back(tags_.Intern(tag));
+  agent->SetImmune(std::move(ids));
+  return true;
+}
+
+std::vector<std::string> BaseEnv::GetImmunities(ObjectId id) const {
+  const auto* agent = dynamic_cast<const Agent*>(object_manager_->GetActor(id));
+  std::vector<std::string> out;
+  if (!agent) return out;
+  for (TagId t : agent->GetImmune()) out.push_back(tags_.Name(t));
+  return out;
 }
 
 void BaseEnv::MoveActor(Actor& actor, Position to) {
@@ -1131,7 +1382,7 @@ void BaseEnv::ApplyZoneTag(Agent& agent) {
   const CellTag c = GetCellTag(agent.GetPosition());
   if (c.tag == kInvalidTag) return;
   const size_t landing = last_tags_applied_.size();  // Its report entry
-  if (!LandTag(agent, c.tag, c.duration, kInvalidObjectId, "zone")) return;
+  if (!LandTag(agent, c.tag, c.duration, kInvalidObjectId, "zone", TagSource::Zone)) return;
   // 5. The zone's own damage, last: only on an agent still affectable once
   // the tag landed (and its weakness / reaction resolved)
   if (c.damage > 0 && agent.IsAffectable()) {
@@ -1353,7 +1604,13 @@ BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
     const bool self = a == &caster;
     const bool area = i < on_area;
     unsigned e = 0;
-    if (!skill.tags.empty() && (!self || skill.self_tags)) e |= kSkillEffectTags;
+    // Tags: at least one of them lands (an agent immune to all gets none)
+    const bool lands_a_tag =
+        std::any_of(skill.tags.begin(), skill.tags.end(), [&](const SkillTagSpec& tag) {
+          const TagId id = tags_.Find(tag.tag);  // Never interned: nobody is immune to it
+          return id == kInvalidTag || !a->IsImmuneTo(id);
+        });
+    if (lands_a_tag && (!self || skill.self_tags)) e |= kSkillEffectTags;
     if (skill.damage > 0 && (!self || skill.self_damage)) e |= kSkillEffectDamage;
     // Only a downed companion gets up (an affects_downed skill reaches the downed only)
     if (skill.revive_percent > 0 && a->IsDowned() && dynamic_cast<const Companion*>(a)) {
@@ -1405,9 +1662,12 @@ BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& sk
       drop(i, kSkillEffectTags);
       continue;
     }
+    bool landed = false;  // An agent immune to all of them gets none
     for (const SkillTagSpec& t : skill.tags) {
-      LandTag(*agents[i], t.tag, t.duration, caster.GetId(), skill.name);
+      landed |= LandTag(*agents[i], t.tag, t.duration, caster.GetId(), skill.name,
+                        TagSource::Skill);
     }
+    if (!landed) drop(i, kSkillEffectTags);
   }
 
   // 4. Damage, on the same agents (after the tags: an agent it kills still got
@@ -1694,6 +1954,10 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   ClearStepReports();  // They name the old world's ObjectIds
   ClearCellTags();     // World state: replaced by the snapshot's zones below
   ClearZoneDefs();     // Level data: the snapshot's (none until v7)
+  reactions_.clear();  // Level data too (reactions, tag statuses): none until v7
+  resolved_reactions_.clear();
+  tag_statuses_.clear();
+  tag_status_ids_.clear();
   in_step_ = false;    // Between two steps, even after a Step that threw
 
   // The level's skill book: builtins, then the snapshot's skills (which may
@@ -1938,17 +2202,29 @@ void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
   // base load set the snapshot's).
   std::vector<ContextSkillRule> rules = context_skills_;
   snapshot.context_skills = std::vector<ContextSkillRule>{};
-  // The zone table as well (level data; a generated level has no zones)
+  // The zone table, the reactions and the tag statuses as well (level data;
+  // a generated level has none). Their resolved tag ids stay valid: the
+  // TagTable is kept.
   std::map<std::string, ZoneDef> zone_defs = zone_defs_;
+  std::vector<ReactionRule> reactions = reactions_;
+  std::vector<ResolvedReaction> resolved_reactions = resolved_reactions_;
+  std::vector<TagStatusRule> tag_statuses = tag_statuses_;
+  std::vector<TagId> tag_status_ids = tag_status_ids_;
+  auto restore = [&]() {
+    context_skills_ = std::move(rules);
+    zone_defs_ = std::move(zone_defs);
+    reactions_ = std::move(reactions);
+    resolved_reactions_ = std::move(resolved_reactions);
+    tag_statuses_ = std::move(tag_statuses);
+    tag_status_ids_ = std::move(tag_status_ids);
+  };
   try {
     LoadSnapshot(snapshot);
   } catch (...) {
-    context_skills_ = std::move(rules);
-    zone_defs_ = std::move(zone_defs);
+    restore();
     throw;
   }
-  context_skills_ = std::move(rules);
-  zone_defs_ = std::move(zone_defs);
+  restore();
 }
 
 void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {

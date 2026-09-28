@@ -59,6 +59,7 @@ set(CORE_SOURCES
   src/core/tag_table.cc
   src/core/skill_config.cc
   src/core/context_skill.cc
+  src/core/reaction.cc
   src/core/fsm/fsm_states.cc
   src/core/fsm/enemies.cc
 )
@@ -88,6 +89,7 @@ set(CORE_HEADERS
   src/core/tag_table.h
   src/core/skill_config.h
   src/core/context_skill.h
+  src/core/reaction.h
   src/core/fsm/fsm_state.h
   src/core/fsm/fsm_states.h
   src/core/fsm/enemies.h
@@ -221,6 +223,10 @@ add_executable(companions_zones_test tests/test_zones.cc)
 target_link_libraries(companions_zones_test companions_viz companions_env companions_core)
 target_include_directories(companions_zones_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(companions_reactions_test tests/test_reactions.cc)
+target_link_libraries(companions_reactions_test companions_viz companions_env companions_core)
+target_include_directories(companions_reactions_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(companions_dodge_test tests/test_dodge_env.cc)
 target_link_libraries(companions_dodge_test companions_viz companions_env companions_core)
 target_include_directories(companions_dodge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -296,6 +302,7 @@ add_test(NAME companions_skills_test COMMAND companions_skills_test)
 add_test(NAME companions_downs_test COMMAND companions_downs_test)
 add_test(NAME companions_revive_test COMMAND companions_revive_test)
 add_test(NAME companions_zones_test COMMAND companions_zones_test)
+add_test(NAME companions_reactions_test COMMAND companions_reactions_test)
 add_test(NAME companions_dodge_test COMMAND companions_dodge_test)
 add_test(NAME companions_map_generator_test COMMAND companions_map_generator_test)
 add_test(NAME companions_d4_transform_test COMMAND companions_d4_transform_test)

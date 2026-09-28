@@ -38,6 +38,12 @@ void Agent::TakeDamage(int amount) {
   if (health_ <= 0) OnZeroHealth();
 }
 
+void Agent::Defeat() {
+  if (!IsAffectable()) return;
+  health_ = 0;
+  OnZeroHealth();
+}
+
 void Agent::Heal(int amount) {
   if (!IsAffectable()) return;  // Untouched (reviving is not healing)
   health_ += amount;

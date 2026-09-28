@@ -1099,8 +1099,8 @@ COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectI
     return false;
   }
   if (!env->env->ApplyTagTo(agent, tag, duration)) {
-    SetError("companions_apply_tag: unknown, downed or dead agent, empty or overlong tag, or "
-             "duration 0 or below -1");
+    SetError("companions_apply_tag: unknown, downed or dead agent, an agent immune to the tag, "
+             "empty or overlong tag, or duration 0 or below -1");
     return false;
   }
   return true;
