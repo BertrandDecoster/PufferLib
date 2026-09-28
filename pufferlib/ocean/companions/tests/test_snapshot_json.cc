@@ -436,6 +436,35 @@ TEST(TestJsonSnapshotVersionRejection) {
   ASSERT_TRUE(threw);
 }
 
+// Statuses are saved lowercase ("stunned") and must load back, whatever case.
+TEST(TestJsonRoundTripStatuses) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[0];
+  a->ApplyStatus(StatusType::Stunned, 2);
+  a->ApplyStatus(StatusType::Slowed, 3);
+  a->ApplyStatus(StatusType::Marked, 4);
+  a->ApplyStatus(StatusType::Rooted, 5);
+
+  SynchroEnv other(8, 8, 1, 1, 0, 7);
+  other.Reset();
+  other.LoadSnapshot(SnapshotFromJson(SnapshotToJson(env.SaveSnapshot())));
+
+  const Agent* b = other.GetObjectManager().GetAllAgents()[0];
+  const StatusType types[] = {StatusType::Stunned, StatusType::Slowed,
+                              StatusType::Marked, StatusType::Rooted};
+  for (int i = 0; i < 4; ++i) {
+    bool found = false;
+    for (const auto& st : b->GetStatuses()) {
+      if (st.type == types[i] && st.IsActive()) {
+        ASSERT_EQ(st.duration, i + 2);
+        found = true;
+      }
+    }
+    ASSERT_TRUE(found);
+  }
+}
+
 int main() {
   int passed = 0;
   int failed = 0;

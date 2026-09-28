@@ -78,14 +78,6 @@ Direction StringToDirection(const std::string& str) {
   return Direction::Up;
 }
 
-StatusType StringToStatusType(const std::string& str) {
-  if (str == "Stunned") return StatusType::Stunned;
-  if (str == "Slowed") return StatusType::Slowed;
-  if (str == "Marked") return StatusType::Marked;
-  if (str == "Rooted") return StatusType::Rooted;
-  return StatusType::None;
-}
-
 // SemanticTag string conversion (symmetric with Python SEMANTIC_TAG_NAMES).
 SemanticTag StringToSemanticTag(const std::string& str) {
   if (str == "SynchroGoal") return SemanticTag::SynchroGoal;
@@ -136,7 +128,8 @@ json StatusSnapshotToJson(const StatusSnapshot& status) {
 
 StatusSnapshot JsonToStatusSnapshot(const json& j) {
   StatusSnapshot status;
-  status.type = static_cast<int>(StringToStatusType(j.at("status_type").get<std::string>()));
+  status.type = static_cast<int>(
+      StatusTypeFromString(j.at("status_type").get<std::string>()));  // Case-insensitive
   status.duration = j.at("duration").get<int>();
   return status;
 }
