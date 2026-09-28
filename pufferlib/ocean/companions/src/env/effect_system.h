@@ -44,7 +44,12 @@ class EffectSystem {
                    Direction direction = Direction::Up,
                    ObjectId source_id = kInvalidObjectId);
 
-  // Tick all active effects (advance timers, apply damage/push on phase change)
+  // Tick all active effects (advance timers, apply damage/push on phase change).
+  // An effect still in its telegraph phase whose source agent is dead is
+  // removed first, before it can activate (a looping effect too, when it
+  // winds up again): a dead attacker's pending attacks never land. Phases
+  // already active when the source dies run their course. Effects without a
+  // source (kInvalidObjectId) or whose source no longer exists are kept.
   void Tick();
 
   // Accessors
@@ -69,6 +74,9 @@ class EffectSystem {
   // pass nullptr from one-shot paths (spawn-time instant effects) to bypass.
   void ApplyEffectModifiers(const ActiveEffect& effect,
                              std::unordered_map<ObjectId, int>* apply_count);
+
+  // True when the effect names a source that exists and is dead
+  bool IsSourceDead(const ActiveEffect& effect) const;
 
   // Apply push to an agent (blocked by walls and other agents)
   void ApplyPush(Agent* agent, int dx, int dy, int distance);

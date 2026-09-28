@@ -255,6 +255,16 @@ Location: `companions/src/core/fsm/`
 
 **Integration**: `BaseEnv::PreStep()` calls `UpdateEnemyFSM()` before gathering intentions
 
+**A dead attacker's pending attacks are cancelled**:
+- A dead (or stunned) agent's FSM does not run, so a wind-up in `TelegraphState`
+  never reaches `AttackState`, which is what spawns the strike effect
+- `EffectSystem::Tick` removes an effect still in its telegraph phase whose source
+  agent exists and is dead, before it can activate (a looping effect too, when it
+  winds up again). An effect already active when its source dies runs its course.
+  Effects without a source (`kInvalidObjectId`, host-spawned) are never cancelled
+- A companion that kills the attacker during step t cancels a strike due at the end
+  of step t: skills resolve before effects tick
+
 ### Environments & TaskLens
 
 Each environment uses a **TaskLens** to define task-specific behavior:

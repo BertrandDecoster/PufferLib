@@ -1,6 +1,7 @@
 // Copyright 2024
 // Unit tests for AggroEnv
 
+#include <cstdlib>
 #include <iostream>
 #include <random>
 #include <sstream>
@@ -9,6 +10,7 @@
 
 #include "../src/core/annotations.h"
 #include "../src/core/cell.h"
+#include "../src/core/effect_config.h"
 #include "../src/core/fsm/enemies.h"
 #include "../src/core/fsm/fsm_states.h"
 #include "../src/core/grid.h"
@@ -776,6 +778,63 @@ TEST(TestAWoundedEnemyKeepsTheEpisodeGoing) {
   ASSERT_FALSE(result.done);
   ASSERT_FALSE(env.IsDone());
   for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
+}
+
+// =============================================================================
+// A dead attacker's telegraphed attacks are cancelled
+// =============================================================================
+
+// A 1-HP goblin next to the companion winds up (FSM telegraph, then its strike
+// effect's own 2-tick telegraph). Once the strike is pending, the companion
+// kills the goblin or not. True when the strike hurt the companion.
+static bool GoblinStrikeLands(bool kill_during_wind_up) {
+  EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
+  registry.Clear();
+  EffectConfig strike;
+  strike.name = "goblin_wind_up";
+  strike.telegraph_ticks = 2;
+  strike.active_ticks = 1;
+  strike.damage = 1;
+  strike.area = {1};
+  strike.filter = TargetFilter::Companion;
+  registry.RegisterConfig(strike);
+
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 1);
+  goblin->SetCurrentState(&PatrolState::Instance());  // FSM on again
+  goblin->GetFSMContext().has_attack = true;
+  goblin->GetFSMContext().attack_effect_name = "goblin_wind_up";
+  Companion* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
+  const int hp = companion->GetHealth();
+  const Action stay = EncodeAction(MovementAction::Stay);
+
+  for (int i = 0; i < 10 && env.GetActiveEffects().empty(); ++i) env.Step({stay, stay});
+  ASSERT_EQ(env.GetActiveEffects().size(), 1u);
+  ASSERT_TRUE(env.GetActiveEffects()[0].in_telegraph);
+  ASSERT_EQ(env.GetActiveEffects()[0].source_id, goblin->GetId());
+  ASSERT_EQ(companion->GetHealth(), hp);
+
+  if (kill_during_wind_up) {
+    Position c = companion->GetPosition(), g = goblin->GetPosition();
+    ASSERT_EQ(std::abs(c.row - g.row) + std::abs(c.col - g.col), 1);
+    MovementAction aim = g.row < c.row   ? MovementAction::Up
+                         : g.row > c.row ? MovementAction::Down
+                         : g.col < c.col ? MovementAction::Left
+                                         : MovementAction::Right;
+    env.Step({stay, EncodeAction(aim, InteractAction::Skill1)});
+    ASSERT_FALSE(goblin->IsAlive());
+  }
+  for (int i = 0; i < 3; ++i) env.Step({stay, stay});
+  registry.Clear();
+  return companion->GetHealth() < hp;
+}
+
+TEST(TestKilledGoblinsPendingStrikeNeverLands) {
+  ASSERT_FALSE(GoblinStrikeLands(true));
+}
+
+TEST(TestLivingGoblinsPendingStrikeLands) {
+  ASSERT_TRUE(GoblinStrikeLands(false));
 }
 
 // =============================================================================

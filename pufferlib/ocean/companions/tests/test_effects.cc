@@ -1450,6 +1450,114 @@ TEST(TestEffectOnDeadAgentIsNoOp) {
 }
 
 // =============================================================================
+// A dead attacker's pending attacks are cancelled
+// =============================================================================
+
+// Companion 0 on (3,3) facing a 1-HP enemy agent on (3,4); an effect from the
+// enemy (`telegraph` ticks, then `active` ticks of 1 damage each) is aimed at
+// the companion. Returns the enemy.
+static Agent* PendingStrikeScene(SynchroEnv& env, int telegraph, int active) {
+  EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
+  registry.Clear();
+  EffectConfig cfg;
+  cfg.name = "wind_up";
+  cfg.telegraph_ticks = telegraph;
+  cfg.active_ticks = active;
+  cfg.apply_every_tick = active > 1;
+  cfg.damage = 1;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Companion;
+  registry.RegisterConfig(cfg);
+
+  env.Reset();
+  ObjectManager& om = env.GetMutableObjectManager();
+  Agent* companion = om.GetAllAgents()[0];
+  om.UpdatePosition(companion->GetId(), {3, 3});
+  Agent* enemy = om.CreateActor<Agent>({3, 4});
+  enemy->SetFaction(Faction::ENEMY);
+  enemy->SetMaxHealth(1);
+  env.SpawnEffect("wind_up", EffectTarget::AtCell({3, 3}), Direction::Up, enemy->GetId());
+  return enemy;
+}
+
+static const Action kStrikeRight = EncodeAction(MovementAction::Right, InteractAction::Skill1);
+static const Action kIdle = EncodeAction(MovementAction::Stay);
+
+TEST(TestDeadAttackersTelegraphedEffectIsCancelled) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Agent* enemy = PendingStrikeScene(env, 2, 1);
+  Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
+  const int hp = companion->GetHealth();
+  env.Step({kStrikeRight, kIdle});  // Kills it while its strike winds up
+  ASSERT_FALSE(enemy->IsAlive());
+  ASSERT_TRUE(env.GetActiveEffects().empty());
+  env.Step({kIdle, kIdle});
+  env.Step({kIdle, kIdle});
+  ASSERT_EQ(companion->GetHealth(), hp);
+  EffectConfigRegistry::Instance().Clear();
+}
+
+TEST(TestLivingAttackersTelegraphedEffectLands) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Agent* enemy = PendingStrikeScene(env, 2, 1);
+  Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
+  const int hp = companion->GetHealth();
+  env.Step({kIdle, kIdle});
+  env.Step({kIdle, kIdle});
+  ASSERT_TRUE(enemy->IsAlive());
+  ASSERT_EQ(companion->GetHealth(), hp - 1);
+  EffectConfigRegistry::Instance().Clear();
+}
+
+// Only pending (telegraphed) phases are cancelled: an effect already active
+// when its source dies runs its course.
+TEST(TestDeadAttackersActiveEffectRunsItsCourse) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Agent* enemy = PendingStrikeScene(env, 0, 3);  // Active at once: 1 damage
+  Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
+  const int hp = companion->GetHealth();
+  ASSERT_EQ(companion->GetHealth(), hp);  // Spawn-time hit already counted in hp
+  env.Step({kStrikeRight, kIdle});        // Kills the source, the effect ticks on
+  ASSERT_FALSE(enemy->IsAlive());
+  ASSERT_EQ(companion->GetHealth(), hp - 1);
+  env.Step({kIdle, kIdle});
+  ASSERT_EQ(companion->GetHealth(), hp - 2);
+  EffectConfigRegistry::Instance().Clear();
+}
+
+// A looping effect whose source died is cancelled when it winds up again.
+TEST(TestDeadAttackersLoopIsCancelledAtItsNextWindUp) {
+  EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
+  registry.Clear();
+  EffectConfig cfg;
+  cfg.name = "looping_strike";
+  cfg.telegraph_ticks = 1;
+  cfg.active_ticks = 1;
+  cfg.loop = -1;
+  cfg.damage = 1;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Companion;
+  registry.RegisterConfig(cfg);
+
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  ObjectManager& om = env.GetMutableObjectManager();
+  Agent* companion = om.GetAllAgents()[0];
+  om.UpdatePosition(companion->GetId(), {3, 3});
+  Agent* tower = om.CreateActor<Agent>({3, 4});
+  tower->SetFaction(Faction::ENEMY);
+  env.SpawnEffect("looping_strike", EffectTarget::AtCell({3, 3}), Direction::Up, tower->GetId());
+  const int hp = companion->GetHealth();
+  env.Step({kIdle, kIdle});  // Telegraph -> active: hit
+  ASSERT_EQ(companion->GetHealth(), hp - 1);
+  tower->TakeDamage(tower->GetHealth());
+  for (int i = 0; i < 4; ++i) env.Step({kIdle, kIdle});
+  ASSERT_EQ(companion->GetHealth(), hp - 1);
+  ASSERT_TRUE(env.GetActiveEffects().empty());
+  registry.Clear();
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

@@ -98,6 +98,15 @@ void EffectSystem::Tick() {
   for (size_t i = 0; i < active_effects_.size(); ++i) {
     ActiveEffect& effect = active_effects_[i];
 
+    // A dead attacker's pending (telegraphed) attack never lands, a looping
+    // one included when it winds up again. Active phases run their course.
+    if (effect.in_telegraph && IsSourceDead(effect)) {
+      LOG_EFFECT("'" << (effect.config ? effect.config->name : std::string("?"))
+                     << "': Cancelled (source " << effect.source_id << " is dead)");
+      to_remove.push_back(i);
+      continue;
+    }
+
     if (effect.ticks_remaining > 0) {
       effect.ticks_remaining--;
     }
@@ -173,6 +182,12 @@ void EffectSystem::Tick() {
     active_effects_.erase(active_effects_.begin() +
                           static_cast<std::ptrdiff_t>(*it));
   }
+}
+
+bool EffectSystem::IsSourceDead(const ActiveEffect& effect) const {
+  if (effect.source_id == kInvalidObjectId) return false;
+  const Actor* source = object_manager_->GetActor(effect.source_id);
+  return source && !source->IsAlive();
 }
 
 void EffectSystem::ApplyEffectModifiers(
