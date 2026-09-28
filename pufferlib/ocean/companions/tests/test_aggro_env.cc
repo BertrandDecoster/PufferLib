@@ -876,6 +876,26 @@ TEST(TestSynchroLensSwappedOntoGoalsIsNotDoneBeforeAStep) {
   ASSERT_FALSE(env.IsSuccess());
 }
 
+// LoadSnapshot re-issues agent ids: an FSM target is mapped through the
+// snapshot's own agent ids, whatever they are.
+TEST(TestLoadSnapshotMapsTheFSMTargetThroughSavedIds) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  Snapshot snap = env.SaveSnapshot();
+  ASSERT_EQ(snap.agents.size(), 2u);
+  ASSERT_TRUE(snap.agents[0].has_fsm);
+  snap.agents[0].id = 7;   // The goblin
+  snap.agents[1].id = 9;   // The companion
+  snap.agents[0].fsm.target_id = 9;
+  env.LoadSnapshot(snap);
+  const ObjectManager& om = env.GetObjectManager();
+  ASSERT_EQ(om.GetAllAgentFSMs()[0]->GetFSMContext().target_id,
+            om.GetAllCompanions()[0]->GetId());
+  snap.agents[0].fsm.target_id = 8;  // No such agent
+  env.LoadSnapshot(snap);
+  ASSERT_EQ(env.GetObjectManager().GetAllAgentFSMs()[0]->GetFSMContext().target_id,
+            kInvalidObjectId);
+}
+
 // =============================================================================
 // A dead attacker's telegraphed attacks are cancelled
 // =============================================================================

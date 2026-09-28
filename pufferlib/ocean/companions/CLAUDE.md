@@ -268,9 +268,15 @@ Location: `companions/src/core/fsm/`
 - A dead (or stunned) agent's FSM does not run, so a wind-up in `TelegraphState`
   never reaches `AttackState`, which is what spawns the strike effect
 - `EffectSystem::Tick` removes an effect still in its telegraph phase whose source
-  agent exists and is dead, before it can activate (a looping effect too, when it
-  winds up again). An effect already active when its source dies runs its course.
+  agent exists and is dead, before it can activate. An effect already active when its
+  source dies runs its course, but a looping one stops at its next restart, with or
+  without a wind-up (`telegraph_ticks = 0` loops too).
   Effects without a source (`kInvalidObjectId`, host-spawned) are never cancelled
+- `source_id` is an ObjectId: `LoadSnapshot` re-issues agent ids (0, 1, ... in the
+  saved order) and maps effect sources, effect actor targets and FSM `target_id`
+  through the snapshot's own agent `id`s (first wins on a duplicate; an id naming no
+  saved agent loads as `kInvalidObjectId`), so gaps from removed objects or
+  hand-authored ids never misattribute an effect
 - A companion that kills the attacker during step t cancels a strike due at the end
   of step t: skills resolve before effects tick
 

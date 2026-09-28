@@ -98,8 +98,8 @@ void EffectSystem::Tick() {
   for (size_t i = 0; i < active_effects_.size(); ++i) {
     ActiveEffect& effect = active_effects_[i];
 
-    // A dead attacker's pending (telegraphed) attack never lands, a looping
-    // one included when it winds up again. Active phases run their course.
+    // A dead attacker's pending (telegraphed) attack never lands. Active
+    // phases run their course; a loop stops at its next restart (below).
     if (effect.in_telegraph && IsSourceDead(effect)) {
       LOG_EFFECT("'" << (effect.config ? effect.config->name : std::string("?"))
                      << "': Cancelled (source " << effect.source_id << " is dead)");
@@ -143,6 +143,13 @@ void EffectSystem::Tick() {
 
         // Apply effect modifiers when entering active phase
         ApplyEffectModifiers(effect, &apply_count);
+      } else if ((effect.loops_remaining > 0 || effect.config->loop == -1) &&
+                 IsSourceDead(effect)) {
+        // A dead source's loop stops at its restart, wind-up or not (a
+        // loop without telegraph would otherwise go straight on hitting).
+        LOG_EFFECT("'" << effect.config->name << "': Loop cancelled (source "
+                       << effect.source_id << " is dead)");
+        to_remove.push_back(i);
       } else {
         // Active phase complete - check for looping
         if (effect.loops_remaining > 0) {

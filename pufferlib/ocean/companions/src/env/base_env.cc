@@ -1309,7 +1309,16 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   // and resets for hosts that cache ids (a cleared table would hand an old id
   // to a different name). It only grows by the names the env has ever seen.
 
-  // Load agents
+  // Load agents. They get new ids (0, 1, ... in the saved order), which may
+  // differ from the saved ones (gaps left by removed objects, hand-authored
+  // levels): references to agents (effect sources and targets, FSM targets)
+  // are mapped through the saved ids below. The first agent wins a
+  // duplicated saved id; an id naming no saved agent maps to kInvalidObjectId.
+  std::unordered_map<int, ObjectId> saved_to_new;
+  auto remap = [&saved_to_new](int saved) {
+    auto it = saved_to_new.find(saved);
+    return it == saved_to_new.end() ? kInvalidObjectId : it->second;
+  };
   for (const auto& as : snapshot.agents) {
     ObjectType type = static_cast<ObjectType>(as.type);
     Agent* agent = nullptr;
@@ -1345,6 +1354,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     }
 
     if (!agent) continue;
+    saved_to_new.emplace(as.id, agent->GetId());
 
     // Restore basic state
     agent->SetMaxHealth(as.max_health);
@@ -1427,6 +1437,12 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   // living agent standing on its cell.
   object_manager_->RebuildGrid();
 
+  // FSM targets were loaded as saved ids (the target may come later)
+  for (AgentFSM* fsm_agent : object_manager_->GetAllAgentFSMs()) {
+    FSMContext& ctx = fsm_agent->GetFSMContext();
+    ctx.target_id = remap(ctx.target_id);
+  }
+
   // Load effects
   for (const auto& es : snapshot.effects) {
     const EffectConfig* config = EffectConfigRegistry::Instance().GetConfig(es.effect_name);
@@ -1435,9 +1451,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     EffectTarget target;
     target.type = static_cast<EffectTarget::Type>(es.target_type);
     target.cell = es.target_cell;
-    target.actor_id = es.target_actor_id;
+    target.actor_id = remap(es.target_actor_id);
     for (int id : es.target_actors) {
-      target.actors.push_back(id);
+      target.actors.push_back(remap(id));
     }
 
     ActiveEffect effect;
@@ -1447,7 +1463,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     effect.ticks_remaining = es.ticks_remaining;
     effect.in_telegraph = es.in_telegraph;
     effect.loops_remaining = es.loops_remaining;
-    effect.source_id = es.source_id;
+    effect.source_id = remap(es.source_id);
 
     effect_system_->AddEffect(std::move(effect));
   }

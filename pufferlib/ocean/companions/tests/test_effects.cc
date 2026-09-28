@@ -1558,6 +1558,100 @@ TEST(TestDeadAttackersLoopIsCancelledAtItsNextWindUp) {
   registry.Clear();
 }
 
+// A looping effect with no wind-up (telegraph_ticks 0) restarts straight into
+// its active phase: a dead source's loop stops at that restart too. `loop` is
+// -1 (forever) or a count. Returns the companion's health lost over 3 steps
+// after the spawn-time hit, the tower killed right after the spawn or not.
+static int NoWindUpLoopDamage(int loop, bool kill_tower) {
+  EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
+  registry.Clear();
+  EffectConfig cfg;
+  cfg.name = "pulse";
+  cfg.telegraph_ticks = 0;
+  cfg.active_ticks = 1;
+  cfg.loop = loop;
+  cfg.damage = 1;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Companion;
+  registry.RegisterConfig(cfg);
+
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  ObjectManager& om = env.GetMutableObjectManager();
+  Agent* companion = om.GetAllAgents()[0];
+  companion->SetMaxHealth(10);
+  om.UpdatePosition(companion->GetId(), {3, 3});
+  Agent* tower = om.CreateActor<Agent>({3, 4});
+  tower->SetFaction(Faction::ENEMY);
+  env.SpawnEffect("pulse", EffectTarget::AtCell({3, 3}), Direction::Up, tower->GetId());
+  const int hp = companion->GetHealth();  // After the spawn-time hit
+  if (kill_tower) tower->TakeDamage(tower->GetHealth());
+  for (int i = 0; i < 3; ++i) env.Step({kIdle, kIdle});
+  const bool gone = env.GetActiveEffects().empty();
+  registry.Clear();
+  if (kill_tower && !gone) throw std::runtime_error("the dead tower's loop is still active");
+  return hp - companion->GetHealth();
+}
+
+TEST(TestDeadSourcesNoWindUpLoopStops) {
+  ASSERT_EQ(NoWindUpLoopDamage(-1, true), 0);
+  ASSERT_EQ(NoWindUpLoopDamage(5, true), 0);
+}
+
+TEST(TestLivingSourcesNoWindUpLoopKeepsHitting) {
+  ASSERT_EQ(NoWindUpLoopDamage(-1, false), 3);
+  ASSERT_EQ(NoWindUpLoopDamage(5, false), 3);
+}
+
+// LoadSnapshot re-issues agent ids (0, 1, ... in the saved order): a loaded
+// effect's source follows its agent even when the saved ids had gaps, and a
+// source naming no saved agent loads as no source.
+TEST(TestLoadedEffectKeepsItsSource) {
+  EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
+  registry.Clear();
+  EffectConfig cfg;
+  cfg.name = "wind_up";
+  cfg.telegraph_ticks = 2;
+  cfg.active_ticks = 1;
+  cfg.damage = 1;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Companion;
+  registry.RegisterConfig(cfg);
+
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  ObjectManager& om = env.GetMutableObjectManager();
+  om.UpdatePosition(om.GetAllAgents()[0]->GetId(), {3, 3});
+  const ObjectId gap = om.CreateActor<Agent>({5, 5})->GetId();
+  Agent* tower = om.CreateActor<Agent>({3, 4});
+  tower->SetFaction(Faction::ENEMY);
+  om.RemoveObject(gap);
+  env.SpawnEffect("wind_up", EffectTarget::AtCell({3, 3}), Direction::Up, tower->GetId());
+  Snapshot snap = env.SaveSnapshot();
+  ASSERT_EQ(snap.effects.size(), 1u);
+  ASSERT_EQ(snap.effects[0].source_id, tower->GetId());
+
+  SynchroEnv loaded(8, 8, 1, 1, 0, 42);
+  loaded.LoadSnapshot(snap);
+  Agent* loaded_tower = dynamic_cast<Agent*>(loaded.GetMutableObjectManager().GetActorAt({3, 4}));
+  ASSERT_TRUE(loaded_tower != nullptr);
+  ASSERT_TRUE(loaded_tower->GetId() != tower->GetId());  // Re-issued without the gap
+  ASSERT_EQ(loaded.GetActiveEffects()[0].source_id, loaded_tower->GetId());
+  // So killing it cancels its pending strike
+  Agent* companion = loaded.GetMutableObjectManager().GetAllAgents()[0];
+  const int hp = companion->GetHealth();
+  loaded_tower->TakeDamage(loaded_tower->GetHealth());
+  loaded.Step({kIdle, kIdle});
+  loaded.Step({kIdle, kIdle});
+  ASSERT_TRUE(loaded.GetActiveEffects().empty());
+  ASSERT_EQ(companion->GetHealth(), hp);
+
+  snap.effects[0].source_id = 42;  // No saved agent
+  loaded.LoadSnapshot(snap);
+  ASSERT_EQ(loaded.GetActiveEffects()[0].source_id, kInvalidObjectId);
+  registry.Clear();
+}
+
 // =============================================================================
 // Main
 // =============================================================================

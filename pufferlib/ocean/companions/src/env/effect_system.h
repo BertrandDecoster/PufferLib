@@ -46,10 +46,16 @@ class EffectSystem {
 
   // Tick all active effects (advance timers, apply damage/push on phase change).
   // An effect still in its telegraph phase whose source agent is dead is
-  // removed first, before it can activate (a looping effect too, when it
-  // winds up again): a dead attacker's pending attacks never land. Phases
-  // already active when the source dies run their course. Effects without a
-  // source (kInvalidObjectId) or whose source no longer exists are kept.
+  // removed first, before it can activate: a dead attacker's pending attacks
+  // never land. Phases already active when the source dies run their course,
+  // but a looping effect stops at its next restart, with or without a
+  // wind-up. Effects without a source (kInvalidObjectId) or whose source no
+  // longer exists are kept.
+  //
+  // source_id is an ObjectId of this env. LoadSnapshot re-creates agents with
+  // new ids and maps a snapshot effect's source_id (and its actor targets,
+  // and FSM target_id) through the snapshot's agent ids; an id naming no
+  // snapshot agent loads as kInvalidObjectId (a source-less effect).
   void Tick();
 
   // Accessors
