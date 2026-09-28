@@ -253,8 +253,9 @@ class BaseEnv {
 
   // Host primitives: land / remove a tag outside of a step. `duration` is a
   // positive step count or kPermanentTag; ApplyTagTo returns false for 0 or
-  // anything below kPermanentTag, and for an empty tag or one longer than
-  // kMaxNameLength. Durations are step timers (see Agent::BeginStep): a tag
+  // anything below kPermanentTag, for an empty tag or one longer than
+  // kMaxNameLength, and for an agent that is not affectable (downed or dead:
+  // the tag is then not interned, like LandTag). Durations are step timers (see Agent::BeginStep): a tag
   // applied between two steps with duration d is there for the d next steps.
   bool ApplyTagTo(ObjectId agent, const std::string& tag, int duration);
   bool RemoveTagFrom(ObjectId agent, const std::string& tag);

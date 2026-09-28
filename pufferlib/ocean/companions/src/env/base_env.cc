@@ -932,6 +932,7 @@ bool BaseEnv::ApplyTagTo(ObjectId id, const std::string& tag, int duration) {
   if (duration == 0 || duration < kPermanentTag) return false;
   auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
   if (!agent || tag.empty() || !IsValidNameLength(tag)) return false;
+  if (!agent->IsAffectable()) return false;  // Downed or dead: lands and interns nothing
   agent->ApplyTag(tags_.Intern(tag), duration);
   return true;
 }

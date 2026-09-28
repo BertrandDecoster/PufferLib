@@ -1445,11 +1445,12 @@ static int CountEvents(const Companions_StepResult& r, Companions_EventType type
 
 // A step reports at most Companions_MAX_EVENTS events and counts the others
 // in events_dropped; the EpisodeEnd of a step that ends the episode is always
-// reported, as the last event.
+// reported, as the last event, and an AgentDowned comes before the skill and
+// tag events, so a down survives the cap too.
 TEST(TestEventCapKeepsEpisodeEnd) {
   // "splash" lands 20 tags on each of the 4 agents around its caster (spared:
-  // self_tags off): 80 TagApplied + 1 SkillUsed per step (+ EpisodeEnd on
-  // step 2, the horizon).
+  // self_tags off): 80 TagApplied + 1 SkillUsed per step (+ on step 2, the
+  // horizon, the down of the 6th companion, away in a corner, and EpisodeEnd).
   std::string tags;
   for (int i = 0; i < 20; ++i) {
     tags += std::string(i ? "," : "") + "{\"tag\":\"t" + std::to_string(i) + "\",\"duration\":-1}";
@@ -1461,13 +1462,14 @@ TEST(TestEventCapKeepsEpisodeEnd) {
                                    {2, 3, ""},
                                    {4, 3, ""},
                                    {3, 2, ""},
-                                   {3, 4, ""}},
+                                   {3, 4, ""},
+                                   {1, 1, ""}},
                                   skills, 2);
-  std::vector<Companions_Action> actions(5, {Companions_Movement_Stay, Companions_Interact_None});
+  std::vector<Companions_Action> actions(6, {Companions_Movement_Stay, Companions_Interact_None});
   actions[0].interact = Companions_Interact_Skill1;
 
   Companions_StepResult result = {};
-  companions_step(env, actions.data(), 5, &result);
+  companions_step(env, actions.data(), 6, &result);
   ASSERT_FALSE(result.state.done);
   ASSERT_EQ(result.event_count, Companions_MAX_EVENTS);
   ASSERT_EQ(result.events_dropped, 81 - Companions_MAX_EVENTS);
@@ -1475,15 +1477,24 @@ TEST(TestEventCapKeepsEpisodeEnd) {
   ASSERT_EQ(CountEvents(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 1);
   ASSERT_EQ(CountEvents(result, Companions_Event_EpisodeEnd), 0);
 
-  companions_step(env, actions.data(), 5, &result);
+  // The 6th companion goes down between the steps: step 2 reports it
+  const Companions_AgentState corner = AgentAt(env, 5);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", corner.position.row, corner.position.col,
+                                      Companions_Direction_Up, -1));
+  companions_step(env, actions.data(), 6, &result);
   ASSERT_TRUE(result.state.done);
+  ASSERT_FALSE(result.state.team_down);  // 1 down of 3
   ASSERT_EQ(result.event_count, Companions_MAX_EVENTS);
-  ASSERT_EQ(result.events_dropped, 82 - Companions_MAX_EVENTS);
+  ASSERT_EQ(result.events_dropped, 83 - Companions_MAX_EVENTS);
+  ASSERT_EQ(result.events[0].type, Companions_Event_AgentDowned);
+  ASSERT_EQ(result.events[0].subject_id, corner.id);
+  ASSERT_EQ(result.events[1].type, Companions_Event_SkillUsed);
   ASSERT_EQ(result.events[Companions_MAX_EVENTS - 1].type, Companions_Event_EpisodeEnd);
   ASSERT_EQ(result.events[Companions_MAX_EVENTS - 1].episode_steps, 2);
   ASSERT_EQ(result.events[Companions_MAX_EVENTS - 2].type, Companions_Event_TagApplied);
   ASSERT_EQ(CountEvents(result, Companions_Event_EpisodeEnd), 1);
-  ASSERT_EQ(CountEvents(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 2);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 1);
+  ASSERT_EQ(CountEvents(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 3);
   companions_destroy(env);
 }
 
@@ -1765,6 +1776,9 @@ TEST(TestDownsThroughTheApi) {
   companions_get_state(env, &state);  // Between steps, the state already says so
   ASSERT_TRUE(state.agents[0].downed);
   ASSERT_EQ(state.downs, 1);
+  // No tag lands on the downed, not even the host's (and none is interned)
+  ASSERT_FALSE(companions_apply_tag(env, id, "blessed", 2));
+  ASSERT_EQ(companions_find_tag(env, "blessed"), -1);
 
   Companions_Action stay[2] = {{Companions_Movement_Stay, Companions_Interact_None},
                                {Companions_Movement_Stay, Companions_Interact_None}};

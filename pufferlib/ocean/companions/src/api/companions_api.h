@@ -62,6 +62,10 @@
 // - Companions_Event_AgentMoved: Agent moved to a new position (by walking,
 //   or by a skill: a teleport, dash, push or pull)
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
+// - Companions_Event_AgentDowned: a companion went down (0 HP: alive, inert,
+//   untouchable): subject_id = the companion, position = its cell. One per
+//   down; a down between two steps (a host effect, companions_spawn_effect)
+//   is reported by the next step. Since 1.3.
 // - Companions_Event_SkillUsed: a companion used the skill in a slot:
 //   subject_id = caster, position = the skill's centre (the landing cell for
 //   a self-targeted skill such as teleport), effect_id = the slot (0-based),
@@ -72,10 +76,6 @@
 //   effect_name = tag name, status_duration = duration (-1 = permanent),
 //   health_source_id = caster (-1 for a zone), tag_fresh = the agent did not
 //   carry the tag just before this landing.
-// - Companions_Event_AgentDowned: a companion went down (0 HP: alive, inert,
-//   untouchable): subject_id = the companion, position = its cell. One per
-//   down; a down between two steps (a host effect, companions_spawn_effect)
-//   is reported by the next step. Since 1.3.
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
 //   reported once per false->true transition of done, on the step where it
 //   happens: the steps a host keeps playing afterwards (done stays true) do
@@ -84,9 +84,10 @@
 // A step reports at most Companions_MAX_EVENTS events, in the order above.
 // When there are more, the ones past the cap are dropped, except EpisodeEnd:
 // a step that ends the episode always reports it, as the last event (the
-// others are then cut to Companions_MAX_EVENTS - 1). events_dropped counts
-// the events not reported. The state itself (agents' tags, skills, statuses)
-// is always complete.
+// others are then cut to Companions_MAX_EVENTS - 1). The movement and down
+// events (at most one of each per agent) always fit: only skill and tag
+// events can be dropped. events_dropped counts the events not reported. The
+// state itself (agents' tags, skills, statuses) is always complete.
 //
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
@@ -617,7 +618,8 @@ COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
 COMPANIONS_API const char* companions_get_tag_name(const Companions_Env* env, int32_t tag_id);  // NULL if unknown
 COMPANIONS_API int32_t companions_find_tag(const Companions_Env* env, const char* name);        // -1 if unknown
 // Land `tag` on an agent for `duration` steps (-1 = permanent). False for an
-// unknown agent, a NULL / "" tag or one over 31 bytes, or a duration of 0 or
+// unknown, downed or dead agent (nothing lands on them, the tag is not
+// interned), a NULL / "" tag or one over 31 bytes, or a duration of 0 or
 // below -1. Durations, statuses' and cooldowns included, tick at the end of
 // each step: applied between two steps with duration d, the tag is there for
 // the d next steps (d = 1: gone after the next step). Landed during a step

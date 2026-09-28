@@ -223,6 +223,24 @@ TEST(TestNothingLandsOnADownedCompanion) {
   for (const auto& landed : env.GetLastTagsApplied()) ASSERT_TRUE(landed.agent != down->GetId());
 }
 
+// The host primitive lands no tag on the downed or the dead either: it
+// refuses, and interns nothing (like a skill's or a zone's landing).
+TEST(TestTheHostLandsNoTagOnTheDownedOrTheDead) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Agent* down = DownCompanion(env, 0);
+  Agent* dead = env.GetMutableObjectManager().GetAllAgents()[1];
+  dead->SetAlive(false);
+  Agent* standing = env.GetMutableObjectManager().GetAllAgents()[2];
+  ASSERT_FALSE(env.ApplyTagTo(down->GetId(), "blessed", kPermanentTag));
+  ASSERT_FALSE(env.ApplyTagTo(dead->GetId(), "blessed", 2));
+  ASSERT_EQ(env.GetTagTable().Find("blessed"), kInvalidTag);  // Not interned
+  ASSERT_FALSE(Has(env, down, "blessed"));
+  ASSERT_FALSE(Has(env, dead, "blessed"));
+  ASSERT_TRUE(env.ApplyTagTo(standing->GetId(), "blessed", 2));
+  ASSERT_TRUE(Has(env, standing, "blessed"));
+}
+
 // Puts the companion on a free walkable neighbour of the enemy.
 static bool PlaceNextTo(AggroEnv& env, Companion* comp, const AgentFSM* enemy) {
   const Position e = enemy->GetPosition();

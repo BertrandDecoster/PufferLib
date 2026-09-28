@@ -212,6 +212,7 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 - Durations are step timers (see Step timers): landed during step t with duration d,
   the tag is present after steps t .. t+d-1 (and during step t+d, until its end)
 - No gameplay effect in the env. Host primitives: `ApplyTagTo` / `RemoveTagFrom`
+  (`ApplyTagTo` refuses a downed or dead agent and then interns nothing, like `LandTag`)
 
 **Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`):
 - One tag per cell ("" clears), with the duration it lands with; the zone itself never expires
@@ -241,8 +242,10 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
-- Event order in a step: AgentMoved, AgentBlocked, SkillUsed, TagApplied,
-  AgentDowned, EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
+- Event order in a step: AgentMoved, AgentBlocked, AgentDowned, SkillUsed, TagApplied,
+  EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped`
+  counts the rest. Movement and down events (at most one each per agent) always fit: only
+  SkillUsed / TagApplied can be dropped
 - C API (`src/api/companions_api.h`, version 1.3.0: 1.2 removed the legacy cast,
   1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
   `Companions_GameState.downs` / `max_downs` / `team_down`, `Companions_End_TeamDown` (4),
@@ -287,9 +290,10 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   down until `Reset` / `LoadSnapshot`
 - **Inert and untouched.** `Agent::IsAffectable()` = alive and not downed: the check
   for everything that hits, heals, tags, statuses, pushes / pulls or targets an agent
-  (`TakeDamage`, `Heal`, `ApplyTag` / `LandTag`, `ApplyStatus`, zones, `Affects`,
-  `AreaMotion`, effects and effect pushes, projectiles pass over it). The downed does
-  not act (`GatherIntentions`: Stay; `CanUseSkill` false; `LegalActions`: Stay only).
+  (`TakeDamage`, `Heal`, `ApplyTag` / `LandTag` / `ApplyTagTo` (false, interns nothing),
+  `ApplyStatus`, zones, `Affects`, `AreaMotion`, effects and effect pushes, projectiles
+  pass over it). The downed does not act (`GatherIntentions`: Stay; `CanUseSkill` false;
+  `LegalActions`: Stay only).
   Enemies ignore it (`FindClosestCompanion`) and drop it as a target (`AggroState`, a
   wind-up locks no downed target). It still blocks its cell (collisions, landing)
 - `Agent::IsDead()` stays health-based (a downed companion `IsDead()`): DodgeEnv /
@@ -319,7 +323,8 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   `max_downs` and `team_down` (the live `IsTeamDown()`, independent of the latched end
   reason: a team down after the horizon stays `Horizon`, `team_down` says it);
   `Companions_End_TeamDown` (4); `Companions_Event_AgentDowned` (17, subject_id,
-  position), after TagApplied and before EpisodeEnd
+  position), after the movement events and before SkillUsed (so the event cap never drops
+  it)
 
 ### Pathfinding
 A* with Euclidean heuristic in `pathfinder.cc`:

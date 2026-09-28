@@ -820,10 +820,12 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->end_reason = CurrentEndReason(*env);
   env->last_rewards = result.rewards;
 
-  // Generate movement, skill, tag and down events
+  // Generate movement, down, skill and tag events. The downs come before the
+  // skills and tags, which can overflow Companions_MAX_EVENTS: a down is
+  // always reported.
   AddMovementEvents(env);
-  AddSkillAndTagEvents(env);
   AddDownEvents(env);
+  AddSkillAndTagEvents(env);
 
   // Add the episode end event on the step that ends the episode
   if (episode_ended) {
@@ -1031,8 +1033,8 @@ COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectI
     return false;
   }
   if (!env->env->ApplyTagTo(agent, tag, duration)) {
-    SetError("companions_apply_tag: unknown agent, empty or overlong tag, or duration 0 or "
-             "below -1");
+    SetError("companions_apply_tag: unknown, downed or dead agent, empty or overlong tag, or "
+             "duration 0 or below -1");
     return false;
   }
   return true;
