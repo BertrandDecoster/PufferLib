@@ -27,18 +27,18 @@ Actor::Actor(ObjectId id, Position pos) : Object(id), pos_(pos) {}
 Agent::Agent(ObjectId id, Position pos) : Actor(id, pos) {}
 
 void Agent::TakeDamage(int amount) {
+  if (IsDowned()) return;  // Untouched
   // Marked targets take bonus damage
   if (HasStatus(StatusType::Marked)) {
     amount = static_cast<int>(amount * kMarkedDamageMultiplier);
   }
   health_ -= amount;
   if (health_ < 0) health_ = 0;
-  if (health_ <= 0) {
-    SetAlive(false);
-  }
+  if (health_ <= 0) OnZeroHealth();
 }
 
 void Agent::Heal(int amount) {
+  if (IsDowned()) return;  // Untouched (reviving is not healing)
   health_ += amount;
   if (health_ > max_health_) health_ = max_health_;
 }
@@ -54,7 +54,7 @@ void Agent::TickTimers() {
 }
 
 void Agent::ApplyStatus(StatusType type, int duration) {
-  if (type == StatusType::None || duration <= 0) return;
+  if (IsDowned() || type == StatusType::None || duration <= 0) return;
   duration = TimerSteps(duration);
 
   // Check if we already have this status - refresh duration if so
@@ -101,7 +101,7 @@ bool Agent::HasStatus(StatusType type) const {
 }
 
 void Agent::ApplyTag(TagId id, int duration) {
-  if (id == kInvalidTag || duration == 0) return;
+  if (IsDowned() || id == kInvalidTag || duration == 0) return;
   duration = TimerSteps(duration);  // kPermanentTag stays
   for (AgentTag& t : tags_) {
     if (t.id != id) continue;
@@ -260,6 +260,14 @@ Companion::Companion(ObjectId id, Position pos) : Agent(id, pos) {
 void Companion::TickTimers() {
   Agent::TickTimers();
   TickCooldowns();
+}
+
+void Companion::OnZeroHealth() {
+  // A companion goes down: it stays alive, and its statuses go (a stun or a
+  // root would otherwise outlive the down); its tags and skills stay.
+  ClearAllStatuses();
+  downed_ = true;
+  ++times_downed_;
 }
 
 // =============================================================================

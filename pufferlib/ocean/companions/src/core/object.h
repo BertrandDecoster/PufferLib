@@ -4,6 +4,7 @@
 #ifndef COMPANIONS_CORE_OBJECT_H_
 #define COMPANIONS_CORE_OBJECT_H_
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <string>
@@ -205,6 +206,16 @@ class Agent : public Actor {
   void TakeDamage(int amount);
   void Heal(int amount);
   bool IsDead() const { return health_ <= 0; }
+  // Snapshot loads: the health as saved, clamped to [0, max], without the
+  // consequences of damage (no death, no down)
+  void RestoreHealth(int health) { health_ = std::max(0, std::min(health, max_health_)); }
+
+  // Downs: a companion at 0 HP goes down instead of dying (Companion). A
+  // downed agent stays alive and keeps its cell, but nothing touches it
+  // (damage, healing, tags, statuses, push / pull) and it does not act.
+  virtual bool IsDowned() const { return false; }
+  // What may be hit, tagged, pushed or targeted: alive and not downed
+  bool IsAffectable() const { return IsAlive() && !IsDowned(); }
 
   // ==========================================================================
   // Step timers: tag and status durations and (Companion) cooldowns count
@@ -255,6 +266,8 @@ class Agent : public Actor {
   // A timer of n steps as stored (see BeginStep): n + 1 during a step
   int TimerSteps(int n) const { return in_step_ && n > 0 ? n + 1 : n; }
   virtual void TickTimers();  // Called by EndStep on a living agent
+  // What reaching 0 HP does: an agent dies, a companion goes down
+  virtual void OnZeroHealth() { SetAlive(false); }
 
   DecodedAction intention_;
   DecodedAction original_intention_;  // Captured before collision resolution
@@ -384,17 +397,36 @@ class Companion : public Agent {
   void SetCooldown(int slot, int steps) { cooldowns_[static_cast<size_t>(slot)] = TimerSteps(steps); }
   void TickCooldowns() { for (int& c : cooldowns_) if (c > 0) --c; }
 
+  bool IsDowned() const override { return downed_; }
+  // Times this companion went down (the team's downs are the sum)
+  int GetTimesDowned() const { return times_downed_; }
+  // Downs not reported yet (BaseEnv's per-step report); marks them reported
+  int TakeUnreportedDowns() {
+    const int n = times_downed_ - reported_downs_;
+    reported_downs_ = times_downed_;
+    return n;
+  }
+  // Snapshot loads: the state as saved, already reported
+  void RestoreDowns(bool downed, int times_downed) {
+    downed_ = downed;
+    times_downed_ = reported_downs_ = times_downed;
+  }
+
   std::unique_ptr<Object> Clone() const override {
     return std::make_unique<Companion>(*this);
   }
 
  protected:
   void TickTimers() override;
+  void OnZeroHealth() override;
 
   Direction direction_ = Direction::Down;  // Default: facing down
   ActorColor color_ = ActorColor::None;
   std::array<std::string, kMaxSkillSlots> skills_;
   std::array<int, kMaxSkillSlots> cooldowns_{};
+  bool downed_ = false;
+  int times_downed_ = 0;
+  int reported_downs_ = 0;  // Of times_downed_, those already reported
 };
 
 // =============================================================================

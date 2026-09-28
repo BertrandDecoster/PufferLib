@@ -146,9 +146,9 @@ TEST(TestDodgeEnvDeath) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
 }
 
-// A companion that dies fails the Dodge task (DodgeLens::IsFailed), even on
-// the horizon step: the episode ends as TaskFailed, not Horizon. The rewards
-// and done are those of any death.
+// A companion that goes down fails the Dodge task (DodgeLens::IsFailed), even
+// on the horizon step: the episode ends as TaskFailed, not Horizon. The
+// rewards and done are those of any death.
 TEST(TestDodgeEnvDeathOnTheHorizonStepIsATaskFailure) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfig lethal;
@@ -169,7 +169,7 @@ TEST(TestDodgeEnvDeathOnTheHorizonStepIsATaskFailure) {
   env.SpawnEffect("delayed_death", EffectTarget::AtCell(companion->GetPosition()));
 
   StepResult last = env.Step(stay);
-  ASSERT_FALSE(companion->IsAlive());
+  ASSERT_TRUE(companion->IsDowned());
   ASSERT_EQ(env.GetTick(), 2);
   ASSERT_TRUE(last.done);
   ASSERT_FALSE(env.IsSuccess());

@@ -1377,9 +1377,9 @@ TEST(TestEffectOnDeadAgentIsNoOp) {
   Agent* target = agents[0];
   int initial_hp = target->GetHealth();
 
-  // Kill the agent
+  // Down the agent (a companion: it goes down instead of dying)
   target->TakeDamage(initial_hp + 100);
-  ASSERT_FALSE(target->IsAlive());
+  ASSERT_TRUE(target->IsDowned());
   int dead_hp = target->GetHealth();
 
   // Spawn damage effect targeting dead agent's position
@@ -1389,9 +1389,9 @@ TEST(TestEffectOnDeadAgentIsNoOp) {
   // Tick effect system via step (need 2 actions for 2 agents)
   env.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Stay)});
 
-  // Health should remain unchanged (dead agent should not take further damage)
+  // Health should remain unchanged (a downed agent takes no further damage)
   ASSERT_EQ(target->GetHealth(), dead_hp);
-  ASSERT_FALSE(target->IsAlive());
+  ASSERT_TRUE(target->IsDowned());
 }
 
 // =============================================================================

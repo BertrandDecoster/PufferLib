@@ -366,7 +366,7 @@ TEST(TestADodgeFailureOnSynchroEnvEndsAtTheHorizon) {
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
   Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
   companion->TakeDamage(companion->GetHealth());
-  ASSERT_FALSE(companion->IsAlive());
+  ASSERT_TRUE(companion->IsDowned());
   for (int i = 0; i < 2; ++i) {
     ASSERT_FALSE(env.Step({stay}).done);
     ASSERT_TRUE(env.IsTaskFailed());

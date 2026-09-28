@@ -754,11 +754,11 @@ TEST(TestHealthSystem) {
   companion->Heal(10);
   ASSERT_EQ(companion->GetHealth(), 3);
 
-  // Take lethal damage
+  // Take lethal damage: a companion goes down, it does not die
   companion->TakeDamage(5);
   ASSERT_EQ(companion->GetHealth(), 0);
   ASSERT_TRUE(companion->IsDead());
-  ASSERT_FALSE(companion->IsAlive());
+  ASSERT_TRUE(companion->IsDowned());
 }
 
 TEST(TestFactionSystem) {

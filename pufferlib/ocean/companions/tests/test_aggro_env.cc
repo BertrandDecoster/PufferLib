@@ -961,7 +961,7 @@ TEST(TestADeadCompanionDoesNotEndAggroEnvUnderDodgeLens) {
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
   Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
   companion->TakeDamage(companion->GetHealth());
-  ASSERT_FALSE(companion->IsAlive());
+  ASSERT_TRUE(companion->IsDowned());
   ASSERT_TRUE(env.GetTaskLens()->IsDone(env));  // The lens alone would say done
   ASSERT_FALSE(env.IsDone());
   const Action stay = EncodeAction(MovementAction::Stay);
