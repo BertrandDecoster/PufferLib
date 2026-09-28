@@ -51,6 +51,7 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       skills_(other.skills_),
       last_skill_uses_(other.last_skill_uses_),
       last_tags_applied_(other.last_tags_applied_),
+      last_downs_(other.last_downs_),
       cell_tags_(other.cell_tags_),
       max_downs_(other.max_downs_) {
   // Update EffectSystem pointers to point to our new copies
@@ -76,6 +77,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     skills_ = other.skills_;
     last_skill_uses_ = other.last_skill_uses_;
     last_tags_applied_ = other.last_tags_applied_;
+    last_downs_ = other.last_downs_;
     cell_tags_ = other.cell_tags_;
     max_downs_ = other.max_downs_;
   }
@@ -128,6 +130,11 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
 
   // Every timer (tags, statuses, cooldowns) ticks here, at the end of the step
   for (Agent* agent : object_manager_->GetAllAgents()) agent->EndStep();
+
+  // Downs since the last report (this step's, and any between steps)
+  for (Companion* c : object_manager_->GetAllCompanions()) {
+    for (int n = c->TakeUnreportedDowns(); n > 0; --n) last_downs_.push_back(c->GetId());
+  }
 
   // Increment tick
   tick_++;
@@ -897,6 +904,7 @@ bool PassesFilter(const Agent& a, TargetFilter f) {
 void BaseEnv::ClearStepReports() {
   last_skill_uses_.clear();
   last_tags_applied_.clear();
+  last_downs_.clear();
 }
 
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }

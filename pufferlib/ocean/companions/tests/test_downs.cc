@@ -409,6 +409,32 @@ TEST(TestTeamDownEndsAMultiCompanionAggroEnv) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
 }
 
+// Each down is reported once, by the step it happened in; a down between
+// steps (a host effect) by the next step. The next step's reports are empty.
+TEST(TestTheStepReportsEachDownOnce) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  const std::vector<Action> stay(3, kStay);
+  Agent* between = DownCompanion(env, 0);  // Between steps
+  ASSERT_TRUE(env.GetLastDowns().empty());  // Not reported until a step
+  env.Step(stay);
+  ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastDowns()[0], between->GetId());
+  env.Step(stay);
+  ASSERT_TRUE(env.GetLastDowns().empty());
+
+  Agent* during = Place(env, 1, {3, 3});  // During a step
+  SpawnKillNextStep(env, {3, 3});
+  env.Step(stay);
+  ASSERT_TRUE(during->IsDowned());
+  ASSERT_FALSE(env.IsDone());  // Companion 2 stands
+  ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastDowns()[0], during->GetId());
+  env.Step(stay);
+  ASSERT_TRUE(env.GetLastDowns().empty());
+}
+
 // =============================================================================
 // Main
 // =============================================================================

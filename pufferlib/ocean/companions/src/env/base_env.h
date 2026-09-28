@@ -282,6 +282,9 @@ class BaseEnv {
   // current cell: an earlier push / pull can move a later caster (ResolveSkills).
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
+  // Companions that went down since the last report, one entry per down:
+  // this step's, and any between steps (a host effect), reported once.
+  const std::vector<ObjectId>& GetLastDowns() const { return last_downs_; }
 
   // Zones: a cell may carry one tag, landed (with `duration`, cause "zone",
   // source kInvalidObjectId) on every living agent standing on it after the
@@ -379,7 +382,7 @@ class BaseEnv {
   void ResolveInteractions();
 
   // Skills (see GetSkillBook)
-  // Empties the per-step reports (skill uses, tags applied): their
+  // Empties the per-step reports (skill uses, tags applied, downs): their
   // ObjectIds are re-issued by a new world.
   void ClearStepReports();
   // Not rooted. Walking and caster-moving skills both need it (being pushed /
@@ -438,6 +441,7 @@ class BaseEnv {
   SkillBook skills_;
   std::vector<SkillUse> last_skill_uses_;
   std::vector<TagApplication> last_tags_applied_;
+  std::vector<ObjectId> last_downs_;
   // Row-major rows_ * cols_ once a zone is set; empty = no zones.
   std::vector<CellTag> cell_tags_;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the
