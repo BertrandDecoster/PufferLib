@@ -79,9 +79,9 @@ class BaseEnv {
   virtual void Reset() = 0;
   virtual void Reset(unsigned int seed) = 0;
   virtual StepResult Step(const std::vector<Action>& actions);
-  // Done: the team is down (whatever the env), or the env's own rule
-  // (IsEnvDone: success, horizon, a failure it honours)
-  bool IsDone() const { return IsTeamDown() || IsEnvDone(); }
+  // Done: the env's own rule (IsEnvDone: success, horizon, a failure it
+  // honours), or the team is down (whatever the env). The cheap term first.
+  bool IsDone() const { return IsEnvDone() || IsTeamDown(); }
 
   // Downs. Every companion going down counts (revived or not); the level is
   // lost (EndReason::TeamDown) once the count reaches max_downs, or when every
@@ -90,7 +90,11 @@ class BaseEnv {
   static constexpr int kDefaultMaxDowns = 3;
   int GetDowns() const;
   int GetMaxDowns() const { return max_downs_; }
-  bool SetMaxDowns(int max_downs);  // False below 1
+  // False below 1. Level data: meant to be set at load or between episodes.
+  // A mid-episode change re-evaluates the verdict: raised above the downs, it
+  // can make IsDone() false again, and the next latch (LatchEndReason) then
+  // clears a latched end reason.
+  bool SetMaxDowns(int max_downs);
   bool IsTeamDown() const;
 
   // Latched success flag. BaseEnv::Step sets it once the active TaskLens

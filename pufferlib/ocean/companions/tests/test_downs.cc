@@ -12,6 +12,7 @@
 #include "../src/core/object.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/synchro_env.h"
+#include "effect_registry_guard.h"
 
 using namespace companions;
 
@@ -280,6 +281,20 @@ TEST(TestAnEnemyDropsATargetItDowned) {
 // =============================================================================
 static Companion* AsCompanion(Agent* a) { return dynamic_cast<Companion*>(a); }
 
+// A lethal effect on `cell` that strikes during the next step (the builtin
+// "kill" strikes as it spawns). Call under a ScopedEffectRegistry.
+static void SpawnKillNextStep(BaseEnv& env, Position cell) {
+  EffectConfig kill;
+  kill.name = "kill_next_step";
+  kill.telegraph_ticks = 1;
+  kill.active_ticks = 1;
+  kill.area = {1};
+  kill.filter = TargetFilter::Companion;
+  kill.damage = 999;
+  EffectConfigRegistry::Instance().RegisterConfig(kill);
+  env.SpawnEffect("kill_next_step", EffectTarget::AtCell(cell));
+}
+
 TEST(TestTheThirdDownLosesTheLevel) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -333,6 +348,65 @@ TEST(TestResetClearsTheDowns) {
   env.Reset(42);
   ASSERT_EQ(env.GetDowns(), 0);
   ASSERT_FALSE(env.IsDone());
+}
+
+// A success latched on the step the team goes down wins: the end reason is
+// Success (ComputeEndReason's priority). Companion 0 covers the only goal;
+// companion 1 goes down during the step (max_downs 1).
+TEST(TestASuccessOnTheTeamDownStepIsASuccess) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetMaxDowns(1));
+  const Position goal = env.GetSynchroPositions()[0];
+  Place(env, 0, goal);
+  const Position other = goal == Position{5, 5} ? Position{3, 3} : Position{5, 5};
+  Agent* victim = Place(env, 1, other);
+  SpawnKillNextStep(env, other);
+  ASSERT_FALSE(victim->IsDowned());
+  ASSERT_FALSE(env.IsDone());
+  StepResult result = env.Step({kStay, kStay});
+  ASSERT_TRUE(victim->IsDowned());
+  ASSERT_TRUE(env.IsTeamDown());
+  ASSERT_TRUE(env.IsSuccess());
+  ASSERT_TRUE(result.done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
+}
+
+// A dead companion does not stand: one down and the other dead is every
+// companion down at once. A dead one alone is not.
+TEST(TestADeadCompanionDoesNotStand) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* dead = env.GetMutableObjectManager().GetAllAgents()[1];
+  dead->SetAlive(false);
+  ASSERT_FALSE(env.IsTeamDown());
+  DownCompanion(env, 0);
+  ASSERT_EQ(env.GetDowns(), 1);
+  ASSERT_TRUE(env.IsTeamDown());
+  ASSERT_TRUE(env.IsDone());
+}
+
+// TeamDown ends a multi-companion AggroEnv (whatever its lens says): the
+// second companion goes down during a step, which reports done.
+TEST(TestTeamDownEndsAMultiCompanionAggroEnv) {
+  ScopedEffectRegistry scoped_registry;
+  AggroEnv env(10, 2, EnemyType::Goblin, 42, 0, 100);
+  env.Reset(42);
+  const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()), kStay);  // The enemy's too
+  auto companions = env.GetMutableObjectManager().GetAllCompanions();
+  ASSERT_EQ(companions.size(), static_cast<size_t>(2));
+  companions[0]->TakeDamage(companions[0]->GetHealth());
+  StepResult first = env.Step(stay);
+  ASSERT_FALSE(first.done);  // One down, one standing
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  SpawnKillNextStep(env, companions[1]->GetPosition());
+  ASSERT_FALSE(companions[1]->IsDowned());
+  StepResult last = env.Step(stay);
+  ASSERT_TRUE(companions[1]->IsDowned());
+  ASSERT_TRUE(last.done);
+  ASSERT_TRUE(env.IsDone());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
 }
 
 // =============================================================================
