@@ -1,5 +1,5 @@
 // Copyright 2024
-// Unit tests for skills: opaque agent tags and the per-env TagTable
+// Unit tests for skills: opaque agent tags, the per-env TagTable and the SkillBook
 
 #include <iostream>
 #include <sstream>
@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../src/core/object.h"
+#include "../src/core/skill_config.h"
 #include "../src/core/tag_table.h"
 
 using namespace companions;
@@ -99,6 +100,87 @@ TEST(TestAgentTagRefreshKeepsLonger) {
   ASSERT_FALSE(a.HasTag(0));
   a.ApplyTag(1, 0);             // zero duration: no-op
   ASSERT_FALSE(a.HasTag(1));
+}
+
+// =============================================================================
+// SkillBook Tests
+// =============================================================================
+
+TEST(TestSkillBookBuiltins) {
+  SkillBook book;
+  const SkillConfig* fireball = book.Find("fireball");
+  ASSERT_TRUE(fireball != nullptr);
+  ASSERT_TRUE(fireball->targeting == SkillTargeting::Ground);
+  ASSERT_EQ(fireball->range, 3);
+  ASSERT_TRUE(fireball->area == SkillArea::Cross);
+  ASSERT_TRUE(fireball->motion == SkillMotion::PushOut);
+  ASSERT_EQ(fireball->motion_distance, 1);
+  ASSERT_EQ(fireball->tags[0].tag, std::string("burning"));
+
+  const SkillConfig* step = book.Find("lightningStep");
+  ASSERT_TRUE(step != nullptr);
+  ASSERT_TRUE(step->targeting == SkillTargeting::Self);
+  ASSERT_TRUE(step->motion == SkillMotion::Dash);
+  ASSERT_EQ(step->motion_distance, 4);
+  ASSERT_TRUE(step->area == SkillArea::Cross);
+  ASSERT_TRUE(step->tag_path);
+  ASSERT_EQ(step->tags[0].tag, std::string("electrified"));
+
+  const SkillConfig* tp = book.Find("teleport");
+  ASSERT_TRUE(tp != nullptr && tp->motion == SkillMotion::Teleport);
+  ASSERT_EQ(tp->motion_distance, 3);
+  ASSERT_TRUE(tp->tags.empty());
+
+  const SkillConfig* vortex = book.Find("vortex");
+  ASSERT_TRUE(vortex != nullptr);
+  ASSERT_TRUE(vortex->targeting == SkillTargeting::Ground);
+  ASSERT_EQ(vortex->range, 3);
+  ASSERT_TRUE(vortex->motion == SkillMotion::PullIn);
+  ASSERT_EQ(vortex->root_steps, 1);
+
+  ASSERT_TRUE(book.Find("frost") == nullptr);
+  ASSERT_TRUE(SkillMovesCaster(*step));
+  ASSERT_TRUE(SkillMovesCaster(*tp));
+  ASSERT_FALSE(SkillMovesCaster(*fireball));
+}
+
+TEST(TestSkillBookDefineReplaces) {
+  SkillBook book;
+  SkillConfig frost;
+  frost.name = "frost";
+  frost.targeting = SkillTargeting::Projectile;
+  frost.range = 2;
+  frost.tags = {{"chilled", kPermanentTag}};
+  book.Define(frost);
+  ASSERT_EQ(book.Find("frost")->range, 2);
+  SkillConfig short_fireball = *book.Find("fireball");
+  short_fireball.range = 2;
+  book.Define(short_fireball);                  // a level retunes a builtin
+  ASSERT_EQ(book.Find("fireball")->range, 2);
+  book.Reset();                                 // back to builtins only
+  ASSERT_EQ(book.Find("fireball")->range, 3);
+  ASSERT_TRUE(book.Find("frost") == nullptr);
+}
+
+TEST(TestSkillEnumStringsRoundTrip) {
+  for (SkillTargeting t : {SkillTargeting::Self, SkillTargeting::Ground,
+                           SkillTargeting::Projectile}) {
+    ASSERT_TRUE(SkillTargetingFromString(SkillTargetingToString(t)) == t);
+  }
+  for (SkillArea a : {SkillArea::Single, SkillArea::Cross}) {
+    ASSERT_TRUE(SkillAreaFromString(SkillAreaToString(a)) == a);
+  }
+  for (SkillMotion m : {SkillMotion::None, SkillMotion::Dash,
+                        SkillMotion::Teleport, SkillMotion::PushOut,
+                        SkillMotion::PullIn}) {
+    ASSERT_TRUE(SkillMotionFromString(SkillMotionToString(m)) == m);
+  }
+
+  int thrown = 0;
+  try { SkillTargetingFromString("beam"); } catch (const std::runtime_error&) { ++thrown; }
+  try { SkillAreaFromString("ring"); } catch (const std::runtime_error&) { ++thrown; }
+  try { SkillMotionFromString("blink"); } catch (const std::runtime_error&) { ++thrown; }
+  ASSERT_EQ(thrown, 3);
 }
 
 // =============================================================================
