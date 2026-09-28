@@ -905,8 +905,14 @@ std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const 
   return cells;
 }
 
+// Sequential, by design: casters resolve one by one in agent-index order
+// (deterministic; earlier casters claim landings first), each from where it
+// stands NOW. So an earlier caster's push / pull can move a later caster before
+// it acts (its aim, range and area start from the new cell), and a caster
+// rooted earlier in this pass still resolves its own skill this step, even a
+// dash / teleport: whether it may use a skill was decided when intentions were
+// gathered, and the root blocks from the next step.
 void BaseEnv::ResolveSkills() {
-  // Agent-index order: deterministic, and earlier casters claim landings first.
   for (Agent* agent : object_manager_->GetAllAgents()) {
     if (!agent->IsAlive()) continue;
     auto* comp = dynamic_cast<Companion*>(agent);
@@ -967,42 +973,44 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
     }
   }
 
-  // 2. Affected agents: on the area (and the dash path), never the caster.
-  std::vector<Position> cells = AreaCells(centre, skill.area);
-  if (skill.tag_path) cells.insert(cells.end(), path.begin(), path.end());
+  // 2. Affected agents: on the area, then (tag_path) on the dash path.
   std::vector<Agent*> affected;
-  for (const Position& p : cells) {
-    auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
-    if (!a || !a->IsAlive() || a == &caster || !PassesFilter(*a, skill.filter)) continue;
-    if (std::find(affected.begin(), affected.end(), a) == affected.end()) affected.push_back(a);
-  }
+  CollectAffected(AreaCells(centre, skill.area), skill, caster.GetId(), affected);
+  const std::vector<Agent*> on_area = affected;
+  if (skill.tag_path) CollectAffected(path, skill, caster.GetId(), affected);
 
-  // 3. Tags land on who was there at impact.
+  // 3. Tags land on who was there at impact (area and path).
   for (Agent* a : affected) {
     for (const SkillTagSpec& t : skill.tags) {
       LandTag(*a, t.tag, t.duration, caster.GetId(), skill.name);
     }
   }
 
-  // 4. Area motions and root.
-  AreaMotion(skill, centre, caster.GetId());
+  // 4. Root (the area only) and area motions.
+  AreaMotion(skill, centre, caster.GetId(), on_area);
   return centre;
 }
 
-void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster) {
+void BaseEnv::CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
+                              ObjectId caster, std::vector<Agent*>& affected) {
+  for (const Position& p : cells) {
+    auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
+    if (!a || !a->IsAlive() || a->GetId() == caster || !PassesFilter(*a, skill.filter)) continue;
+    if (std::find(affected.begin(), affected.end(), a) == affected.end()) affected.push_back(a);
+  }
+}
+
+void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster,
+                         const std::vector<Agent*>& on_area) {
+  // Root first, before anything moves: no Agent* is used across a MoveActor.
+  // Statuses tick at the end of Step (after this), so "rooted for the next
+  // N steps" is applied as N + 1. Push / pull never read Rooted.
+  if (skill.root_steps > 0) {
+    for (Agent* a : on_area) a->ApplyStatus(StatusType::Rooted, skill.root_steps + 1);
+  }
+
   std::vector<Position> cells = AreaCells(centre, skill.area);
   std::vector<Position> ring(cells.begin() + 1, cells.end());  // Up, right, down, left
-
-  // Who is rooted: the agents in the area before anything moves.
-  std::vector<Agent*> to_root;
-  if (skill.root_steps > 0) {
-    for (const Position& p : cells) {
-      auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
-      if (a && a->IsAlive() && a->GetId() != caster && PassesFilter(*a, skill.filter)) {
-        to_root.push_back(a);
-      }
-    }
-  }
 
   // A thing the motion may move: any living actor but the caster; the filter
   // applies to agents.
@@ -1035,10 +1043,6 @@ void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, ObjectId cas
       }
     }
   }
-
-  // Statuses tick at the end of Step (after this), so "rooted for the next
-  // N steps" is applied as N + 1.
-  for (Agent* a : to_root) a->ApplyStatus(StatusType::Rooted, skill.root_steps + 1);
 }
 
 // =============================================================================

@@ -973,6 +973,91 @@ TEST(TestRootedStatusStrings) {
 }
 
 // =============================================================================
+// Resolution order and area edge cases
+// =============================================================================
+
+TEST(TestLaterCasterActsFromWhereAnEarlierSkillMovedIt) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});   // vortex right: target (3,4)
+  Agent* b = Place(env, 1, {2, 4});   // above the target: pulled in first
+  env.SetCompanionSkill(a->GetId(), 0, "vortex");
+  env.SetCompanionSkill(b->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Down)});
+  ASSERT_TRUE(b->GetPosition() == (Position{3, 4}));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
+  ASSERT_EQ(env.GetLastSkillUses()[1].skill, std::string("fireball"));
+  // 3 down from the pulled cell (3,4), not from (2,4), which would give (5,4).
+  ASSERT_TRUE(env.GetLastSkillUses()[1].target == (Position{6, 4}));
+  // Rooted by the earlier vortex, it still cast this step; root blocks next step.
+  ASSERT_TRUE(b->HasStatus(StatusType::Rooted));
+  ASSERT_EQ(AsCompanion(b)->GetCooldown(0), 3);
+  env.Step({kStay, EncodeAction(MovementAction::Right)});
+  ASSERT_TRUE(b->GetPosition() == (Position{3, 4}));
+}
+
+TEST(TestCasterOnTheRingIsNeverMovedOrRooted) {
+  for (const char* skill : {"vortex", "fireball"}) {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    env.GetMutableGrid().SetCell({3, 4}, CellKind::Wall);
+    Agent* caster = Place(env, 0, {3, 2});  // the wall stops the target at (3,3)
+    env.SetCompanionSkill(caster->GetId(), 0, skill);
+    env.Step({Use(MovementAction::Right)});
+    ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 3}));
+    ASSERT_TRUE(caster->GetPosition() == (Position{3, 2}));  // left ring cell
+    ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
+    ASSERT_TRUE(env.GetLastTagsApplied().empty());
+  }
+}
+
+TEST(TestEnemyFilteredVortexIgnoresCompanions) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig vortex = *env.GetSkillBook().Find("vortex");
+  vortex.name = "enemyVortex";
+  vortex.filter = TargetFilter::Enemy;
+  env.GetMutableSkillBook().Define(vortex);
+  Agent* caster = Place(env, 0, {3, 1});  // target (3,4), empty
+  Agent* up = Place(env, 1, {2, 4});
+  Agent* right = Place(env, 2, {3, 5});
+  env.SetCompanionSkill(caster->GetId(), 0, "enemyVortex");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(up->GetPosition() == (Position{2, 4}));
+  ASSERT_TRUE(right->GetPosition() == (Position{3, 5}));
+  ASSERT_FALSE(up->HasStatus(StatusType::Rooted));
+  ASSERT_FALSE(right->HasStatus(StatusType::Rooted));
+}
+
+TEST(TestVortexPullsTheLeftOneWhenAlone) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});  // target (3,4)
+  Agent* left = Place(env, 1, {3, 3});
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 4}));
+  ASSERT_TRUE(left->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(left->HasStatus(StatusType::Rooted));
+}
+
+TEST(TestVortexSkipsADeadAgentOnTheRing) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});  // target (3,4)
+  Agent* dead = Place(env, 1, {2, 4});    // above: first in priority, but dead
+  Agent* right = Place(env, 2, {3, 5});
+  dead->SetAlive(false);
+  env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(dead->GetPosition() == (Position{2, 4}));
+  ASSERT_FALSE(dead->HasStatus(StatusType::Rooted));
+  ASSERT_TRUE(right->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(right->HasStatus(StatusType::Rooted));
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

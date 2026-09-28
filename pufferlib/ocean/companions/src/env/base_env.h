@@ -227,6 +227,8 @@ class BaseEnv {
   };
   // What the last Step did (cleared at the start of every Step, and by
   // LoadSnapshot, hence by every Reset).
+  // Skills resolve one caster at a time in agent-index order, each from its
+  // current cell: an earlier push / pull can move a later caster (ResolveSkills).
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
 
@@ -286,12 +288,18 @@ class BaseEnv {
   Position UseSkill(Companion& caster, const SkillConfig& skill);
   // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for Cross.
   std::vector<Position> AreaCells(Position centre, SkillArea area) const;
+  // The one definition of "affected": appends the living agents on `cells` that
+  // pass the skill's filter, never the caster, each once, in cell order.
+  void CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
+                       ObjectId caster, std::vector<Agent*>& affected);
   void LandTag(Agent& agent, const std::string& tag, int duration,
                ObjectId source, const std::string& cause);
   void MoveActor(Actor& actor, Position to);  // Skill motions (zone tags follow in a later task)
-  // PushOut (the ring, away from the centre) / PullIn (one ring thing, by
-  // priority, into a free centre), then roots the agents that were on the area.
-  void AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster);
+  // Roots `on_area` (the affected agents on the area, centre included, not the
+  // dash path) before anything moves, then PushOut (the ring, away from the
+  // centre) / PullIn (one ring thing, by priority, into a free centre).
+  void AreaMotion(const SkillConfig& skill, Position centre, ObjectId caster,
+                  const std::vector<Agent*>& on_area);
 
   int rows_;
   int cols_;

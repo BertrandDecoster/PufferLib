@@ -31,8 +31,14 @@ enum class SkillMotion {
   None,
   Dash,      // Caster: up to `motion_distance`; crosses holes/agents, lands on the furthest valid cell
   Teleport,  // Caster: exactly `motion_distance`, else closer; ignores what is between
+  // PushOut / PullIn move things on the area's ring, never the caster; with
+  // SkillArea::Single there is no ring, so they do nothing.
   PushOut,   // Things on the area's ring: `motion_distance` away from the centre (landing rule)
-  PullIn,    // One thing on the ring into the centre, if free: above, right, below, left
+  // PullIn: one thing on the ring into the centre, if free: above, right,
+  // below, left. Always exactly one cell (ignores `motion_distance`); needs a
+  // Cross area and a free, walkable centre, so a Self-targeted PullIn never
+  // pulls (the caster stands on the centre).
+  PullIn,
 };
 
 struct SkillTagSpec {
