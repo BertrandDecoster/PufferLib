@@ -206,10 +206,11 @@ struct Snapshot {
 
   // Throws std::runtime_error unless the v4 data is loadable: every skill
   // passes ValidateSkillConfig; agent and zone tag names non-empty with a
-  // duration positive or kPermanentTag; zones inside the grid; at most
-  // kMaxSkillSlots slots / cooldowns per agent, cooldowns >= 0. Messages name
-  // the skill, agent (index and id) or zone cell. Slot names are not checked
-  // against `skills`: an undefined skill loads and is simply unusable.
+  // duration positive or kPermanentTag; tag and slot names of at most
+  // kMaxNameLength bytes; zones inside the grid; at most kMaxSkillSlots slots /
+  // cooldowns per agent, cooldowns >= 0. Messages name the skill, agent (index
+  // and id) or zone cell. Slot names are not checked against `skills`: an
+  // undefined skill loads and is simply unusable.
   void ValidateSkillsTagsZones() const;
 
   // ==========================================================================

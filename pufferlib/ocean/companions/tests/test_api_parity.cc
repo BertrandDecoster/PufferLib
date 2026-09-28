@@ -811,6 +811,7 @@ TEST(ParityTest_SkillsTagsZones) {
     }
     Companions_StepResult r = {};
     companions_step(api_env, api_actions.data(), agents, &r);
+    ASSERT_EQ(r.events_dropped, 0);
     StepResult cpp_result = cpp_env.Step(cpp_actions);
     ASSERT_EQ(r.state.done, cpp_result.done);
 
@@ -848,6 +849,7 @@ TEST(ParityTest_SkillsTagsZones) {
     ASSERT_EQ(used.size(), uses.size());
     for (size_t k = 0; k < uses.size(); ++k) {
       ASSERT_EQ(used[k]->subject_id, uses[k].caster);
+      ASSERT_EQ(used[k]->effect_id, uses[k].slot);
       ASSERT_EQ(std::string(used[k]->effect_name), uses[k].skill);
       ASSERT_EQ(used[k]->position.row, uses[k].target.row);
       ASSERT_EQ(used[k]->position.col, uses[k].target.col);
@@ -856,6 +858,7 @@ TEST(ParityTest_SkillsTagsZones) {
     ASSERT_EQ(landed.size(), tags.size());
     for (size_t k = 0; k < tags.size(); ++k) {
       ASSERT_EQ(landed[k]->subject_id, tags[k].agent);
+      ASSERT_EQ(tag_name(landed[k]->effect_id), cpp_env.GetTagTable().Name(tags[k].tag));
       ASSERT_EQ(std::string(landed[k]->effect_name), cpp_env.GetTagTable().Name(tags[k].tag));
       ASSERT_EQ(landed[k]->status_duration, tags[k].duration);
       ASSERT_EQ(landed[k]->health_source_id, tags[k].source);

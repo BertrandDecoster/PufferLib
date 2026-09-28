@@ -94,8 +94,9 @@ std::string TargetFilterToString(TargetFilter f);
 TargetFilter TargetFilterFromString(const std::string& s);      // Throws on unknown
 
 // Throws std::runtime_error naming the skill and the field unless `s` is
-// usable: non-empty name; range, motion_distance, root_steps and cooldown
-// >= 0; tag names non-empty with a duration of kPermanentTag or > 0; enums in
+// usable: non-empty name of at most kMaxNameLength bytes; range,
+// motion_distance, root_steps and cooldown >= 0; tag names non-empty, of at
+// most kMaxNameLength bytes, with a duration of kPermanentTag or > 0; enums in
 // range.
 void ValidateSkillConfig(const SkillConfig& s);
 

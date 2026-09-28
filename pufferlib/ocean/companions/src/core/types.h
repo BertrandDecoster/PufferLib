@@ -29,6 +29,13 @@ constexpr ObjectId kInvalidObjectId = -1;
 using TagId = int;
 constexpr TagId kInvalidTag = -1;
 constexpr int kPermanentTag = -1;  // Tag duration: never expires
+// Longest skill or tag name, in bytes. Longer names are refused where they
+// enter the env (ValidateSkillConfig, snapshot validation, the host
+// primitives), so the C API's fixed-size name buffers never truncate one.
+constexpr int kMaxNameLength = 31;
+inline bool IsValidNameLength(const std::string& name) {
+  return name.size() <= static_cast<size_t>(kMaxNameLength);
+}
 
 // =============================================================================
 // Position

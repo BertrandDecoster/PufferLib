@@ -649,6 +649,33 @@ TEST(TestHostTagPrimitives) {
   ASSERT_FALSE(env.RemoveTagFrom(kInvalidObjectId, "wet"));
 }
 
+// Names longer than kMaxNameLength never enter the env (the C API hands names
+// out in fixed-size buffers): refused, and not interned either.
+TEST(TestHostPrimitivesRejectOverlongNames) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  const std::string max_name(kMaxNameLength, 'm');
+  const std::string too_long(kMaxNameLength + 1, 'x');
+
+  ASSERT_FALSE(env.ApplyTagTo(a->GetId(), too_long, 2));
+  ASSERT_FALSE(env.SetCellTag({3, 2}, too_long, 2));
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
+  ASSERT_EQ(env.GetTagTable().Find(too_long), kInvalidTag);
+  ASSERT_TRUE(a->GetTags().empty());
+
+  // Even a skill the book holds (Define does not validate) cannot be slotted.
+  SkillConfig wordy;
+  wordy.name = too_long;
+  env.GetMutableSkillBook().Define(wordy);
+  ASSERT_FALSE(env.SetCompanionSkill(a->GetId(), 0, too_long));
+  ASSERT_TRUE(AsCompanion(a)->GetSkill(0).empty());
+
+  ASSERT_TRUE(env.ApplyTagTo(a->GetId(), max_name, 2));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, max_name, 2));
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, env.GetTagTable().Find(max_name));
+}
+
 TEST(TestCloneKeepsSkillsTagsAndCooldowns) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);

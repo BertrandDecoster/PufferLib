@@ -4,6 +4,7 @@
 #include "companions_api.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <deque>
 #include <string>
@@ -34,7 +35,9 @@
 // =============================================================================
 // Version
 // =============================================================================
-#define COMPANIONS_VERSION "1.0.0"
+// 1.1.0: skills, tags, zones; Companions_AgentState, Companions_Event and
+// Companions_StepResult layouts changed (consumers must rebuild).
+#define COMPANIONS_VERSION "1.1.0"
 
 // =============================================================================
 // Thread-local error message
@@ -186,8 +189,15 @@ static_assert(static_cast<int>(companions::InteractAction::None) == Companions_I
               "InteractAction out of sync with C API");
 static_assert(companions::kInvalidTag == -1, "C API documents -1 as the invalid tag id");
 static_assert(companions::kPermanentTag == -1, "C API documents -1 as a permanent tag");
+// The env refuses longer skill / tag names, so they always fit the buffers.
+static_assert(companions::kMaxNameLength == Companions_SKILL_NAME_LEN - 1,
+              "kMaxNameLength out of sync with Companions_SKILL_NAME_LEN");
+static_assert(companions::kMaxNameLength <= Companions_EFFECT_NAME_LEN - 1,
+              "Event names (effect_name) must hold kMaxNameLength bytes");
 
-// Copy `src` into a fixed-size C string, truncating, always terminated.
+// Copy `src` into a fixed-size C string, always terminated. Skill and tag
+// names never exceed kMaxNameLength (see the static_asserts above), so the
+// truncation is only a safety net.
 template <size_t N>
 static void CopyName(char (&dst)[N], const std::string& src) {
   std::strncpy(dst, src.c_str(), N - 1);
@@ -449,9 +459,9 @@ static void AddCastEvents(Companions_Env* wrapper) {
 }
 
 // One SkillUsed event per skill use of this step (subject = caster, position
-// = the skill's centre), then one TagApplied per tag landing (subject = the
-// agent, at its cell after the step; health_source_id = caster or -1 for a
-// zone). Names are truncated to Companions_EFFECT_NAME_LEN - 1 bytes.
+// = the skill's centre, effect_id = the slot), then one TagApplied per tag
+// landing (subject = the agent, at its cell after the step; effect_id = the
+// tag id; health_source_id = caster or -1 for a zone).
 static void AddSkillAndTagEvents(Companions_Env* wrapper) {
   auto* env = wrapper->env.get();
   for (const auto& use : env->GetLastSkillUses()) {
@@ -460,6 +470,7 @@ static void AddSkillAndTagEvents(Companions_Env* wrapper) {
     evt.tick = env->GetTick();
     evt.subject_id = use.caster;
     evt.position = ToAPIPosition(use.target);
+    evt.effect_id = use.slot;
     CopyName(evt.effect_name, use.skill);
     wrapper->events.push_back(evt);
   }
@@ -471,6 +482,7 @@ static void AddSkillAndTagEvents(Companions_Env* wrapper) {
     evt.subject_id = landed.agent;
     const auto* agent = objects.GetActor(landed.agent);
     evt.position = agent ? ToAPIPosition(agent->GetPosition()) : Companions_Position{-1, -1};
+    evt.effect_id = landed.tag;
     CopyName(evt.effect_name, env->GetTagTable().Name(landed.tag));
     evt.status_duration = landed.duration;
     evt.health_source_id = landed.source;
@@ -486,7 +498,9 @@ static const char* StableTagName(const Companions_Env* wrapper, int32_t tag_id) 
   while (static_cast<int>(wrapper->tag_names.size()) < table.Size()) {
     wrapper->tag_names.push_back(table.Name(static_cast<int>(wrapper->tag_names.size())));
   }
-  return wrapper->tag_names[static_cast<size_t>(tag_id)].c_str();
+  const std::string& name = wrapper->tag_names[static_cast<size_t>(tag_id)];
+  assert(name == table.Name(tag_id) && "TagTable must only grow, never rename");
+  return name.c_str();
 }
 
 // =============================================================================
@@ -739,11 +753,11 @@ COMPANIONS_API void companions_step(Companions_Env* env,
       SetError("Invalid movement action");
       return;
     }
-    // A negative interact is invalid. One past the enabled skill slots (today
-    // Skill2 and up) is None: EncodeAction would otherwise carry it into the
-    // movement digit of the flat action.
+    // An interact outside None..Skill2 is invalid. A skill slot the action
+    // space does not enable yet (today Skill2) is None: EncodeAction would
+    // otherwise carry it into the movement digit of the flat action.
     int32_t interact = static_cast<int32_t>(actions[i].interact);
-    if (interact < Companions_Interact_None) {
+    if (interact < Companions_Interact_None || interact > Companions_Interact_Skill2) {
       SetError("Invalid interact action");
       return;
     }
@@ -786,12 +800,14 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   // Extract state
   ExtractGameState(env, &out_result->state);
 
-  // Copy events
-  out_result->event_count = std::min(static_cast<int>(env->events.size()),
-                                     Companions_MAX_EVENTS);
-  for (int i = 0; i < out_result->event_count; i++) {
-    out_result->events[i] = env->events[i];
-  }
+  // Copy events: the first Companions_MAX_EVENTS, except that an EpisodeEnd
+  // (always the last event) takes the last place when they do not all fit.
+  const int total = static_cast<int>(env->events.size());
+  const int count = std::min(total, static_cast<int>(Companions_MAX_EVENTS));
+  std::copy_n(env->events.begin(), count, out_result->events);
+  if (env->done && total > count) out_result->events[count - 1] = env->events.back();
+  out_result->event_count = count;
+  out_result->events_dropped = total - count;
 }
 
 COMPANIONS_API void companions_get_state(const Companions_Env* env,
@@ -984,7 +1000,8 @@ COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectI
     return false;
   }
   if (!env->env->ApplyTagTo(agent, tag, duration)) {
-    SetError("companions_apply_tag: unknown agent, empty tag, or duration 0 or below -1");
+    SetError("companions_apply_tag: unknown agent, empty or overlong tag, or duration 0 or "
+             "below -1");
     return false;
   }
   return true;
@@ -1010,7 +1027,7 @@ COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, in
     return false;
   }
   if (!env->env->SetCellTag(companions::Position{row, col}, tag ? tag : "", duration)) {
-    SetError("companions_set_cell_tag: out of bounds, or duration 0 or below -1");
+    SetError("companions_set_cell_tag: out of bounds, overlong tag, or duration 0 or below -1");
     return false;
   }
   return true;
@@ -1020,6 +1037,10 @@ COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_
                                                int32_t col) {
   if (!env || !env->env) {
     SetError("Invalid environment");
+    return -1;
+  }
+  if (row < 0 || row >= env->env->GetRows() || col < 0 || col >= env->env->GetCols()) {
+    SetError("Position out of bounds");
     return -1;
   }
   return env->env->GetCellTag(companions::Position{row, col}).tag;

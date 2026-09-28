@@ -1092,6 +1092,60 @@ TEST(TestValidateSkillConfig) {
   bad = s;
   bad.motion = static_cast<SkillMotion>(-1);
   AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "skill 'frost': motion");
+
+  // Names (the skill's and its tags') fit in kMaxNameLength bytes.
+  const std::string max_name(kMaxNameLength, 'm');
+  const std::string too_long(kMaxNameLength + 1, 'x');
+  bad = s;
+  bad.name = max_name;
+  bad.tags = {{max_name, 2}};
+  ValidateSkillConfig(bad);
+  bad = s;
+  bad.name = too_long;
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "name is 32 bytes, at most 31");
+  bad = s;
+  bad.tags = {{"chilled", 3}, {too_long, 2}};
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); },
+                         "skill 'frost': tags[1] ('" + too_long + "'): name is 32 bytes, at most 31");
+}
+
+// Tag and slot names longer than kMaxNameLength are refused where they enter
+// the env (the C API hands them out in fixed-size buffers).
+TEST(TestSnapshotRejectsOverlongNames) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const std::string agent0 = "agent #0 (id " + std::to_string(good.agents[0].id) + ")";
+  const std::string max_name(kMaxNameLength, 'm');
+  const std::string too_long(kMaxNameLength + 1, 'x');
+
+  Snapshot s = good;
+  s.agents[0].tags = {{too_long, 2}};
+  AssertSnapshotRejected(s, agent0);
+  AssertSnapshotRejected(s, "at most 31");
+  s = good;
+  s.agents[0].skills = {"", too_long};
+  AssertSnapshotRejected(s, agent0);
+  AssertSnapshotRejected(s, "skills[1]");
+  AssertSnapshotRejected(s, "at most 31");
+  s = good;
+  s.cell_tags = {{Position{2, 3}, too_long, 2}};
+  AssertSnapshotRejected(s, "(2, 3)");
+  AssertSnapshotRejected(s, "at most 31");
+  s = good;
+  SkillConfig frost;
+  frost.name = too_long;
+  s.skills.push_back(frost);
+  AssertSnapshotRejected(s, "skills[" + std::to_string(good.skills.size()) + "]");
+  AssertSnapshotRejected(s, "at most 31");
+
+  s = good;  // The longest names load
+  s.agents[0].tags = {{max_name, 2}};
+  s.agents[0].skills = {max_name, ""};
+  s.cell_tags = {{Position{2, 3}, max_name, 2}};
+  frost.name = max_name;
+  s.skills.push_back(frost);
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.LoadSnapshot(Snapshot::Deserialize(s.Serialize()));
+  ASSERT_EQ(env.GetTagTable().Find(max_name), env.GetCellTag({2, 3}).tag);
 }
 
 TEST(TestSnapshotValidationErrorsSayWhere) {

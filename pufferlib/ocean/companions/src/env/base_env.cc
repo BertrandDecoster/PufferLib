@@ -873,7 +873,7 @@ bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
 }
 
 bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill) {
-  if (slot < 0 || slot >= kMaxSkillSlots) return false;
+  if (slot < 0 || slot >= kMaxSkillSlots || !IsValidNameLength(skill)) return false;
   auto* comp = dynamic_cast<Companion*>(object_manager_->GetActor(id));
   if (!comp) return false;
   if (!skill.empty() && !skills_.Find(skill)) return false;
@@ -885,7 +885,7 @@ bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill)
 bool BaseEnv::ApplyTagTo(ObjectId id, const std::string& tag, int duration) {
   if (duration == 0 || duration < kPermanentTag) return false;
   auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
-  if (!agent || tag.empty()) return false;
+  if (!agent || tag.empty() || !IsValidNameLength(tag)) return false;
   agent->ApplyTag(tags_.Intern(tag), duration);
   return true;
 }
@@ -921,7 +921,9 @@ void BaseEnv::MoveActor(Actor& actor, Position to) {
 
 bool BaseEnv::SetCellTag(Position cell, const std::string& tag, int duration) {
   if (!grid_->IsInBounds(cell)) return false;
-  if (!tag.empty() && (duration == 0 || duration < kPermanentTag)) return false;
+  if (!tag.empty() && (duration == 0 || duration < kPermanentTag || !IsValidNameLength(tag))) {
+    return false;
+  }
   if (cell_tags_.empty()) {
     if (tag.empty()) return true;  // Nothing to clear
     cell_tags_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), CellTag{});
@@ -986,7 +988,7 @@ void BaseEnv::ResolveSkills() {
     const SkillConfig skill = *found;
     Position target = UseSkill(*comp, skill);
     comp->SetCooldown(slot, skill.cooldown);
-    last_skill_uses_.push_back({comp->GetId(), skill.name, target});
+    last_skill_uses_.push_back({comp->GetId(), skill.name, target, slot});
   }
 }
 

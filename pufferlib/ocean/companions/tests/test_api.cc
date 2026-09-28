@@ -84,7 +84,7 @@ static Companions_EnvConfig MakeConfig(int rows = 12, int cols = 12, int compani
 TEST(TestVersion) {
   const char* version = companions_version();
   ASSERT_NOT_NULL(version);
-  ASSERT_TRUE(std::strlen(version) > 0);
+  ASSERT_EQ(std::string(version), std::string("1.1.0"));  // Struct layouts changed in 1.1
   std::cout << "  Version: " << version << std::endl;
 }
 
@@ -1065,9 +1065,10 @@ struct LevelAgent {
 };
 
 // An 8x8 snapshot (walls on the border, floor inside) with one companion per
-// entry, a SynchroGoal on (6, 6), and `skills` as the snapshot's skill list.
+// entry, a SynchroGoal on (6, 6), `skills` as the snapshot's skill list, and
+// the given horizon.
 static std::string LevelJson(const std::vector<LevelAgent>& agents,
-                             const std::string& skills = "[]") {
+                             const std::string& skills = "[]", int horizon = 100) {
   std::ostringstream j;
   j << "{\"magic\":\"SNAP\",\"version\":4,\"grid\":{\"rows\":8,\"cols\":8,\"cells\":[";
   bool first = true;
@@ -1089,7 +1090,8 @@ static std::string LevelJson(const std::vector<LevelAgent>& agents,
       << ",\"faction\":\"COMPANION\",\"direction\":\"Down\",\"color\":\"Red\",\"alive\":true,"
       << "\"statuses\":[],\"fsm\":null,\"cadence\":[],\"tick\":0" << a.extra << "}";
   }
-  j << "],\"effects\":[],\"tick\":0,\"horizon\":100,\"rng_state\":{\"state\":0,\"inc\":0},"
+  j << "],\"effects\":[],\"tick\":0,\"horizon\":" << horizon
+    << ",\"rng_state\":{\"state\":0,\"inc\":0},"
     << "\"d4_value\":0,\"patrol_path\":[],\"annotations\":[{\"target\":\"Cell\","
     << "\"pos\":{\"row\":6,\"col\":6},\"tag\":\"SynchroGoal\",\"owner_lens_id\":-1,"
     << "\"params\":{}}],\"skills\":" << skills << ",\"cell_tags\":[]}";
@@ -1097,11 +1099,11 @@ static std::string LevelJson(const std::vector<LevelAgent>& agents,
 }
 
 static Companions_Env* LoadLevel(const std::vector<LevelAgent>& agents,
-                                 const std::string& skills = "[]") {
+                                 const std::string& skills = "[]", int horizon = 100) {
   Companions_EnvConfig config = MakeConfig(8, 8, static_cast<int>(agents.size()), 1, 42);
   Companions_Env* env = companions_create(&config);
   ASSERT_NOT_NULL(env);
-  if (!companions_load_snapshot_json(env, LevelJson(agents, skills).c_str())) {
+  if (!companions_load_snapshot_json(env, LevelJson(agents, skills, horizon).c_str())) {
     throw std::runtime_error(std::string("LevelJson did not load: ") + companions_get_error());
   }
   return env;
@@ -1122,6 +1124,13 @@ static const Companions_Event* FindEvent(const Companions_StepResult& r,
     if (e.type == type && (subject == -2 || e.subject_id == subject)) return &e;
   }
   return nullptr;
+}
+
+// Leaves a known, unrelated message in companions_get_error ("Invalid
+// arguments"), so a test can tell a call set its own.
+static void SetErrorProbe() {
+  companions_find_tag(nullptr, nullptr);
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid arguments"));
 }
 
 static bool HasStatus(const Companions_AgentState& a, Companions_StatusType type) {
@@ -1156,6 +1165,8 @@ TEST(TestSkill1TeleportsAndReportsSkillUsed) {
   const Companions_Event* used = FindEvent(result, Companions_Event_SkillUsed, a.id);
   ASSERT_NOT_NULL(used);
   ASSERT_EQ(std::string(used->effect_name), std::string("teleport"));
+  ASSERT_EQ(used->effect_id, 0);  // The slot
+  ASSERT_EQ(result.events_dropped, 0);
   ASSERT_EQ(used->position.row, 3);
   ASSERT_EQ(used->position.col, 4);
   ASSERT_EQ(used->tick, result.state.tick);
@@ -1236,6 +1247,7 @@ TEST(TestCellTagZoneLandsOnWalker) {
   const Companions_Event* landed = FindEvent(result, Companions_Event_TagApplied, id);
   ASSERT_NOT_NULL(landed);
   ASSERT_EQ(std::string(landed->effect_name), std::string("wet"));
+  ASSERT_EQ(landed->effect_id, wet);  // The tag id
   ASSERT_EQ(landed->health_source_id, -1);
   ASSERT_TRUE(landed->tag_fresh);
   ASSERT_EQ(landed->status_duration, -1);
@@ -1265,8 +1277,12 @@ TEST(TestCellTagZoneLandsOnWalker) {
   ASSERT_FALSE(companions_set_cell_tag(env, 0, -1, "wet", -1));
   ASSERT_FALSE(companions_set_cell_tag(env, 3, 2, "wet", 0));
   ASSERT_FALSE(companions_set_cell_tag(nullptr, 3, 2, "wet", -1));
+  SetErrorProbe();
   ASSERT_EQ(companions_get_cell_tag(env, -1, 0), -1);
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Position out of bounds"));
+  SetErrorProbe();
   ASSERT_EQ(companions_get_cell_tag(env, 0, 8), -1);
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Position out of bounds"));
   ASSERT_EQ(companions_get_cell_tag(nullptr, 3, 2), -1);
   companions_destroy(env);
 }
@@ -1295,8 +1311,8 @@ TEST(TestVortexRootIsReportedAsRooted) {
   companions_destroy(env);
 }
 
-// Slot 2 is not enabled yet: Skill2 (and anything above) is None, even with
-// both slots filled. A negative interact still refuses the step.
+// Slot 2 is not enabled yet: Skill2 is None, even with both slots filled. An
+// interact past Skill2, or a negative one, refuses the step.
 TEST(TestSkill2IsIgnoredAndTheCompanionMoves) {
   Companions_Env* env = LoadLevel({{3, 1, ""}});
   const Companions_ObjectId id = AgentAt(env, 0).id;
@@ -1315,16 +1331,14 @@ TEST(TestSkill2IsIgnoredAndTheCompanionMoves) {
   ASSERT_TRUE(FindEvent(result, Companions_Event_SkillUsed) == nullptr);
   ASSERT_NOT_NULL(FindEvent(result, Companions_Event_AgentMoved, id));
 
-  action.interact = static_cast<Companions_InteractAction>(7);
-  companions_step(env, &action, 1, &result);
-  ASSERT_EQ(result.state.tick, 2);
-  ASSERT_EQ(AgentAt(env, 0).position.col, 3);
-  ASSERT_TRUE(FindEvent(result, Companions_Event_SkillUsed) == nullptr);
-
-  action.interact = static_cast<Companions_InteractAction>(-1);
-  companions_step(env, &action, 1, &result);
-  ASSERT_EQ(companions_get_tick(env), 2);  // Refused
-  ASSERT_EQ(AgentAt(env, 0).position.col, 3);
+  for (int32_t bad : {Companions_Interact_Skill2 + 1, 7, -1}) {
+    SetErrorProbe();
+    action.interact = static_cast<Companions_InteractAction>(bad);
+    companions_step(env, &action, 1, &result);
+    ASSERT_EQ(companions_get_tick(env), 1);  // Refused
+    ASSERT_EQ(AgentAt(env, 0).position.col, 2);
+    ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid interact action"));
+  }
   companions_destroy(env);
 }
 
@@ -1358,17 +1372,18 @@ TEST(TestSetAgentSkillRejectsUnknowns) {
 }
 
 TEST(TestSnapshotSkillWorksThroughStep) {
-  const std::string long_name = "a_skill_name_well_past_thirty_one_bytes";  // 39 bytes
+  // The longest name allowed (Companions_SKILL_NAME_LEN - 1 bytes) shows in full.
+  const std::string max_name(Companions_SKILL_NAME_LEN - 1, 'm');
   const std::string skills =
       "[{\"name\":\"blink\",\"targeting\":\"self\",\"motion\":\"teleport\",\"distance\":2,"
-      "\"cooldown\":2},{\"name\":\"" + long_name + "\",\"targeting\":\"self\"}]";
+      "\"cooldown\":2},{\"name\":\"" + max_name + "\",\"targeting\":\"self\"}]";
   Companions_Env* env = LoadLevel(
-      {{3, 1, ",\"skills\":[\"blink\",\"" + long_name + "\"],\"cooldowns\":[0,1],"
+      {{3, 1, ",\"skills\":[\"blink\",\"" + max_name + "\"],\"cooldowns\":[0,1],"
               "\"tags\":[{\"tag\":\"wet\",\"duration\":3}]"}},
       skills);
   Companions_AgentState a = AgentAt(env, 0);
   ASSERT_EQ(std::string(a.skills[0]), std::string("blink"));
-  ASSERT_EQ(std::string(a.skills[1]), long_name.substr(0, Companions_SKILL_NAME_LEN - 1));
+  ASSERT_EQ(std::string(a.skills[1]), max_name);
   ASSERT_EQ(a.skill_cooldowns[1], 1);
   ASSERT_EQ(a.tag_count, 1);
   ASSERT_EQ(std::string(companions_get_tag_name(env, a.tags[0].tag_id)), std::string("wet"));
@@ -1384,6 +1399,88 @@ TEST(TestSnapshotSkillWorksThroughStep) {
   ASSERT_NOT_NULL(used);
   ASSERT_EQ(std::string(used->effect_name), std::string("blink"));
   ASSERT_EQ(used->position.col, 3);
+  companions_destroy(env);
+}
+
+// Skill and tag names of Companions_SKILL_NAME_LEN bytes or more are refused
+// where they enter the env, so the C API never truncates one.
+TEST(TestOverlongNamesAreRejected) {
+  const std::string too_long(Companions_SKILL_NAME_LEN, 'x');
+  const std::string max_name(Companions_SKILL_NAME_LEN - 1, 'y');
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  auto rejected = [&](const std::string& json) {
+    SetErrorProbe();
+    ASSERT_FALSE(companions_load_snapshot_json(env, json.c_str()));
+    ASSERT_TRUE(std::string(companions_get_error()).find("at most 31") != std::string::npos);
+  };
+  // A skill's name, one of its tags, a slot, an agent's tag.
+  rejected(LevelJson({{3, 1, ""}}, "[{\"name\":\"" + too_long + "\"}]"));
+  rejected(LevelJson({{3, 1, ""}}, "[{\"name\":\"frost\",\"tags\":[{\"tag\":\"" + too_long +
+                                       "\",\"duration\":2}]}]"));
+  rejected(LevelJson({{3, 1, ",\"skills\":[\"" + too_long + "\"]"}}));
+  rejected(LevelJson({{3, 1, ",\"tags\":[{\"tag\":\"" + too_long + "\",\"duration\":2}]"}}));
+  ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 1, ""}}).c_str()));
+
+  const Companions_ObjectId id = AgentAt(env, 0).id;
+  ASSERT_FALSE(companions_apply_tag(env, id, too_long.c_str(), 3));
+  ASSERT_FALSE(companions_set_cell_tag(env, 3, 2, too_long.c_str(), 3));
+  ASSERT_EQ(companions_get_cell_tag(env, 3, 2), -1);
+  ASSERT_EQ(companions_find_tag(env, too_long.c_str()), -1);  // Not interned
+  ASSERT_EQ(AgentAt(env, 0).tag_count, 0);
+  ASSERT_FALSE(companions_set_agent_skill(env, id, 0, too_long.c_str()));
+
+  ASSERT_TRUE(companions_apply_tag(env, id, max_name.c_str(), 3));
+  ASSERT_EQ(std::string(companions_get_tag_name(env, AgentAt(env, 0).tags[0].tag_id)), max_name);
+  ASSERT_TRUE(companions_set_cell_tag(env, 3, 2, max_name.c_str(), 3));
+  companions_destroy(env);
+}
+
+// A step reports at most Companions_MAX_EVENTS events and counts the others
+// in events_dropped; the EpisodeEnd of a step that ends the episode is always
+// reported, as the last event.
+TEST(TestEventCapKeepsEpisodeEnd) {
+  // "splash" lands 20 tags on each of the 4 agents around its caster: 80
+  // TagApplied + 1 SkillUsed per step (+ EpisodeEnd on step 2, the horizon).
+  std::string tags;
+  for (int i = 0; i < 20; ++i) {
+    tags += std::string(i ? "," : "") + "{\"tag\":\"t" + std::to_string(i) + "\",\"duration\":-1}";
+  }
+  const std::string skills =
+      "[{\"name\":\"splash\",\"targeting\":\"self\",\"area\":\"cross\",\"tags\":[" + tags + "]}]";
+  Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"splash\"]"},
+                                   {2, 3, ""},
+                                   {4, 3, ""},
+                                   {3, 2, ""},
+                                   {3, 4, ""}},
+                                  skills, 2);
+  std::vector<Companions_Action> actions(5, {Companions_Movement_Stay, Companions_Interact_None});
+  actions[0].interact = Companions_Interact_Skill1;
+  auto count = [](const Companions_StepResult& r, Companions_EventType type) {
+    int n = 0;
+    for (int32_t i = 0; i < r.event_count; ++i) n += r.events[i].type == type;
+    return n;
+  };
+
+  Companions_StepResult result = {};
+  companions_step(env, actions.data(), 5, &result);
+  ASSERT_FALSE(result.state.done);
+  ASSERT_EQ(result.event_count, Companions_MAX_EVENTS);
+  ASSERT_EQ(result.events_dropped, 81 - Companions_MAX_EVENTS);
+  ASSERT_EQ(result.events[0].type, Companions_Event_SkillUsed);
+  ASSERT_EQ(count(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 1);
+  ASSERT_EQ(count(result, Companions_Event_EpisodeEnd), 0);
+
+  companions_step(env, actions.data(), 5, &result);
+  ASSERT_TRUE(result.state.done);
+  ASSERT_EQ(result.event_count, Companions_MAX_EVENTS);
+  ASSERT_EQ(result.events_dropped, 82 - Companions_MAX_EVENTS);
+  ASSERT_EQ(result.events[Companions_MAX_EVENTS - 1].type, Companions_Event_EpisodeEnd);
+  ASSERT_EQ(result.events[Companions_MAX_EVENTS - 1].episode_steps, 2);
+  ASSERT_EQ(result.events[Companions_MAX_EVENTS - 2].type, Companions_Event_TagApplied);
+  ASSERT_EQ(count(result, Companions_Event_EpisodeEnd), 1);
+  ASSERT_EQ(count(result, Companions_Event_TagApplied), Companions_MAX_EVENTS - 2);
   companions_destroy(env);
 }
 

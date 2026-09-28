@@ -59,7 +59,9 @@ class BaseEnv {
                    int d4_transform = 0);
   virtual ~BaseEnv();
 
-  // Copyable (for OpenSpiel State::Clone())
+  // Copyable (for OpenSpiel State::Clone()). Assignment replaces the TagTable
+  // (ids may change): the C API relies on its env's table only growing, so it
+  // never assigns over an env it wraps.
   BaseEnv(const BaseEnv& other);
   BaseEnv& operator=(const BaseEnv& other);
 
@@ -194,19 +196,23 @@ class BaseEnv {
   // an empty slot 0 while the legacy companion cast is enabled, which casts
   // "companion_cast" instead (see SetCompanionCastEnabled).
   const TagTable& GetTagTable() const { return tags_; }
+  // Intern only: the C API relies on the table only growing and never
+  // renaming (it keeps stable copies of the names by id).
   TagTable& GetMutableTagTable() { return tags_; }
   const SkillBook& GetSkillBook() const { return skills_; }
   SkillBook& GetMutableSkillBook() { return skills_; }
 
   // Put `skill` in a companion's slot (0-based; "" empties it) and reset the
-  // slot's cooldown. False for an unknown skill, slot or companion.
+  // slot's cooldown. False for an unknown skill, slot or companion, or a name
+  // longer than kMaxNameLength.
   bool SetCompanionSkill(ObjectId companion, int slot, const std::string& skill);
 
   // Host primitives: land / remove a tag outside of a step. `duration` is a
   // positive step count or kPermanentTag; ApplyTagTo returns false for 0 or
-  // anything below kPermanentTag. Durations tick at the START of each Step: a
-  // tag applied during step t (or between steps t and t+1) with duration d is
-  // present after steps t .. t+d-1.
+  // anything below kPermanentTag, and for an empty tag or one longer than
+  // kMaxNameLength. Durations tick at the START of each Step: a tag applied
+  // during step t (or between steps t and t+1) with duration d is present after
+  // steps t .. t+d-1.
   bool ApplyTagTo(ObjectId agent, const std::string& tag, int duration);
   bool RemoveTagFrom(ObjectId agent, const std::string& tag);
 
@@ -214,6 +220,7 @@ class BaseEnv {
     ObjectId caster = kInvalidObjectId;
     std::string skill;
     Position target;  // The skill's centre: landing cell for Self skills
+    int slot = 0;     // The caster's slot it was used from (0-based)
   };
   struct TagApplication {
     ObjectId agent = kInvalidObjectId;
@@ -251,7 +258,8 @@ class BaseEnv {
     int duration = kPermanentTag;
   };
   // "" clears the cell. False (cell unchanged) out of bounds, or for a tag with
-  // a duration of 0 or below kPermanentTag (as ApplyTagTo).
+  // a duration of 0 or below kPermanentTag, or longer than kMaxNameLength (as
+  // ApplyTagTo).
   bool SetCellTag(Position cell, const std::string& tag, int duration);
   CellTag GetCellTag(Position cell) const;  // {} when none / out of bounds
   void ClearCellTags() { cell_tags_.clear(); }

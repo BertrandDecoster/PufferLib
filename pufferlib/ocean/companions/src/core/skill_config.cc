@@ -147,11 +147,18 @@ bool EnumInRange(E value, E last) {
   return v >= 0 && v <= static_cast<int>(last);
 }
 
+// "name is 40 bytes, at most 31"
+std::string NameLengthError(const std::string& name) {
+  return "name is " + std::to_string(name.size()) + " bytes, at most " +
+         std::to_string(kMaxNameLength);
+}
+
 }  // namespace
 
 void ValidateSkillConfig(const SkillConfig& s) {
   if (s.name.empty()) throw std::runtime_error("skill without a name");
   const std::string where = "skill '" + s.name + "': ";
+  if (!IsValidNameLength(s.name)) throw std::runtime_error(where + NameLengthError(s.name));
   auto check_enum = [&](bool ok, const char* field, int value) {
     if (!ok) {
       throw std::runtime_error(where + field + " has an unknown value " + std::to_string(value));
@@ -175,6 +182,9 @@ void ValidateSkillConfig(const SkillConfig& s) {
     const SkillTagSpec& t = s.tags[i];
     const std::string tag_where = where + "tags[" + std::to_string(i) + "]";
     if (t.tag.empty()) throw std::runtime_error(tag_where + ": empty tag name");
+    if (!IsValidNameLength(t.tag)) {
+      throw std::runtime_error(tag_where + " ('" + t.tag + "'): " + NameLengthError(t.tag));
+    }
     if (t.duration != kPermanentTag && t.duration <= 0) {
       throw std::runtime_error(tag_where + " ('" + t.tag + "'): duration must be -1 or > 0 (got " +
                                std::to_string(t.duration) + ")");

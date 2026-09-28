@@ -61,6 +61,11 @@ void CheckTag(const std::string& tag, int duration, const std::string& what) {
   if (tag.empty()) {
     throw std::runtime_error("Snapshot: " + what + " has an empty tag name");
   }
+  if (!IsValidNameLength(tag)) {
+    throw std::runtime_error("Snapshot: " + what + " tag \"" + tag + "\" is " +
+                             std::to_string(tag.size()) + " bytes, at most " +
+                             std::to_string(kMaxNameLength));
+  }
   if (!IsValidTagDuration(duration)) {
     throw std::runtime_error("Snapshot: " + what + " tag \"" + tag + "\" has an invalid duration " +
                              std::to_string(duration) + " (positive or -1)");
@@ -91,6 +96,14 @@ void Snapshot::ValidateSkillsTagsZones() const {
       throw std::runtime_error("Snapshot: " + who + " has " + std::to_string(agent.skills.size()) +
                                " skill slots and " + std::to_string(agent.cooldowns.size()) +
                                " cooldowns, at most " + std::to_string(kMaxSkillSlots) + " each");
+    }
+    for (size_t slot = 0; slot < agent.skills.size(); ++slot) {
+      const std::string& name = agent.skills[slot];
+      if (!IsValidNameLength(name)) {
+        throw std::runtime_error("Snapshot: " + who + ": skills[" + std::to_string(slot) + "] \"" +
+                                 name + "\" is " + std::to_string(name.size()) +
+                                 " bytes, at most " + std::to_string(kMaxNameLength));
+      }
     }
     for (size_t slot = 0; slot < agent.cooldowns.size(); ++slot) {
       if (agent.cooldowns[slot] < 0) {
