@@ -30,6 +30,13 @@ companions/                    # Standalone pure C++ implementation
     └── python/                # RL algorithm comparison scripts
 ```
 
+## Tests
+- One executable per area, registered with ctest (`CMakeLists.txt`); on Windows (VS
+  multi-config) they land in `build/bin/Release/` (e.g. `companions_skills_test.exe`)
+- Skills, tags, zones, Rooted, friendly fire, SkillBook, line / landing rules:
+  `companions_skills_test` (`tests/test_skills.cc`); their snapshot v4 JSON and C API
+  sides live in `tests/test_snapshot_json.cc`, `tests/test_snapshot.cc`, `tests/test_api.cc`
+
 ## Game design
 **DOCUMENTATION** look at `docs/GDD.md` to know more
 Only read it if you need to develop new environments so you can follow
@@ -52,9 +59,22 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
 
 ### Action space
  - Multidiscrete action space: movement X interaction
- - Movement has 5 options
- - Interaction is currently None or Attack
- - Can flatten / unflatten the action space to be compatible with other frameworks
+ - Movement has 5 options (Stay, Up, Down, Left, Right)
+ - Interaction (`InteractAction`, `core/types.h`):
+   - `None`
+   - `Skill1`: use the skill in slot 0 (`Attack` is its historical alias)
+   - `Skill2`: slot 1. Declared (data, snapshots, C API all carry 2 slots) but not
+     in the flat space until `kEnabledSkillSlots = 2` (the space then grows from
+     10 to 15). The C API accepts `Skill2` and treats it as `None`
+ - Flat action = `movement * kNumInteractActions + interact` (10 today);
+   `EncodeAction` / `DecodeAction` flatten / unflatten for other frameworks
+ - Using a skill: the companion stays put, the movement only aims (sets its
+   facing; Stay keeps it)
+ - A skill that can't be used (empty slot, unknown skill, cooldown, disabled slot,
+   rooted + self-moving skill) is dropped and the movement applies as with `None`:
+   companions without skills behave exactly as before
+ - Legacy: with `SetCompanionCastEnabled(true)`, `Skill1` on an EMPTY slot 0 casts the
+   generic `companion_cast` effect on the faced cell instead (to be removed)
 
 ### Collision Resolution
 Fixed-point iteration algorithm in `base_env.cc:ResolveCollisions()`:
@@ -62,6 +82,128 @@ Fixed-point iteration algorithm in `base_env.cc:ResolveCollisions()`:
 2. Cancel swap conflicts (A→B, B→A)
 3. Cancel same-cell conflicts (A→X, B→X)
 4. Validate chase moves (only if target is vacating)
+
+### Skills, tags, zones
+The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque data
+(at most `kMaxNameLength` = 31 bytes), a level may retune or add skills, and what a tag
+*does* is the host's business. But the env simulates every mechanic: targeting, motion,
+tags, roots, cooldowns. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
+`env/skill_motion.{h,cc}`, `env/base_env.cc` (`ResolveSkills`, `UseSkill`, `Affects`, `AreaMotion`).
+
+**Step order** (`BaseEnv::Step`):
+1. Clear the per-step reports, tick tags and cooldowns
+2. `PreStep` (enemy FSM) → `GatherIntentions` → `ResolveCollisions` → `ExecuteValidatedMovements`
+3. `ApplyZoneTags` (every living agent on a zone cell)
+4. `ResolveInteractions`: legacy `companion_cast`, then `ResolveSkills`
+5. Effects tick, statuses tick, `tick_++`, `PostStep`, rewards (TaskLens)
+
+**Line and landing rules** (`env/skill_motion.h`):
+- Line rule: a line travels along the facing; a wall (not pathable) or the grid edge
+  stops it on the cell before; holes (`CellKind::Hazard`: pathable, not walkable) and
+  actors are crossed
+- Landing rule: something moved never ends on a hole or on another living actor
+- Ground target: the cell `range` away by the line rule (may be a hole)
+- Projectile: the first living agent the skill affects within `range`, else the last cell reached
+- Dash: up to `distance` by the line rule, lands on the furthest valid cell (else stays)
+- Teleport: exactly `distance`, else `distance - 1`, ... 1 (ignores what lies between,
+  walls included), else stays
+- Push: each ring thing `distance` away from the centre, as a dash. Pull: exactly one
+  cell, only into a free, walkable centre
+
+**Builtins** (`SkillBook`, `skill_config.cc`). Tags are permanent (-1).
+
+| Skill | Targeting | Area | Motion | Effect | Cooldown |
+|-------|-----------|------|--------|--------|----------|
+| `fireball` | ground, range 3 | cross | push_out 1 (the ring) | `burning` | 3 |
+| `lightningStep` | self | cross around the landing cell | dash 4, `tag_path` | `electrified` on agents crossed on the path and on the 4 cells orthogonal to the landing cell; `self_tags=false` | 3 |
+| `teleport` | self | single | teleport 3, else 2, else 1 | - | 4 |
+| `vortex` | ground, range 3 | cross | pull_in: one ring thing, priority up/right/down/left | roots the affected agents on the cross (pulled one included) for the next step; `self_root=false` | 4 |
+
+Cooldown: used at step t, usable again at step t + cooldown (0 and 1 both mean every step).
+
+**SkillConfig** (JSON key in parentheses when it differs):
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `name` | required | Opaque, unique in the book (`Define` replaces a same-name skill) |
+| `targeting` | projectile | `self` (centre = caster after its motion) / `ground` / `projectile` |
+| `range` | 1 | Ground / projectile distance |
+| `filter` | all | `all` / `companion` / `enemy` / `neutral`: who can be affected |
+| `area` | single | `single` (centre) / `cross` (centre + in-bounds ring, order up, right, down, left) |
+| `motion` | none | `none` / `dash` / `teleport` (caster) / `push_out` / `pull_in` (ring things; need a cross) |
+| `motion_distance` (`distance`) | 0 | Dash / teleport / push distance (pull is always 1) |
+| `tag_path` | false | Dash: agents crossed on the way are affected too |
+| `tags` | [] | `{tag, duration}` landed on every affected agent |
+| `root_steps` | 0 | Affected agents on the area are rooted for this many next steps |
+| `cooldown` | 0 | See above |
+| `friendly_fire` | true | Off: only agents NOT of the caster's faction are affected (allies and caster get no tag, push/pull or root; a projectile flies past them) |
+| `self_tags` / `self_motion` / `self_root` | true | With friendly fire, the caster is affected when it stands in its own area (after its own motion); each flag can spare it that effect |
+
+- "Affected" (`BaseEnv::Affects`) = living, passes `filter`, and `friendly_fire` or not of
+  the caster's faction. Push / pull also move living non-agent actors (no faction check)
+- Resolution of one skill (`UseSkill`): caster motion and centre → affected agents
+  (area, then dash path) → tags → root (area only, before anything moves) → push / pull
+- `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, root_steps,
+  cooldown ≥ 0; tag names non-empty ≤ 31 bytes with duration -1 or > 0; enums in range
+
+**Multiple casters** resolve sequentially, in agent-index order, each from its CURRENT
+position: an earlier push / pull can move a later caster before it acts (aim, range and
+area start from its new cell), and earlier casters claim landing cells first. A caster
+rooted earlier in the pass still resolves its skill this step (usability is decided in
+`GatherIntentions`; the root blocks from the next step).
+
+**Tags** (`TagTable`, `Agent::ApplyTag`):
+- Opaque names interned per env; ids stay stable (the table only grows, never cleared
+  by `LoadSnapshot` / `Reset`). Persist names, not ids
+- Duration in steps, or -1 (`kPermanentTag`); re-applying keeps the longer (permanent wins)
+- Durations tick at the START of `Step`: landed during step t with duration d, the tag
+  is present after steps t .. t+d-1
+- No gameplay effect in the env. Host primitives: `ApplyTagTo` / `RemoveTagFrom`
+
+**Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`):
+- One tag per cell ("" clears), with the duration it lands with; the zone itself never expires
+- Landed (cause `"zone"`, source -1) on every living agent standing there after regular
+  movement (before casts and skills), and on any agent a skill motion lands there
+  (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
+- World state: copied with the env, saved in snapshots, replaced by `LoadSnapshot`
+  (generated levels have none, so every `Reset` clears them)
+
+**Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3),
+`Rooted`(4). `Slowed` was removed: value 2 is reserved (never reused, a snapshot carrying
+it is rejected); the C API `Companions_Status_*` keeps the same numbers.
+- Rooted: can't move by itself (walking becomes Stay, dash / teleport skills are
+  unusable, `CanMoveItself`), can still use non-moving skills (a rooted FSM enemy still
+  attacks), can be pushed / pulled
+- Statuses tick at the END of `Step`, so `root_steps = n` is applied as n + 1
+
+**Per-step reports** (cleared at the start of every `Step` and by `LoadSnapshot`, hence every `Reset`):
+
+| BaseEnv | Content | C API event |
+|---------|---------|-------------|
+| `GetLastSkillUses()` | caster, skill, target (centre; landing cell for a self skill), slot | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill) |
+| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
+| `GetLastCasts()` | legacy `companion_cast` | `Companions_Event_EffectSpawned` |
+
+- `fresh` = the agent did not carry the tag just before this landing (so an agent on a
+  duration-1 zone is re-landed fresh every step)
+- Event order in a step: AgentMoved, AgentBlocked, EffectSpawned, SkillUsed, TagApplied,
+  EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
+- C API (`src/api/companions_api.h`): `companions_set_agent_skill`, `companions_apply_tag` /
+  `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`, `companions_get_tag_name` /
+  `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;
+  name buffers are 32 bytes (31 + NUL)
+
+**Levels** bring their skills, zones and slots through snapshot JSON v4 (`core/snapshot_json.cc`):
+- Top level `"skills"`: SkillConfig objects (keys above; all but `name` optional)
+- Top level `"cell_tags"`: `{row, col, tag, duration}` (duration absent = -1)
+- Per agent: `"tags"` (`{tag, duration}`), `"skills"` (slot names), `"cooldowns"`;
+  statuses as `"status_type": "stunned" | "marked" | "rooted"`
+- Unknown keys in a skill / tag / zone are rejected; `Snapshot::ValidateSkillsTagsZones`
+  runs before any change. Slot names are not checked against the book (an undefined
+  skill loads and is simply unusable)
+- `LoadSnapshot` resets the SkillBook to the builtins, then defines the snapshot's skills
+  (they may retune builtins), so a level's skills never leak into the next load.
+  `SaveSnapshot` writes the whole book, builtins included
 
 ### Pathfinding
 A* with Euclidean heuristic in `pathfinder.cc`:
@@ -108,6 +250,16 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 - 3x3 patrol square (8 cells perimeter, clockwise)
 - Aggro range: 3, Return range: 5
 - Smart spawning: companions and target outside aggro range
+
+### Known issue: D4 transform
+- `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)
+  together with `d4_transform` (`base_env.cc:1136`, `:1251`), but `LoadSnapshot` treats a
+  snapshot as pre-transform and transforms it again (`base_env.cc:1461-1465`): Save→Load
+  is not a round trip when `d4 != 0`
+- `ApplyD4Transform` swaps `rows_` / `cols_` for rotations / transposes
+  (`base_env.cc:197-199`), and each `Reset` generates a level with the current
+  `rows_` / `cols_` then transforms it (e.g. `synchro_env.cc:96-113`): on non-square
+  grids, rows/cols alternate on every Reset
 
 ## Exporting the game
 We want to integrate the pure C++ game in `companions/` into PufferLib
