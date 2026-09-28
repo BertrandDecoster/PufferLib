@@ -54,7 +54,9 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       last_downs_(other.last_downs_),
       last_revives_(other.last_revives_),
       cell_tags_(other.cell_tags_),
-      max_downs_(other.max_downs_) {
+      intended_skills_(other.intended_skills_),
+      max_downs_(other.max_downs_),
+      context_skills_(other.context_skills_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -81,7 +83,9 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     last_downs_ = other.last_downs_;
     last_revives_ = other.last_revives_;
     cell_tags_ = other.cell_tags_;
+    intended_skills_ = other.intended_skills_;
     max_downs_ = other.max_downs_;
+    context_skills_ = other.context_skills_;
   }
   return *this;
 }
@@ -609,6 +613,7 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
 }
 
 void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
+  intended_skills_.clear();
   auto agents = object_manager_->GetAllAgents();
   for (size_t i = 0; i < agents.size() && i < actions.size(); ++i) {
     Agent* agent = agents[i];
@@ -632,12 +637,19 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
 
     DecodedAction decoded = DecodeAction(actions[i]);
 
-    // A companion using a skill (its slot's, kDefaultSkill when nothing else
-    // is there) stays put: the movement only aims (Stay keeps the facing). A
-    // skill it cannot use is dropped and the move applies.
+    // A companion using a skill (its slot's effective one: a context rule's,
+    // else the equipped one, kDefaultSkill when nothing else is there) stays
+    // put: the movement only aims (Stay keeps the facing). A skill it cannot
+    // use is dropped and the move applies. The skill is fixed here, for
+    // ResolveSkills: what happens later in the step does not change it.
     if (decoded.interact != InteractAction::None) {
       if (Companion* comp = dynamic_cast<Companion*>(agent)) {
-        if (CanUseSkill(*comp, SkillSlotOf(decoded.interact))) {
+        const int slot = SkillSlotOf(decoded.interact);
+        if (CanUseSkill(*comp, slot)) {
+          const ContextSkillRule* rule = ActiveContextRule(*comp, slot);
+          intended_skills_.push_back({comp->GetId(), slot,
+                                      rule ? rule->skill : comp->GetSkill(slot),
+                                      rule != nullptr});
           if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
           agent->SetIntention({MovementAction::Stay, decoded.interact});
           continue;
@@ -914,11 +926,63 @@ bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted()
 
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
   if (!comp.IsAffectable() || slot < 0 || slot >= kEnabledSkillSlots) return false;
-  if (comp.GetCooldown(slot) != 0) return false;
-  const SkillConfig* skill = skills_.Find(comp.GetSkill(slot));
+  const ContextSkillRule* rule = ActiveContextRule(comp, slot);
+  // The cooldown belongs to the equipped skill: a rule's skill does not read it
+  if (!rule && comp.GetCooldown(slot) != 0) return false;
+  const SkillConfig* skill = skills_.Find(rule ? rule->skill : comp.GetSkill(slot));
   if (!skill) return false;
   // A skill that moves its caster is movement: Rooted forbids it too.
   return !SkillMovesCaster(*skill) || CanMoveItself(comp);
+}
+
+bool BaseEnv::ContextHolds(ContextCondition condition, const Companion& comp) const {
+  switch (condition) {
+    case ContextCondition::AdjacentDownedAlly: {
+      const Position at = comp.GetPosition();
+      for (Direction d : {Direction::Up, Direction::Right, Direction::Down, Direction::Left}) {
+        int dr = 0, dc = 0;
+        DirectionDelta(d, dr, dc);
+        const Position p{at.row + dr, at.col + dc};
+        if (!grid_->IsInBounds(p)) continue;
+        // GetActorAt gives the living actor on a cell (a downed one is alive)
+        const auto* other = dynamic_cast<const Agent*>(object_manager_->GetActorAt(p));
+        if (other && other->IsAlive() && other->IsDowned() &&
+            other->GetFaction() == comp.GetFaction()) {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+const ContextSkillRule* BaseEnv::ActiveContextRule(const Companion& comp, int slot) const {
+  for (const ContextSkillRule& rule : context_skills_) {
+    if (rule.slot == slot && ContextHolds(rule.condition, comp)) return &rule;
+  }
+  return nullptr;
+}
+
+const std::string& BaseEnv::EffectiveSkill(const Companion& comp, int slot) const {
+  assert(slot >= 0 && slot < kMaxSkillSlots && "skill slot out of range");
+  const ContextSkillRule* rule = ActiveContextRule(comp, slot);
+  return rule ? rule->skill : comp.GetSkill(slot);
+}
+
+bool BaseEnv::IsContextSkill(const Companion& comp, int slot) const {
+  return ActiveContextRule(comp, slot) != nullptr;
+}
+
+bool BaseEnv::SetContextSkills(std::vector<ContextSkillRule> rules, std::string* error) {
+  try {
+    ValidateContextSkills(rules, skills_);
+  } catch (const std::runtime_error& e) {
+    if (error) *error = e.what();
+    return false;
+  }
+  context_skills_ = std::move(rules);
+  return true;
 }
 
 bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill) {
@@ -1030,12 +1094,24 @@ void BaseEnv::ResolveSkills() {
     if (!comp) continue;
     int slot = SkillSlotOf(agent->GetExecutedAction().interact);
     if (slot < 0 || slot >= kEnabledSkillSlots) continue;
-    const SkillConfig* found = skills_.Find(comp->GetSkill(slot));
+    // The skill GatherIntentions fixed (whoever an earlier caster revived or
+    // downed since, the context read then holds)
+    const IntendedSkill* intended = nullptr;
+    for (const IntendedSkill& i : intended_skills_) {
+      if (i.caster == comp->GetId() && i.slot == slot) {
+        intended = &i;
+        break;
+      }
+    }
+    assert(intended && "a skill use GatherIntentions did not record");
+    if (!intended) continue;
+    const SkillConfig* found = skills_.Find(intended->skill);
     if (!found) continue;
     // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
     const SkillConfig skill = *found;
     Position target = UseSkill(*comp, skill);
-    comp->SetCooldown(slot, skill.cooldown);
+    // Cooldowns belong to the equipped skill: a context skill does not spend it
+    if (!intended->context) comp->SetCooldown(slot, skill.cooldown);
     last_skill_uses_.push_back({comp->GetId(), skill.name, target, slot});
   }
 }
@@ -1599,7 +1675,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
 }
 
 void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
-  // Level data kept across Reset: a generated level has the default
+  // Level data kept across Reset: a generated level has the default.
+  // The context skills too: LoadSnapshot leaves them alone (snapshots do not
+  // carry them yet).
   snapshot.max_downs = max_downs_;
   LoadSnapshot(snapshot);
 }

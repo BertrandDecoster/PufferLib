@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../core/annotations.h"
+#include "../core/context_skill.h"
 #include "../core/d4_transform.h"
 #include "../core/pcg32.h"
 #include "../core/effect_config.h"
@@ -231,7 +232,7 @@ class BaseEnv {
   // ==========================================================================
   // Skills and tags (data-driven; names are opaque to the env)
   // ==========================================================================
-  // A companion's Skill1 uses the skill in its slot 0: the companion stays put
+  // A companion's Skill1 uses its slot 0's (effective) skill: the companion stays put
   // (the movement only aims) and the skill resolves after movement. Slots are
   // never empty: one with nothing else in it holds kDefaultSkill ("attack",
   // a strike on the faced cell), so every companion, RL envs' included,
@@ -250,6 +251,28 @@ class BaseEnv {
   // and reset the slot's cooldown. False for an unknown skill, slot or
   // companion, or a name longer than kMaxNameLength.
   bool SetCompanionSkill(ObjectId companion, int slot, const std::string& skill);
+
+  // Context skills (core/context_skill.h). A slot holds its equipped skill
+  // (SetCompanionSkill, snapshots) and an effective one: the skill of the
+  // first rule for that slot whose condition holds for the companion, else
+  // the equipped one. Nothing is swapped. A skill a rule gives neither reads
+  // nor spends the slot's cooldown (cooldowns belong to the equipped skill;
+  // a rule's skill has none). The effective skill of a use is fixed when the
+  // step reads the intentions (GatherIntentions): an ally revived or downed
+  // later in the step does not change it.
+  // The rules are level data, like max_downs: a fresh env has
+  // DefaultContextSkills() (next to a downed ally, slot 0 is revive), and a
+  // generated Reset keeps the env's rules. LoadSnapshot does not touch them
+  // (snapshots do not carry them yet).
+  const std::vector<ContextSkillRule>& GetContextSkills() const { return context_skills_; }
+  // Replaces the rules ({} = no override). False, rules unchanged and the
+  // reason in `error` (when given), unless ValidateContextSkills accepts them
+  // with the current skill book.
+  bool SetContextSkills(std::vector<ContextSkillRule> rules, std::string* error = nullptr);
+  // The skill `comp`'s slot (0-based, < kMaxSkillSlots) uses now
+  const std::string& EffectiveSkill(const Companion& comp, int slot) const;
+  // Whether a rule gives that slot its effective skill now
+  bool IsContextSkill(const Companion& comp, int slot) const;
 
   // Host primitives: land / remove a tag outside of a step. `duration` is a
   // positive step count or kPermanentTag; ApplyTagTo returns false for 0 or
@@ -401,7 +424,17 @@ class BaseEnv {
   // Not rooted. Walking and caster-moving skills both need it (being pushed /
   // pulled does not).
   bool CanMoveItself(const Agent& agent) const;
+  // The slot's effective skill is usable: an affectable caster, an enabled
+  // slot, a skill of the book, not cooling down (only an equipped skill reads
+  // the cooldown), and a rooted caster only for a skill that does not move it.
   bool CanUseSkill(const Companion& comp, int slot) const;
+  // The first rule for `slot` whose condition holds for `comp`, or nullptr
+  const ContextSkillRule* ActiveContextRule(const Companion& comp, int slot) const;
+  // The one evaluation of a condition (a new condition: one more case)
+  bool ContextHolds(ContextCondition condition, const Companion& comp) const;
+  // Uses the skill fixed by GatherIntentions (intended_skills_); sets the
+  // slot's cooldown only for an equipped skill. The SkillUse reports the
+  // effective skill's name.
   void ResolveSkills();         // After movement, in agent-index order
   // Resolves one skill (caster motion, area, tags, damage, revive, root, area
   // motion); returns its centre.
@@ -463,8 +496,20 @@ class BaseEnv {
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;
 
+  // The skill each companion's use settled on when the step read the
+  // intentions (GatherIntentions), for ResolveSkills; rebuilt every step.
+  struct IntendedSkill {
+    ObjectId caster = kInvalidObjectId;
+    int slot = 0;
+    std::string skill;     // The effective skill
+    bool context = false;  // Given by a rule: the slot's cooldown is not spent
+  };
+  std::vector<IntendedSkill> intended_skills_;
+
  private:
   int max_downs_ = kDefaultMaxDowns;  // Level data (SetMaxDowns)
+  // Level data (SetContextSkills)
+  std::vector<ContextSkillRule> context_skills_ = DefaultContextSkills();
 };
 
 }  // namespace companions

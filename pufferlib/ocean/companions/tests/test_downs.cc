@@ -216,6 +216,7 @@ TEST(TestNothingLandsOnADownedCompanion) {
   Agent* behind = Place(env, 2, {3, 4});
   Agent* down = DownCompanion(env, 1);
   ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", kPermanentTag));
+  ASSERT_TRUE(env.SetContextSkills({}));  // The bolt itself, not the context revive
   ASSERT_TRUE(env.SetCompanionSkill(caster->GetId(), 0, "bolt"));
   env.Step({Use(MovementAction::Right), kStay, kStay});
   ASSERT_FALSE(Has(env, down, "zapped"));

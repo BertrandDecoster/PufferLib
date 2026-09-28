@@ -7,8 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "../src/core/context_skill.h"
 #include "../src/core/object.h"
 #include "../src/core/skill_config.h"
+#include "../src/env/aggro_env.h"
 #include "../src/env/synchro_env.h"
 #include "effect_registry_guard.h"
 
@@ -346,6 +348,7 @@ TEST(TestSkillsPassOverWhomTheyDoNotAffect) {
   Agent* down = Place(env, 1, {3, 2});
   Agent* standing = Place(env, 2, {3, 3});
   DownCompanion(env, 1);
+  ASSERT_TRUE(env.SetContextSkills({}));  // The bolt itself, not the context revive
   ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "bolt"));
   env.Step({Use(MovementAction::Right), kStay, kStay});
   ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 3}));  // Past the downed
@@ -422,6 +425,261 @@ TEST(TestTheReviveReportIsCopiedAndCleared) {
   ASSERT_EQ(assigned.GetLastRevives().size(), static_cast<size_t>(1));
   env.LoadSnapshot(saved);
   ASSERT_TRUE(env.GetLastRevives().empty());
+}
+
+// =============================================================================
+// Context skills
+// =============================================================================
+static Companion* AsCompanion(Agent* a) { return dynamic_cast<Companion*>(a); }
+
+static size_t CountSkill1(const std::vector<Action>& actions) {
+  size_t n = 0;
+  for (Action act : actions) {
+    if (DecodeAction(act).interact == InteractAction::Skill1) ++n;
+  }
+  return n;
+}
+
+TEST(TestContextConditionNames) {
+  ASSERT_EQ(ContextConditionToString(ContextCondition::AdjacentDownedAlly),
+            std::string("adjacent_downed_ally"));
+  ASSERT_TRUE(ContextConditionFromString("adjacent_downed_ally") ==
+              ContextCondition::AdjacentDownedAlly);
+  bool threw = false;
+  try {
+    ContextConditionFromString("next_to_a_friend");
+  } catch (const std::runtime_error& e) {
+    threw = Mentions(e.what(), "next_to_a_friend");
+  }
+  ASSERT_TRUE(threw);
+
+  const std::vector<ContextSkillRule> rules = DefaultContextSkills();
+  ASSERT_EQ(rules.size(), static_cast<size_t>(1));
+  ASSERT_TRUE(rules[0].condition == ContextCondition::AdjacentDownedAlly);
+  ASSERT_EQ(rules[0].slot, 0);
+  ASSERT_EQ(rules[0].skill, std::string("revive"));
+}
+
+// Next to a downed ally (4 neighbours), slot 0 is revive whatever it holds;
+// away from it, the equipped skill again; slot 1 unchanged.
+TEST(TestSlot0IsReviveNextToADownedAlly) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Companion* b = AsCompanion(Place(env, 1, {3, 2}));
+  ASSERT_TRUE(env.GetContextSkills() == DefaultContextSkills());  // A fresh env
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "fireball"));
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("fireball"));  // b stands
+  ASSERT_FALSE(env.IsContextSkill(*a, 0));
+
+  DownCompanion(env, 1);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("revive"));
+  ASSERT_TRUE(env.IsContextSkill(*a, 0));
+  ASSERT_EQ(a->GetSkill(0), std::string("fireball"));  // Nothing swapped
+  ASSERT_EQ(env.EffectiveSkill(*a, 1), std::string(kDefaultSkill));
+  ASSERT_FALSE(env.IsContextSkill(*a, 1));
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, ""));  // The attack too
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("revive"));
+
+  // Each of the 4 neighbours; not a diagonal, not two cells away
+  for (Position p : {Position{2, 2}, Position{4, 2}, Position{3, 3}}) {
+    Place(env, 0, p);
+    ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("revive"));
+  }
+  Place(env, 0, {4, 3});
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+  ASSERT_FALSE(env.IsContextSkill(*a, 0));
+  Place(env, 0, {3, 4});
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+
+  // An ally is of the same faction
+  Place(env, 0, {3, 3});
+  b->SetFaction(Faction::ENEMY);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+  b->SetFaction(Faction::COMPANION);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("revive"));
+
+  // The downed one cannot act, whatever its effective skills
+  ASSERT_EQ(env.LegalActions(1).size(), static_cast<size_t>(1));
+}
+
+// Using it in a step: whatever is equipped, the use is a revive, reported as
+// such, and the equipped skill's cooldown is not spent.
+TEST(TestAContextReviveInAStep) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Agent* b = Place(env, 1, {3, 2});
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "fireball"));
+  DownCompanion(env, 1);
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_FALSE(b->IsDowned());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string("revive"));
+  ASSERT_EQ(env.GetLastSkillUses()[0].slot, 0);
+  ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());  // No fireball
+  ASSERT_EQ(a->GetCooldown(0), 0);
+  ASSERT_EQ(a->GetSkill(0), std::string("fireball"));
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("fireball"));  // b stands again
+}
+
+// Cooldowns belong to the equipped skill: the context revive neither reads nor
+// spends the slot's.
+TEST(TestAContextSkillIgnoresTheSlotCooldown) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Companion* a = AsCompanion(Place(env, 0, {3, 4}));
+  Agent* b = Place(env, 1, {3, 2});
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "fireball"));
+  DownCompanion(env, 1);
+  env.Step({Use(MovementAction::Up), kStay});  // Step 1: the fireball, far from b
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string("fireball"));
+  ASSERT_EQ(a->GetCooldown(0), 3);  // Usable again at step 5
+  ASSERT_EQ(CountSkill1(env.LegalActions(0)), static_cast<size_t>(0));
+
+  env.Step({EncodeAction(MovementAction::Left), kStay});  // Step 2: next to b
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 3}));
+  ASSERT_EQ(a->GetCooldown(0), 2);
+  // Usable at once, with every aim, though the fireball is cooling down
+  ASSERT_EQ(CountSkill1(env.LegalActions(0)), static_cast<size_t>(kNumMovementActions));
+
+  // Stepping away instead: the fireball, still blocked for its remaining steps
+  SynchroEnv away(env);
+  Companion* a2 = AsCompanion(away.GetMutableObjectManager().GetAllAgents()[0]);
+  away.Step({EncodeAction(MovementAction::Right), kStay});  // Step 3
+  ASSERT_EQ(away.EffectiveSkill(*a2, 0), std::string("fireball"));
+  ASSERT_EQ(a2->GetCooldown(0), 1);
+  ASSERT_EQ(CountSkill1(away.LegalActions(0)), static_cast<size_t>(0));
+  away.Step({Use(MovementAction::Up), kStay});  // Step 4: dropped, the move applies
+  ASSERT_TRUE(away.GetLastSkillUses().empty());
+  ASSERT_TRUE(a2->GetPosition() == (Position{2, 4}));
+  ASSERT_EQ(a2->GetCooldown(0), 0);
+  away.Step({Use(MovementAction::Up), kStay});  // Step 5
+  ASSERT_EQ(away.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(away.GetLastSkillUses()[0].skill, std::string("fireball"));
+
+  // Reviving: the cooldown keeps ticking as before (neither reset nor spent)
+  env.Step({Use(MovementAction::Left), kStay});  // Step 3
+  ASSERT_FALSE(b->IsDowned());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string("revive"));
+  ASSERT_EQ(a->GetCooldown(0), 1);
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("fireball"));
+  ASSERT_EQ(CountSkill1(env.LegalActions(0)), static_cast<size_t>(0));
+}
+
+// The effective skill is fixed when intentions are read: a later caster whose
+// downed neighbour an earlier caster revived in the same pass still uses the
+// revive (it affects nothing), not its equipped skill.
+TEST(TestTheContextIsReadWithTheIntentions) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Companion* first = AsCompanion(Place(env, 0, {3, 1}));
+  Agent* down = Place(env, 1, {3, 2});
+  Companion* second = AsCompanion(Place(env, 2, {3, 3}));
+  ASSERT_TRUE(env.SetCompanionSkill(first->GetId(), 0, "fireball"));
+  ASSERT_TRUE(env.SetCompanionSkill(second->GetId(), 0, "fireball"));
+  DownCompanion(env, 1);
+  env.Step({Use(MovementAction::Right), kStay, Use(MovementAction::Left)});
+  ASSERT_FALSE(down->IsDowned());
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string("revive"));
+  ASSERT_EQ(env.GetLastSkillUses()[1].skill, std::string("revive"));
+  ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());  // No fireball
+  ASSERT_EQ(first->GetCooldown(0), 0);
+  ASSERT_EQ(second->GetCooldown(0), 0);
+}
+
+// "" when accepted; else the message (the rules must be left unchanged).
+static std::string RejectionOf(BaseEnv& env, std::vector<ContextSkillRule> rules) {
+  std::string error;
+  const std::vector<ContextSkillRule> before = env.GetContextSkills();
+  if (env.SetContextSkills(std::move(rules), &error)) return "";
+  if (!(env.GetContextSkills() == before)) return "rules changed on rejection";
+  return error.empty() ? "no message" : error;
+}
+
+TEST(TestSetContextSkillsValidates) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  const ContextCondition adj = ContextCondition::AdjacentDownedAlly;
+
+  std::string e = RejectionOf(env, {{adj, 0, "nope"}});
+  ASSERT_TRUE(Mentions(e, "nope") && Mentions(e, "unknown skill"));
+  e = RejectionOf(env, {{adj, 0, ""}});
+  ASSERT_TRUE(Mentions(e, "skill"));
+  e = RejectionOf(env, {{adj, kMaxSkillSlots, "revive"}});
+  ASSERT_TRUE(Mentions(e, "slot"));
+  e = RejectionOf(env, {{adj, -1, "revive"}});
+  ASSERT_TRUE(Mentions(e, "slot"));
+  e = RejectionOf(env, {{adj, 0, "revive"}, {adj, 1, "fireball"}});
+  ASSERT_TRUE(Mentions(e, "fireball") && Mentions(e, "cooldown"));
+  e = RejectionOf(env, {{static_cast<ContextCondition>(99), 0, "revive"}});
+  ASSERT_TRUE(Mentions(e, "condition"));
+  // The throwing form (snapshots) names the skill too
+  bool threw = false;
+  try {
+    ValidateContextSkills({{adj, 0, "nope"}}, env.GetSkillBook());
+  } catch (const std::runtime_error& ex) {
+    threw = Mentions(ex.what(), "nope");
+  }
+  ASSERT_TRUE(threw);
+  ASSERT_TRUE(env.SetContextSkills({}));  // No error pointer needed
+
+  // No rule: no override
+  Companion* a = AsCompanion(Place(env, 0, {3, 1}));
+  Place(env, 1, {3, 2});
+  DownCompanion(env, 1);
+  ASSERT_TRUE(env.GetContextSkills().empty());
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+  ASSERT_FALSE(env.IsContextSkill(*a, 0));
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_EQ(env.GetLastSkillUses()[0].skill, std::string(kDefaultSkill));
+  ASSERT_TRUE(env.GetLastRevives().empty());
+
+  // A rule for slot 1 leaves slot 0 alone; a zero-cooldown skill of the level
+  SkillConfig mend = *env.GetSkillBook().Find("revive");
+  mend.name = "mend";
+  env.GetMutableSkillBook().Define(mend);
+  ASSERT_EQ(RejectionOf(env, {{adj, 1, "mend"}}), std::string(""));
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string(kDefaultSkill));
+  ASSERT_EQ(env.EffectiveSkill(*a, 1), std::string("mend"));
+  ASSERT_TRUE(env.IsContextSkill(*a, 1));
+  // The first matching rule wins
+  ASSERT_TRUE(env.SetContextSkills({{adj, 0, "mend"}, {adj, 0, "revive"}}));
+  ASSERT_EQ(env.EffectiveSkill(*a, 0), std::string("mend"));
+}
+
+// Level data: a fresh env has the default rule, Reset keeps the level's, copies
+// carry them.
+TEST(TestContextSkillsAreLevelData) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  env.Reset();
+  ASSERT_TRUE(env.GetContextSkills() == DefaultContextSkills());
+  const std::vector<ContextSkillRule> custom = {
+      {ContextCondition::AdjacentDownedAlly, 1, "revive"}};
+  ASSERT_TRUE(env.SetContextSkills(custom));
+  env.Reset();
+  ASSERT_TRUE(env.GetContextSkills() == custom);
+  env.Reset(7u);
+  ASSERT_TRUE(env.GetContextSkills() == custom);
+  SynchroEnv copy(env);
+  ASSERT_TRUE(copy.GetContextSkills() == custom);
+  SynchroEnv assigned(10, 10, 2, 1, 0, 7);
+  ASSERT_TRUE(assigned.GetContextSkills() == DefaultContextSkills());
+  assigned = env;
+  ASSERT_TRUE(assigned.GetContextSkills() == custom);
+  ASSERT_TRUE(env.Clone()->GetContextSkills() == custom);
+
+  AggroEnv aggro(10, 2);
+  aggro.Reset();
+  ASSERT_TRUE(aggro.GetContextSkills() == DefaultContextSkills());
+  ASSERT_TRUE(aggro.SetContextSkills({}));
+  aggro.Reset();
+  ASSERT_TRUE(aggro.GetContextSkills().empty());
 }
 
 // =============================================================================

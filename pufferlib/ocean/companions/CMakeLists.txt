@@ -58,6 +58,7 @@ set(CORE_SOURCES
   src/core/level_generator.cc
   src/core/tag_table.cc
   src/core/skill_config.cc
+  src/core/context_skill.cc
   src/core/fsm/fsm_states.cc
   src/core/fsm/enemies.cc
 )
@@ -86,6 +87,7 @@ set(CORE_HEADERS
   src/core/level_generator.h
   src/core/tag_table.h
   src/core/skill_config.h
+  src/core/context_skill.h
   src/core/fsm/fsm_state.h
   src/core/fsm/fsm_states.h
   src/core/fsm/enemies.h
