@@ -13,6 +13,7 @@
 #include "../src/core/snapshot.h"
 #include "../src/core/snapshot_json.h"
 #include "../src/env/aggro_env.h"
+#include "../src/env/dodge_env.h"
 #include "../src/env/synchro_env.h"
 #include "effect_registry_guard.h"
 
@@ -507,6 +508,22 @@ TEST(TestASnapshotSavedTeamDownLoadsDone) {
   copy.LoadSnapshot(env.SaveSnapshot());
   ASSERT_TRUE(copy.IsDone());
   ASSERT_TRUE(copy.GetEndReason() == EndReason::TeamDown);
+}
+
+// max_downs is level data: a generated Reset keeps it, in every env.
+TEST(TestMaxDownsSurvivesAggroAndDodgeResets) {
+  AggroEnv aggro(10, 2, EnemyType::Goblin, 42, 0, 100);
+  ASSERT_TRUE(aggro.SetMaxDowns(1));
+  aggro.Reset(42);
+  ASSERT_EQ(aggro.GetMaxDowns(), 1);
+  aggro.Reset();
+  ASSERT_EQ(aggro.GetMaxDowns(), 1);
+  DodgeEnv dodge(7, 2, 3, 50, 42);
+  ASSERT_TRUE(dodge.SetMaxDowns(1));
+  dodge.Reset(42);
+  ASSERT_EQ(dodge.GetMaxDowns(), 1);
+  dodge.Reset();
+  ASSERT_EQ(dodge.GetMaxDowns(), 1);
 }
 
 // A snapshot without downs (older files) loads with the default max_downs,

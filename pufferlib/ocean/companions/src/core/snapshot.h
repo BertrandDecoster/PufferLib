@@ -87,6 +87,10 @@ struct FSMSnapshot {
   int recovery_ticks = 1;
 };
 
+// True for the ObjectTypes (as int) built as a Companion: Companion, Player,
+// NPCCompanion. Only they carry skill slots and go down (snapshot v5).
+bool IsCompanionType(int object_type);
+
 // =============================================================================
 // AgentSnapshot - Serialized agent state
 // =============================================================================
@@ -224,8 +228,8 @@ struct Snapshot {
   // or one of `skills` (the book LoadSnapshot builds), so slots always hold a
   // real skill ("" is kDefaultSkill); an agent's kind is empty, or one of
   // EnemyKinds() on an AgentFSM agent; v5 downs: max_downs >= 1, downed /
-  // times_downed only on a companion type (Companion, Player, NPCCompanion),
-  // times_downed >= 0, a downed agent at 0 HP with times_downed >= 1.
+  // times_downed only on a companion type (IsCompanionType), times_downed
+  // >= 0, a downed agent at 0 HP with times_downed >= 1 and no statuses.
   // Messages name the skill, agent (index and id) or zone cell.
   void ValidateSkillsTagsZones() const;
 

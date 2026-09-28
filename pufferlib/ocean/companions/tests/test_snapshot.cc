@@ -1347,6 +1347,14 @@ TEST(TestSnapshotRejectsBadDowns) {
   s.agents[0].health = 0;
   s.agents[0].downed = true;
   AssertSnapshotRejected(s, agent0 + ": times_downed must be >= 0 (>= 1 when downed)");
+  s = good;  // A downed companion has no statuses (cleared when it went down)
+  s.agents[0].health = 0;
+  s.agents[0].downed = true;
+  s.agents[0].times_downed = 1;
+  s.agents[0].statuses = {{static_cast<int>(StatusType::Stunned), 2}};
+  AssertSnapshotRejected(s, agent0 + ": downed with statuses, a downed companion has none");
+  s.agents[0].statuses.clear();  // Sanity: the same downed companion loads
+  SynchroEnv(8, 8, 1, 1, 0, 42).LoadSnapshot(s);
 
   // Not on a non-companion (a second agent, a plain Agent)
   AgentSnapshot enemy = good.agents[0];
@@ -1359,9 +1367,9 @@ TEST(TestSnapshotRejectsBadDowns) {
   s = good;
   s.agents.push_back(enemy);
   s.agents.back().times_downed = 1;
-  AssertSnapshotRejected(s, "agent #1 (id 99): only a companion goes down");
+  AssertSnapshotRejected(s, "agent #1 (id 99): downed / times_downed on a non-companion (only a companion goes down)");
   s.agents.back().downed = true;
-  AssertSnapshotRejected(s, "only a companion goes down");
+  AssertSnapshotRejected(s, "downed / times_downed on a non-companion (only a companion goes down)");
   s.agents.back().downed = false;  // Sanity: the same agent without downs loads
   s.agents.back().times_downed = 0;
   SynchroEnv(8, 8, 1, 1, 0, 42).LoadSnapshot(s);

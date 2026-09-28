@@ -1139,6 +1139,12 @@ TEST(TestJsonRejectsBadDowns) {
   j.at("agents").at(0)["times_downed"] = 0;
   AssertJsonErrorMentions(j, {"agent #0", "times_downed", ">= 1 when downed"});
   j = LevelJson();
+  j.at("agents").at(0)["downed"] = true;  // With a status
+  j.at("agents").at(0)["health"] = 0;
+  j.at("agents").at(0)["times_downed"] = 1;
+  j.at("agents").at(0)["statuses"] = json::array({json{{"status_type", "stunned"}, {"duration", 2}}});
+  AssertJsonErrorMentions(j, {"agent #0", "downed with statuses, a downed companion has none"});
+  j = LevelJson();
   j.at("agents").at(0)["downed"] = "yes";
   AssertJsonErrorMentions(j, {"agents[0]: downed: type must be boolean"});
   j = LevelJson();
@@ -1150,8 +1156,24 @@ TEST(TestJsonRejectsBadDowns) {
     enemy["health"] = 0;
     enemy[key] = key == std::string("downed") ? json(true) : json(1);
     if (key == std::string("downed")) enemy["times_downed"] = 1;
-    AssertJsonErrorMentions(j, {"agent #", "only a companion goes down"});
+    AssertJsonErrorMentions(j, {"agent #", "downed / times_downed on a non-companion (only a companion goes down)"});
   }
+}
+
+// Only companion entries carry the downs keys (always); an enemy's has none.
+TEST(TestJsonDownsKeysOnlyOnCompanions) {
+  json j = AggroJson();
+  int companions = 0;
+  for (const json& agent : j.at("agents")) {
+    const std::string type = agent.at("agent_type").get<std::string>();
+    const bool companion = type == "Companion" || type == "Player" || type == "NPCCompanion";
+    ASSERT_EQ(agent.contains("downed"), companion);
+    ASSERT_EQ(agent.contains("times_downed"), companion);
+    if (companion) ++companions;
+  }
+  ASSERT_TRUE(companions > 0);
+  ASSERT_FALSE(FsmAgent(j).contains("downed"));
+  SnapshotFromJson(j.dump());  // And it loads
 }
 
 // A v4 level (no downs keys) loads: nobody down, the default max_downs.

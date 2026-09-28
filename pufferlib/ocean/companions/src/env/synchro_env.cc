@@ -99,8 +99,6 @@ void SynchroEnv::Reset() {
 
   // Generate snapshot using LevelGenerator
   Snapshot snapshot = LevelGenerator::Generate(config);
-  // A generated level keeps the env's max downs (level data, kept across Reset)
-  snapshot.max_downs = GetMaxDowns();
 
   // Extract synchro positions from snapshot BEFORE loading (pre-transform order).
   // Synchro goals live in the annotation layer now (Floor cell + SynchroGoal tag).
@@ -112,7 +110,7 @@ void SynchroEnv::Reset() {
   }
 
   // Load the snapshot (handles grid, agents, timing, D4 transform)
-  LoadSnapshot(snapshot);
+  LoadGeneratedLevel(snapshot);
 
   // Transform synchro positions using same D4 transform that was applied
   if (d4_transform_ != 0) {

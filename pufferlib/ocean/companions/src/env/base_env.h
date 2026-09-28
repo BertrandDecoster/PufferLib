@@ -341,6 +341,10 @@ class BaseEnv {
   // Update all agents with FSM AI (called in PreStep)
   void UpdateAgentFSM();
 
+  // A generated Reset's load: LoadSnapshot with the env's max_downs (level
+  // data, kept across Reset) in place of the generated level's default
+  void LoadGeneratedLevel(Snapshot snapshot);
+
   // The env's own end rule (IsDone's other term, besides IsTeamDown): the
   // latched success, the horizon, a failure it honours
   virtual bool IsEnvDone() const = 0;

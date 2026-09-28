@@ -1438,8 +1438,9 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
         comp->SetSkill(slot, i < as.skills.size() ? as.skills[i] : std::string());
         comp->SetCooldown(slot, i < as.cooldowns.size() ? as.cooldowns[i] : 0);
       }
-      // Downs last: a downed agent accepts no tags or statuses, so the ones
-      // restored above must land before it goes down. Loaded as already
+      // Downs last: a downed agent accepts no new tags (it keeps those it
+      // had), so the tags restored above must land before it goes down. A
+      // downed companion has no statuses (validated). Loaded as already
       // reported (the step that downed it did).
       comp->RestoreDowns(as.downed, as.times_downed);
     }
@@ -1577,6 +1578,12 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   // TaskFailed. DodgeEnv has no override; its any_dead_ is not cleared by a
   // load (its Reset clears it).
   LatchEndReason();
+}
+
+void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
+  // Level data kept across Reset: a generated level has the default
+  snapshot.max_downs = max_downs_;
+  LoadSnapshot(snapshot);
 }
 
 void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {

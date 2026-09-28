@@ -11,6 +11,17 @@
 
 namespace companions {
 
+bool IsCompanionType(int object_type) {
+  switch (static_cast<ObjectType>(object_type)) {
+    case ObjectType::Companion:
+    case ObjectType::Player:
+    case ObjectType::NPCCompanion:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // =============================================================================
 // Snapshot validation helpers
 // =============================================================================
@@ -85,18 +96,6 @@ bool IsKnownStatus(int type) {
       return true;
   }
   return false;
-}
-
-// The ObjectTypes built as a Companion (the only agents that go down)
-bool IsCompanionType(int type) {
-  switch (static_cast<ObjectType>(type)) {
-    case ObjectType::Companion:
-    case ObjectType::Player:
-    case ObjectType::NPCCompanion:
-      return true;
-    default:
-      return false;
-  }
 }
 
 std::string CellText(const Position& p) {
@@ -175,7 +174,9 @@ void Snapshot::ValidateSkillsTagsZones() const {
     }
     if (agent.downed || agent.times_downed != 0) {
       if (!IsCompanionType(agent.type)) {
-        throw std::runtime_error("Snapshot: " + who + ": only a companion goes down");
+        throw std::runtime_error("Snapshot: " + who +
+                                 ": downed / times_downed on a non-companion (only a "
+                                 "companion goes down)");
       }
       if (agent.downed && agent.health != 0) {
         throw std::runtime_error("Snapshot: " + who + ": downed with " +
@@ -185,6 +186,11 @@ void Snapshot::ValidateSkillsTagsZones() const {
         throw std::runtime_error("Snapshot: " + who +
                                  ": times_downed must be >= 0 (>= 1 when downed), got " +
                                  std::to_string(agent.times_downed));
+      }
+      // Going down clears them, and a downed agent accepts none
+      if (agent.downed && !agent.statuses.empty()) {
+        throw std::runtime_error("Snapshot: " + who +
+                                 ": downed with statuses, a downed companion has none");
       }
     }
   }
@@ -480,7 +486,7 @@ std::vector<uint8_t> Snapshot::Serialize() const {
     WriteVector(buffer, agent.cooldowns);
 
     // v5: downs
-    WriteValue(buffer, agent.downed);
+    WriteValue(buffer, static_cast<uint8_t>(agent.downed));  // Read as a byte
     WriteValue(buffer, agent.times_downed);
   }
 

@@ -479,9 +479,11 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
   if (!agent.skills.empty()) j["skills"] = agent.skills;
   if (!agent.cooldowns.empty()) j["cooldowns"] = agent.cooldowns;
 
-  // Downs (v5)
-  j["downed"] = agent.downed;
-  j["times_downed"] = agent.times_downed;
+  // Downs (v5; companions only, always for them)
+  if (IsCompanionType(agent.type)) {
+    j["downed"] = agent.downed;
+    j["times_downed"] = agent.times_downed;
+  }
 
   return j;
 }
