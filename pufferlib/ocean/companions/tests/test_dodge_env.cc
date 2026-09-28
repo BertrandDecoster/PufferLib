@@ -8,6 +8,7 @@
 
 #include "../src/core/agent_config.h"
 #include "../src/env/dodge_env.h"
+#include "effect_registry_guard.h"
 
 using namespace companions;
 
@@ -232,8 +233,8 @@ TEST(TestDodgeEnvVectorObservationValues) {
 }
 
 TEST(TestDodgeEnvVectorObservationDanger) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   // Register a test effect
   EffectConfig cfg;
@@ -271,14 +272,12 @@ TEST(TestDodgeEnvVectorObservationDanger) {
   // Danger in "up" direction should be non-zero
   // Features 10-13 are active danger (up, down, left, right)
   ASSERT_TRUE(obs_with_effect[10] > 0.0f);  // Danger up
-
-  registry.Clear();
 }
 
 TEST(TestDodgeEnvHazardDamage) {
   // Test that companions take damage from hazards
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   // Register a damaging effect
   EffectConfig damage_cfg;
@@ -313,14 +312,12 @@ TEST(TestDodgeEnvHazardDamage) {
 
   // Verify game is not done (player still alive)
   ASSERT_FALSE(env.IsDone());
-
-  registry.Clear();
 }
 
 TEST(TestDodgeEnvHazardKillsCompanion) {
   // Test that lethal damage ends the game
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   // Register a lethal effect
   EffectConfig lethal_cfg;
@@ -353,8 +350,6 @@ TEST(TestDodgeEnvHazardKillsCompanion) {
   ASSERT_TRUE(player->GetHealth() <= 0);
   ASSERT_TRUE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());  // Death is not success
-
-  registry.Clear();
 }
 
 TEST(TestDodgeEnvSurvivalIntegration) {

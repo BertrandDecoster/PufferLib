@@ -506,8 +506,9 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
   }
 
   const Agent* agent = agents[agent_idx];
-  if (!agent->IsAlive()) {
-    // Dead agents can only stay
+  if (!agent->IsAlive() || agent->IsStunned()) {
+    // The dead, and the stunned (GatherIntentions forces them to stay), can
+    // only stay
     actions.push_back(EncodeAction(MovementAction::Stay));
     return actions;
   }
@@ -531,12 +532,17 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
     }
   }
 
-  // A companion's usable slot-0 skill, for every aim (the movement only aims,
-  // so aiming into a wall is legal too). A stunned agent is forced to stay.
-  const auto* comp = dynamic_cast<const Companion*>(agent);
-  if (comp && !comp->IsStunned() && CanUseSkill(*comp, 0)) {
-    for (int m = 0; m < kNumMovementActions; ++m) {
-      actions.push_back(EncodeAction(static_cast<MovementAction>(m), InteractAction::Skill1));
+  // A companion's usable skills, slot by slot among the enabled ones (Skill1 =
+  // slot 0, Skill2 = slot 1), each for every aim (the movement only aims, so
+  // aiming into a wall is legal too).
+  if (const auto* comp = dynamic_cast<const Companion*>(agent)) {
+    for (int slot = 0; slot < kEnabledSkillSlots; ++slot) {
+      if (!CanUseSkill(*comp, slot)) continue;
+      const auto interact =
+          static_cast<InteractAction>(static_cast<int>(InteractAction::Skill1) + slot);
+      for (int m = 0; m < kNumMovementActions; ++m) {
+        actions.push_back(EncodeAction(static_cast<MovementAction>(m), interact));
+      }
     }
   }
 

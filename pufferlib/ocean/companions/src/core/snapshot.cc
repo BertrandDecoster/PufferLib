@@ -97,8 +97,9 @@ void Snapshot::ValidateSkillsTagsZones() const {
   SkillBook book;
   for (size_t i = 0; i < skills.size(); ++i) {
     try {
-      RejectDefaultSkillName(skills[i].name);
-      ValidateSkillConfig(skills[i]);
+      // Define validates the config and rejects the default skill's name,
+      // but silently skips an unnamed skill: reject that one here.
+      if (skills[i].name.empty()) throw std::runtime_error("skill without a name");
       book.Define(skills[i]);
     } catch (const std::runtime_error& e) {
       // The index says which skill when it has no name.

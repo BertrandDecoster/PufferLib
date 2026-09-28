@@ -36,6 +36,10 @@ companions/                    # Standalone pure C++ implementation
 - Skills, tags, zones, Rooted, friendly fire, SkillBook, line / landing rules:
   `companions_skills_test` (`tests/test_skills.cc`); their snapshot v4 JSON and C API
   sides live in `tests/test_snapshot_json.cc`, `tests/test_snapshot.cc`, `tests/test_api.cc`
+- A test that registers its own effects holds a `ScopedEffectRegistry`
+  (`tests/effect_registry_guard.h`), declared before its envs: it clears the global
+  `EffectConfigRegistry` back to the builtins on entry and on exit, even when an
+  assertion throws
 
 ## Game design
 **DOCUMENTATION** look at `docs/GDD.md` to know more
@@ -84,9 +88,10 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
  - A skill that can't be used (a name the book lacks, cooldown, disabled slot,
    rooted + self-moving skill, dead caster) is dropped and the movement applies as with `None`
  - `BaseEnv::LegalActions`: Stay and each move onto an in-bounds walkable cell (interact
-   `None`), plus, for a companion that is not stunned and `CanUseSkill(slot 0)`, `Skill1`
-   with each of the 5 aims (a wall-facing aim included). FSM / plain agents: movement
-   only; the dead: Stay only. Only the C++ tests call it today
+   `None`), plus, for a companion, each enabled slot (`slot < kEnabledSkillSlots`) it
+   `CanUseSkill`, as `Skill1` / `Skill2` with each of the 5 aims (a wall-facing aim
+   included). FSM / plain agents: movement only; the dead and the stunned (any kind):
+   Stay only. Only the C++ tests call it today
  - The legacy generic companion cast (an on/off flag that cast an effect for an EMPTY
    slot 0) is gone, with its C API setter / getter and EffectSpawned events (C API 1.2.0)
 
@@ -236,7 +241,12 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   runs before any change (and when JSON / binary snapshots are parsed)
 - Slots always hold a real skill: a non-empty slot naming neither a builtin nor one of
   the snapshot's `skills` is rejected (`LoadSnapshot` throws, the C API returns false;
-  the message names the agent, the slot and the skill). `""` still means `attack`
+  the message names the agent, the slot and the skill). `""` still means `attack`.
+  Older saved levels with such slots no longer load: regenerate them (noted in the
+  C API Versioning section)
+- Validation builds the level's book once: `SkillBook::Define` per skill (it validates
+  and rejects `attack`), plus an explicit check for an unnamed skill (which `Define`
+  silently skips)
 - `LoadSnapshot` resets the SkillBook to the builtins, then defines the snapshot's skills
   (they may retune builtins, but not `attack`), so a level's skills never leak into
   the next load. `SaveSnapshot` writes the whole book, builtins included, but `attack`

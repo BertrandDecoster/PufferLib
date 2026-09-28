@@ -13,6 +13,7 @@
 #include "../src/core/level_builder.h"
 #include "../src/core/object_manager.h"
 #include "../src/env/synchro_env.h"
+#include "effect_registry_guard.h"
 
 using namespace companions;
 
@@ -165,8 +166,8 @@ TEST(TestEffectConfigRotatedPush) {
 // =============================================================================
 
 TEST(TestEffectConfigRegistryRegister) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "test_effect";
@@ -180,13 +181,11 @@ TEST(TestEffectConfigRegistryRegister) {
 
   // Not found
   ASSERT_TRUE(registry.GetConfig("nonexistent") == nullptr);
-
-  registry.Clear();
 }
 
 TEST(TestEffectConfigRegistryUpdate) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "update_test";
@@ -200,8 +199,6 @@ TEST(TestEffectConfigRegistryUpdate) {
   const EffectConfig* found = registry.GetConfig("update_test");
   ASSERT_TRUE(found != nullptr);
   ASSERT_EQ(found->damage, 10);
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -299,8 +296,8 @@ TEST(TestActiveEffectIsFinishedInfiniteLoop) {
 
 TEST(TestSpawnEffectAndTick) {
   // Register a test effect
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "test_damage";
@@ -336,14 +333,12 @@ TEST(TestSpawnEffectAndTick) {
   // Effect should now be in active phase and applied damage
   // (After the step, the effect transitions and applies damage)
   ASSERT_EQ(player->GetHealth(), initial_health - 2);
-
-  registry.Clear();
 }
 
 TEST(TestEffectPush) {
   // Register a push effect
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "wind_push";
@@ -387,14 +382,12 @@ TEST(TestEffectPush) {
   // Push dy=1 means row increases
   ASSERT_EQ(new_pos.row, 5);  // 3 + 2 = 5
   ASSERT_EQ(new_pos.col, 3);
-
-  registry.Clear();
 }
 
 TEST(TestEffectPushBlockedByWall) {
   // Register a push effect
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "wind_push_wall";
@@ -429,13 +422,11 @@ TEST(TestEffectPushBlockedByWall) {
   Position new_pos = player->GetPosition();
   ASSERT_EQ(new_pos.row, 3);  // Pushed 1 cell, stopped at wall
   ASSERT_EQ(new_pos.col, 3);
-
-  registry.Clear();
 }
 
 TEST(TestEffectClearedOnReset) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "persist_test";
@@ -456,8 +447,6 @@ TEST(TestEffectClearedOnReset) {
   // Clear effects (would be called by env Reset)
   env.ClearEffects();
   ASSERT_EQ(env.GetActiveEffects().size(), 0u);
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -470,8 +459,8 @@ TEST(TestEffectClearedOnReset) {
 // - Tick 2: Telegraph ends, active phase starts, damage applied
 // - Tick 3: Effect finished and removed
 TEST(TestDamageScenario_SingleCell_HitOnTelegraphEnd) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_damage_1";
@@ -510,8 +499,6 @@ TEST(TestDamageScenario_SingleCell_HitOnTelegraphEnd) {
   ASSERT_EQ(player->GetHealth(), initial_hp - 1);  // Damage applied!
   // Effect should have transitioned to active phase and then removed
   // (active_ticks=1, so after applying it's finished)
-
-  registry.Clear();
 }
 
 // Scenario: Player dodges damage by moving out
@@ -519,8 +506,8 @@ TEST(TestDamageScenario_SingleCell_HitOnTelegraphEnd) {
 // - Tick 1: Player moves to (3,4)
 // - Tick 2: Damage applied at (3,3) but player is at (3,4) - MISS!
 TEST(TestDamageScenario_PlayerDodges) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_dodge_dmg";
@@ -552,8 +539,6 @@ TEST(TestDamageScenario_PlayerDodges) {
   // Tick 2: Damage applies at (3,3) but player is at (3,4)
   env.Step({EncodeAction(MovementAction::Stay)});
   ASSERT_EQ(player->GetHealth(), initial_hp);  // Still no damage - dodged!
-
-  registry.Clear();
 }
 
 // Scenario: 3x3 AoE damage effect
@@ -561,8 +546,8 @@ TEST(TestDamageScenario_PlayerDodges) {
 // - Player at (3,4) is within area - should take damage
 // - Another test: Player at (3,5) is outside area - should NOT take damage
 TEST(TestDamageScenario_AoE_HitsAdjacentCell) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_aoe_3x3";
@@ -595,13 +580,11 @@ TEST(TestDamageScenario_AoE_HitsAdjacentCell) {
   // Tick 2: Telegraph phase ends (ticks_remaining goes from 1 to 0, transitions to active)
   env.Step({EncodeAction(MovementAction::Stay)});
   ASSERT_EQ(player->GetHealth(), initial_hp - 2);  // Damage applied on transition!
-
-  registry.Clear();
 }
 
 TEST(TestDamageScenario_AoE_MissesOutsideArea) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_aoe_miss";
@@ -633,15 +616,13 @@ TEST(TestDamageScenario_AoE_MissesOutsideArea) {
   // Tick 2: Damage activates but player is outside 3x3 area
   env.Step({EncodeAction(MovementAction::Stay)});
   ASSERT_EQ(player->GetHealth(), initial_hp);  // No damage - outside area
-
-  registry.Clear();
 }
 
 // Scenario: Filter test - Effect targets Enemy but player is Companion
 // - Effect should NOT damage player (wrong faction filter)
 TEST(TestDamageScenario_FilterMismatch) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_enemy_only";
@@ -668,8 +649,6 @@ TEST(TestDamageScenario_FilterMismatch) {
 
   // Player should NOT take damage (wrong faction)
   ASSERT_EQ(player->GetHealth(), initial_hp);
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -679,8 +658,8 @@ TEST(TestDamageScenario_FilterMismatch) {
 // Scenario: Push in all 4 directions
 // - Verify direction rotation works correctly
 TEST(TestPushScenario_AllDirections) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   // Push north (dy=-1 in CSV, which is up = negative row)
   EffectConfig cfg;
@@ -744,14 +723,12 @@ TEST(TestPushScenario_AllDirections) {
     ASSERT_EQ(player->GetPosition().row, 4);
     ASSERT_EQ(player->GetPosition().col, 2);  // 4 - 2 = 2
   }
-
-  registry.Clear();
 }
 
 // Scenario: Push blocked by wall at distance 1
 TEST(TestPushScenario_BlockedByWall) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_push_wall2";
@@ -782,14 +759,12 @@ TEST(TestPushScenario_BlockedByWall) {
   // Should stop at (3,4) - one before the wall
   ASSERT_EQ(player->GetPosition().row, 3);
   ASSERT_EQ(player->GetPosition().col, 4);
-
-  registry.Clear();
 }
 
 // Scenario: Push into world boundary
 TEST(TestPushScenario_BlockedByBoundary) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_push_boundary";
@@ -816,14 +791,12 @@ TEST(TestPushScenario_BlockedByBoundary) {
   // Should stop at row 1 (wall at row 0)
   ASSERT_EQ(player->GetPosition().row, 1);
   ASSERT_EQ(player->GetPosition().col, 3);
-
-  registry.Clear();
 }
 
 // Scenario: Push with 0 distance = no movement
 TEST(TestPushScenario_ZeroDistance) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_push_zero";
@@ -850,8 +823,6 @@ TEST(TestPushScenario_ZeroDistance) {
   // No movement
   ASSERT_EQ(player->GetPosition().row, 3);
   ASSERT_EQ(player->GetPosition().col, 3);
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -864,8 +835,8 @@ TEST(TestPushScenario_ZeroDistance) {
 // - Tick 2: Third activation
 // - Tick 3: Effect removed
 TEST(TestLoopScenario_ThreeActivations) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_loop_3x";
@@ -902,15 +873,13 @@ TEST(TestLoopScenario_ThreeActivations) {
   env.Step({EncodeAction(MovementAction::Stay)});
   ASSERT_EQ(player->GetHealth(), 7);  // No more damage
   ASSERT_EQ(env.GetActiveEffects().size(), 0u);  // Effect removed
-
-  registry.Clear();
 }
 
 // Scenario: Effect with telegraph + loop
 // Each loop goes through telegraph -> active
 TEST(TestLoopScenario_WithTelegraph) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_loop_tele";
@@ -951,8 +920,6 @@ TEST(TestLoopScenario_WithTelegraph) {
   // Tick 4: Effect finished
   env.Step({EncodeAction(MovementAction::Stay)});
   ASSERT_EQ(env.GetActiveEffects().size(), 0u);
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -961,8 +928,8 @@ TEST(TestLoopScenario_WithTelegraph) {
 
 // Scenario: Two effects hitting same target
 TEST(TestMultipleEffects_BothHitSameTarget) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg1;
   cfg1.name = "sc_multi_1";
@@ -997,14 +964,12 @@ TEST(TestMultipleEffects_BothHitSameTarget) {
 
   // Both apply immediately (no telegraph)
   ASSERT_EQ(player->GetHealth(), 10 - 2 - 3);  // 5 HP remaining
-
-  registry.Clear();
 }
 
 // Scenario: Effect at different positions, player walks into one
 TEST(TestMultipleEffects_PlayerWalksIntoEffect) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_walk_into";
@@ -1036,8 +1001,6 @@ TEST(TestMultipleEffects_PlayerWalksIntoEffect) {
   env.Step({EncodeAction(MovementAction::Right)});
   ASSERT_EQ(player->GetPosition().col, 3);  // Now at effect position
   ASSERT_EQ(player->GetHealth(), initial_hp - 1);  // Damage applied!
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -1047,8 +1010,8 @@ TEST(TestMultipleEffects_PlayerWalksIntoEffect) {
 TEST(TestTelegraphPreventsDirectDamage) {
   // Critical test: Verify telegraph phase does NOT apply damage
   // Damage should ONLY apply when transitioning from telegraph to active
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "telegraph_test";
@@ -1090,14 +1053,12 @@ TEST(TestTelegraphPreventsDirectDamage) {
 
   ASSERT_EQ(player->GetHealth(), initial_hp - 2);  // Damage applied!
   // Effect should be removed after completing
-
-  registry.Clear();
 }
 
 TEST(TestTelegraphAllowsDodge) {
   // Verify that player can dodge during telegraph and avoid damage
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "dodge_test";
@@ -1139,8 +1100,6 @@ TEST(TestTelegraphAllowsDodge) {
   env.Step({EncodeAction(MovementAction::Stay)});
   ASSERT_EQ(player->GetHealth(), initial_hp);  // Still no damage
   ASSERT_TRUE(env.GetActiveEffects().empty());
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -1149,8 +1108,8 @@ TEST(TestTelegraphAllowsDodge) {
 
 TEST(TestEffectStacking_TwoEffectsSameTarget) {
   // Critical test: Multiple effects hitting the same target should all apply
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg1;
   cfg1.name = "stack_effect_1";
@@ -1187,14 +1146,12 @@ TEST(TestEffectStacking_TwoEffectsSameTarget) {
   // Both effects have telegraph_ticks=0, so damage applies immediately
   // Player should take BOTH damages: 2 + 3 = 5 total
   ASSERT_EQ(player->GetHealth(), initial_hp - 5);
-
-  registry.Clear();
 }
 
 TEST(TestEffectStacking_ThreeEffectsDifferentTimings) {
   // Test stacking with different telegraph timings
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig instant;
   instant.name = "instant_dmg";
@@ -1248,8 +1205,6 @@ TEST(TestEffectStacking_ThreeEffectsDifferentTimings) {
   // Tick 2: delayed_2 activates (3 more damage)
   env.Step({EncodeAction(MovementAction::Stay)});
   ASSERT_EQ(player->GetHealth(), initial_hp - 1 - 2 - 3);
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -1258,8 +1213,8 @@ TEST(TestEffectStacking_ThreeEffectsDifferentTimings) {
 
 TEST(TestMultiTargetAoE_ThreeCompanions) {
   // Critical test: Effect should hit ALL companions in AoE
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "multi_aoe";
@@ -1293,14 +1248,12 @@ TEST(TestMultiTargetAoE_ThreeCompanions) {
   ASSERT_EQ(agents[0]->GetHealth(), hp0 - 1);
   ASSERT_EQ(agents[1]->GetHealth(), hp1 - 1);
   ASSERT_EQ(agents[2]->GetHealth(), hp2 - 1);
-
-  registry.Clear();
 }
 
 TEST(TestMultiTargetAoE_PartialHit) {
   // Test that only companions WITHIN area are hit
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "partial_aoe";
@@ -1333,14 +1286,12 @@ TEST(TestMultiTargetAoE_PartialHit) {
   ASSERT_EQ(agents[0]->GetHealth(), hp0 - 2);
   ASSERT_EQ(agents[1]->GetHealth(), hp1 - 2);
   ASSERT_EQ(agents[2]->GetHealth(), hp2);  // NO DAMAGE - outside area
-
-  registry.Clear();
 }
 
 TEST(TestMultiTargetAoE_ExactDamageValues) {
   // Verify exact damage amounts, not just "decreased"
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "exact_dmg_aoe";
@@ -1370,8 +1321,6 @@ TEST(TestMultiTargetAoE_ExactDamageValues) {
   // Verify EXACT damage values
   ASSERT_EQ(agents[0]->GetHealth(), 20 - 7);  // 13, not "less than 20"
   ASSERT_EQ(agents[1]->GetHealth(), 15 - 7);  // 8, not "less than 15"
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -1379,8 +1328,8 @@ TEST(TestMultiTargetAoE_ExactDamageValues) {
 // =============================================================================
 
 TEST(TestHealScenario_NegativeDamageHeals) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   EffectConfig cfg;
   cfg.name = "sc_heal";
@@ -1405,13 +1354,11 @@ TEST(TestHealScenario_NegativeDamageHeals) {
 
   env.SpawnEffect("sc_heal", EffectTarget::AtCell(pos));
   ASSERT_EQ(player->GetHealth(), 7);  // 5 + 2 = 7
-
-  registry.Clear();
 }
 
 TEST(TestEffectOnDeadAgentIsNoOp) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   // Register a damage effect
   EffectConfig cfg;
@@ -1445,8 +1392,6 @@ TEST(TestEffectOnDeadAgentIsNoOp) {
   // Health should remain unchanged (dead agent should not take further damage)
   ASSERT_EQ(target->GetHealth(), dead_hp);
   ASSERT_FALSE(target->IsAlive());
-
-  registry.Clear();
 }
 
 // =============================================================================
@@ -1455,10 +1400,10 @@ TEST(TestEffectOnDeadAgentIsNoOp) {
 
 // Companion 0 on (3,3) facing a 1-HP enemy agent on (3,4); an effect from the
 // enemy (`telegraph` ticks, then `active` ticks of 1 damage each) is aimed at
-// the companion. Returns the enemy.
+// the companion. Returns the enemy. The caller holds a ScopedEffectRegistry
+// declared before `env` (the effect points into the registry).
 static Agent* PendingStrikeScene(SynchroEnv& env, int telegraph, int active) {
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
   EffectConfig cfg;
   cfg.name = "wind_up";
   cfg.telegraph_ticks = telegraph;
@@ -1484,6 +1429,7 @@ static const Action kStrikeRight = EncodeAction(MovementAction::Right, InteractA
 static const Action kIdle = EncodeAction(MovementAction::Stay);
 
 TEST(TestDeadAttackersTelegraphedEffectIsCancelled) {
+  ScopedEffectRegistry scoped_registry;
   SynchroEnv env(8, 8, 1, 1, 0, 42);
   Agent* enemy = PendingStrikeScene(env, 2, 1);
   Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
@@ -1494,10 +1440,10 @@ TEST(TestDeadAttackersTelegraphedEffectIsCancelled) {
   env.Step({kIdle, kIdle});
   env.Step({kIdle, kIdle});
   ASSERT_EQ(companion->GetHealth(), hp);
-  EffectConfigRegistry::Instance().Clear();
 }
 
 TEST(TestLivingAttackersTelegraphedEffectLands) {
+  ScopedEffectRegistry scoped_registry;
   SynchroEnv env(8, 8, 1, 1, 0, 42);
   Agent* enemy = PendingStrikeScene(env, 2, 1);
   Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
@@ -1506,12 +1452,12 @@ TEST(TestLivingAttackersTelegraphedEffectLands) {
   env.Step({kIdle, kIdle});
   ASSERT_TRUE(enemy->IsAlive());
   ASSERT_EQ(companion->GetHealth(), hp - 1);
-  EffectConfigRegistry::Instance().Clear();
 }
 
 // Only pending (telegraphed) phases are cancelled: an effect already active
 // when its source dies runs its course.
 TEST(TestDeadAttackersActiveEffectRunsItsCourse) {
+  ScopedEffectRegistry scoped_registry;
   SynchroEnv env(8, 8, 1, 1, 0, 42);
   Agent* enemy = PendingStrikeScene(env, 0, 3);  // Active at once: 1 damage
   Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
@@ -1523,13 +1469,12 @@ TEST(TestDeadAttackersActiveEffectRunsItsCourse) {
   ASSERT_EQ(companion->GetHealth(), hp - 1);
   env.Step({kIdle, kIdle});
   ASSERT_EQ(companion->GetHealth(), hp - 2);
-  EffectConfigRegistry::Instance().Clear();
 }
 
 // A looping effect whose source died is cancelled when it winds up again.
 TEST(TestDeadAttackersLoopIsCancelledAtItsNextWindUp) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
   EffectConfig cfg;
   cfg.name = "looping_strike";
   cfg.telegraph_ticks = 1;
@@ -1555,7 +1500,6 @@ TEST(TestDeadAttackersLoopIsCancelledAtItsNextWindUp) {
   for (int i = 0; i < 4; ++i) env.Step({kIdle, kIdle});
   ASSERT_EQ(companion->GetHealth(), hp - 1);
   ASSERT_TRUE(env.GetActiveEffects().empty());
-  registry.Clear();
 }
 
 // A looping effect with no wind-up (telegraph_ticks 0) restarts straight into
@@ -1563,8 +1507,8 @@ TEST(TestDeadAttackersLoopIsCancelledAtItsNextWindUp) {
 // -1 (forever) or a count. Returns the companion's health lost over 3 steps
 // after the spawn-time hit, the tower killed right after the spawn or not.
 static int NoWindUpLoopDamage(int loop, bool kill_tower) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
   EffectConfig cfg;
   cfg.name = "pulse";
   cfg.telegraph_ticks = 0;
@@ -1588,7 +1532,6 @@ static int NoWindUpLoopDamage(int loop, bool kill_tower) {
   if (kill_tower) tower->TakeDamage(tower->GetHealth());
   for (int i = 0; i < 3; ++i) env.Step({kIdle, kIdle});
   const bool gone = env.GetActiveEffects().empty();
-  registry.Clear();
   if (kill_tower && !gone) throw std::runtime_error("the dead tower's loop is still active");
   return hp - companion->GetHealth();
 }
@@ -1607,8 +1550,8 @@ TEST(TestLivingSourcesNoWindUpLoopKeepsHitting) {
 // effect's source follows its agent even when the saved ids had gaps, and a
 // source naming no saved agent loads as no source.
 TEST(TestLoadedEffectKeepsItsSource) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
   EffectConfig cfg;
   cfg.name = "wind_up";
   cfg.telegraph_ticks = 2;
@@ -1649,7 +1592,6 @@ TEST(TestLoadedEffectKeepsItsSource) {
   snap.effects[0].source_id = 42;  // No saved agent
   loaded.LoadSnapshot(snap);
   ASSERT_EQ(loaded.GetActiveEffects()[0].source_id, kInvalidObjectId);
-  registry.Clear();
 }
 
 // =============================================================================

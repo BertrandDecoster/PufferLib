@@ -16,6 +16,11 @@
 // 1.2.1 (additive, struct layouts unchanged): Companions_EndReason and
 // companions_get_end_reason; the EpisodeEnd event carries the reason in
 // effect_id.
+// Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
+// is neither a builtin nor one of the snapshot's own "skills" is rejected
+// (companions_load_snapshot / _json return false, the error names the agent,
+// slot and skill; "" still means "attack"). Levels saved earlier with such
+// slots load no more: regenerate them.
 // A minor bump may break the ABI (1.1 did): consumers pin major.minor, not
 // just major, and rebuild against the matching header.
 //
@@ -56,8 +61,9 @@
 //   health_source_id = caster (-1 for a zone), tag_fresh = the agent did not
 //   carry the tag just before this landing.
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
-//   reported once, on the step where done becomes true: the steps a host
-//   keeps playing afterwards (done stays true) do not repeat it.
+//   reported once per false->true transition of done, on the step where it
+//   happens: the steps a host keeps playing afterwards (done stays true) do
+//   not repeat it; reset and snapshot loads start a new episode.
 //   effect_id = the Companions_EndReason (see companions_get_end_reason).
 // A step reports at most Companions_MAX_EVENTS events, in the order above.
 // When there are more, the ones past the cap are dropped, except EpisodeEnd:
@@ -290,7 +296,10 @@ typedef struct {
 typedef struct {
   Companions_Position position;
   Companions_CellKind kind;
-  Companions_ObjectId occupant_id;  // Companions_INVALID_ID if empty
+  // The living occupant, or a dead one not walked over (a corpse walked over
+  // and left drops out: read the dead from the agents, not by cell);
+  // Companions_INVALID_ID if empty
+  Companions_ObjectId occupant_id;
 } Companions_CellState;
 
 // Active effect instance

@@ -53,7 +53,9 @@ class AggroLens : public TaskLens {
                        std::vector<float>& obs) const override;
   int AdditionalVectorObsSize() const override { return 8; }
 
-  // Any living FSM agent. AggroEnv ends the Aggro task without one.
+  // Any living FSM agent, whatever its faction (not filtered, like IsSuccess:
+  // any living FSM agent on the target wins). AggroEnv ends the Aggro task
+  // without one.
   static bool HasLivingEnemy(const BaseEnv& env);
 
  private:

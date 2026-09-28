@@ -22,6 +22,7 @@
 #include "../src/env/base_env.h"
 #include "../src/env/synchro_env.h"
 #include "../src/viz/renderer.h"
+#include "effect_registry_guard.h"
 
 using namespace companions;
 
@@ -526,6 +527,24 @@ TEST(TestObjectManagerClear) {
 
   ASSERT_EQ(mgr.GetNumActors(), 0);
   ASSERT_FALSE(mgr.IsOccupied({1, 1}));
+}
+
+// operator= replaces the objects: the FSM-agent cache (GetAllAgentFSMs) is
+// rebuilt from the new ones instead of pointing into the old ones.
+TEST(TestObjectManagerAssignmentRefreshesTheFSMCache) {
+  ObjectManager a;
+  a.CreateActor<AgentFSM>({1, 1});
+  ASSERT_EQ(a.GetAllAgentFSMs().size(), 1u);  // Now cached
+  ObjectManager b;
+  b.CreateActor<Player>({2, 2});
+  const ObjectId f1 = b.CreateActor<AgentFSM>({3, 3})->GetId();
+  const ObjectId f2 = b.CreateActor<AgentFSM>({4, 4})->GetId();
+  a = b;
+  const std::vector<AgentFSM*>& fsms = a.GetAllAgentFSMs();
+  ASSERT_EQ(fsms.size(), 2u);
+  ASSERT_TRUE(fsms[0] == a.GetObject(f1) || fsms[0] == a.GetObject(f2));
+  ASSERT_TRUE(fsms[1] == a.GetObject(f1) || fsms[1] == a.GetObject(f2));
+  ASSERT_TRUE(fsms[0] != fsms[1]);
 }
 
 // =============================================================================
@@ -2108,8 +2127,8 @@ TEST(TestStatusTypeValuesAreStable) {
 
 TEST(TestStatusEffectAppliedByEffect) {
   // Test that effects with status_applied field apply statuses
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
 
   // Register a stun effect
   EffectConfig stun_config;
@@ -2135,8 +2154,6 @@ TEST(TestStatusEffectAppliedByEffect) {
 
   // Effect applies immediately since telegraph_ticks = 0
   ASSERT_TRUE(agent->IsStunned());
-
-  registry.Clear();
 }
 
 // =============================================================================

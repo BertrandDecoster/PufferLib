@@ -21,6 +21,7 @@
 #include "../src/env/aggro_lens.h"
 #include "../src/env/dodge_lens.h"
 #include "../src/env/synchro_lens.h"
+#include "effect_registry_guard.h"
 
 using namespace companions;
 
@@ -904,8 +905,8 @@ TEST(TestLoadSnapshotMapsTheFSMTargetThroughSavedIds) {
 // effect's own 2-tick telegraph). Once the strike is pending, the companion
 // kills the goblin or not. True when the strike hurt the companion.
 static bool GoblinStrikeLands(bool kill_during_wind_up) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
-  registry.Clear();
   EffectConfig strike;
   strike.name = "goblin_wind_up";
   strike.telegraph_ticks = 2;
@@ -941,7 +942,6 @@ static bool GoblinStrikeLands(bool kill_during_wind_up) {
     ASSERT_FALSE(goblin->IsAlive());
   }
   for (int i = 0; i < 3; ++i) env.Step({stay, stay});
-  registry.Clear();
   return companion->GetHealth() < hp;
 }
 

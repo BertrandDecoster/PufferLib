@@ -1854,6 +1854,20 @@ TEST(TestLegalActionsDropUnusableSkills) {
   ASSERT_EQ(LegalSkillActions(env, 0).size(), static_cast<size_t>(kNumMovementActions));
   a->ApplyStatus(StatusType::Stunned, 2);                  // Stunned: forced to stay
   ASSERT_TRUE(LegalSkillActions(env, 0).empty());
+  ASSERT_EQ(env.LegalActions(0).size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.LegalActions(0)[0] == kStay);
+}
+
+// Any stunned agent is forced to stay (GatherIntentions): Stay is all it has.
+TEST(TestLegalActionsOfTheStunnedAreStayOnly) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 3});
+  Agent* enemy = AddAgent(env, {5, 5}, Faction::ENEMY);
+  enemy->ApplyStatus(StatusType::Stunned, 2);
+  ASSERT_EQ(env.LegalActions(1).size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.LegalActions(1)[0] == kStay);
+  ASSERT_EQ(env.LegalActions(0).size(), static_cast<size_t>(2 * kNumMovementActions));
 }
 
 TEST(TestLegalActionsOfNonCompanionsAndTheDeadListNoSkill) {
