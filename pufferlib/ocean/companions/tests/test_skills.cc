@@ -1058,6 +1058,185 @@ TEST(TestVortexSkipsADeadAgentOnTheRing) {
 }
 
 // =============================================================================
+// Zone (cell) tag Tests
+// =============================================================================
+
+TEST(TestZoneTagsWhoeverStandsThere) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", kPermanentTag));
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, env.GetTagTable().Find("wet"));
+  ASSERT_EQ(env.GetCellTag({3, 2}).duration, kPermanentTag);
+  ASSERT_EQ(env.GetCellTag({3, 3}).tag, kInvalidTag);
+  Agent* a = Place(env, 0, {3, 1});
+  env.Step({EncodeAction(MovementAction::Right)});
+  ASSERT_TRUE(Has(env, a, "wet"));
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].cause, std::string("zone"));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].source, kInvalidObjectId);
+  ASSERT_EQ(env.GetLastTagsApplied()[0].agent, a->GetId());
+  ASSERT_TRUE(env.GetLastTagsApplied()[0].fresh);
+  env.Step({kStay});  // Still there: re-applied, not fresh
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+  ASSERT_FALSE(env.GetLastTagsApplied()[0].fresh);
+  env.Step({EncodeAction(MovementAction::Right)});  // Off the zone: nothing lands
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+  ASSERT_TRUE(Has(env, a, "wet"));  // Permanent
+}
+
+TEST(TestTimedZoneKeepsTheTagWhileStandingThere) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", 2));
+  Agent* a = Place(env, 0, {3, 1});
+  env.Step({EncodeAction(MovementAction::Right)});  // Lands with 2 left
+  for (int i = 0; i < 3; ++i) {
+    env.Step({kStay});  // Ticked to 1 at the start, re-landed at 2
+    ASSERT_TRUE(Has(env, a, "wet"));
+    ASSERT_EQ(a->GetTags()[0].duration, 2);
+  }
+  // The last landing was during the last step on the zone (t): the tag is
+  // present after steps t and t+1, gone after t+2.
+  env.Step({EncodeAction(MovementAction::Right)});  // t+1: walks off
+  ASSERT_TRUE(Has(env, a, "wet"));
+  env.Step({kStay});  // t+2
+  ASSERT_FALSE(Has(env, a, "wet"));
+}
+
+TEST(TestZoneTagsFollowSkillMotions) {
+  {  // A lightningStep lands on an oil cell
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    env.SetCellTag({3, 5}, "oil", kPermanentTag);
+    Agent* a = Place(env, 0, {3, 1});
+    env.SetCompanionSkill(a->GetId(), 0, "lightningStep");
+    env.Step({Use(MovementAction::Right), kStay});
+    ASSERT_TRUE(a->GetPosition() == (Position{3, 5}));
+    ASSERT_TRUE(Has(env, a, "oil"));
+  }
+  {  // A fireball pushes `up` from (2,4) onto a wet cell (1,4)
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    env.SetCellTag({1, 4}, "wet", kPermanentTag);
+    Agent* caster = Place(env, 0, {3, 1});  // target (3,4)
+    Agent* up = Place(env, 1, {2, 4});
+    env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+    env.Step({Use(MovementAction::Right), kStay});
+    ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));
+    ASSERT_TRUE(Has(env, up, "wet"));
+    const auto& landed = env.GetLastTagsApplied();
+    ASSERT_EQ(landed.size(), static_cast<size_t>(2));
+    ASSERT_EQ(landed[0].cause, std::string("fireball"));
+    ASSERT_EQ(landed[1].cause, std::string("zone"));
+  }
+  {  // A vortex pulls `up` from (2,4) onto a wet centre (3,4)
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    env.SetCellTag({3, 4}, "wet", kPermanentTag);
+    Agent* caster = Place(env, 0, {3, 1});
+    Agent* up = Place(env, 1, {2, 4});
+    env.SetCompanionSkill(caster->GetId(), 0, "vortex");
+    env.Step({Use(MovementAction::Right), kStay});
+    ASSERT_TRUE(up->GetPosition() == (Position{3, 4}));
+    ASSERT_TRUE(Has(env, up, "wet"));
+  }
+  {  // A teleport lands on a wet cell
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    env.SetCellTag({3, 4}, "wet", kPermanentTag);
+    Agent* a = Place(env, 0, {3, 1});
+    env.SetCompanionSkill(a->GetId(), 0, "teleport");
+    env.Step({Use(MovementAction::Right)});
+    ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
+    ASSERT_TRUE(Has(env, a, "wet"));
+  }
+}
+
+TEST(TestZonesApplyBeforeSkills) {
+  // A target walking into water and hit the same step: "wet" lands first.
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.SetCellTag({3, 3}, "wet", kPermanentTag);
+  Agent* caster = Place(env, 0, {3, 1});  // fireball target (3,4)
+  Agent* walker = Place(env, 1, {3, 4});  // walks left onto the wet cell, on the ring
+  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+  env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Left)});
+  const auto& landed = env.GetLastTagsApplied();
+  ASSERT_TRUE(landed.size() >= 2);
+  ASSERT_EQ(landed[0].cause, std::string("zone"));
+  ASSERT_EQ(landed[0].agent, walker->GetId());
+  ASSERT_EQ(landed[1].cause, std::string("fireball"));
+  ASSERT_EQ(landed[1].agent, walker->GetId());
+}
+
+TEST(TestClearCellTag) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", kPermanentTag));
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "", 0));
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
+  Agent* a = Place(env, 0, {3, 1});
+  env.Step({EncodeAction(MovementAction::Right)});
+  ASSERT_FALSE(Has(env, a, "wet"));
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+}
+
+TEST(TestSetCellTagRejectsOutOfBoundsAndBadDurations) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_FALSE(env.SetCellTag({-1, 2}, "wet", kPermanentTag));
+  ASSERT_FALSE(env.SetCellTag({3, 10}, "wet", kPermanentTag));
+  ASSERT_EQ(env.GetCellTag({-1, 2}).tag, kInvalidTag);
+  ASSERT_EQ(env.GetCellTag({3, 10}).tag, kInvalidTag);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", 3));
+  ASSERT_FALSE(env.SetCellTag({3, 2}, "oil", 0));   // Unchanged
+  ASSERT_FALSE(env.SetCellTag({3, 2}, "oil", -2));  // Unchanged
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, env.GetTagTable().Find("wet"));
+  ASSERT_EQ(env.GetCellTag({3, 2}).duration, 3);
+  ASSERT_EQ(env.GetTagTable().Find("oil"), kInvalidTag);  // Not interned either
+}
+
+TEST(TestResetClearsCellTags) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.SetCellTag({3, 2}, "wet", kPermanentTag);
+  env.Reset();
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
+
+  env.SetCellTag({3, 2}, "wet", kPermanentTag);
+  Snapshot saved = env.SaveSnapshot();
+  env.LoadSnapshot(saved);
+  ASSERT_EQ(env.GetCellTag({3, 2}).tag, kInvalidTag);
+}
+
+TEST(TestResetWithD4ClearsCellTags) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42, 1);  // A rotation
+  env.SetCellTag({2, 3}, "wet", kPermanentTag);
+  env.Reset();  // Cleared (by LoadSnapshot) before the transform, which asserts it
+  for (int r = 0; r < env.GetRows(); ++r) {
+    for (int c = 0; c < env.GetCols(); ++c) {
+      ASSERT_EQ(env.GetCellTag({r, c}).tag, kInvalidTag);
+    }
+  }
+}
+
+TEST(TestCloneKeepsCellTags) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  env.SetCellTag({3, 2}, "wet", 2);
+  std::unique_ptr<BaseEnv> copy = env.Clone();
+  ASSERT_EQ(copy->GetCellTag({3, 2}).tag, copy->GetTagTable().Find("wet"));
+  ASSERT_EQ(copy->GetCellTag({3, 2}).duration, 2);
+
+  SynchroEnv assigned(10, 10, 1, 1, 0, 7);
+  assigned = env;
+  ASSERT_EQ(assigned.GetCellTag({3, 2}).tag, assigned.GetTagTable().Find("wet"));
+  env.SetCellTag({3, 2}, "", 0);  // Deep copies: they keep theirs
+  ASSERT_TRUE(assigned.GetCellTag({3, 2}).tag != kInvalidTag);
+  ASSERT_TRUE(copy->GetCellTag({3, 2}).tag != kInvalidTag);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

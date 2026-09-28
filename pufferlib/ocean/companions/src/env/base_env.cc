@@ -50,7 +50,8 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       tags_(other.tags_),
       skills_(other.skills_),
       last_skill_uses_(other.last_skill_uses_),
-      last_tags_applied_(other.last_tags_applied_) {
+      last_tags_applied_(other.last_tags_applied_),
+      cell_tags_(other.cell_tags_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -74,6 +75,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     skills_ = other.skills_;
     last_skill_uses_ = other.last_skill_uses_;
     last_tags_applied_ = other.last_tags_applied_;
+    cell_tags_ = other.cell_tags_;
   }
   return *this;
 }
@@ -111,6 +113,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
 
   // Update FSM after movements (so FSM sees actual positions)
   UpdateAgentFSM();
+
+  // Zones land on whoever stands on them, before casts and skills
+  ApplyZoneTags();
 
   // Resolve interactions (attacks, effects)
   ResolveInteractions();
@@ -179,6 +184,8 @@ void BaseEnv::UpdateAgentFSM() {
 
 void BaseEnv::ApplyD4Transform() {
   if (d4_transform_ == 0) return;  // Identity - no transformation needed
+  // Runs at the end of LoadSnapshot, which cleared them.
+  assert(cell_tags_.empty() && "cell tags are not D4-transformed");
 
   D4Transform transform = ToD4Transform(d4_transform_);
   int old_rows = rows_;
@@ -888,7 +895,41 @@ void BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration,
 }
 
 void BaseEnv::MoveActor(Actor& actor, Position to) {
-  if (to != actor.GetPosition()) object_manager_->UpdatePosition(actor.GetId(), to);
+  if (to == actor.GetPosition()) return;
+  object_manager_->UpdatePosition(actor.GetId(), to);
+  auto* agent = dynamic_cast<Agent*>(&actor);
+  if (agent && agent->IsAlive()) ApplyZoneTag(*agent);
+}
+
+bool BaseEnv::SetCellTag(Position cell, const std::string& tag, int duration) {
+  if (!grid_->IsInBounds(cell)) return false;
+  if (!tag.empty() && (duration == 0 || duration < kPermanentTag)) return false;
+  if (cell_tags_.empty()) {
+    if (tag.empty()) return true;  // Nothing to clear
+    cell_tags_.assign(static_cast<size_t>(rows_ * cols_), CellTag{});
+  }
+  CellTag& c = cell_tags_[static_cast<size_t>(cell.row * cols_ + cell.col)];
+  c = tag.empty() ? CellTag{} : CellTag{tags_.Intern(tag), duration};
+  return true;
+}
+
+BaseEnv::CellTag BaseEnv::GetCellTag(Position cell) const {
+  if (cell_tags_.empty() || !grid_->IsInBounds(cell)) return {};
+  assert(cell_tags_.size() == static_cast<size_t>(rows_ * cols_));
+  return cell_tags_[static_cast<size_t>(cell.row * cols_ + cell.col)];
+}
+
+void BaseEnv::ApplyZoneTag(Agent& agent) {
+  CellTag c = GetCellTag(agent.GetPosition());
+  if (c.tag == kInvalidTag) return;
+  LandTag(agent, tags_.Name(c.tag), c.duration, kInvalidObjectId, "zone");
+}
+
+void BaseEnv::ApplyZoneTags() {
+  if (cell_tags_.empty()) return;
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    if (agent->IsAlive()) ApplyZoneTag(*agent);
+  }
 }
 
 std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const {
@@ -1204,6 +1245,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   object_manager_->Clear();
   effect_system_->Clear();
   ClearStepReports();  // They name the old world's ObjectIds
+  ClearCellTags();     // World state (and ApplyD4Transform below expects none)
 
   // Load agents
   for (const auto& as : snapshot.agents) {

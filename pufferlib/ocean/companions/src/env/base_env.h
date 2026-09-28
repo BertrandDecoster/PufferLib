@@ -232,6 +232,21 @@ class BaseEnv {
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
 
+  // Zones: a cell may carry one tag, landed (with `duration`, cause "zone",
+  // source kInvalidObjectId) on every living agent standing on it after the
+  // regular movement of every Step (before legacy casts and skills; `fresh`
+  // tells arrivals apart), and on any agent a skill moves onto it. Cell tags are
+  // world state: copied with the env, cleared by LoadSnapshot (so by every Reset).
+  struct CellTag {
+    TagId tag = kInvalidTag;
+    int duration = kPermanentTag;
+  };
+  // "" clears the cell. False (cell unchanged) out of bounds, or for a tag with
+  // a duration of 0 or below kPermanentTag (as ApplyTagTo).
+  bool SetCellTag(Position cell, const std::string& tag, int duration);
+  CellTag GetCellTag(Position cell) const;  // {} when none / out of bounds
+  void ClearCellTags() { cell_tags_.clear(); }
+
   // ==========================================================================
   // Snapshot Support - Save/Load complete world state
   // ==========================================================================
@@ -294,7 +309,10 @@ class BaseEnv {
                        ObjectId caster, std::vector<Agent*>& affected);
   void LandTag(Agent& agent, const std::string& tag, int duration,
                ObjectId source, const std::string& cause);
-  void MoveActor(Actor& actor, Position to);  // Skill motions (zone tags follow in a later task)
+  // Skill motions: a living agent moved onto a zone cell gets its tag.
+  void MoveActor(Actor& actor, Position to);
+  void ApplyZoneTag(Agent& agent);  // The tag of the cell it stands on, if any
+  void ApplyZoneTags();             // Every living agent (after movement)
   // Roots `on_area` (the affected agents on the area, centre included, not the
   // dash path) before anything moves, then PushOut (the ring, away from the
   // centre) / PullIn (one ring thing, by priority, into a free centre).
@@ -319,6 +337,8 @@ class BaseEnv {
   SkillBook skills_;
   std::vector<SkillUse> last_skill_uses_;
   std::vector<TagApplication> last_tags_applied_;
+  // Row-major rows_ * cols_ once a zone is set; empty = no zones.
+  std::vector<CellTag> cell_tags_;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;
