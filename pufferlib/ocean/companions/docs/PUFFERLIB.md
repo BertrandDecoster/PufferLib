@@ -244,16 +244,20 @@ Because reset happens in C, `PufferEnv.done` returns `False` (no Python-level re
 
 ### Termination Conditions (Companions)
 
-Episode ends when either condition is met in `synchro_env.cc:170-171`:
+`BaseEnv::IsDone()` is `IsEnvDone() || IsTeamDown()`. SynchroEnv's own rule
+(`synchro_env.cc`, `SynchroEnv::IsEnvDone`):
 
 ```cpp
-bool SynchroEnv::IsDone() const {
+bool SynchroEnv::IsEnvDone() const {
     return success_ || tick_ >= horizon_;
 }
 ```
 
 - **Success**: All agents reach synchro cells (`success_ = true`)
 - **Horizon**: Maximum steps reached (`tick_ >= horizon_`)
+- **Team down** (every env): the team's downs reach `max_downs` (3 by default), or
+  every companion is down at once (a companion at 0 HP goes down; see `CLAUDE.md`,
+  "Downs"). `GetEndReason()` says which one ended the episode
 
 ---
 

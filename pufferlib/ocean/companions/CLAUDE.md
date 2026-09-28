@@ -34,8 +34,10 @@ companions/                    # Standalone pure C++ implementation
 - One executable per area, registered with ctest (`CMakeLists.txt`); on Windows (VS
   multi-config) they land in `build/bin/Release/` (e.g. `companions_skills_test.exe`)
 - Skills, tags, zones, Rooted, friendly fire, SkillBook, line / landing rules:
-  `companions_skills_test` (`tests/test_skills.cc`); their snapshot v4 JSON and C API
+  `companions_skills_test` (`tests/test_skills.cc`); their snapshot JSON and C API
   sides live in `tests/test_snapshot_json.cc`, `tests/test_snapshot.cc`, `tests/test_api.cc`
+- Downs, `IsAffectable`, the team counter, `TeamDown`, down reports, v5 snapshots:
+  `companions_downs_test` (`tests/test_downs.cc`)
 - A test that registers its own effects holds a `ScopedEffectRegistry`
   (`tests/effect_registry_guard.h`), declared before its envs: it clears the global
   `EffectConfigRegistry` back to the builtins on entry and on exit, even when an
@@ -61,7 +63,8 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
 - Actors are Objects that have a position on the grid
 - There can be at most a single living Actor in a Cell. Dead agents stay where they
   died, and living ones may walk / land onto their cell (collisions, `IsOccupied`,
-  `CanLand` ignore the dead)
+  `CanLand` ignore the dead). A downed companion (see Downs) is alive: it keeps its
+  cell and blocks it
 - `ObjectManager`'s actor grid (`GetActorAt`) holds one actor per cell: a dead actor
   never takes a cell from a living one (`PlaceInGrid`, used by `CreateActor`,
   `UpdatePosition` and `RebuildGrid`, which the copy ctor / `operator=`, the D4
@@ -86,12 +89,13 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
    `attack` (`kDefaultSkill`), so every companion, RL envs' included, strikes the
    faced cell on `Skill1` (1 damage, allies spared) instead of moving
  - A skill that can't be used (a name the book lacks, cooldown, disabled slot,
-   rooted + self-moving skill, dead caster) is dropped and the movement applies as with `None`
+   rooted + self-moving skill, dead or downed caster) is dropped and the movement applies as with `None`
  - `BaseEnv::LegalActions`: Stay and each move onto an in-bounds walkable cell (interact
    `None`), plus, for a companion, each enabled slot (`slot < kEnabledSkillSlots`) it
    `CanUseSkill`, as `Skill1` / `Skill2` with each of the 5 aims (a wall-facing aim
-   included). FSM / plain agents: movement only; the dead and the stunned (any kind):
-   Stay only; the rooted (any kind): no moves (Stay, and a companion's skills). Only the
+   included). FSM / plain agents: movement only; the dead, the downed and the stunned
+   (any kind): Stay only (`GatherIntentions` forces the downed and the stunned to
+   Stay); the rooted (any kind): no moves (Stay, and a companion's skills). Only the
    C++ tests call it today
  - The legacy generic companion cast (an on/off flag that cast an effect for an EMPTY
    slot 0) is gone, with its C API setter / getter and EffectSpawned events (C API 1.2.0)
@@ -113,9 +117,11 @@ tags, roots, cooldowns. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 **Step order** (`BaseEnv::Step`):
 1. Clear the per-step reports, `BeginStep` on every agent
 2. `PreStep` (enemy FSM) → `GatherIntentions` → `ResolveCollisions` → `ExecuteValidatedMovements`
-3. `ApplyZoneTags` (every living agent on a zone cell)
+3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed)
 4. `ResolveInteractions` → `ResolveSkills`
-5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), `tick_++`, `PostStep`, rewards (TaskLens)
+5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), the downs
+   since the last report (`GetLastDowns`, after `EndStep`), `tick_++`, `PostStep`,
+   rewards (TaskLens)
 
 **Step timers** (`Agent::BeginStep` / `EndStep`): tag and status durations and cooldowns all
 count steps and all tick at the END of `Step`. A timer of n is in effect for the n next
@@ -129,7 +135,8 @@ What a host reads between steps is always the number of steps to come it covers.
   actors are crossed
 - Landing rule: something moved never ends on a hole or on another living actor
 - Ground target: the cell `range` away by the line rule (may be a hole)
-- Projectile: the first living agent the skill affects within `range`, else the last cell reached
+- Projectile: the first agent the skill affects within `range` (a downed one is passed
+  over), else the last cell reached
 - Dash: up to `distance` by the line rule, lands on the furthest valid cell (else stays)
 - Teleport: exactly `distance`, else `distance - 1`, ... 1 (ignores what lies between,
   walls included), else stays
@@ -174,18 +181,19 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
 | `motion_distance` (`distance`) | 0 | Dash / teleport / push distance (pull is always 1) |
 | `tag_path` | false | Dash: agents crossed on the way are affected too |
 | `tags` | [] | `{tag, duration}` landed on every affected agent |
-| `damage` | 0 | Health every affected agent (area and dash path) loses, via `Agent::TakeDamage` (Marked ×1.5, truncated: 1 stays 1, 2 → 3; 0 HP = dead, as with effects) |
+| `damage` | 0 | Health every affected agent (area and dash path) loses, via `Agent::TakeDamage` (Marked ×1.5, truncated: 1 stays 1, 2 → 3; 0 HP = dead, a companion down, as with effects) |
 | `root_steps` | 0 | Affected agents on the area are rooted for this many next steps |
 | `cooldown` | 0 | See above |
 | `friendly_fire` | true | Off: only agents NOT of the caster's faction are affected (allies and caster get no tag, damage, push/pull or root; a projectile flies past them) |
 | `self_tags` / `self_motion` / `self_root` / `self_damage` | true | With friendly fire, the caster is affected when it stands in its own area (after its own motion); each flag can spare it that effect |
 
-- "Affected" (`BaseEnv::Affects`) = living, passes `filter`, and `friendly_fire` or not of
-  the caster's faction. Push / pull also move living non-agent actors (no faction check)
+- "Affected" (`BaseEnv::Affects`) = affectable (alive, not downed), passes `filter`, and
+  `friendly_fire` or not of the caster's faction. Push / pull also move living non-agent
+  actors (no faction check)
 - Resolution of one skill (`UseSkill`): caster motion and centre → affected agents
   (area, then dash path) → tags → damage → root (area only, before anything moves) →
-  push / pull. An agent the damage kills keeps the tags (reported) but is neither
-  rooted nor moved, and is no longer affected by anything (dead)
+  push / pull. An agent the damage kills or downs keeps the tags (reported) but is
+  neither rooted nor moved, and is no longer affected by anything
 - Damage is not reported as events yet (`Companions_Event_AgentDamaged` is declared,
   not implemented): read it from the agents' health
 - `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, damage, root_steps,
@@ -207,7 +215,7 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 
 **Zones** (`SetCellTag` / `GetCellTag` / `ClearCellTags`):
 - One tag per cell ("" clears), with the duration it lands with; the zone itself never expires
-- Landed (cause `"zone"`, source -1) on every living agent standing there after regular
+- Landed (cause `"zone"`, source -1) on every affectable agent standing there after regular
   movement (before casts and skills), and on any agent a skill motion lands there
   (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
 - World state: copied with the env, saved in snapshots, replaced by `LoadSnapshot`
@@ -221,6 +229,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   unusable, `CanMoveItself`), can still use non-moving skills (a rooted FSM enemy still
   attacks), can be pushed / pulled
 - Statuses are step timers (see Step timers): `root_steps = n` roots for the n next steps
+- Going down clears a companion's statuses, and a downed one accepts none (see Downs)
 
 **Per-step reports** (cleared at the start of every `Step` and by `LoadSnapshot`, hence every `Reset`):
 
@@ -236,19 +245,22 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   AgentDowned, EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
 - C API (`src/api/companions_api.h`, version 1.3.0: 1.2 removed the legacy cast,
   1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
-  `Companions_GameState.downs` / `max_downs`, `Companions_End_TeamDown` (4); struct
-  layouts changed):
+  `Companions_GameState.downs` / `max_downs` / `team_down`, `Companions_End_TeamDown` (4),
+  `Companions_Event_AgentDowned` (17); struct layouts changed, consumers rebuild):
   `companions_set_agent_skill` (`""` / NULL = `attack`), `companions_apply_tag` /
   `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`, `companions_get_tag_name` /
   `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;
   name buffers are 32 bytes (31 + NUL)
 
-**Levels** bring their skills, zones and slots through snapshot JSON v4 (`core/snapshot_json.cc`):
+**Levels** bring their skills, zones, slots and downs through snapshot JSON v5
+(`core/snapshot_json.cc`; versions 2..5 load, binary snapshots follow the same number):
 - Top level `"skills"`: SkillConfig objects (keys above; all but `name` optional)
 - Top level `"cell_tags"`: `{row, col, tag, duration}` (duration absent = -1)
+- Top level `"max_downs"` (v5; absent = 3, must be >= 1)
 - Per agent: `"tags"` (`{tag, duration}`), `"skills"` (slot names; `""` or missing =
   `attack`), `"cooldowns"`;
-  statuses as `"status_type": "stunned" | "marked" | "rooted"`
+  statuses as `"status_type": "stunned" | "marked" | "rooted"`; companions only (v5):
+  `"downed"`, `"times_downed"` (absent = false, 0; see Downs for their rules)
 - Unknown keys in a skill / tag / zone are rejected; `Snapshot::ValidateSkillsTagsZones`
   runs before any change (and when JSON / binary snapshots are parsed)
 - Slots always hold a real skill: a non-empty slot naming neither a builtin nor one of
@@ -262,6 +274,52 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - `LoadSnapshot` resets the SkillBook to the builtins, then defines the snapshot's skills
   (they may retune builtins, but not `attack`), so a level's skills never leak into
   the next load. `SaveSnapshot` writes the whole book, builtins included, but `attack`
+
+### Downs
+A companion at 0 HP goes DOWN instead of dying; the team's downs can lose the level.
+Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/test_downs.cc`.
+
+- **Going down** (`Agent::TakeDamage` → `OnZeroHealth`: an agent dies, a `Companion`
+  goes down): alive (`IsAlive()`), 0 HP, `IsDowned()`, `times_downed + 1`; its statuses
+  are cleared, its tags and skills kept; its timers keep running (`EndStep` ticks it: tags
+  expire, cooldowns recover). Skill damage, effects (enemy strikes, the host's `kill` /
+  `hit`) all go through it. Nothing gets a companion up yet (revive: phase 2): it stays
+  down until `Reset` / `LoadSnapshot`
+- **Inert and untouched.** `Agent::IsAffectable()` = alive and not downed: the check
+  for everything that hits, heals, tags, statuses, pushes / pulls or targets an agent
+  (`TakeDamage`, `Heal`, `ApplyTag` / `LandTag`, `ApplyStatus`, zones, `Affects`,
+  `AreaMotion`, effects and effect pushes, projectiles pass over it). The downed does
+  not act (`GatherIntentions`: Stay; `CanUseSkill` false; `LegalActions`: Stay only).
+  Enemies ignore it (`FindClosestCompanion`) and drop it as a target (`AggroState`, a
+  wind-up locks no downed target). It still blocks its cell (collisions, landing)
+- `Agent::IsDead()` stays health-based (a downed companion `IsDead()`): DodgeEnv /
+  DodgeLens count it as fallen (DodgeEnv: done, `TaskFailed`, unless the team is down)
+- **Team counter**: `GetDowns()` = the sum of `Companion::GetTimesDowned()` (every down
+  counts). `GetMaxDowns()` / `SetMaxDowns(n)` (n >= 1, else false; `kDefaultMaxDowns` =
+  3, `core/types.h`). `IsTeamDown()` = downs >= max_downs, or no companion is affectable
+  (a dead companion does not stand; an env without companions is never team down)
+- **Done**: `BaseEnv::IsDone()` is non-virtual, `IsEnvDone() || IsTeamDown()`; envs
+  implement the protected `IsEnvDone()` (success, horizon, a failure they honour), so
+  every env gets the team verdict. `EndReason::TeamDown` (4): see "Why an episode ended"
+- **max_downs is level data**: snapshots own it. `LoadSnapshot` sets it from the
+  snapshot (absent = 3), so a host that wants another value sets it AFTER a load. A
+  generated `Reset` loads through `LoadGeneratedLevel`, which keeps the env's current
+  max_downs. A mid-episode `SetMaxDowns` re-evaluates the verdict (raised above the
+  downs, `IsDone()` can turn false again)
+- **Reports**: `GetLastDowns()`, one companion id per down, filled after `EndStep`
+  (`Companion::TakeUnreportedDowns`): a down between two steps (a host effect) is
+  reported once, by the next step. Downs a snapshot loads count as reported
+- **Snapshots** (v5): per companion `downed` / `times_downed` (companion types only:
+  Companion, Player, NPCCompanion; `IsCompanionType`), top-level `max_downs`.
+  `ValidateSkillsTagsZones` rejects max_downs < 1, downs on a non-companion,
+  `times_downed` < 0, and a downed companion with HP > 0, `times_downed` < 1 or
+  statuses. `LoadSnapshot` restores health with `RestoreHealth` (no damage: a companion
+  saved at 0 HP and not downed does not go down on load), then the downs last
+- **C API 1.3.0**: `Companions_AgentState.downed`; `Companions_GameState.downs`,
+  `max_downs` and `team_down` (the live `IsTeamDown()`, independent of the latched end
+  reason: a team down after the horizon stays `Horizon`, `team_down` says it);
+  `Companions_End_TeamDown` (4); `Companions_Event_AgentDowned` (17, subject_id,
+  position), after TagApplied and before EpisodeEnd
 
 ### Pathfinding
 A* with Euclidean heuristic in `pathfinder.cc`:
@@ -331,8 +389,9 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 - Smart spawning: companions and target outside aggro range
 - Episode end: success when a living FSM enemy stands on the target; failure at the
   horizon or as soon as no living FSM enemy remains (killed: the lure can't succeed
-  any more, `AggroLens::IsFailed`). `AggroEnv::IsDone` applies the dead-enemy rule only
-  while the active lens is the Aggro lens; it never consults another lens's `IsDone`
+  any more, `AggroLens::IsFailed`). `AggroEnv::IsEnvDone` applies the dead-enemy rule
+  only while the active lens is the Aggro lens; it never consults another lens's `IsDone`.
+  As in every env, the team being down also ends it (`TeamDown`, see Downs)
 - Rewards: +1 win, `kTimePenalty` (-0.01) per other step. The failure is terminal:
   `BaseEnv::Step` latches it after the rewards (`IsTaskFailed`, like `success_`; the
   first outcome is final; `SetTaskLens` / `LoadSnapshot` / `Reset` clear both with
@@ -353,19 +412,22 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
   `EndReason::TaskFailed`, see below
 
 **Why an episode ended** (`BaseEnv::GetEndReason`, `EndReason` in `base_env.h`):
-what ended the episode. `None` while `IsDone()` is false, else `Success` (latched),
-else `TaskFailed` when the env is done even without the horizon
-(`IsDoneWithoutHorizon`, even on the horizon step): a latched lens failure the env's
-`IsDone` honours (AggroEnv's dead enemy under the Aggro lens) or the env's own end rule
-(a Dodge companion died in DodgeEnv, an Aggro enemy killed between steps), else
-`Horizon` (tick >= horizon). A latched failure the env's `IsDone` ignores did not end
-the episode: a Dodge lens on SynchroEnv, or on AggroEnv (whose `IsDone` honours a
-latched failure only under the Aggro lens), with a companion down ends at the horizon,
-as `Horizon`. The reason is fixed when done first becomes true (latched by `Step`,
-`SetTaskLens*` and `LoadSnapshot`, cleared by `ResetOutcome`): a kill after the horizon,
-or after loading a snapshot at the horizon, keeps `Horizon`. C API (1.2.1, additive,
-no struct layout change): `Companions_EndReason` (same values: None 0, Success 1,
-Horizon 2, TaskFailed 3) from `companions_get_end_reason(env)`, fixed on the step or
+what ended the episode. `None` while `IsDone()` is false, else `Success` (latched: a
+success on the step the team goes down is a success), else `TeamDown` (`IsTeamDown()`,
+any env: the level is lost), else `TaskFailed` when the env is done even without the
+horizon (`IsDoneWithoutHorizon`, even on the horizon step): a latched lens failure the
+env's `IsEnvDone` honours (AggroEnv's dead enemy under the Aggro lens) or the env's own
+end rule (a Dodge companion at 0 HP in DodgeEnv, an Aggro enemy killed between steps),
+else `Horizon` (tick >= horizon). A latched failure the env's `IsEnvDone` ignores did
+not end the episode: a Dodge lens on SynchroEnv, or on AggroEnv (whose `IsEnvDone`
+honours a latched failure only under the Aggro lens), with a companion at 0 HP (and the
+team not down) ends at the horizon, as `Horizon`. The reason is fixed when done first
+becomes true (latched by `Step`, `SetTaskLens*` and `LoadSnapshot`, cleared by
+`ResetOutcome`): a kill or a team down after the horizon, or after loading a snapshot at
+the horizon, keeps `Horizon` (`IsTeamDown()` / the C API's `team_down` still tell the
+team is down). C API (1.2.1, additive, no struct layout change; 1.3 added `TeamDown` 4):
+`Companions_EndReason` (same values: None 0, Success 1, Horizon 2, TaskFailed 3,
+TeamDown 4) from `companions_get_end_reason(env)`, fixed on the step or
 lens change where done becomes true, kept while a host plays on; reset and snapshot
 loads take the env's (done / success / reason: a snapshot loaded at the horizon is done
 at once, as `Horizon`, and the next step reports EpisodeEnd); the EpisodeEnd event
