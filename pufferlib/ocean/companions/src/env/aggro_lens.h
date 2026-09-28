@@ -21,6 +21,18 @@ namespace companions {
 // was already paid). A killed-enemy episode thus always returns
 // horizon * kTimePenalty + kEnemyDeadPenalty, one kEnemyDeadPenalty below
 // timing out, whatever the step of the kill: killing is never a shortcut.
+// A kill after a latched success is no failure (the first outcome is final):
+// it pays kTimePenalty, like any step with the enemy off the target after a
+// success.
+//
+// This design assumes UNCLIPPED rewards. pufferl.py clamps every reward to
+// [-1, 1] (r = torch.clamp(r, -1, 1)): the failure penalty (always below -1
+// before the horizon) is flattened to -1, and a kill on step k then returns
+// (k - 1) * kTimePenalty - 1, which beats timing out (horizon * kTimePenalty)
+// as soon as horizon > 100 + (k - 1): an early kill becomes a shortcut.
+// Training Aggro through pufferl needs either no clamp or a time penalty
+// small enough that timing out stays above -1, e.g. kTimePenalty =
+// -0.5 / horizon (time out -0.5; any kill <= -1).
 //
 // "Done" is a verdict for RL episodes, not a stop: the env never refuses to
 // step. A host that keeps playing after a kill (a game layer) just ignores

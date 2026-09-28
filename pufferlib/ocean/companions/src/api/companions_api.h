@@ -373,7 +373,8 @@ typedef struct {
   Companions_FSMStateType fsm_to;
 
   // For Effect events (and SkillUsed: slot / skill name; TagApplied: tag id /
-  // tag name, see "Event System" at the top):
+  // tag name; EpisodeEnd: the Companions_EndReason, see "Event System" at the
+  // top):
   int32_t effect_id;
   char effect_name[Companions_EFFECT_NAME_LEN];
 
@@ -384,7 +385,7 @@ typedef struct {
   // For TagApplied (health_source_id = caster, -1 for a zone):
   bool tag_fresh;  // The agent did not carry the tag just before this landing
 
-  // For EpisodeEnd:
+  // For EpisodeEnd (effect_id = the Companions_EndReason):
   bool episode_success;
   float episode_reward;
   int32_t episode_steps;

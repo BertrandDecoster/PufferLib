@@ -283,10 +283,12 @@ Location: `companions/src/core/fsm/`
   without a wind-up (`telegraph_ticks = 0` loops too).
   Effects without a source (`kInvalidObjectId`, host-spawned) are never cancelled
 - `source_id` is an ObjectId: `LoadSnapshot` re-issues agent ids (0, 1, ... in the
-  saved order) and maps effect sources, effect actor targets and FSM `target_id`
-  through the snapshot's own agent `id`s (first wins on a duplicate; an id naming no
-  saved agent loads as `kInvalidObjectId`), so gaps from removed objects or
-  hand-authored ids never misattribute an effect
+  saved order) and maps effect sources, effect actor targets, FSM `target_id` and
+  agent annotations (`AnnotationTarget::Agent`) through the snapshot's own agent
+  `id`s (first wins on a duplicate; an id naming no saved agent loads as
+  `kInvalidObjectId`, and an ActorList entry or agent annotation naming none is
+  dropped), so gaps from removed objects or hand-authored ids never misattribute an
+  effect or a tag
 - A companion that kills the attacker during step t cancels a strike due at the end
   of step t: skills resolve before effects tick
 
@@ -323,15 +325,26 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
   tick)` = `kTimePenalty * (horizon - tick + 1) + kEnemyDeadPenalty` (the rest of the
   episode's time cost, that step included, plus -1); later steps pay 0. A kill at any
   step returns `horizon * kTimePenalty - 1`, one below timing out: killing is never
-  a shortcut, whatever the horizon. `AggroEnv::MinUtility` is that return
+  a shortcut, whatever the horizon. `AggroEnv::MinUtility` is that return. A kill
+  after a latched success is no failure: it pays `kTimePenalty` (the enemy is off the
+  target, as after any success)
+- The reward design assumes UNCLIPPED returns. `pufferl.py` clamps rewards to [-1, 1]
+  (`torch.clamp(r, -1, 1)`): the failure penalty flattens to -1, and an early kill
+  then beats timing out once the horizon exceeds ~100 steps. Training Aggro through
+  pufferl needs either no clamp or a smaller time penalty (e.g. `kTimePenalty =
+  -0.5 / horizon`); neither is done today
 - `done` is a verdict for RL episodes, never a stop: the env keeps stepping. A host
   that keeps playing after a kill (a game layer) ignores `done` for that reason:
   `EndReason::TaskFailed`, see below
 
 **Why an episode ended** (`BaseEnv::GetEndReason`, `EndReason` in `base_env.h`):
 `None` while `IsDone()` is false, else `Success` (latched), `TaskFailed` (the latched
-lens failure), `Horizon` (tick >= horizon), else `TaskFailed` (an env's own end rule:
-a Dodge companion died, an Aggro enemy killed between steps). C API (1.2.1, additive,
+lens failure: Aggro's dead enemy, Dodge's companion down, even on the horizon step),
+`Horizon` (tick >= horizon), else `TaskFailed` (an env's own end rule: an Aggro enemy
+killed between steps). The reason is fixed when done first becomes true (latched by
+`Step` and `SetTaskLens*`, cleared by `ResetOutcome`): a kill after the horizon keeps
+`Horizon`. `AggroEnv::IsDone` honours a latched failure only under the Aggro lens (a
+Dodge death under AggroEnv ends at the horizon, as `TaskFailed`). C API (1.2.1, additive,
 no struct layout change): `Companions_EndReason` (same values: None 0, Success 1,
 Horizon 2, TaskFailed 3) from `companions_get_end_reason(env)`, fixed on the step or
 lens change where done becomes true, kept while a host plays on, cleared by reset and

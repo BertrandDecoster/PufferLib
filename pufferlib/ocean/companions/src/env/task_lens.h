@@ -59,9 +59,11 @@ class TaskLens {
   // IsDone: true if episode should terminate (success OR failure/timeout)
   // IsSuccess: true if task was completed successfully
   // IsFailed: true once the task can no longer succeed (e.g. Aggro: the enemy
-  //   to lure is dead). BaseEnv::Step latches it like success (IsTaskFailed);
-  //   a lens rewards the failure on the step it happens (not yet latched)
-  //   and never again. Default: a task that only ends at the horizon.
+  //   to lure is dead; Dodge: a companion is down). BaseEnv::Step latches it
+  //   like success (IsTaskFailed; the first outcome is final, so a failure
+  //   after a latched success is not latched). A lens may reward the failure
+  //   on the step it happens (not yet latched) and never again (Aggro).
+  //   Default: a task that only ends at the horizon.
   virtual bool IsDone(const BaseEnv& env) const = 0;
   virtual bool IsSuccess(const BaseEnv& env) const = 0;
   virtual bool IsFailed(const BaseEnv& env) const {
