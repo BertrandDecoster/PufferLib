@@ -4,6 +4,7 @@
 #ifndef COMPANIONS_CORE_EFFECT_CONFIG_H_
 #define COMPANIONS_CORE_EFFECT_CONFIG_H_
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -88,15 +89,26 @@ class EffectConfigRegistry {
   // Register a config (for testing/programmatic setup)
   void RegisterConfig(EffectConfig config);
 
-  // Clear all configs
+  // Register the built-in effects every env can rely on without effects.csv:
+  // melee attacks referenced by snapshot enemies ("zombie_attack",
+  // "goblin_attack"), the companion's generic cast ("companion_cast", spawned
+  // for InteractAction::Attack), and generic host-applied effects ("kill",
+  // "hit", "stun") that a game layer spawns through companions_spawn_effect.
+  // Names already registered (e.g. loaded from CSV) are left untouched.
+  // Runs when the registry is created and after Clear().
+  void RegisterBuiltins();
+
+  // Clear all configs (the builtins are registered again)
   void Clear();
 
   // Get all registered effect names
   std::vector<std::string> GetAllNames() const;
 
  private:
-  EffectConfigRegistry() = default;
-  std::vector<EffectConfig> configs_;
+  EffectConfigRegistry();  // Registers the builtins (thread-safe static init)
+  // A deque: active effects hold `const EffectConfig*` into it, and deque
+  // push_back never moves existing elements.
+  std::deque<EffectConfig> configs_;
 };
 
 // =============================================================================

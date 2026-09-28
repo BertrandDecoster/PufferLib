@@ -163,7 +163,8 @@ std::vector<uint8_t> Snapshot::Serialize() const {
 
   // Magic number and version
   WriteValue(buffer, static_cast<uint32_t>(0x534E4150));  // "SNAP"
-  WriteValue(buffer, static_cast<uint32_t>(2));           // Version 2 (adds annotations)
+  // Version 2 added annotations; version 3 adds agent kind + attack config.
+  WriteValue(buffer, static_cast<uint32_t>(3));
 
   // Grid dimensions
   WriteValue(buffer, rows);
@@ -222,6 +223,16 @@ std::vector<uint8_t> Snapshot::Serialize() const {
     // Cadence
     WriteVector(buffer, agent.cadence);
     WriteValue(buffer, agent.tick);
+
+    // v3: concrete class + attack configuration
+    WriteString(buffer, agent.kind);
+    if (agent.has_fsm) {
+      WriteValue(buffer, agent.fsm.has_attack);
+      WriteString(buffer, agent.fsm.attack_effect);
+      WriteValue(buffer, agent.fsm.telegraph_ticks);
+      WriteValue(buffer, agent.fsm.attack_ticks);
+      WriteValue(buffer, agent.fsm.recovery_ticks);
+    }
   }
 
   // Effects
@@ -281,7 +292,7 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     throw std::runtime_error("Invalid snapshot magic number");
   }
   uint32_t version = ReadValue<uint32_t>(ptr, end);
-  if (version != 1 && version != 2) {
+  if (version < 1 || version > 3) {
     throw std::runtime_error("Unsupported snapshot version");
   }
 
@@ -401,6 +412,17 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     // Cadence
     agent.cadence = ReadVector<int>(ptr, end);
     agent.tick = ReadValue<int>(ptr, end);
+
+    if (version >= 3) {
+      agent.kind = ReadString(ptr, end);
+      if (agent.has_fsm) {
+        agent.fsm.has_attack = ReadValue<bool>(ptr, end);
+        agent.fsm.attack_effect = ReadString(ptr, end);
+        agent.fsm.telegraph_ticks = ReadValue<int>(ptr, end);
+        agent.fsm.attack_ticks = ReadValue<int>(ptr, end);
+        agent.fsm.recovery_ticks = ReadValue<int>(ptr, end);
+      }
+    }
   }
 
   // Effects

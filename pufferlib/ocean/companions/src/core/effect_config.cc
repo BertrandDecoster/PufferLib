@@ -3,6 +3,7 @@
 
 #include "effect_config.h"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -33,20 +34,23 @@ bool EffectConfig::IsPositionAffected(int rel_row, int rel_col,
   int rotated_row = rel_row;
   int rotated_col = rel_col;
 
+  // The pattern is rotated with the effect (a NORTH-facing pattern turned to
+  // face EAST puts its "ahead" cell to the east), so a world offset maps back
+  // to the pattern through the inverse rotation.
   switch (dir) {
     case Direction::Up:  // NORTH - no rotation
       break;
-    case Direction::Right:  // EAST - rotate 90° CW
-      rotated_row = rel_col;
-      rotated_col = -rel_row;
+    case Direction::Right:  // EAST: world east (0,+1) -> pattern north (-1,0)
+      rotated_row = -rel_col;
+      rotated_col = rel_row;
       break;
     case Direction::Down:  // SOUTH - rotate 180°
       rotated_row = -rel_row;
       rotated_col = -rel_col;
       break;
-    case Direction::Left:  // WEST - rotate 90° CCW
-      rotated_row = -rel_col;
-      rotated_col = rel_row;
+    case Direction::Left:  // WEST: world west (0,-1) -> pattern north (-1,0)
+      rotated_row = rel_col;
+      rotated_col = -rel_row;
       break;
   }
 
@@ -154,12 +158,17 @@ Position ActiveEffect::GetCenter(const ObjectManager& mgr) const {
 // EffectConfigRegistry
 // =============================================================================
 
+EffectConfigRegistry::EffectConfigRegistry() { RegisterBuiltins(); }
+
 EffectConfigRegistry& EffectConfigRegistry::Instance() {
   static EffectConfigRegistry instance;
   return instance;
 }
 
-void EffectConfigRegistry::Clear() { configs_.clear(); }
+void EffectConfigRegistry::Clear() {
+  configs_.clear();
+  RegisterBuiltins();  // Envs rely on them; keep them available
+}
 
 void EffectConfigRegistry::RegisterConfig(EffectConfig config) {
   // Check for duplicate
@@ -170,6 +179,42 @@ void EffectConfigRegistry::RegisterConfig(EffectConfig config) {
     }
   }
   configs_.push_back(std::move(config));
+}
+
+void EffectConfigRegistry::RegisterBuiltins() {
+  auto add = [this](const std::string& name, int telegraph, int active,
+                    int recovery, TargetFilter filter, int damage,
+                    const std::string& status, int status_duration,
+                    bool visible, std::vector<int> area = {1}) {
+    if (GetConfig(name) != nullptr) return;
+    EffectConfig config;
+    config.name = name;
+    config.telegraph_ticks = telegraph;
+    config.active_ticks = active;
+    config.recovery_ticks = recovery;
+    config.area = std::move(area);
+    config.filter = filter;
+    config.damage = damage;
+    config.status_applied = status;
+    config.status_duration = status_duration;
+    config.telegraph_visible = visible;
+    configs_.push_back(std::move(config));
+  };
+
+  // Same values as data/effects.csv.
+  add("zombie_attack", 2, 1, 2, TargetFilter::Companion, 1, "", 0, false);
+  add("goblin_attack", 1, 1, 1, TargetFilter::Companion, 1, "", 0, false);
+  // A companion's cast: a two-cell bolt (the faced cell and the one beyond,
+  // spawned on the faced cell). It applies nothing by itself: what it means
+  // (which skill, which consequence) is decided by the host.
+  add("companion_cast", 0, 1, 0, TargetFilter::Enemy, 0, "", 0, true,
+      {0, 1, 0,
+       0, 1, 0,
+       0, 0, 0});
+  // Generic consequences a host applies to whoever stands on a cell.
+  add("kill", 0, 1, 0, TargetFilter::All, 999, "", 0, false);
+  add("hit", 0, 1, 0, TargetFilter::All, 1, "", 0, false);
+  add("stun", 0, 1, 0, TargetFilter::All, 0, "stunned", 3, false);
 }
 
 const EffectConfig* EffectConfigRegistry::GetConfig(

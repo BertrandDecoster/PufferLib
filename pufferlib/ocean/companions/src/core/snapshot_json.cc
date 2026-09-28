@@ -179,7 +179,12 @@ json FSMSnapshotToJson(const FSMSnapshot& fsm) {
     {"attack_area_width", fsm.attack_area_width},
     {"attack_area_height", fsm.attack_area_height},
     {"attack_damage", fsm.attack_damage},
-    {"attack_filter", static_cast<int>(fsm.attack_filter)}
+    {"attack_filter", static_cast<int>(fsm.attack_filter)},
+    {"has_attack", fsm.has_attack},
+    {"attack_effect", fsm.attack_effect},
+    {"telegraph_ticks", fsm.telegraph_ticks},
+    {"attack_ticks", fsm.attack_ticks},
+    {"recovery_ticks", fsm.recovery_ticks}
   };
 
   json patrol = json::array();
@@ -226,6 +231,13 @@ FSMSnapshot JsonToFSMSnapshot(const json& j) {
     fsm.attack_filter = static_cast<TargetFilter>(j.at("attack_filter").get<int>());
   }
 
+  // Attack configuration (optional; absent = no attack)
+  fsm.has_attack = j.value("has_attack", false);
+  fsm.attack_effect = j.value("attack_effect", std::string());
+  fsm.telegraph_ticks = j.value("telegraph_ticks", 1);
+  fsm.attack_ticks = j.value("attack_ticks", 1);
+  fsm.recovery_ticks = j.value("recovery_ticks", 1);
+
   return fsm;
 }
 
@@ -244,6 +256,9 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
     {"color", ActorColorToString(static_cast<ActorColor>(agent.color))},
     {"alive", agent.alive}
   };
+  if (!agent.kind.empty()) {
+    j["kind"] = agent.kind;
+  }
 
   // Statuses
   json statuses = json::array();
@@ -279,6 +294,7 @@ AgentSnapshot JsonToAgentSnapshot(const json& j) {
   agent.direction = static_cast<int>(StringToDirection(j.at("direction").get<std::string>()));
   agent.color = static_cast<int>(StringToActorColor(j.at("color").get<std::string>()));
   agent.alive = j.at("alive").get<bool>();
+  agent.kind = j.value("kind", std::string());
 
   // Statuses
   for (const auto& status_json : j.at("statuses")) {

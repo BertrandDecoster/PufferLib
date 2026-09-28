@@ -379,6 +379,21 @@ static void AddMovementEvents(Companions_Env* wrapper) {
   }
 }
 
+// One EffectSpawned event per companion cast of this step (casts must be
+// enabled): subject is the caster, position the cell it cast on.
+static void AddCastEvents(Companions_Env* wrapper) {
+  auto* env = wrapper->env.get();
+  for (const auto& cast : env->GetLastCasts()) {
+    Companions_Event evt = {};
+    evt.type = Companions_Event_EffectSpawned;
+    evt.tick = env->GetTick();
+    evt.subject_id = cast.caster;
+    evt.position = ToAPIPosition(cast.cell);
+    std::strncpy(evt.effect_name, "companion_cast", Companions_EFFECT_NAME_LEN - 1);
+    wrapper->events.push_back(evt);
+  }
+}
+
 // =============================================================================
 // Public API Implementation
 // =============================================================================
@@ -651,8 +666,9 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->success = env->env->IsSuccess();
   env->last_rewards = result.rewards;
 
-  // Generate movement events
+  // Generate movement and cast events
   AddMovementEvents(env);
+  AddCastEvents(env);
 
   // Add episode end event if done
   if (env->done) {
@@ -770,6 +786,74 @@ COMPANIONS_API void companions_get_grid(const Companions_Env* env,
       out_grid[r * cols + c] = ToAPICellKind(grid.GetCell(r, c).GetKind());
     }
   }
+}
+
+COMPANIONS_API bool companions_set_cell(Companions_Env* env, int32_t row,
+                                        int32_t col, Companions_CellKind kind) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return false;
+  }
+  if (row < 0 || row >= env->env->GetRows() ||
+      col < 0 || col >= env->env->GetCols()) {
+    SetError("Position out of bounds");
+    return false;
+  }
+  companions::CellKind cpp_kind;
+  switch (kind) {
+    case Companions_CellKind_Floor: cpp_kind = companions::CellKind::Floor; break;
+    case Companions_CellKind_Wall: cpp_kind = companions::CellKind::Wall; break;
+    case Companions_CellKind_Hazard: cpp_kind = companions::CellKind::Hazard; break;
+    case Companions_CellKind_HealArea: cpp_kind = companions::CellKind::HealArea; break;
+    default:
+      SetError("Invalid cell kind");
+      return false;
+  }
+  env->env->GetMutableGrid().SetCell(row, col, cpp_kind);
+  return true;
+}
+
+COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
+                                            const char* effect_name,
+                                            int32_t row, int32_t col,
+                                            Companions_Direction direction,
+                                            Companions_ObjectId source_id) {
+  if (!env || !env->env || !effect_name) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (row < 0 || row >= env->env->GetRows() ||
+      col < 0 || col >= env->env->GetCols()) {
+    SetError("Position out of bounds");
+    return false;
+  }
+  if (!companions::EffectConfigRegistry::Instance().GetConfig(effect_name)) {
+    SetError((std::string("Unknown effect: ") + effect_name).c_str());
+    return false;
+  }
+  companions::Direction dir = companions::Direction::Up;
+  switch (direction) {
+    case Companions_Direction_Up: dir = companions::Direction::Up; break;
+    case Companions_Direction_Down: dir = companions::Direction::Down; break;
+    case Companions_Direction_Left: dir = companions::Direction::Left; break;
+    case Companions_Direction_Right: dir = companions::Direction::Right; break;
+  }
+  env->env->SpawnEffect(effect_name,
+                        companions::EffectTarget::AtCell(companions::Position{row, col}), dir,
+                        source_id);
+  return true;
+}
+
+COMPANIONS_API void companions_set_companion_cast(Companions_Env* env, bool enabled) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return;
+  }
+  env->env->SetCompanionCastEnabled(enabled);
+}
+
+COMPANIONS_API bool companions_get_companion_cast(const Companions_Env* env) {
+  return env && env->env && env->env->IsCompanionCastEnabled();
 }
 
 COMPANIONS_API int32_t companions_get_rows(const Companions_Env* env) {

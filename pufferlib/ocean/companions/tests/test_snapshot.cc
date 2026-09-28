@@ -752,12 +752,12 @@ TEST(TestSnapshotV1MigrationRoundTripsAsV2) {
   Snapshot migrated = Snapshot::Deserialize(buf_v1);
 
   std::vector<uint8_t> buf_v2 = migrated.Serialize();
-  // Serialize always writes version 2 now.
+  // Serialize always writes the current version (3: v2 + agent kind/attack).
   uint32_t magic = 0, version = 0;
   std::memcpy(&magic, buf_v2.data(), sizeof(magic));
   std::memcpy(&version, buf_v2.data() + sizeof(magic), sizeof(version));
   ASSERT_EQ(magic, (uint32_t)0x534E4150);
-  ASSERT_EQ(version, (uint32_t)2);
+  ASSERT_EQ(version, (uint32_t)3);
 
   Snapshot round = Snapshot::Deserialize(buf_v2);
   ASSERT_EQ(round.cells.size(), migrated.cells.size());

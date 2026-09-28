@@ -167,6 +167,21 @@ class BaseEnv {
                    Direction direction = Direction::Up,
                    ObjectId source_id = kInvalidObjectId);
 
+  // Companion casts. Off by default: a companion's InteractAction is then
+  // ignored, as it always was (RL envs keep their dynamics). When on, an
+  // attacking companion stays put (the movement part of its action only aims)
+  // and casts the generic "companion_cast" effect on the cell it faces. What
+  // the cast means is up to the host that turned it on.
+  void SetCompanionCastEnabled(bool enabled) { companion_cast_enabled_ = enabled; }
+  bool IsCompanionCastEnabled() const { return companion_cast_enabled_; }
+
+  struct CompanionCast {
+    ObjectId caster = kInvalidObjectId;
+    Position cell;  // The faced cell the cast was spawned on
+  };
+  // Casts resolved by the last Step (empty when casts are off).
+  const std::vector<CompanionCast>& GetLastCasts() const { return last_casts_; }
+
   // ==========================================================================
   // Snapshot Support - Save/Load complete world state
   // ==========================================================================
@@ -221,6 +236,8 @@ class BaseEnv {
   AnnotationStore annotations_;
   // Latched once the active lens reports IsSuccess. Reset via ResetSuccess.
   bool success_ = false;
+  bool companion_cast_enabled_ = false;
+  std::vector<CompanionCast> last_casts_;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;

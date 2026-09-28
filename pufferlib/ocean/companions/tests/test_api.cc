@@ -903,6 +903,156 @@ TEST(TestAnnotationsSurviveSnapshotRoundTrip) {
 }
 
 // =============================================================================
+// Companion cast + host-driven changes
+// =============================================================================
+static Companions_Env* MakeAggroZombieEnv() {
+  Companions_AggroEnvConfig config = {};
+  config.rows = 10;
+  config.cols = 10;
+  config.num_companions = 1;
+  config.patrol_square_size = 3;
+  config.horizon = 100;
+  config.d4_transform = 0;
+  config.seed = 42;
+  config.enemy_type = Companions_Enemy_Zombie;
+  config.map_complexity = 0;
+  Companions_Env* env = companions_create_aggro(&config);
+  companions_reset(env, 42);
+  return env;
+}
+
+static int32_t FindAgentIndex(Companions_Env* env, Companions_Faction faction) {
+  int32_t n = companions_get_agent_count(env);
+  for (int32_t i = 0; i < n; ++i) {
+    Companions_AgentState a;
+    if (companions_get_agent_by_index(env, i, &a) && a.faction == faction) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Default (RL) behaviour is unchanged: without companion casts, Attack is
+// ignored, the companion moves and nothing is cast.
+TEST(TestAttackIsIgnoredWhenCompanionCastsAreOff) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+  ASSERT_FALSE(companions_get_companion_cast(env));
+
+  Companions_AgentState before;
+  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &before));
+  Companions_MovementAction move = before.position.col > 1
+      ? Companions_Movement_Left : Companions_Movement_Right;
+  Companions_Action action = {move, Companions_Interact_Attack};
+  Companions_StepResult result;
+  companions_step(env, &action, 1, &result);
+
+  Companions_AgentState after;
+  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &after));
+  ASSERT_NE(after.position.col, before.position.col);
+  for (int32_t i = 0; i < result.event_count; ++i) {
+    ASSERT_NE(result.events[i].type, Companions_Event_EffectSpawned);
+  }
+  companions_destroy(env);
+}
+
+TEST(TestAttackAimsWithoutMovingAndEmitsCastEvent) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+  companions_set_companion_cast(env, true);
+  ASSERT_TRUE(companions_get_companion_cast(env));
+
+  Companions_AgentState before;
+  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &before));
+  // Aim at whichever horizontal neighbour is inside the grid.
+  Companions_MovementAction aim = before.position.col > 0
+      ? Companions_Movement_Left : Companions_Movement_Right;
+  int32_t dc = aim == Companions_Movement_Left ? -1 : 1;
+
+  Companions_Action action = {aim, Companions_Interact_Attack};
+  Companions_StepResult result;
+  companions_step(env, &action, 1, &result);
+
+  Companions_AgentState after;
+  ASSERT_TRUE(companions_get_agent_by_index(env, 0, &after));
+  ASSERT_EQ(after.position.row, before.position.row);
+  ASSERT_EQ(after.position.col, before.position.col);
+  ASSERT_EQ(after.facing, aim == Companions_Movement_Left
+      ? Companions_Direction_Left : Companions_Direction_Right);
+
+  bool found = false;
+  for (int32_t i = 0; i < result.event_count; ++i) {
+    const Companions_Event& e = result.events[i];
+    if (e.type != Companions_Event_EffectSpawned) continue;
+    found = true;
+    ASSERT_EQ(e.subject_id, before.id);
+    ASSERT_EQ(e.position.row, before.position.row);
+    ASSERT_EQ(e.position.col, before.position.col + dc);
+    ASSERT_EQ(std::string(e.effect_name), std::string("companion_cast"));
+  }
+  ASSERT_TRUE(found);
+  companions_destroy(env);
+}
+
+TEST(TestSetCellChangesKind) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  companions_reset(env, 42);
+  // The border is wall; open one border cell.
+  ASSERT_EQ(companions_get_cell(env, 0, 3), Companions_CellKind_Wall);
+  ASSERT_TRUE(companions_set_cell(env, 0, 3, Companions_CellKind_Floor));
+  ASSERT_EQ(companions_get_cell(env, 0, 3), Companions_CellKind_Floor);
+  ASSERT_FALSE(companions_set_cell(env, -1, 3, Companions_CellKind_Floor));
+  ASSERT_FALSE(companions_set_cell(nullptr, 0, 3, Companions_CellKind_Floor));
+  companions_destroy(env);
+}
+
+TEST(TestSpawnEffectKillAndStun) {
+  Companions_Env* env = MakeAggroZombieEnv();
+  int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
+  ASSERT_TRUE(zi >= 0);
+  Companions_AgentState z;
+  companions_get_agent_by_index(env, zi, &z);
+
+  ASSERT_FALSE(companions_spawn_effect(env, "no_such_effect", z.position.row,
+                                       z.position.col, Companions_Direction_Up, -1));
+  ASSERT_TRUE(companions_spawn_effect(env, "stun", z.position.row, z.position.col,
+                                      Companions_Direction_Up, -1));
+  companions_get_agent_by_index(env, zi, &z);
+  bool stunned = false;
+  for (int32_t s = 0; s < z.status_count; ++s) {
+    if (z.statuses[s].type == Companions_Status_Stunned) stunned = true;
+  }
+  ASSERT_TRUE(stunned);
+
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", z.position.row, z.position.col,
+                                      Companions_Direction_Up, -1));
+  companions_get_agent_by_index(env, zi, &z);
+  ASSERT_FALSE(z.alive);
+  companions_destroy(env);
+}
+
+TEST(TestSnapshotJsonKeepsEnemyKindAndAttack) {
+  Companions_Env* env = MakeAggroZombieEnv();
+  const char* json = companions_snapshot_to_json(env);
+  ASSERT_NOT_NULL(json);
+  std::string text(json);
+  companions_free_string(json);
+  ASSERT_TRUE(text.find("\"kind\": \"Zombie\"") != std::string::npos ||
+              text.find("\"kind\":\"Zombie\"") != std::string::npos);
+  ASSERT_TRUE(text.find("has_attack") != std::string::npos);
+
+  ASSERT_TRUE(companions_load_snapshot_json(env, text.c_str()));
+  int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
+  Companions_AgentState z;
+  ASSERT_TRUE(companions_get_agent_by_index(env, zi, &z));
+  ASSERT_EQ(z.kind, Companions_AgentKind_EnemyZombie);
+  companions_destroy(env);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {

@@ -13,6 +13,7 @@
 #include "../core/agent_config.h"
 #include "../core/cell.h"
 #include "../core/effect_config.h"
+#include "../core/fsm/enemies.h"
 #include "../core/fsm/fsm_state.h"
 #include "../core/fsm/fsm_states.h"
 #include "../core/game_logger.h"
@@ -42,7 +43,9 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       horizon_(other.horizon_),
       d4_transform_(other.d4_transform_),
       annotations_(other.annotations_),
-      success_(other.success_) {
+      success_(other.success_),
+      companion_cast_enabled_(other.companion_cast_enabled_),
+      last_casts_(other.last_casts_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
 }
@@ -60,6 +63,8 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     d4_transform_ = other.d4_transform_;
     annotations_ = other.annotations_;
     success_ = other.success_;
+    companion_cast_enabled_ = other.companion_cast_enabled_;
+    last_casts_ = other.last_casts_;
   }
   return *this;
 }
@@ -145,7 +150,8 @@ void BaseEnv::PreStep() {
   // Run FSM updates BEFORE movement resolution so FSM agents set their intentions
   for (Agent* agent : object_manager_->GetAllAgents()) {
     if (AgentFSM* fsm_agent = dynamic_cast<AgentFSM*>(agent)) {
-      if (fsm_agent->HasFSM() && fsm_agent->IsAlive()) {
+      // A stunned agent's FSM is frozen: no chasing, no wind-up, no strike.
+      if (fsm_agent->HasFSM() && fsm_agent->IsAlive() && !fsm_agent->IsStunned()) {
         fsm_agent->UpdateFSM(*this);
       }
     }
@@ -502,6 +508,18 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
 
     DecodedAction decoded = DecodeAction(actions[i]);
 
+    // A companion that attacks stays put: the movement component only aims
+    // the attack (Stay keeps the current facing).
+    if (companion_cast_enabled_ && decoded.interact == InteractAction::Attack) {
+      if (Companion* comp = dynamic_cast<Companion*>(agent)) {
+        if (auto dir = MovementToDirection(decoded.movement)) {
+          comp->SetDirection(*dir);
+        }
+        agent->SetIntention({MovementAction::Stay, InteractAction::Attack});
+        continue;
+      }
+    }
+
     // Slowed agents can only move on even ticks
     if (agent->IsSlowed() && (tick_ % 2) == 1) {
       decoded.movement = MovementAction::Stay;
@@ -738,9 +756,24 @@ std::vector<Position> BaseEnv::FindEmptyCells(
 }
 
 void BaseEnv::ResolveInteractions() {
-  // FSM attack damage is now handled via Effect system (AttackState::OnEnter spawns effect)
-  // TODO: Handle companion interact actions when implemented
-  // For now, companions always have interact = None, so nothing to do
+  // FSM attack damage is handled via the Effect system (AttackState::OnEnter
+  // spawns the effect). When companion casts are on, a companion's Attack
+  // casts the generic "companion_cast" effect on the cell it faces: the env
+  // does not know which skill this is; the host interprets the cast.
+  last_casts_.clear();
+  if (!companion_cast_enabled_) return;
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    if (!agent->IsAlive()) continue;
+    if (agent->GetExecutedAction().interact != InteractAction::Attack) continue;
+    auto* comp = dynamic_cast<Companion*>(agent);
+    if (!comp) continue;
+    Position target = ApplyMovement(comp->GetPosition(),
+                                    DirectionToMovement(comp->GetDirection()));
+    if (!grid_->IsInBounds(target)) continue;
+    SpawnEffect("companion_cast", EffectTarget::AtCell(target),
+                comp->GetDirection(), comp->GetId());
+    last_casts_.push_back({comp->GetId(), target});
+  }
 }
 
 // =============================================================================
@@ -828,6 +861,19 @@ Snapshot BaseEnv::SaveSnapshot() const {
         as.fsm.attack_area_height = ctx.current_attack.area_height;
         as.fsm.attack_damage = ctx.current_attack.damage;
         as.fsm.attack_filter = ctx.current_attack.filter;
+        // Attack configuration
+        as.fsm.has_attack = ctx.has_attack;
+        as.fsm.attack_effect = ctx.attack_effect_name;
+        as.fsm.telegraph_ticks = ctx.telegraph_ticks;
+        as.fsm.attack_ticks = ctx.attack_ticks;
+        as.fsm.recovery_ticks = ctx.recovery_ticks;
+      }
+      if (dynamic_cast<const Zombie*>(agent)) {
+        as.kind = "Zombie";
+      } else if (dynamic_cast<const Goblin*>(agent)) {
+        as.kind = "Goblin";
+      } else if (dynamic_cast<const Dragon*>(agent)) {
+        as.kind = "Dragon";
       }
       as.cadence = fsm_agent->GetCadence();
       as.tick = fsm_agent->GetTick();
@@ -906,7 +952,17 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
         agent = object_manager_->CreateActor<Companion>(as.position);
         break;
       case ObjectType::AgentFSM:
-        agent = object_manager_->CreateActor<AgentFSM>(as.position);
+        // Restore the concrete class so its movement (A*, cadence, flying)
+        // comes back with it.
+        if (as.kind == "Zombie") {
+          agent = object_manager_->CreateActor<Zombie>(as.position);
+        } else if (as.kind == "Goblin") {
+          agent = object_manager_->CreateActor<Goblin>(as.position);
+        } else if (as.kind == "Dragon") {
+          agent = object_manager_->CreateActor<Dragon>(as.position);
+        } else {
+          agent = object_manager_->CreateActor<AgentFSM>(as.position);
+        }
         break;
       case ObjectType::Agent:
       default:
@@ -963,6 +1019,13 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
         ctx.current_attack.area_height = as.fsm.attack_area_height;
         ctx.current_attack.damage = as.fsm.attack_damage;
         ctx.current_attack.filter = as.fsm.attack_filter;
+
+        // Restore attack configuration
+        ctx.has_attack = as.fsm.has_attack;
+        ctx.attack_effect_name = as.fsm.attack_effect;
+        ctx.telegraph_ticks = as.fsm.telegraph_ticks;
+        ctx.attack_ticks = as.fsm.attack_ticks;
+        ctx.recovery_ticks = as.fsm.recovery_ticks;
 
         // Restore RNG state
         if (ctx.rng) {

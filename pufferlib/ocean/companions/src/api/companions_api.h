@@ -27,10 +27,13 @@
 // - Companions_Event_AgentMoved: Agent successfully moved to new position
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
 // - Companions_Event_EpisodeEnd: Episode completed (success or timeout)
+// - Companions_Event_EffectSpawned: a companion cast (only with companion
+//   casts on, see companions_set_companion_cast): subject_id = caster,
+//   position = the faced cell, effect_name = "companion_cast".
 //
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
-// - Companions_Event_FSMTransition, Companions_Event_EffectSpawned, etc.
+// - Companions_Event_FSMTransition, other EffectSpawned sources, etc.
 
 #ifndef COMPANIONS_API_H_
 #define COMPANIONS_API_H_
@@ -449,6 +452,40 @@ COMPANIONS_API Companions_CellKind companions_get_cell(
 // out_grid must have rows * cols elements
 COMPANIONS_API void companions_get_grid(const Companions_Env* env,
                                               Companions_CellKind* out_grid);
+
+// =============================================================================
+// Host-driven changes (between steps)
+// =============================================================================
+//
+// A host that layers its own rules on top of the env (e.g. a game that knows
+// a cell is a gate, or that a combo is lethal) pushes the consequences back
+// through these generic primitives. The env does not know why.
+
+// Change the kind of a cell (e.g. Wall -> Floor to open a passage).
+// Occupancy is not checked: turning an occupied cell into a wall is the
+// caller's responsibility. Returns false on error (invalid env, out of bounds).
+COMPANIONS_API bool companions_set_cell(Companions_Env* env, int32_t row,
+                                        int32_t col, Companions_CellKind kind);
+
+// Spawn a registered effect at a cell, as the env would. Built-in effects
+// always available: "kill", "hit" (1 damage), "stun" (stunned, 3 ticks), plus
+// enemy attacks and "companion_cast". Instant effects (no telegraph) apply
+// immediately; telegraphed ones resolve over the next steps.
+// source_id: agent immune to the effect (-1 for none).
+// Returns false on error (unknown effect, out of bounds).
+COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
+                                            const char* effect_name,
+                                            int32_t row, int32_t col,
+                                            Companions_Direction direction,
+                                            Companions_ObjectId source_id);
+
+// Companion casts (default: off, and a companion's interact action is ignored
+// as before). When on, a companion whose action is Companions_Interact_Attack
+// stays put (the movement only aims) and casts "companion_cast" on the cell it
+// faces; each cast yields a Companions_Event_EffectSpawned in its step result.
+// The setting survives companions_reset and snapshot loads.
+COMPANIONS_API void companions_set_companion_cast(Companions_Env* env, bool enabled);
+COMPANIONS_API bool companions_get_companion_cast(const Companions_Env* env);
 
 // =============================================================================
 // Configuration Queries

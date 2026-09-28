@@ -59,6 +59,14 @@ struct FSMSnapshot {
   int attack_area_height = 1;
   int attack_damage = 1;
   TargetFilter attack_filter = TargetFilter::Companion;
+
+  // Attack configuration (snapshot version 3). Without it a restored agent
+  // cannot attack: has_attack defaults to false.
+  bool has_attack = false;
+  std::string attack_effect;  // Effect name spawned on attack, e.g. "zombie_attack"
+  int telegraph_ticks = 1;
+  int attack_ticks = 1;
+  int recovery_ticks = 1;
 };
 
 // =============================================================================
@@ -76,6 +84,10 @@ struct AgentSnapshot {
   int direction = 0;         // Direction as int (for Companions)
   int color = 0;             // ActorColor as int
   bool alive = true;
+  // Concrete AgentFSM class ("Zombie", "Goblin", "Dragon"; empty = plain
+  // AgentFSM). Restores class behaviour (pathfinding, flying) on load.
+  // Snapshot version 3.
+  std::string kind;
 
   // Status effects
   std::vector<StatusSnapshot> statuses;

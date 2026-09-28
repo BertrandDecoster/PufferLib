@@ -115,18 +115,20 @@ TEST(TestEffectConfigIsPositionAffectedRotated) {
   ASSERT_FALSE(cfg.IsPositionAffected(0, 1, Direction::Up));
   ASSERT_FALSE(cfg.IsPositionAffected(1, 0, Direction::Up));
 
-  // When rotated to EAST: the "above" becomes "to the right"
-  // But the rotation formula: rotated_row = rel_col, rotated_col = -rel_row
-  // For (0,1) to be affected after rotation, we need the original (-1,0) to map there
-  // (-1,0) -> rotated (0, 1), so (0,1) should be affected
-  // Wait, the IsPositionAffected takes world-relative position and checks if affected
-  // The rotation is applied to the world position to get the area index
-  // For (0,1) with EAST: rotated_row = 1, rotated_col = 0 -> checks area[1][0]
-  // But area pattern has 1s at indices (0,1) and (1,1) which are row 0 col 1, row 1 col 1
-  // This is confusing. Let's simplify - just test the center is always affected
+  // The pattern turns with the effect: the "ahead" cell follows the facing.
   ASSERT_TRUE(cfg.IsPositionAffected(0, 0, Direction::Right));
+  ASSERT_TRUE(cfg.IsPositionAffected(0, 1, Direction::Right));
+  ASSERT_FALSE(cfg.IsPositionAffected(0, -1, Direction::Right));
+  ASSERT_FALSE(cfg.IsPositionAffected(-1, 0, Direction::Right));
+
   ASSERT_TRUE(cfg.IsPositionAffected(0, 0, Direction::Down));
+  ASSERT_TRUE(cfg.IsPositionAffected(1, 0, Direction::Down));
+  ASSERT_FALSE(cfg.IsPositionAffected(-1, 0, Direction::Down));
+
   ASSERT_TRUE(cfg.IsPositionAffected(0, 0, Direction::Left));
+  ASSERT_TRUE(cfg.IsPositionAffected(0, -1, Direction::Left));
+  ASSERT_FALSE(cfg.IsPositionAffected(0, 1, Direction::Left));
+  ASSERT_FALSE(cfg.IsPositionAffected(1, 0, Direction::Left));
 }
 
 TEST(TestEffectConfigRotatedPush) {
