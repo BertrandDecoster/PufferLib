@@ -787,10 +787,9 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->last_step_done = result.done;
   env->done = result.done;
   env->success = env->env->IsSuccess();
-  // The reason is fixed when done becomes true; playing on keeps it
-  if (episode_ended || !env->done || env->end_reason == Companions_End_None) {
-    env->end_reason = CurrentEndReason(*env);
-  }
+  // BaseEnv::Step latches the reason when done becomes true, so playing on
+  // keeps it
+  env->end_reason = CurrentEndReason(*env);
   env->last_rewards = result.rewards;
 
   // Generate movement, skill and tag events

@@ -1641,8 +1641,12 @@ TEST(TestLoadedEffectKeepsItsActorTargets) {
   ASSERT_TRUE(effects[1].GetCenter(lom) == (Position{3, 4}));  // Its first actor's cell
 
   snap.effects[0].target_actor_id = 42;  // No saved agent
+  snap.effects[0].target_cell = {6, 6};
   loaded.LoadSnapshot(snap);
-  ASSERT_EQ(loaded.GetActiveEffects()[0].target.actor_id, kInvalidObjectId);
+  const ActiveEffect& orphan = loaded.GetActiveEffects()[0];
+  ASSERT_TRUE(orphan.target.type == EffectTarget::Type::Actor);
+  ASSERT_EQ(orphan.target.actor_id, kInvalidObjectId);
+  ASSERT_TRUE(orphan.GetCenter(loaded.GetObjectManager()) == (Position{6, 6}));  // Its cell
 }
 
 // =============================================================================

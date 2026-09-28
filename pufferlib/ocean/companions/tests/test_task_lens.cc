@@ -357,6 +357,26 @@ TEST(TestGetEndReason) {
   ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
 }
 
+// The end reason names what ended the episode: SynchroEnv ignores the Dodge
+// lens's latched failure (a companion down), so the episode ends at the
+// horizon, as Horizon.
+TEST(TestADodgeFailureOnSynchroEnvEndsAtTheHorizon) {
+  const Action stay = EncodeAction(MovementAction::Stay);
+  SynchroEnv env(6, 6, 1, 1, 0, 42, 0, 3);
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
+  Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
+  companion->TakeDamage(companion->GetHealth());
+  ASSERT_FALSE(companion->IsAlive());
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_FALSE(env.Step({stay}).done);
+    ASSERT_TRUE(env.IsTaskFailed());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  }
+  ASSERT_TRUE(env.Step({stay}).done);
+  ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+}
+
 TEST(TestAggroLensAdditionalObsSize) {
   AggroLens lens;
   ASSERT_EQ(lens.AdditionalVectorObsSize(), 8);

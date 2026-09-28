@@ -345,7 +345,7 @@ typedef enum {
   Companions_End_None = 0,        // Not done
   Companions_End_Success = 1,     // The task succeeded
   Companions_End_Horizon = 2,     // The horizon was reached
-  Companions_End_TaskFailed = 3,  // The task can no longer succeed (e.g. Aggro: the enemy is dead)
+  Companions_End_TaskFailed = 3,  // A task failure ended the episode (e.g. Aggro: the enemy is dead)
 } Companions_EndReason;
 
 // Transition event (delta information for animations)

@@ -338,13 +338,17 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
   `EndReason::TaskFailed`, see below
 
 **Why an episode ended** (`BaseEnv::GetEndReason`, `EndReason` in `base_env.h`):
-`None` while `IsDone()` is false, else `Success` (latched), `TaskFailed` (the latched
-lens failure: Aggro's dead enemy, Dodge's companion down, even on the horizon step),
-`Horizon` (tick >= horizon), else `TaskFailed` (an env's own end rule: an Aggro enemy
-killed between steps). The reason is fixed when done first becomes true (latched by
-`Step` and `SetTaskLens*`, cleared by `ResetOutcome`): a kill after the horizon keeps
-`Horizon`. `AggroEnv::IsDone` honours a latched failure only under the Aggro lens (a
-Dodge death under AggroEnv ends at the horizon, as `TaskFailed`). C API (1.2.1, additive,
+what ended the episode. `None` while `IsDone()` is false, else `Success` (latched),
+else `TaskFailed` when the env is done even without the horizon
+(`IsDoneWithoutHorizon`, even on the horizon step): a latched lens failure the env's
+`IsDone` honours (AggroEnv's dead enemy under the Aggro lens) or the env's own end rule
+(a Dodge companion died in DodgeEnv, an Aggro enemy killed between steps), else
+`Horizon` (tick >= horizon). A latched failure the env's `IsDone` ignores did not end
+the episode: a Dodge lens on SynchroEnv, or on AggroEnv (whose `IsDone` honours a
+latched failure only under the Aggro lens), with a companion down ends at the horizon,
+as `Horizon`. The reason is fixed when done first becomes true (latched by `Step`,
+`SetTaskLens*` and `LoadSnapshot`, cleared by `ResetOutcome`): a kill after the horizon,
+or after loading a snapshot at the horizon, keeps `Horizon`. C API (1.2.1, additive,
 no struct layout change): `Companions_EndReason` (same values: None 0, Success 1,
 Horizon 2, TaskFailed 3) from `companions_get_end_reason(env)`, fixed on the step or
 lens change where done becomes true, kept while a host plays on, cleared by reset and

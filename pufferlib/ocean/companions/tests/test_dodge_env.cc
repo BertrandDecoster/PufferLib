@@ -140,9 +140,10 @@ TEST(TestDodgeEnvDeath) {
   std::vector<Action> actions = {EncodeAction(MovementAction::Stay)};
   env.Step(actions);
 
-  // Should be done but not successful
+  // Should be done but not successful: the death ended it
   ASSERT_TRUE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
 }
 
 // A companion that dies fails the Dodge task (DodgeLens::IsFailed), even on

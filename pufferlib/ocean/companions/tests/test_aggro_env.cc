@@ -765,6 +765,7 @@ TEST(TestKillingTheEnemyEndsTheEpisodeAsFailure) {
   ASSERT_TRUE(result.done);
   ASSERT_TRUE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
   for (double r : result.rewards) {
     ASSERT_EQ(r, AggroLens::FailurePenalty(env.GetHorizon(), env.GetTick()));
   }
@@ -884,9 +885,46 @@ TEST(TestAKillAfterTheHorizonKeepsTheHorizonEndReason) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
   env.Step({stay, stay});
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  // Copies keep the latched reason (the kill alone would now say TaskFailed)
+  AggroEnv copy(env);
+  ASSERT_TRUE(copy.GetEndReason() == EndReason::Horizon);
+  AggroEnv assigned(12, 1, EnemyType::Goblin, 7777, 0, 3);
+  assigned = env;
+  ASSERT_TRUE(assigned.GetEndReason() == EndReason::Horizon);
   // A new episode starts over
   env.Reset();
   ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+}
+
+// The kill that ends the Aggro task on the horizon step ended the episode:
+// TaskFailed, not Horizon.
+TEST(TestAKillOnTheHorizonStepIsATaskFailure) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 2);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 1);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  ASSERT_FALSE(env.Step({stay, stay}).done);
+  ASSERT_TRUE(AttackRight(env).done);
+  ASSERT_FALSE(goblin->IsAlive());
+  ASSERT_EQ(env.GetTick(), env.GetHorizon());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
+}
+
+// A snapshot loaded at the horizon is done there: a kill on the next step
+// keeps Horizon, as after a Step.
+TEST(TestASnapshotLoadedAtTheHorizonKeepsTheHorizonEndReason) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 3);
+  Snapshot at_horizon = env.SaveSnapshot();
+  at_horizon.tick = at_horizon.horizon;
+
+  AggroEnv loaded(12, 1, EnemyType::Goblin, 7777, 0, 3);
+  loaded.LoadSnapshot(at_horizon);
+  ASSERT_TRUE(loaded.IsDone());
+  ASSERT_TRUE(loaded.GetEndReason() == EndReason::Horizon);
+  AgentFSM* goblin = GoblinNextToCompanion(loaded, 1);
+  AttackRight(loaded);
+  ASSERT_FALSE(goblin->IsAlive());
+  ASSERT_TRUE(loaded.IsTaskFailed());
+  ASSERT_TRUE(loaded.GetEndReason() == EndReason::Horizon);
 }
 
 // Only the Aggro task ends on a dead enemy: under another lens, AggroEnv is
@@ -902,20 +940,25 @@ TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
 }
 
 TEST(TestADeadCompanionDoesNotEndAggroEnvUnderDodgeLens) {
-  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 3);
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
   Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
   companion->TakeDamage(companion->GetHealth());
   ASSERT_FALSE(companion->IsAlive());
   ASSERT_TRUE(env.GetTaskLens()->IsDone(env));  // The lens alone would say done
   ASSERT_FALSE(env.IsDone());
-  StepResult result = env.Step({EncodeAction(MovementAction::Stay),
-                                EncodeAction(MovementAction::Stay)});
-  ASSERT_FALSE(result.done);
-  ASSERT_FALSE(env.IsDone());
-  // The Dodge task did fail (latched): the episode ends so at the horizon
-  ASSERT_TRUE(env.IsTaskFailed());
-  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  for (int i = 0; i < 2; ++i) {
+    StepResult result = env.Step({stay, stay});
+    ASSERT_FALSE(result.done);
+    ASSERT_FALSE(env.IsDone());
+    // The Dodge task did fail (latched): the episode ends so at the horizon
+    ASSERT_TRUE(env.IsTaskFailed());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  }
+  // The horizon ended it, not the failure AggroEnv ignores
+  ASSERT_TRUE(env.Step({stay, stay}).done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
 }
 
 TEST(TestSynchroLensSwappedOntoGoalsIsNotDoneBeforeAStep) {

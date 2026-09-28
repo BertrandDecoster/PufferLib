@@ -93,6 +93,10 @@ class AggroEnv : public BaseEnv {
   // Snapshot loading - extract AggroEnv-specific fields from loaded cells
   void LoadSnapshot(const Snapshot& snapshot) override;
 
+ protected:
+  // Under the Aggro lens: its latched failure or no living enemy
+  bool IsDoneWithoutHorizon() const override;
+
  private:
   void SetupGrid();
   void PlacePatrolSquare();

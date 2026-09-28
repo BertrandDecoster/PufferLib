@@ -236,17 +236,14 @@ void DodgeEnv::SpawnHazard() {
 }
 
 bool DodgeEnv::IsDone() const {
-  // Done if survived all ticks
-  if (tick_ >= horizon_) {
-    return true;
-  }
+  // Done if survived all ticks, or if any companion died
+  return tick_ >= horizon_ || IsDoneWithoutHorizon();
+}
 
-  // Done if any companion died
-  if (any_dead_) {
-    return true;
-  }
-
-  return false;
+bool DodgeEnv::IsDoneWithoutHorizon() const {
+  // A companion died (seen by PostStep): the episode ends as a failure, even
+  // on the horizon step
+  return any_dead_;
 }
 
 void DodgeEnv::PreStep() {

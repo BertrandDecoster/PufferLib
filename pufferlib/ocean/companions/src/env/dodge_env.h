@@ -87,6 +87,8 @@ class DodgeEnv : public BaseEnv {
  protected:
   void PreStep() override;
   void PostStep() override;
+  // A companion died
+  bool IsDoneWithoutHorizon() const override;
 
  private:
   void SetupGrid();

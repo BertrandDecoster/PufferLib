@@ -94,14 +94,18 @@ class BaseEnv {
     failed_ = false;
     end_reason_ = EndReason::None;
   }
-  // Why the episode is done: None while IsDone() is false, else Success (the
-  // latched success), else TaskFailed (the latched failure), else Horizon
-  // (tick >= horizon), else TaskFailed (an env's own end rule: a Dodge
-  // companion died, an Aggro enemy killed between steps). Hosts that keep
-  // playing past a task failure tell it from a time out with this.
-  // The reason is fixed when done first becomes true (latched by Step and
-  // SetTaskLens*): a kill after the horizon keeps Horizon. Between those
-  // calls (e.g. a kill between steps) it is evaluated live.
+  // Why the episode is done, i.e. what ended it: None while IsDone() is
+  // false, else Success (the latched success), else TaskFailed when the env
+  // is done even without the horizon (IsDoneWithoutHorizon: a latched failure
+  // the env's IsDone honours, as AggroEnv's under the Aggro lens, or the
+  // env's own end rule: a Dodge companion died, an Aggro enemy killed between
+  // steps), else Horizon (tick >= horizon). A latched failure the env's
+  // IsDone ignores (a Dodge lens on SynchroEnv / AggroEnv) did not end the
+  // episode: it ends at the horizon, as Horizon. Hosts that keep playing
+  // past a task failure tell it from a time out with this.
+  // The reason is fixed when done first becomes true (latched by Step,
+  // SetTaskLens* and LoadSnapshot): a kill after the horizon keeps Horizon.
+  // Between those calls (e.g. a kill between steps) it is evaluated live.
   virtual EndReason GetEndReason() const;
 
   // Task lens management
@@ -312,6 +316,13 @@ class BaseEnv {
 
   // Update all agents with FSM AI (called in PreStep)
   void UpdateAgentFSM();
+
+  // IsDone()'s terms other than the latched success and the horizon: true
+  // when the env is done even without the horizon (a latched failure its
+  // IsDone honours, or its own end rule). GetEndReason reports TaskFailed
+  // then. An env whose IsDone is only success || horizon (SynchroEnv) keeps
+  // the default; the others build IsDone on their override so both agree.
+  virtual bool IsDoneWithoutHorizon() const { return false; }
 
   // GetEndReason's rules, for a done env
   EndReason ComputeEndReason() const;

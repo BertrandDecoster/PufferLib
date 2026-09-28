@@ -181,9 +181,11 @@ EndReason BaseEnv::GetEndReason() const {
 
 EndReason BaseEnv::ComputeEndReason() const {
   if (IsSuccess()) return EndReason::Success;
-  if (failed_) return EndReason::TaskFailed;
+  // Done even without the horizon: a failure ended the episode, latched or by
+  // the env's own rule. A latched failure the env's IsDone ignores did not.
+  if (IsDoneWithoutHorizon()) return EndReason::TaskFailed;
   if (tick_ >= horizon_) return EndReason::Horizon;
-  return EndReason::TaskFailed;  // Done by the env's own rule, not latched
+  return EndReason::TaskFailed;  // An env's end rule it does not describe
 }
 
 void BaseEnv::LatchEndReason() {
@@ -1528,6 +1530,10 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   if (d4_transform_ != 0) {
     ApplyD4Transform();
   }
+
+  // A state loaded already done (at or past the horizon) ended there: a
+  // later kill keeps that reason, as after a Step.
+  LatchEndReason();
 }
 
 void BaseEnv::ValidateSnapshot(const Snapshot& /*snapshot*/) const {
