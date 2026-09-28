@@ -228,13 +228,16 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 |---------|---------|-------------|
 | `GetLastSkillUses()` | caster, skill, target (centre; landing cell for a self skill), slot | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill) |
 | `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
+| `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
 - Event order in a step: AgentMoved, AgentBlocked, SkillUsed, TagApplied,
-  EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
-- C API (`src/api/companions_api.h`, version 1.2.1: 1.2 removed the legacy cast,
-  1.2.1 added `companions_get_end_reason`):
+  AgentDowned, EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
+- C API (`src/api/companions_api.h`, version 1.3.0: 1.2 removed the legacy cast,
+  1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
+  `Companions_GameState.downs` / `max_downs`, `Companions_End_TeamDown` (4); struct
+  layouts changed):
   `companions_set_agent_skill` (`""` / NULL = `attack`), `companions_apply_tag` /
   `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`, `companions_get_tag_name` /
   `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;

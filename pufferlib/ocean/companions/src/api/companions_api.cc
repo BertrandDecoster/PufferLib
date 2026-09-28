@@ -42,7 +42,10 @@
 // by default.
 // 1.2.1: companions_get_end_reason (additive), EpisodeEnd's effect_id.
 // 1.2.2: timers tick at the end of a step (cooldown n = n blocked steps).
-#define COMPANIONS_VERSION "1.2.2"
+// 1.3.0: downs (Companions_AgentState.downed, Companions_GameState.downs /
+// max_downs, Companions_End_TeamDown, Companions_Event_AgentDowned); struct
+// layouts changed (consumers must rebuild).
+#define COMPANIONS_VERSION "1.3.0"
 
 // =============================================================================
 // Thread-local error message
@@ -265,6 +268,7 @@ static void ExtractAgentState(const companions::Agent* agent,
   out->health = agent->GetHealth();
   out->max_health = agent->GetMaxHealth();
   out->alive = agent->IsAlive();
+  out->downed = agent->IsDowned();
   out->agent_index = agent->GetAgentIndex();
 
   // Default values for non-companion types
@@ -400,6 +404,8 @@ static void ExtractGameState(const Companions_Env* wrapper,
   // Episode status
   out->done = wrapper->done;
   out->success = wrapper->success;
+  out->downs = env->GetDowns();
+  out->max_downs = env->GetMaxDowns();
   for (int i = 0; i < out->agent_count; i++) {
     out->rewards[i] = static_cast<float>(
         i < static_cast<int>(wrapper->last_rewards.size())
@@ -482,6 +488,21 @@ static void AddSkillAndTagEvents(Companions_Env* wrapper) {
     evt.status_duration = landed.duration;
     evt.health_source_id = landed.source;
     evt.tag_fresh = landed.fresh;
+    wrapper->events.push_back(evt);
+  }
+}
+
+// One AgentDowned event per down since the last report (subject = the
+// companion, at its cell): this step's, and any between steps (a host effect).
+static void AddDownEvents(Companions_Env* wrapper) {
+  const companions::BaseEnv* env = wrapper->env.get();
+  for (companions::ObjectId id : env->GetLastDowns()) {
+    Companions_Event evt = {};
+    evt.type = Companions_Event_AgentDowned;
+    evt.tick = env->GetTick();
+    evt.subject_id = id;
+    const companions::Actor* actor = env->GetObjectManager().GetActor(id);
+    evt.position = actor ? ToAPIPosition(actor->GetPosition()) : Companions_Position{-1, -1};
     wrapper->events.push_back(evt);
   }
 }
@@ -594,7 +615,8 @@ COMPANIONS_API Companions_Env* companions_create_aggro(
 static_assert(static_cast<int>(companions::EndReason::None) == Companions_End_None &&
                   static_cast<int>(companions::EndReason::Success) == Companions_End_Success &&
                   static_cast<int>(companions::EndReason::Horizon) == Companions_End_Horizon &&
-                  static_cast<int>(companions::EndReason::TaskFailed) == Companions_End_TaskFailed,
+                  static_cast<int>(companions::EndReason::TaskFailed) == Companions_End_TaskFailed &&
+                  static_cast<int>(companions::EndReason::TeamDown) == Companions_End_TeamDown,
               "EndReason and Companions_EndReason must match");
 static Companions_EndReason CurrentEndReason(const Companions_Env& env) {
   if (!env.done) return Companions_End_None;
@@ -797,9 +819,10 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->end_reason = CurrentEndReason(*env);
   env->last_rewards = result.rewards;
 
-  // Generate movement, skill and tag events
+  // Generate movement, skill, tag and down events
   AddMovementEvents(env);
   AddSkillAndTagEvents(env);
+  AddDownEvents(env);
 
   // Add the episode end event on the step that ends the episode
   if (episode_ended) {

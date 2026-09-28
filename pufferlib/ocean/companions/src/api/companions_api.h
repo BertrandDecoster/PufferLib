@@ -6,7 +6,7 @@
 // =============================================================================
 // Versioning
 // =============================================================================
-// companions_version() is "1.2.2". 1.1 changed struct layouts
+// companions_version() is "1.3.0". 1.1 changed struct layouts
 // (Companions_AgentState, Companions_Event, Companions_StepResult): consumers
 // must be rebuilt against this header, never mixed with a 1.0 DLL or header.
 // 1.2 removed the legacy generic companion cast (its on/off setter and
@@ -21,6 +21,12 @@
 // blocks the n steps after the use (it blocked n - 1). A lens change starts
 // a new episode, which reports its own EpisodeEnd. A snapshot naming an
 // unknown enemy "kind" is rejected.
+// 1.3 added downs, and changed struct layouts (Companions_AgentState,
+// Companions_GameState): consumers must rebuild against this header. A
+// companion at 0 HP goes down instead of dying: Companions_AgentState.downed
+// (alive stays true); Companions_GameState.downs / max_downs count the team's
+// downs; Companions_End_TeamDown (the level is lost) and
+// Companions_Event_AgentDowned.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -65,6 +71,10 @@
 //   effect_name = tag name, status_duration = duration (-1 = permanent),
 //   health_source_id = caster (-1 for a zone), tag_fresh = the agent did not
 //   carry the tag just before this landing.
+// - Companions_Event_AgentDowned: a companion went down (0 HP: alive, inert,
+//   untouchable): subject_id = the companion, position = its cell. One per
+//   down; a down between two steps (a host effect, companions_spawn_effect)
+//   is reported by the next step. Since 1.3.
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
 //   reported once per false->true transition of done, on the step where it
 //   happens: the steps a host keeps playing afterwards (done stays true) do
@@ -271,6 +281,7 @@ typedef struct {
   int32_t health;
   int32_t max_health;
   bool alive;
+  bool downed;  // A companion at 0 HP: alive, inert, untouchable (since 1.3)
   int32_t agent_index;  // Index in action array
 
   // FSM state (for AgentFSM types)
@@ -343,6 +354,7 @@ typedef enum {
   Companions_Event_EpisodeEnd = 14,
   Companions_Event_SkillUsed = 15,   // See "Event System" at the top
   Companions_Event_TagApplied = 16,  // See "Event System" at the top
+  Companions_Event_AgentDowned = 17,  // A companion went down (subject_id, position; see "Event System")
 } Companions_EventType;
 
 // Why an episode ended (companions_get_end_reason, EpisodeEnd's effect_id)
@@ -351,6 +363,7 @@ typedef enum {
   Companions_End_Success = 1,     // The task succeeded
   Companions_End_Horizon = 2,     // The horizon was reached
   Companions_End_TaskFailed = 3,  // A task failure ended the episode (e.g. Aggro: the enemy is dead)
+  Companions_End_TeamDown = 4,    // The team is down: max_downs reached or every companion down (the level is lost). Since 1.3
 } Companions_EndReason;
 
 // Transition event (delta information for animations)
@@ -420,6 +433,8 @@ typedef struct {
   // Episode status
   bool done;
   bool success;
+  int32_t downs;      // The team's downs so far (every down counts)
+  int32_t max_downs;  // The level is lost at this many (or every companion down)
   float rewards[Companions_MAX_AGENTS];
 } Companions_GameState;
 

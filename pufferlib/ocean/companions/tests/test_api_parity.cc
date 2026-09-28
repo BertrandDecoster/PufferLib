@@ -814,6 +814,8 @@ TEST(ParityTest_SkillsTagsZones) {
     ASSERT_EQ(r.events_dropped, 0);
     StepResult cpp_result = cpp_env.Step(cpp_actions);
     ASSERT_EQ(r.state.done, cpp_result.done);
+    ASSERT_EQ(r.state.downs, cpp_env.GetDowns());
+    ASSERT_EQ(r.state.max_downs, cpp_env.GetMaxDowns());
 
     cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
     ASSERT_EQ(r.state.agent_count, static_cast<int>(cpp_agents.size()));
@@ -823,6 +825,8 @@ TEST(ParityTest_SkillsTagsZones) {
       ASSERT_NOT_NULL(c);
       ASSERT_EQ(s.position.row, c->GetPosition().row);
       ASSERT_EQ(s.position.col, c->GetPosition().col);
+      ASSERT_EQ(s.alive, c->IsAlive());
+      ASSERT_EQ(s.downed, c->IsDowned());
       for (int slot = 0; slot < kMaxSkillSlots; ++slot) {
         ASSERT_EQ(std::string(s.skills[slot]), c->GetSkill(slot));
         ASSERT_EQ(s.skill_cooldowns[slot], c->GetCooldown(slot));

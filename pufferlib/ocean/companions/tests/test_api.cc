@@ -87,8 +87,9 @@ TEST(TestVersion) {
   const char* version = companions_version();
   ASSERT_NOT_NULL(version);
   // 1.2 removed the companion cast; 1.2.1 added companions_get_end_reason;
-  // 1.2.2 made every timer tick at the end of a step
-  ASSERT_EQ(std::string(version), std::string("1.2.2"));
+  // 1.2.2 made every timer tick at the end of a step; 1.3 added downs
+  // (struct layouts changed)
+  ASSERT_EQ(std::string(version), std::string("1.3.0"));
   std::cout << "  Version: " << version << std::endl;
 }
 
@@ -1741,6 +1742,81 @@ TEST(TestEndReasonKeepsHorizonAfterAKill) {
     ASSERT_EQ(CountEpisodeEnds(result), 0);
     ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
   }
+  companions_destroy(env);
+}
+
+static int CountEvents(const Companions_StepResult& r, Companions_EventType type) {
+  int n = 0;
+  for (int32_t i = 0; i < r.event_count; ++i) n += r.events[i].type == type;
+  return n;
+}
+
+// A companion at 0 HP goes down: its state says so, the step reports it, and
+// the team's downs count it. The level is lost at max_downs (TeamDown).
+TEST(TestDownsThroughTheApi) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 2, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  Companions_GameState state = {};
+  companions_get_state(env, &state);
+  ASSERT_EQ(state.downs, 0);
+  ASSERT_EQ(state.max_downs, 3);
+  ASSERT_FALSE(state.agents[0].downed);
+  const Companions_ObjectId id = state.agents[0].id;
+  const Companions_Position cell = state.agents[0].position;
+  // "kill" on its cell (the host primitive): it goes down instead
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", cell.row, cell.col,
+                                      Companions_Direction_Up, -1));
+  companions_get_state(env, &state);  // Between steps, the state already says so
+  ASSERT_TRUE(state.agents[0].downed);
+  ASSERT_EQ(state.downs, 1);
+
+  Companions_Action stay[2] = {{Companions_Movement_Stay, Companions_Interact_None},
+                               {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, stay, 2, &result);
+  ASSERT_TRUE(result.state.agents[0].downed);
+  ASSERT_TRUE(result.state.agents[0].alive);
+  ASSERT_FALSE(result.state.agents[1].downed);
+  ASSERT_EQ(result.state.downs, 1);
+  ASSERT_EQ(result.state.max_downs, 3);
+  ASSERT_FALSE(result.state.done);
+  // The step after the down reports it, once
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 1);
+  const Companions_Event* down = FindEvent(result, Companions_Event_AgentDowned);
+  ASSERT_NOT_NULL(down);
+  ASSERT_EQ(down->subject_id, id);
+  ASSERT_EQ(down->position.row, cell.row);
+  ASSERT_EQ(down->position.col, cell.col);
+  Companions_AgentState agent = {};
+  ASSERT_TRUE(companions_get_agent(env, id, &agent));
+  ASSERT_TRUE(agent.downed);
+
+  companions_step(env, stay, 2, &result);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 0);
+  ASSERT_EQ(result.state.downs, 1);
+  companions_destroy(env);
+}
+
+// Every companion down at once loses the level: done, as TeamDown, and the
+// AgentDowned event comes before the EpisodeEnd that carries the reason.
+TEST(TestTeamDownThroughTheApi) {
+  Companions_EnvConfig config = MakeConfig(8, 8, 1, 1, 42);
+  Companions_Env* env = companions_create(&config);
+  ASSERT_NOT_NULL(env);
+  Companions_AgentState a = AgentAt(env, 0);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", a.position.row, a.position.col,
+                                      Companions_Direction_Up, -1));
+  Companions_Action stay = {Companions_Movement_Stay, Companions_Interact_None};
+  Companions_StepResult result = {};
+  companions_step(env, &stay, 1, &result);
+  ASSERT_TRUE(result.state.done);
+  ASSERT_FALSE(result.state.success);
+  ASSERT_EQ(result.state.downs, 1);
+  ExpectEnd(env, result, Companions_End_TeamDown);
+  ASSERT_EQ(result.events[result.event_count - 1].type, Companions_Event_EpisodeEnd);
+  ASSERT_EQ(result.events[result.event_count - 2].type, Companions_Event_AgentDowned);
+  ASSERT_EQ(result.events[result.event_count - 2].subject_id, a.id);
   companions_destroy(env);
 }
 
