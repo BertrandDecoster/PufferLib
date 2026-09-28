@@ -115,6 +115,7 @@ TEST(TestSkillBookBuiltins) {
   ASSERT_TRUE(fireball->area == SkillArea::Cross);
   ASSERT_TRUE(fireball->motion == SkillMotion::PushOut);
   ASSERT_EQ(fireball->motion_distance, 1);
+  ASSERT_EQ(fireball->tags.size(), static_cast<size_t>(1));
   ASSERT_EQ(fireball->tags[0].tag, std::string("burning"));
 
   const SkillConfig* step = book.Find("lightningStep");
@@ -124,6 +125,7 @@ TEST(TestSkillBookBuiltins) {
   ASSERT_EQ(step->motion_distance, 4);
   ASSERT_TRUE(step->area == SkillArea::Cross);
   ASSERT_TRUE(step->tag_path);
+  ASSERT_EQ(step->tags.size(), static_cast<size_t>(1));
   ASSERT_EQ(step->tags[0].tag, std::string("electrified"));
 
   const SkillConfig* tp = book.Find("teleport");
@@ -153,13 +155,16 @@ TEST(TestSkillBookDefineReplaces) {
   frost.tags = {{"chilled", kPermanentTag}};
   book.Define(frost);
   ASSERT_EQ(book.Find("frost")->range, 2);
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));
   SkillConfig short_fireball = *book.Find("fireball");
   short_fireball.range = 2;
   book.Define(short_fireball);                  // a level retunes a builtin
   ASSERT_EQ(book.Find("fireball")->range, 2);
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(5));  // replaced, not appended
   book.Reset();                                 // back to builtins only
   ASSERT_EQ(book.Find("fireball")->range, 3);
   ASSERT_TRUE(book.Find("frost") == nullptr);
+  ASSERT_EQ(book.All().size(), static_cast<size_t>(4));
 }
 
 TEST(TestSkillEnumStringsRoundTrip) {

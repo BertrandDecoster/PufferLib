@@ -87,7 +87,11 @@ SkillTargeting SkillTargetingFromString(const std::string& s) {
 }
 
 std::string SkillAreaToString(SkillArea a) {
-  return a == SkillArea::Cross ? "cross" : "single";
+  switch (a) {
+    case SkillArea::Single: return "single";
+    case SkillArea::Cross: return "cross";
+  }
+  return "single";
 }
 
 SkillArea SkillAreaFromString(const std::string& s) {
