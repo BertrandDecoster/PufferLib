@@ -204,13 +204,6 @@ void EffectConfigRegistry::RegisterBuiltins() {
   // Same values as data/effects.csv.
   add("zombie_attack", 2, 1, 2, TargetFilter::Companion, 1, "", 0, false);
   add("goblin_attack", 1, 1, 1, TargetFilter::Companion, 1, "", 0, false);
-  // A companion's cast: a two-cell bolt (the faced cell and the one beyond,
-  // spawned on the faced cell). It applies nothing by itself: what it means
-  // (which skill, which consequence) is decided by the host.
-  add("companion_cast", 0, 1, 0, TargetFilter::Enemy, 0, "", 0, true,
-      {0, 1, 0,
-       0, 1, 0,
-       0, 0, 0});
   // Generic consequences a host applies to whoever stands on a cell.
   add("kill", 0, 1, 0, TargetFilter::All, 999, "", 0, false);
   add("hit", 0, 1, 0, TargetFilter::All, 1, "", 0, false);

@@ -171,19 +171,6 @@ class BaseEnv {
                    Direction direction = Direction::Up,
                    ObjectId source_id = kInvalidObjectId);
 
-  // Legacy companion casts (off by default). When on, a companion whose slot 0
-  // is empty casts the generic "companion_cast" effect on the cell it faces on
-  // Attack. Slots are never empty any more, so this never fires (to be removed).
-  void SetCompanionCastEnabled(bool enabled) { companion_cast_enabled_ = enabled; }
-  bool IsCompanionCastEnabled() const { return companion_cast_enabled_; }
-
-  struct CompanionCast {
-    ObjectId caster = kInvalidObjectId;
-    Position cell;  // The faced cell the cast was spawned on
-  };
-  // Casts resolved by the last Step (always empty now).
-  const std::vector<CompanionCast>& GetLastCasts() const { return last_casts_; }
-
   // ==========================================================================
   // Skills and tags (data-driven; names are opaque to the env)
   // ==========================================================================
@@ -313,7 +300,7 @@ class BaseEnv {
   void ResolveInteractions();
 
   // Skills (see GetSkillBook)
-  // Empties the per-step reports (casts, skill uses, tags applied): their
+  // Empties the per-step reports (skill uses, tags applied): their
   // ObjectIds are re-issued by a new world.
   void ClearStepReports();
   void TickTagsAndCooldowns();  // Start of Step
@@ -364,8 +351,6 @@ class BaseEnv {
   AnnotationStore annotations_;
   // Latched once the active lens reports IsSuccess. Reset via ResetSuccess.
   bool success_ = false;
-  bool companion_cast_enabled_ = false;
-  std::vector<CompanionCast> last_casts_;
   TagTable tags_;
   SkillBook skills_;
   std::vector<SkillUse> last_skill_uses_;

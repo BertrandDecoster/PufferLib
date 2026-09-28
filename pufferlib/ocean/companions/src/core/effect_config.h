@@ -91,9 +91,8 @@ class EffectConfigRegistry {
 
   // Register the built-in effects every env can rely on without effects.csv:
   // melee attacks referenced by snapshot enemies ("zombie_attack",
-  // "goblin_attack"), the companion's generic cast ("companion_cast", spawned
-  // for InteractAction::Attack), and generic host-applied effects ("kill",
-  // "hit", "stun") that a game layer spawns through companions_spawn_effect.
+  // "goblin_attack"), and generic host-applied effects ("kill", "hit",
+  // "stun") that a game layer spawns through companions_spawn_effect.
   // Names already registered (e.g. loaded from CSV) are left untouched.
   // Runs when the registry is created and after Clear().
   void RegisterBuiltins();

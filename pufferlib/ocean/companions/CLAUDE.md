@@ -75,8 +75,8 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
    faced cell on `Skill1` (1 damage, allies spared) instead of moving
  - A skill that can't be used (a name the book lacks, cooldown, disabled slot,
    rooted + self-moving skill, dead caster) is dropped and the movement applies as with `None`
- - Legacy: `SetCompanionCastEnabled(true)` only cast `companion_cast` for an EMPTY
-   slot 0, which no longer exists: unreachable (being removed)
+ - The legacy generic companion cast (an on/off flag that cast an effect for an EMPTY
+   slot 0) is gone, with its C API setter / getter and EffectSpawned events (C API 1.2.0)
 
 ### Collision Resolution
 Fixed-point iteration algorithm in `base_env.cc:ResolveCollisions()`:
@@ -96,7 +96,7 @@ tags, roots, cooldowns. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 1. Clear the per-step reports, tick tags and cooldowns
 2. `PreStep` (enemy FSM) → `GatherIntentions` → `ResolveCollisions` → `ExecuteValidatedMovements`
 3. `ApplyZoneTags` (every living agent on a zone cell)
-4. `ResolveInteractions`: legacy `companion_cast`, then `ResolveSkills`
+4. `ResolveInteractions` → `ResolveSkills`
 5. Effects tick, statuses tick, `tick_++`, `PostStep`, rewards (TaskLens)
 
 **Line and landing rules** (`env/skill_motion.h`):
@@ -200,13 +200,13 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 |---------|---------|-------------|
 | `GetLastSkillUses()` | caster, skill, target (centre; landing cell for a self skill), slot | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill) |
 | `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"`), `fresh` | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
-| `GetLastCasts()` | legacy `companion_cast` | `Companions_Event_EffectSpawned` |
 
 - `fresh` = the agent did not carry the tag just before this landing (so an agent on a
   duration-1 zone is re-landed fresh every step)
-- Event order in a step: AgentMoved, AgentBlocked, EffectSpawned, SkillUsed, TagApplied,
+- Event order in a step: AgentMoved, AgentBlocked, SkillUsed, TagApplied,
   EpisodeEnd; at most `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest
-- C API (`src/api/companions_api.h`): `companions_set_agent_skill` (`""` / NULL = `attack`), `companions_apply_tag` /
+- C API (`src/api/companions_api.h`, version 1.2.0: 1.2 removed the legacy cast):
+  `companions_set_agent_skill` (`""` / NULL = `attack`), `companions_apply_tag` /
   `remove_tag`, `companions_set_cell_tag` / `get_cell_tag`, `companions_get_tag_name` /
   `find_tag`; `Companions_AgentState` carries tags (first 8), 2 skill slots and cooldowns;
   name buffers are 32 bytes (31 + NUL)

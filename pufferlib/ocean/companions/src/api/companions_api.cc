@@ -37,7 +37,10 @@
 // =============================================================================
 // 1.1.0: skills, tags, zones; Companions_AgentState, Companions_Event and
 // Companions_StepResult layouts changed (consumers must rebuild).
-#define COMPANIONS_VERSION "1.1.0"
+// 1.2.0: removed the legacy generic companion cast (its on/off setter and
+// getter, its EffectSpawned events): every skill slot holds a skill, "attack"
+// by default.
+#define COMPANIONS_VERSION "1.2.0"
 
 // =============================================================================
 // Thread-local error message
@@ -440,21 +443,6 @@ static void AddMovementEvents(Companions_Env* wrapper) {
   }
 }
 
-// One EffectSpawned event per companion cast of this step (casts must be
-// enabled; legacy, never fires now that slots are never empty).
-static void AddCastEvents(Companions_Env* wrapper) {
-  auto* env = wrapper->env.get();
-  for (const auto& cast : env->GetLastCasts()) {
-    Companions_Event evt = {};
-    evt.type = Companions_Event_EffectSpawned;
-    evt.tick = env->GetTick();
-    evt.subject_id = cast.caster;
-    evt.position = ToAPIPosition(cast.cell);
-    std::strncpy(evt.effect_name, "companion_cast", Companions_EFFECT_NAME_LEN - 1);
-    wrapper->events.push_back(evt);
-  }
-}
-
 // One SkillUsed event per skill use of this step (subject = caster, position
 // = the skill's centre, effect_id = the slot), then one TagApplied per tag
 // landing (subject = the agent, at its cell after the step; effect_id = the
@@ -775,9 +763,8 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->success = env->env->IsSuccess();
   env->last_rewards = result.rewards;
 
-  // Generate movement, cast, skill and tag events
+  // Generate movement, skill and tag events
   AddMovementEvents(env);
-  AddCastEvents(env);
   AddSkillAndTagEvents(env);
 
   // Add episode end event if done
@@ -954,18 +941,6 @@ COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
                         companions::EffectTarget::AtCell(companions::Position{row, col}), dir,
                         source_id);
   return true;
-}
-
-COMPANIONS_API void companions_set_companion_cast(Companions_Env* env, bool enabled) {
-  if (!env || !env->env) {
-    SetError("Invalid environment");
-    return;
-  }
-  env->env->SetCompanionCastEnabled(enabled);
-}
-
-COMPANIONS_API bool companions_get_companion_cast(const Companions_Env* env) {
-  return env && env->env && env->env->IsCompanionCastEnabled();
 }
 
 // =============================================================================

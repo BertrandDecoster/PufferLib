@@ -84,7 +84,7 @@ static Companions_EnvConfig MakeConfig(int rows = 12, int cols = 12, int compani
 TEST(TestVersion) {
   const char* version = companions_version();
   ASSERT_NOT_NULL(version);
-  ASSERT_EQ(std::string(version), std::string("1.1.0"));  // Struct layouts changed in 1.1
+  ASSERT_EQ(std::string(version), std::string("1.2.0"));  // 1.2 removed the companion cast
   std::cout << "  Version: " << version << std::endl;
 }
 

@@ -6,9 +6,13 @@
 // =============================================================================
 // Versioning
 // =============================================================================
-// companions_version() is "1.1.0". 1.1 changed struct layouts
+// companions_version() is "1.2.0". 1.1 changed struct layouts
 // (Companions_AgentState, Companions_Event, Companions_StepResult): consumers
 // must be rebuilt against this header, never mixed with a 1.0 DLL or header.
+// 1.2 removed the legacy generic companion cast (its on/off setter and
+// getter, and its EffectSpawned events): every companion skill slot now holds
+// a skill, the fixed "attack" by default, so Companions_Interact_Attack
+// strikes the faced cell (struct layouts unchanged).
 //
 // =============================================================================
 // Thread Safety
@@ -36,8 +40,6 @@
 // - Companions_Event_AgentMoved: Agent moved to a new position (by walking,
 //   or by a skill: a teleport, dash, push or pull)
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
-// - Companions_Event_EffectSpawned: a legacy companion cast (see
-//   companions_set_companion_cast; never fires now that slots are never empty).
 // - Companions_Event_SkillUsed: a companion used the skill in a slot:
 //   subject_id = caster, position = the skill's centre (the landing cell for
 //   a self-targeted skill such as teleport), effect_id = the slot (0-based),
@@ -58,7 +60,7 @@
 //
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
-// - Companions_Event_FSMTransition, other EffectSpawned sources, etc.
+// - Companions_Event_FSMTransition, Companions_Event_EffectSpawned, etc.
 //   (skill damage is visible in the agents' health, not yet as events)
 
 #ifndef COMPANIONS_API_H_
@@ -541,7 +543,7 @@ COMPANIONS_API bool companions_set_cell(Companions_Env* env, int32_t row,
 
 // Spawn a registered effect at a cell, as the env would. Built-in effects
 // always available: "kill", "hit" (1 damage), "stun" (stunned, 3 ticks), plus
-// enemy attacks and "companion_cast". Instant effects (no telegraph) apply
+// enemy attacks. Instant effects (no telegraph) apply
 // immediately; telegraphed ones resolve over the next steps.
 // source_id: agent immune to the effect (-1 for none).
 // Returns false on error (unknown effect, out of bounds).
@@ -550,12 +552,6 @@ COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
                                             int32_t row, int32_t col,
                                             Companions_Direction direction,
                                             Companions_ObjectId source_id);
-
-// Legacy companion casts (default: off). When on, a companion whose slot 0 is
-// EMPTY casts "companion_cast" on Companions_Interact_Attack. Slots are never
-// empty any more ("attack" by default), so this never fires (to be removed).
-COMPANIONS_API void companions_set_companion_cast(Companions_Env* env, bool enabled);
-COMPANIONS_API bool companions_get_companion_cast(const Companions_Env* env);
 
 // =============================================================================
 // Skills, tags and zones

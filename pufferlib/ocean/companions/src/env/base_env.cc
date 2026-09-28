@@ -45,8 +45,6 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       d4_transform_(other.d4_transform_),
       annotations_(other.annotations_),
       success_(other.success_),
-      companion_cast_enabled_(other.companion_cast_enabled_),
-      last_casts_(other.last_casts_),
       tags_(other.tags_),
       skills_(other.skills_),
       last_skill_uses_(other.last_skill_uses_),
@@ -69,8 +67,6 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     d4_transform_ = other.d4_transform_;
     annotations_ = other.annotations_;
     success_ = other.success_;
-    companion_cast_enabled_ = other.companion_cast_enabled_;
-    last_casts_ = other.last_casts_;
     tags_ = other.tags_;
     skills_ = other.skills_;
     last_skill_uses_ = other.last_skill_uses_;
@@ -556,13 +552,6 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
           agent->SetIntention({MovementAction::Stay, decoded.interact});
           continue;
         }
-        if (companion_cast_enabled_ && decoded.interact == InteractAction::Attack &&
-            comp->GetSkill(0).empty()) {
-          // Legacy generic cast: slots are never empty, so unreachable (to be removed).
-          if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
-          agent->SetIntention({MovementAction::Stay, InteractAction::Attack});
-          continue;
-        }
       }
       decoded.interact = InteractAction::None;
     }
@@ -804,25 +793,7 @@ std::vector<Position> BaseEnv::FindEmptyCells(
 
 void BaseEnv::ResolveInteractions() {
   // FSM attack damage is handled via the Effect system (AttackState::OnEnter
-  // spawns the effect); companions act through their skills. The legacy
-  // generic "companion_cast" below only fired for an empty slot 0, which no
-  // longer exists (to be removed).
-  last_casts_.clear();
-  if (companion_cast_enabled_) {
-    for (Agent* agent : object_manager_->GetAllAgents()) {
-      if (!agent->IsAlive()) continue;
-      if (agent->GetExecutedAction().interact != InteractAction::Attack) continue;
-      auto* comp = dynamic_cast<Companion*>(agent);
-      if (!comp) continue;
-      if (!comp->GetSkill(0).empty()) continue;  // Uses its skill instead
-      Position target = ApplyMovement(comp->GetPosition(),
-                                      DirectionToMovement(comp->GetDirection()));
-      if (!grid_->IsInBounds(target)) continue;
-      SpawnEffect("companion_cast", EffectTarget::AtCell(target),
-                  comp->GetDirection(), comp->GetId());
-      last_casts_.push_back({comp->GetId(), target});
-    }
-  }
+  // spawns the effect); companions act through their skills.
   ResolveSkills();
 }
 
@@ -843,7 +814,6 @@ bool PassesFilter(const Agent& a, TargetFilter f) {
 }  // namespace
 
 void BaseEnv::ClearStepReports() {
-  last_casts_.clear();
   last_skill_uses_.clear();
   last_tags_applied_.clear();
 }
