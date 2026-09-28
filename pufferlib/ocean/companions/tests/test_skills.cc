@@ -1084,6 +1084,60 @@ TEST(TestZoneTagsWhoeverStandsThere) {
   ASSERT_TRUE(Has(env, a, "wet"));  // Permanent
 }
 
+TEST(TestZoneFreshMeansTheAgentDidNotCarryTheTag) {
+  {  // Standing still on a duration-1 zone: the tag expires at every Step
+     // start, so every landing is fresh.
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", 1));
+    Agent* a = Place(env, 0, {3, 2});
+    for (int i = 0; i < 3; ++i) {
+      env.Step({kStay});
+      ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+      ASSERT_EQ(env.GetLastTagsApplied()[0].cause, std::string("zone"));
+      ASSERT_TRUE(env.GetLastTagsApplied()[0].fresh);
+      ASSERT_TRUE(Has(env, a, "wet"));
+    }
+  }
+  {  // Arriving on a permanent zone while already carrying its tag: not fresh.
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", kPermanentTag));
+    Agent* a = Place(env, 0, {3, 1});
+    ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "wet", kPermanentTag));
+    env.Step({EncodeAction(MovementAction::Right)});
+    ASSERT_TRUE(a->GetPosition() == (Position{3, 2}));
+    ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+    ASSERT_EQ(env.GetLastTagsApplied()[0].cause, std::string("zone"));
+    ASSERT_FALSE(env.GetLastTagsApplied()[0].fresh);
+  }
+}
+
+TEST(TestZoneSkipsADeadAgent) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", kPermanentTag));
+  Agent* dead = Place(env, 0, {3, 2});
+  dead->SetAlive(false);
+  env.Step({kStay, kStay});
+  ASSERT_FALSE(Has(env, dead, "wet"));
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+}
+
+TEST(TestZoneSetUnderAStandingAgentLandsNextStep) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 2});
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", kPermanentTag));
+  ASSERT_FALSE(Has(env, a, "wet"));  // Nothing lands outside a Step
+  env.Step({kStay});
+  ASSERT_TRUE(Has(env, a, "wet"));
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].cause, std::string("zone"));
+  ASSERT_EQ(env.GetLastTagsApplied()[0].agent, a->GetId());
+  ASSERT_TRUE(env.GetLastTagsApplied()[0].fresh);
+}
+
 TEST(TestTimedZoneKeepsTheTagWhileStandingThere) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);

@@ -121,6 +121,7 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   ResolveInteractions();
 
   // Tick active effects (advance timers, apply damage/push)
+  // Effect pushes move agents without zone tags: they get them next step if they stay.
   effect_system_->Tick();
 
   // Tick agent status effects (decrement durations, remove expired)
@@ -885,13 +886,18 @@ bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
   return true;
 }
 
+void BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
+                      const std::string& cause) {
+  if (duration == 0) return;  // Lands nothing, so reports nothing
+  bool fresh = !agent.HasTag(tag);
+  agent.ApplyTag(tag, duration);
+  last_tags_applied_.push_back({agent.GetId(), tag, duration, source, cause, fresh});
+}
+
 void BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration,
                       ObjectId source, const std::string& cause) {
-  if (duration == 0) return;  // Lands nothing, so reports nothing
-  TagId id = tags_.Intern(tag);
-  bool fresh = !agent.HasTag(id);
-  agent.ApplyTag(id, duration);
-  last_tags_applied_.push_back({agent.GetId(), id, duration, source, cause, fresh});
+  if (duration == 0) return;  // Lands nothing, so interns nothing
+  LandTag(agent, tags_.Intern(tag), duration, source, cause);
 }
 
 void BaseEnv::MoveActor(Actor& actor, Position to) {
@@ -906,7 +912,7 @@ bool BaseEnv::SetCellTag(Position cell, const std::string& tag, int duration) {
   if (!tag.empty() && (duration == 0 || duration < kPermanentTag)) return false;
   if (cell_tags_.empty()) {
     if (tag.empty()) return true;  // Nothing to clear
-    cell_tags_.assign(static_cast<size_t>(rows_ * cols_), CellTag{});
+    cell_tags_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), CellTag{});
   }
   CellTag& c = cell_tags_[static_cast<size_t>(cell.row * cols_ + cell.col)];
   c = tag.empty() ? CellTag{} : CellTag{tags_.Intern(tag), duration};
@@ -915,14 +921,14 @@ bool BaseEnv::SetCellTag(Position cell, const std::string& tag, int duration) {
 
 BaseEnv::CellTag BaseEnv::GetCellTag(Position cell) const {
   if (cell_tags_.empty() || !grid_->IsInBounds(cell)) return {};
-  assert(cell_tags_.size() == static_cast<size_t>(rows_ * cols_));
+  assert(cell_tags_.size() == static_cast<size_t>(rows_) * static_cast<size_t>(cols_));
   return cell_tags_[static_cast<size_t>(cell.row * cols_ + cell.col)];
 }
 
 void BaseEnv::ApplyZoneTag(Agent& agent) {
   CellTag c = GetCellTag(agent.GetPosition());
   if (c.tag == kInvalidTag) return;
-  LandTag(agent, tags_.Name(c.tag), c.duration, kInvalidObjectId, "zone");
+  LandTag(agent, c.tag, c.duration, kInvalidObjectId, "zone");
 }
 
 void BaseEnv::ApplyZoneTags() {

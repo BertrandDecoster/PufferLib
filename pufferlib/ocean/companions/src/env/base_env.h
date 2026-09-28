@@ -234,11 +234,18 @@ class BaseEnv {
 
   // Zones: a cell may carry one tag, landed (with `duration`, cause "zone",
   // source kInvalidObjectId) on every living agent standing on it after the
-  // regular movement of every Step (before legacy casts and skills; `fresh`
-  // tells arrivals apart), and on any agent a skill moves onto it. Cell tags are
-  // world state: copied with the env, cleared by LoadSnapshot (so by every Reset).
+  // regular movement of every Step (before legacy casts and skills), and on any
+  // agent a skill moves onto it. Each landing is reported; its `fresh` is that
+  // of TagApplication (the agent did not carry the tag just before this
+  // landing), so it does not tell arrivals apart: tags tick at the start of
+  // Step, so an agent standing on a duration-1 zone is re-landed fresh every
+  // step, and one already carrying the tag (from any source) arrives not fresh.
+  // Cell tags are world state: copied with the env, cleared by LoadSnapshot (so
+  // by every Reset).
   struct CellTag {
     TagId tag = kInvalidTag;
+    // The duration landed on agents. The zone itself never expires: it stays
+    // until cleared or overwritten (SetCellTag, ClearCellTags, LoadSnapshot).
     int duration = kPermanentTag;
   };
   // "" clears the cell. False (cell unchanged) out of bounds, or for a tag with
@@ -307,9 +314,12 @@ class BaseEnv {
   // pass the skill's filter, never the caster, each once, in cell order.
   void CollectAffected(const std::vector<Position>& cells, const SkillConfig& skill,
                        ObjectId caster, std::vector<Agent*>& affected);
+  void LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
+               const std::string& cause);
   void LandTag(Agent& agent, const std::string& tag, int duration,
-               ObjectId source, const std::string& cause);
-  // Skill motions: a living agent moved onto a zone cell gets its tag.
+               ObjectId source, const std::string& cause);  // Interns, forwards
+  // Skill motions: a living agent moved onto a zone cell gets its tag. Only
+  // the landing cell applies its zone: cells a dash crosses do not (a decision).
   void MoveActor(Actor& actor, Position to);
   void ApplyZoneTag(Agent& agent);  // The tag of the cell it stands on, if any
   void ApplyZoneTags();             // Every living agent (after movement)
