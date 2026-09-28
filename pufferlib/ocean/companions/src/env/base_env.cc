@@ -515,6 +515,15 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
     }
   }
 
+  // A companion's usable slot-0 skill, for every aim (the movement only aims,
+  // so aiming into a wall is legal too). A stunned agent is forced to stay.
+  const auto* comp = dynamic_cast<const Companion*>(agent);
+  if (comp && !comp->IsStunned() && CanUseSkill(*comp, 0)) {
+    for (int m = 0; m < kNumMovementActions; ++m) {
+      actions.push_back(EncodeAction(static_cast<MovementAction>(m), InteractAction::Skill1));
+    }
+  }
+
   return actions;
 }
 

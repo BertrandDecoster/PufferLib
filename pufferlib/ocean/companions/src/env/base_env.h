@@ -127,6 +127,10 @@ class BaseEnv {
   // Action space
   int NumAgents() const;
   int NumActions() const { return kNumMovementActions; }
+  // Stay, each move onto an in-bounds walkable cell (occupancy is for
+  // collisions), all with interact None; for a companion that is not stunned
+  // and can use its slot-0 skill (CanUseSkill), also Skill1 with every aim
+  // (Stay + 4 directions). A dead agent: Stay only.
   std::vector<Action> LegalActions(int agent_idx) const;
 
   // Find empty cells (Floor cells with no actor)

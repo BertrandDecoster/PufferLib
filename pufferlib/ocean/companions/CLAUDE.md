@@ -83,6 +83,10 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
    faced cell on `Skill1` (1 damage, allies spared) instead of moving
  - A skill that can't be used (a name the book lacks, cooldown, disabled slot,
    rooted + self-moving skill, dead caster) is dropped and the movement applies as with `None`
+ - `BaseEnv::LegalActions`: Stay and each move onto an in-bounds walkable cell (interact
+   `None`), plus, for a companion that is not stunned and `CanUseSkill(slot 0)`, `Skill1`
+   with each of the 5 aims (a wall-facing aim included). FSM / plain agents: movement
+   only; the dead: Stay only. Only the C++ tests call it today
  - The legacy generic companion cast (an on/off flag that cast an effect for an EMPTY
    slot 0) is gone, with its C API setter / getter and EffectSpawned events (C API 1.2.0)
 

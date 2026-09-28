@@ -1802,6 +1802,73 @@ TEST(TestCorpseMovedOntoTheLivingNeverTakesTheCell) {
 }
 
 // =============================================================================
+// LegalActions lists usable skill actions
+// =============================================================================
+
+// The Skill1 actions (any aim) among `agent_idx`'s legal actions.
+static std::vector<Action> LegalSkillActions(const BaseEnv& env, int agent_idx) {
+  std::vector<Action> skills;
+  for (Action a : env.LegalActions(agent_idx)) {
+    if (DecodeAction(a).interact == InteractAction::Skill1) skills.push_back(a);
+  }
+  return skills;
+}
+
+static bool Contains(const std::vector<Action>& actions, Action a) {
+  for (Action b : actions) {
+    if (b == a) return true;
+  }
+  return false;
+}
+
+TEST(TestLegalActionsListTheSkillForEveryAim) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 1});  // A wall on the left: aiming into it is still legal
+  std::vector<Action> skills = LegalSkillActions(env, 0);
+  ASSERT_EQ(skills.size(), static_cast<size_t>(kNumMovementActions));
+  for (int m = 0; m < kNumMovementActions; ++m) {
+    ASSERT_TRUE(Contains(skills, Use(static_cast<MovementAction>(m))));
+  }
+  // Movement is listed as before (interact None)
+  ASSERT_TRUE(Contains(env.LegalActions(0), kStay));
+  ASSERT_TRUE(Contains(env.LegalActions(0), EncodeAction(MovementAction::Right)));
+  ASSERT_FALSE(Contains(env.LegalActions(0), EncodeAction(MovementAction::Left)));
+}
+
+TEST(TestLegalActionsDropUnusableSkills) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {3, 1});
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "teleport"));
+  ASSERT_EQ(LegalSkillActions(env, 0).size(), static_cast<size_t>(kNumMovementActions));
+  a->ApplyStatus(StatusType::Rooted, 2);  // A rooted caster can't teleport
+  ASSERT_TRUE(LegalSkillActions(env, 0).empty());
+  a->ClearStatus(StatusType::Rooted);
+  env.Step({Use(MovementAction::Right)});  // Cooldown 4
+  ASSERT_TRUE(LegalSkillActions(env, 0).empty());
+  ASSERT_TRUE(Contains(env.LegalActions(0), kStay));
+
+  ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, ""));  // The attack: cooldown 0
+  a->ApplyStatus(StatusType::Rooted, 2);                   // Doesn't move the caster
+  ASSERT_EQ(LegalSkillActions(env, 0).size(), static_cast<size_t>(kNumMovementActions));
+  a->ApplyStatus(StatusType::Stunned, 2);                  // Stunned: forced to stay
+  ASSERT_TRUE(LegalSkillActions(env, 0).empty());
+}
+
+TEST(TestLegalActionsOfNonCompanionsAndTheDeadListNoSkill) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 1});
+  AddAgent(env, {5, 5}, Faction::ENEMY);
+  ASSERT_TRUE(LegalSkillActions(env, 1).empty());
+  ASSERT_EQ(env.LegalActions(1).size(), static_cast<size_t>(kNumMovementActions));
+  env.GetMutableObjectManager().GetAllAgents()[0]->SetAlive(false);
+  ASSERT_EQ(env.LegalActions(0).size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.LegalActions(0)[0] == kStay);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32
