@@ -140,6 +140,115 @@ TEST(TestRestoreHealthHasNoSideEffect) {
 }
 
 // =============================================================================
+// The env and the downed: they do not act and are not affected
+// =============================================================================
+
+// A 10x10 arena (from test_skills.cc): a wall border, floor inside (rows and
+// cols 1-8), agents parked on row 8 (cols 1..n) until a test places them.
+static void MakeArena(SynchroEnv& env) {
+  env.Reset();
+  Grid& g = env.GetMutableGrid();
+  for (int r = 0; r < 10; ++r) {
+    for (int c = 0; c < 10; ++c) {
+      bool border = r == 0 || c == 0 || r == 9 || c == 9;
+      g.SetCell({r, c}, border ? CellKind::Wall : CellKind::Floor);
+    }
+  }
+  auto agents = env.GetMutableObjectManager().GetAllAgents();
+  for (size_t i = 0; i < agents.size(); ++i) {
+    env.GetMutableObjectManager().UpdatePosition(agents[i]->GetId(),
+                                                 {8, 1 + static_cast<int>(i)});
+  }
+}
+
+static Agent* Place(SynchroEnv& env, int index, Position p) {
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[static_cast<size_t>(index)];
+  env.GetMutableObjectManager().UpdatePosition(a->GetId(), p);
+  return a;
+}
+
+static Agent* DownCompanion(SynchroEnv& env, int index) {
+  Agent* a = env.GetMutableObjectManager().GetAllAgents()[static_cast<size_t>(index)];
+  a->TakeDamage(a->GetHealth());
+  return a;
+}
+
+static Action Use(MovementAction aim) { return EncodeAction(aim, InteractAction::Skill1); }
+static const Action kStay = EncodeAction(MovementAction::Stay);
+static bool Has(const BaseEnv& env, const Agent* a, const char* tag) {
+  TagId t = env.GetTagTable().Find(tag);
+  return t != kInvalidTag && a->HasTag(t);
+}
+
+TEST(TestADownedCompanionStaysPutAndHasOnlyStay) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 1});
+  Agent* down = DownCompanion(env, 0);
+  ASSERT_TRUE(down->IsDowned());
+  ASSERT_EQ(env.LegalActions(0).size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.LegalActions(0)[0] == kStay);
+  env.Step({EncodeAction(MovementAction::Right), kStay});
+  ASSERT_TRUE(down->GetPosition() == (Position{3, 1}));
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(env.GetLastSkillUses().empty());
+}
+
+// A projectile flies past a downed ally; a zone lands nothing on it.
+TEST(TestNothingLandsOnADownedCompanion) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig bolt;
+  bolt.name = "bolt";
+  bolt.targeting = SkillTargeting::Projectile;
+  bolt.range = 4;
+  bolt.damage = 1;
+  bolt.tags = {{"zapped", 1}};
+  env.GetMutableSkillBook().Define(bolt);
+  Agent* caster = Place(env, 0, {3, 1});
+  Place(env, 1, {3, 2});
+  Agent* behind = Place(env, 2, {3, 4});
+  Agent* down = DownCompanion(env, 1);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "wet", kPermanentTag));
+  ASSERT_TRUE(env.SetCompanionSkill(caster->GetId(), 0, "bolt"));
+  env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_FALSE(Has(env, down, "zapped"));
+  ASSERT_FALSE(Has(env, down, "wet"));
+  ASSERT_TRUE(Has(env, behind, "zapped"));
+  for (const auto& landed : env.GetLastTagsApplied()) ASSERT_TRUE(landed.agent != down->GetId());
+}
+
+// Enemies ignore the downed: an Aggro enemy next to a downed companion does
+// not target it, and it takes no further damage.
+TEST(TestEnemiesIgnoreADownedCompanion) {
+  AggroEnv env(10, 1, EnemyType::Goblin, 42, 0, 100);
+  env.Reset(42);
+  Companion* comp = env.GetMutableObjectManager().GetAllCompanions()[0];
+  AgentFSM* enemy = env.GetMutableObjectManager().GetAllAgentFSMs()[0];
+  // Next to the enemy, on any walkable neighbour
+  const Position e = enemy->GetPosition();
+  bool placed = false;
+  for (Position p : {Position{e.row, e.col - 1}, Position{e.row, e.col + 1},
+                     Position{e.row - 1, e.col}, Position{e.row + 1, e.col}}) {
+    if (env.GetGrid().IsWalkable(p) && !env.GetObjectManager().GetActorAt(p)) {
+      env.GetMutableObjectManager().UpdatePosition(comp->GetId(), p);
+      placed = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(placed);
+  comp->TakeDamage(comp->GetHealth());
+  ASSERT_TRUE(comp->IsDowned());
+  const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()), kStay);  // The enemy's too
+  for (int i = 0; i < 6; ++i) {
+    env.Step(stay);
+    ASSERT_EQ(env.GetTick(), i + 1);  // The step ran
+    ASSERT_TRUE(enemy->GetFSMContext().target_id != comp->GetId());
+  }
+  ASSERT_EQ(comp->GetTimesDowned(), 1);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 #ifdef _WIN32

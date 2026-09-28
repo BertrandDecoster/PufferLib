@@ -525,9 +525,9 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
   }
 
   const Agent* agent = agents[agent_idx];
-  if (!agent->IsAlive() || agent->IsStunned()) {
-    // The dead, and the stunned (GatherIntentions forces them to stay), can
-    // only stay
+  if (!agent->IsAlive() || agent->IsStunned() || agent->IsDowned()) {
+    // The dead, the stunned and the downed (GatherIntentions forces the last
+    // two to stay) can only stay
     actions.push_back(EncodeAction(MovementAction::Stay));
     return actions;
   }
@@ -575,8 +575,8 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
   for (size_t i = 0; i < agents.size() && i < actions.size(); ++i) {
     Agent* agent = agents[i];
 
-    // Stunned agents are forced to stay
-    if (agent->IsStunned()) {
+    // Stunned and downed agents are forced to stay
+    if (agent->IsStunned() || agent->IsDowned()) {
       agent->SetIntention({MovementAction::Stay});
       continue;
     }
@@ -873,7 +873,7 @@ void BaseEnv::ClearStepReports() {
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
 
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
-  if (!comp.IsAlive() || slot < 0 || slot >= kEnabledSkillSlots) return false;
+  if (!comp.IsAffectable() || slot < 0 || slot >= kEnabledSkillSlots) return false;
   if (comp.GetCooldown(slot) != 0) return false;
   const SkillConfig* skill = skills_.Find(comp.GetSkill(slot));
   if (!skill) return false;
@@ -909,7 +909,7 @@ bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
 
 void BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                       const std::string& cause) {
-  if (duration == 0) return;  // Lands nothing, so reports nothing
+  if (duration == 0 || agent.IsDowned()) return;  // Lands nothing, so reports nothing
   bool fresh = !agent.HasTag(tag);
   agent.ApplyTag(tag, duration);
   last_tags_applied_.push_back({agent.GetId(), tag, duration, source, cause, fresh});
@@ -925,7 +925,7 @@ void BaseEnv::MoveActor(Actor& actor, Position to) {
   if (to == actor.GetPosition()) return;
   object_manager_->UpdatePosition(actor.GetId(), to);
   auto* agent = dynamic_cast<Agent*>(&actor);
-  if (agent && agent->IsAlive()) ApplyZoneTag(*agent);
+  if (agent && agent->IsAffectable()) ApplyZoneTag(*agent);
 }
 
 bool BaseEnv::SetCellTag(Position cell, const std::string& tag, int duration) {
@@ -957,7 +957,7 @@ void BaseEnv::ApplyZoneTag(Agent& agent) {
 void BaseEnv::ApplyZoneTags() {
   if (cell_tags_.empty()) return;
   for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (agent->IsAlive()) ApplyZoneTag(*agent);
+    if (agent->IsAffectable()) ApplyZoneTag(*agent);
   }
 }
 
@@ -984,7 +984,7 @@ std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const 
 // gathered, and the root blocks from the next step.
 void BaseEnv::ResolveSkills() {
   for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (!agent->IsAlive()) continue;
+    if (!agent->IsAffectable()) continue;
     auto* comp = dynamic_cast<Companion*>(agent);
     if (!comp) continue;
     int slot = SkillSlotOf(agent->GetExecutedAction().interact);
@@ -1064,13 +1064,13 @@ Position BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
     }
   }
 
-  // 5. Root (the area only) and area motions; the dead are neither.
+  // 5. Root (the area only) and area motions; the dead and the downed are neither.
   AreaMotion(skill, centre, caster, on_area);
   return centre;
 }
 
 bool BaseEnv::Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const {
-  if (!agent.IsAlive() || !PassesFilter(agent, skill.filter)) return false;
+  if (!agent.IsAffectable() || !PassesFilter(agent, skill.filter)) return false;
   // The caster is of its own faction: without friendly fire it is spared too.
   return skill.friendly_fire || agent.GetFaction() != caster.GetFaction();
 }
@@ -1091,7 +1091,7 @@ void BaseEnv::AreaMotion(const SkillConfig& skill, Position centre, const Agent&
   // Push / pull never read Rooted.
   if (skill.root_steps > 0) {
     for (Agent* a : on_area) {
-      if (!a->IsAlive()) continue;  // Killed by the skill's damage
+      if (!a->IsAffectable()) continue;  // Killed or downed by the skill's damage
       if (a == &caster && !skill.self_root) continue;
       a->ApplyStatus(StatusType::Rooted, skill.root_steps);
     }

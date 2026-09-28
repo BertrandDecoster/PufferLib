@@ -225,7 +225,7 @@ void EffectSystem::ApplyEffectModifiers(
 
   // Find all agents affected
   for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (!agent->IsAlive()) continue;
+    if (!agent->IsAffectable()) continue;
 
     // Skip source agent if present
     if (effect.source_id != kInvalidObjectId &&
@@ -369,7 +369,7 @@ void EffectSystem::ApplyEffectModifiers(
 }
 
 void EffectSystem::ApplyPush(Agent* agent, int dx, int dy, int distance) {
-  if (!agent || !agent->IsAlive() || distance == 0) return;
+  if (!agent || !agent->IsAffectable() || distance == 0) return;
 
   // Negative distance = pull (reverse direction)
   if (distance < 0) {

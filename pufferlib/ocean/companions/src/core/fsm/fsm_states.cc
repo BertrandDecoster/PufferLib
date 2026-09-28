@@ -30,7 +30,7 @@ ObjectId FindClosestCompanion(const Position& agent_pos, int detection_range,
   std::vector<ObjectId> tied_ids;
 
   for (const Companion* comp : mgr.GetAllCompanions()) {
-    if (!comp->IsAlive()) continue;
+    if (!comp->IsAffectable()) continue;  // Enemies ignore the downed
 
     int dist = ManhattanDistance(agent_pos, comp->GetPosition());
     if (dist <= detection_range) {
@@ -168,7 +168,7 @@ const FSMState* AggroState::Update(FSMContext& ctx, AgentFSM& agent,
   const Companion* target_comp = dynamic_cast<const Companion*>(target);
 
   // Check if target is still valid and in range
-  bool target_valid = target_comp && target_comp->IsAlive();
+  bool target_valid = target_comp && target_comp->IsAffectable();
   int target_dist = target_valid
                         ? ManhattanDistance(agent_pos, target_comp->GetPosition())
                         : ctx.lose_target_range + 1;
@@ -190,7 +190,7 @@ const FSMState* AggroState::Update(FSMContext& ctx, AgentFSM& agent,
   }
 
   // Check if we can attack (adjacent to target and has attack ability)
-  if (ctx.has_attack && target_comp && target_comp->IsAlive()) {
+  if (ctx.has_attack && target_comp && target_comp->IsAffectable()) {
     Position target_pos = target_comp->GetPosition();
     int current_dist = ManhattanDistance(agent_pos, target_pos);
 
@@ -206,7 +206,7 @@ const FSMState* AggroState::Update(FSMContext& ctx, AgentFSM& agent,
 
   // Follow target using A* pathfinding (Euclidean heuristic naturally
   // prioritizes the axis with larger distance)
-  if (target_comp && target_comp->IsAlive()) {
+  if (target_comp && target_comp->IsAffectable()) {
     agent.MoveTo(target_comp->GetPosition(), env);
   } else {
     agent.MoveTo(agent_pos, env);  // Stay if no valid target
@@ -270,9 +270,9 @@ void TelegraphState::OnEnter(FSMContext& ctx, AgentFSM& agent,
 
   // Lock in target position for the attack
   const auto& mgr = env.GetObjectManager();
-  const Actor* target = mgr.GetActor(ctx.target_id);
+  const auto* target = dynamic_cast<const Agent*>(mgr.GetActor(ctx.target_id));
 
-  if (target && target->IsAlive()) {
+  if (target && target->IsAffectable()) {
     ctx.current_attack.target_position = target->GetPosition();
   } else {
     // If no valid target, target our own position (will likely miss)
