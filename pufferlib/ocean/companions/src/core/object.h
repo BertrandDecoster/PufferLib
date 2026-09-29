@@ -209,9 +209,11 @@ class Agent : public Actor {
   void TakeDamage(int amount);
   void Heal(int amount);
   // The end of a turn: `health` (the turn's outcome, clamped to [0, max]) at
-  // once; reaching 0 from above has its consequence (OnZeroHealth: an agent
-  // dies, a companion goes down). Nothing for an agent that is not affectable.
-  void ApplyTurnHealth(int health);
+  // once. Ending at 0 has its consequence (OnZeroHealth: an agent dies, a
+  // companion goes down) when it came from above 0, or when the turn `hurt`
+  // it (as TakeDamage on an agent already at 0 HP, e.g. one a snapshot saved
+  // at 0 standing). Nothing for an agent that is not affectable.
+  void ApplyTurnHealth(int health, bool hurt);
   bool IsDead() const { return health_ <= 0; }
   // Snapshot loads: the health as saved, clamped to [0, max], without the
   // consequences of damage (no death, no down)

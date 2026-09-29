@@ -1029,9 +1029,9 @@ class BaseEnv {
   // The turn's health (see GetLastTurnHealth). During a step (in_step_) a
   // hit / heal on an affectable agent goes into its ledger; between two steps
   // it applies at once (Agent::TakeDamage, Marked per hit / Agent::Heal).
-  // Amounts <= 0 do nothing.
-  void HurtInStep(Agent& agent, int amount);
-  void HealInStep(Agent& agent, int amount);
+  // Amounts <= 0 do nothing. True when the amount went into the ledger.
+  bool HurtInStep(Agent& agent, int amount);
+  bool HealInStep(Agent& agent, int amount);
   // The start of a turn (after the agents' BeginStep): one ledger entry per
   // agent, in agent-index order, with whether it is Marked now
   void BeginTurn();
@@ -1159,7 +1159,9 @@ class BaseEnv {
 
   // The turn's ledger (see GetLastTurnHealth): scratch of one Step, never
   // copied (it points at this env's agents), cleared by operator=, AbortStep
-  // and LoadSnapshot; reused (no allocation once grown).
+  // and LoadSnapshot; reused (no allocation once grown). By design a copy
+  // made mid-step (a hook) starts with an empty ledger: the source's turn so
+  // far is not carried over.
   struct LedgerEntry {
     Agent* agent = nullptr;
     int damage = 0;         // The raw hits (before Marked)
@@ -1172,7 +1174,7 @@ class BaseEnv {
   };
   struct Turn {
     // Per agent, in agent-index order as the turn began (BeginTurn); an agent
-    // created during the turn is appended when first touched
+    // created during the turn is appended when first touched (not Marked)
     std::vector<LedgerEntry> ledger;
     void Clear() { ledger.clear(); }  // Keeps the capacity
   };
@@ -1196,8 +1198,8 @@ class BaseEnv {
   // env (a copy gets its own: the default member initializer)
   struct EffectHealth final : EffectSystem::HealthSink {
     explicit EffectHealth(BaseEnv* owner) : env(owner) {}
-    void Hurt(Agent& agent, int amount) override { env->HurtInStep(agent, amount); }
-    void Heal(Agent& agent, int amount) override { env->HealInStep(agent, amount); }
+    bool Hurt(Agent& agent, int amount) override { return env->HurtInStep(agent, amount); }
+    bool Heal(Agent& agent, int amount) override { return env->HealInStep(agent, amount); }
     BaseEnv* env;
   };
   EffectHealth effect_health_{this};

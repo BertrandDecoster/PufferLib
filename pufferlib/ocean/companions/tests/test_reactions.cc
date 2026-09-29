@@ -615,9 +615,9 @@ TEST(TestASpreadNeedsTheZoneUnderTheAgent) {
 
 // Oil + burning, spreading over the kitchen oil: everyone on it gets the
 // result and the damage (the gob, weak to (oil, burning), is defeated: it
-// still stood on oil; it ends the turn at 0), then the region becomes the table's burning zone (a step timer: 3
-// steps, 1 damage per landing), which then burns out and leaves nothing. A
-// disconnected oil cell stays oil.
+// still stood on oil; it ends the turn at 0), then the region becomes the
+// table's burning zone (a step timer: 3 steps, 1 damage per landing), which
+// then burns out and leaves nothing. A disconnected oil cell stays oil.
 TEST(TestZoneBecomesTakesTheTablesFieldsAndBurnsOut) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -1597,13 +1597,18 @@ static std::string ReportTrace(const BaseEnv& env, size_t first_landing = 0) {
   for (const auto& r : env.GetLastRevives()) {
     out << "revive " << Idx(env, r.reviver) << " " << Idx(env, r.revived) << " " << r.health << "\n";
   }
+  for (const auto& t : env.GetLastTurnHealth()) {
+    out << "turn " << Idx(env, t.agent) << " " << t.damage << " " << t.marked_bonus << " "
+        << t.heal << " " << t.change << " " << t.health << " " << static_cast<int>(t.outcome)
+        << "\n";
+  }
   return out.str();
 }
 
 // The preview predicts exactly what the next step then does when that use is
 // its only change: the same skill use, landings, reactions (the oil catching
 // fire included), defeats (one through a weakness to the fireball's own tag,
-// one through a result) and downs, field by field. The step also lands the
+// one through a result), the turn's health and downs, field by field. The step also lands the
 // zones on those standing on them first (re-landings here, setting nothing
 // off): its landings are the preview's after those.
 TEST(TestAnOutcomePreviewIsWhatTheStepDoes) {
@@ -1645,6 +1650,7 @@ TEST(TestAnOutcomePreviewIsWhatTheStepDoes) {
   ASSERT_TRUE(world.GetLastDefeats().at(1).kind == TagSource::Reaction);  // The cook
   ASSERT_EQ(world.GetLastDowns().size(), static_cast<size_t>(1));
   ASSERT_EQ(world.GetLastDowns().at(0), k.cook);
+  ASSERT_FALSE(world.GetLastTurnHealth().empty());
   ASSERT_EQ(world.GetCellTag({3, 5}).tag, world.GetTagTable().Find("burning"));
 }
 

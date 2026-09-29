@@ -31,11 +31,13 @@ class EffectSystem {
  public:
   // Where an effect's damage and heals go. BaseEnv's: the turn's ledger
   // during a Step (the turn's end applies it), at once between two steps.
-  // Without a sink: at once (Agent::TakeDamage / Heal).
+  // Without a sink: at once (Agent::TakeDamage / Heal). Each returns true
+  // when the amount went into the turn's ledger (deferred), false when it
+  // applied at once (or not at all).
   class HealthSink {
    public:
-    virtual void Hurt(Agent& agent, int amount) = 0;
-    virtual void Heal(Agent& agent, int amount) = 0;
+    virtual bool Hurt(Agent& agent, int amount) = 0;
+    virtual bool Heal(Agent& agent, int amount) = 0;
 
    protected:
     ~HealthSink() = default;

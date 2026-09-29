@@ -165,12 +165,12 @@
 //   revives, such as "revive", reported as a SkillUsed too): subject_id = the
 //   revived companion, health_source_id = the reviver (the skill's caster),
 //   health_new = health_amount = the HP it got up with (gained from 0),
-//   position = its cell after the step
-//   (a later skill may push it). One per revive, in resolution order. A
-//   companion revived and downed again in the same step (by a later skill or
-//   an effect) has its AgentRevived here and its second AgentDowned among the
-//   downs above: within a step the events are grouped by kind, not in time
-//   order. Since 1.4.
+//   position = its cell after the step. Revives apply at the end of the step
+//   (the turn), so a companion revived in a step cannot be downed in it. One
+//   per revive (two revivers of one ally: one, credited to the lowest agent
+//   index giving the highest HP), in the revived agents' index order. Within a
+//   step the events are grouped by kind, not in time order (a down between two
+//   steps comes before the step's revive). Since 1.4.
 // - Companions_Event_SkillUsed: a companion used the skill in a slot:
 //   subject_id = caster, position = the skill's centre (the landing cell for
 //   a self-targeted skill such as teleport), effect_id = the slot (0-based),
@@ -215,17 +215,13 @@
 // the events not reported. The state itself (agents' tags, skills,
 // statuses, downed, health, downs) is always complete.
 // The state-change events (moved / blocked, downed, revived, defeated) come
-// first, so skill, tag and reaction events are dropped before them. They
-// always fit when no companion is revived twice in the step: an agent then
-// has at most one movement event, one revive, two downs (down between two
-// steps, revived, down again) and one defeat (a defeat takes an affectable
-// agent: a companion's is one of its downs, another agent dies), 5 events,
-// so with up to 12 agents (states report at most Companions_MAX_AGENTS = 8)
-// they fit next to EpisodeEnd. Reviving the same companion twice in a step
-// takes a skill downing it between two revives (skills resolve one caster at
-// a time); each such extra revive adds one revive, one down and possibly one
-// defeat, and in such a step the last state-change events may be dropped
-// too.
+// first, so skill, tag and reaction events are dropped before them. Downs,
+// deaths and revives happen at the end of the step (the turn): an agent has
+// at most one movement event, one revive, one defeat (a companion's is also
+// its down) and the downs since the last step (one in the step; more only if
+// the host downed, revived and downed it again between two steps), so with
+// up to 12 agents (states report at most Companions_MAX_AGENTS = 8) they fit
+// next to EpisodeEnd unless the host did that.
 //
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
@@ -1082,9 +1078,9 @@ typedef struct {
   // The agent did not carry the tag just before (a result: before its
   // reaction removed the originals)
   bool fresh;
-  // The zone damage this landing dealt (the zone's, before Marked); 0 when
-  // none: not a zone's landing, a harmless zone, an agent a weakness defeated
-  // or a reaction's damage downed or killed
+  // The zone damage this landing dealt into the turn's total (the zone's raw
+  // share, before Marked, recorded whatever the turn's outcome); 0 when none:
+  // not a zone's landing, a harmless zone
   int32_t damage;
 } Companions_TagLanding;
 
@@ -1102,11 +1098,14 @@ typedef struct {
   char cause[Companions_SKILL_NAME_LEN];
   Companions_TagSource kind;
   bool spread;  // Over the trigger's zone region (else the trigger alone)
-  // The agents it affected, in agent-index order (the trigger included,
-  // unless a weakness defeated it), each with: the result landed on it
-  // (false: immune), the result defeated it (a weakness), the rule's damage
-  // it took (before Marked; 0 for a defeated agent). The first
-  // Companions_MAX_AGENTS: affected_count; affected_total counts them all.
+  // The agents it affected, in agent-index order (the trigger included:
+  // during a step a weakness-defeated agent stays in play until the end of
+  // the step; only a host landing between steps that defeats the trigger
+  // leaves it out), each with: the result landed on it (false: immune), the
+  // result defeated it (a weakness; false when one already did this step:
+  // once per step), the rule's damage recorded into its turn (the raw share,
+  // before Marked, whatever the outcome). The first Companions_MAX_AGENTS:
+  // affected_count; affected_total counts them all.
   Companions_ObjectId affected[Companions_MAX_AGENTS];
   bool affected_result_landed[Companions_MAX_AGENTS];
   bool affected_defeated[Companions_MAX_AGENTS];
@@ -1189,7 +1188,8 @@ COMPANIONS_API int32_t companions_get_down_count(const Companions_Env* env,
 COMPANIONS_API bool companions_get_down(const Companions_Env* env,
                                         Companions_ReportSource source, int32_t index,
                                         Companions_ObjectId* out);
-// The revives, in resolution order (as the AgentRevived events)
+// The revives, applied at the end of the step, in the revived agents' index
+// order (as the AgentRevived events)
 COMPANIONS_API int32_t companions_get_revive_count(const Companions_Env* env,
                                                   Companions_ReportSource source);
 COMPANIONS_API bool companions_get_revive(const Companions_Env* env,

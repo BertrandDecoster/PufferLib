@@ -569,6 +569,68 @@ TEST(TestTheTurnHealthReportOrderCopyAndClear) {
 }
 
 // =============================================================================
+// Copies: each env's effects feed its own ledger
+// =============================================================================
+
+// A copy (constructed, assigned, Clone()) outliving its original: a strike
+// (2 damage) and a heal (1) landing in the copy's step on a 2-HP companion go
+// into the copy's own ledger (its effect system's sink points at the copy):
+// totalled, the companion ends at 1, not down.
+TEST(TestACopysEffectsFeedItsOwnLedger) {
+  ScopedEffectRegistry scoped_registry;
+  for (int how = 0; how < 3; ++how) {
+    std::unique_ptr<BaseEnv> copy;
+    {
+      SynchroEnv original(10, 10, 1, 1, 0, 42);
+      MakeArena(original);
+      Agent* a = Place(original, 0, {3, 3});
+      a->SetMaxHealth(5);
+      a->RestoreHealth(2);
+      SpawnNextStep(original, "strike", {3, 3}, 2);
+      SpawnNextStep(original, "mend", {3, 3}, -1);
+      if (how == 0) {
+        copy = std::make_unique<SynchroEnv>(original);
+      } else if (how == 1) {
+        auto assigned = std::make_unique<SynchroEnv>(10, 10, 1, 1, 0, 7);
+        *assigned = original;
+        copy = std::move(assigned);
+      } else {
+        copy = original.Clone();
+      }
+    }  // The original is gone
+    copy->Step(Stays(*copy));
+    Agent* a = AgentAt(*copy, 0);
+    ASSERT_FALSE(AsCompanion(a)->IsDowned());
+    ASSERT_EQ(a->GetHealth(), 1);
+    ASSERT_EQ(copy->GetLastTurnHealth().size(), static_cast<size_t>(1));
+    ASSERT_EQ(copy->GetLastTurnHealth().at(0).damage, 2);
+    ASSERT_EQ(copy->GetLastTurnHealth().at(0).heal, 1);
+  }
+}
+
+// =============================================================================
+// An agent standing at 0 HP (a snapshot may save one)
+// =============================================================================
+
+// Hurt during a turn, it goes down at its end, as TakeDamage would down it;
+// untouched, it stays up
+TEST(TestAStandingAgentAtZeroHurtThisTurnGoesDown) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* hurt = Place(env, 0, {3, 3});
+  Agent* spared = Place(env, 1, {5, 5});
+  for (Agent* a : {hurt, spared}) a->RestoreHealth(0);
+  ASSERT_TRUE(hurt->IsAffectable());
+  Require(env.SetCellTag({3, 3}, "burning", Hurting(1)), "fire");
+  env.Step(Stays(env));
+  ASSERT_TRUE(AsCompanion(hurt)->IsDowned());
+  ASSERT_TRUE(TurnOf(env, hurt).outcome == TurnOutcome::Downed);
+  ASSERT_EQ(TurnOf(env, hurt).change, 0);
+  ASSERT_FALSE(AsCompanion(spared)->IsDowned());
+  ASSERT_EQ(env.GetLastTurnHealth().size(), static_cast<size_t>(1));
+}
+
+// =============================================================================
 // Between steps: the host's primitives stay immediate
 // =============================================================================
 

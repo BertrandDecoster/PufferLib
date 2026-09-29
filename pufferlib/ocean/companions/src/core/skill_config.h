@@ -66,9 +66,11 @@ struct SkillConfig {
   int motion_distance = 0;
   bool tag_path = false;           // Dash: agents crossed on the way are affected too
   std::vector<SkillTagSpec> tags;  // Landed on every affected agent
-  // Health every affected agent loses (Agent::TakeDamage, so Marked applies
-  // and 0 HP kills), after the tags and before root / area motion. Marked's
-  // x1.5 truncates toward zero: 1 damage stays 1, 2 becomes 3, 3 becomes 4.
+  // Health every affected agent loses, after the tags and before root / area
+  // motion: recorded into the turn's ledger (BaseEnv::GetLastTurnHealth), which
+  // applies the turn's total at its end: Marked (active as the turn began)
+  // multiplies that total by 1.5, rounded down once; at 0 HP an agent dies, a
+  // companion goes down, at the end of the turn.
   int damage = 0;
   int root_steps = 0;              // Affected agents are rooted for this many next steps
   // 0: no cooldown. n: blocked for the n steps after the one it was used in

@@ -645,8 +645,8 @@ static void AddDownEvents(Companions_Env* wrapper) {
   }
 }
 
-// One AgentRevived event per revive of this step, in resolution order
-// (subject = the revived companion, at its cell; health_source_id = the
+// One AgentRevived event per revive of this step, in the revived agents'
+// index order (applied at the end of the step; subject = the revived companion, at its cell; health_source_id = the
 // reviver; health_new = health_amount = the HP it got up with).
 static void AddReviveEvents(Companions_Env* wrapper) {
   const companions::BaseEnv* env = wrapper->env.get();

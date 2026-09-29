@@ -319,6 +319,7 @@ void EffectSystem::ApplyEffectModifiers(
 
     // Track what we apply for logging
     bool applied_damage = false;
+    bool deferred = false;  // Into the turn's ledger (during a Step)
     bool applied_push = false;
     bool applied_status = false;
     int old_health = agent->GetHealth();
@@ -328,13 +329,13 @@ void EffectSystem::ApplyEffectModifiers(
     if (cfg.damage != 0) {
       if (cfg.damage > 0) {
         if (health_sink_) {
-          health_sink_->Hurt(*agent, cfg.damage);
+          deferred = health_sink_->Hurt(*agent, cfg.damage);
         } else {
           agent->TakeDamage(cfg.damage);
         }
       } else {
         if (health_sink_) {
-          health_sink_->Heal(*agent, -cfg.damage);
+          deferred = health_sink_->Heal(*agent, -cfg.damage);
         } else {
           agent->Heal(-cfg.damage);
         }
@@ -366,17 +367,21 @@ void EffectSystem::ApplyEffectModifiers(
       log_msg << "Applied '" << cfg.name << "' to Agent " << agent->GetId();
 
       if (applied_damage) {
-        int new_health = agent->GetHealth();
-        int change = new_health - old_health;
-        if (change == 0) {  // Into the turn's ledger (a Step), or none dealt
-          log_msg << ": " << (cfg.damage > 0 ? "-" : "+") << std::abs(cfg.damage)
-                  << " HP at the end of the turn";
+        // The effect's own amount: during a Step into the turn's ledger
+        // (applied at the end of the turn), between two steps at once
+        const int new_health = agent->GetHealth();
+        log_msg << ": " << (cfg.damage > 0 ? "-" : "+") << std::abs(cfg.damage) << " HP";
+        if (deferred) {
+          log_msg << " (into this turn's total, applied at its end)";
         } else {
-          log_msg << ": " << (change >= 0 ? "+" : "") << change << " HP ("
-                  << new_health << "/" << agent->GetMaxHealth() << " remaining)";
+          log_msg << " (" << (new_health - old_health >= 0 ? "+" : "")
+                  << new_health - old_health << ": " << new_health << "/"
+                  << agent->GetMaxHealth() << " remaining)";
         }
         if (!agent->IsAlive()) {
           log_msg << " [KILLED]";
+        } else if (agent->IsDowned()) {
+          log_msg << " [DOWNED]";
         }
       }
 

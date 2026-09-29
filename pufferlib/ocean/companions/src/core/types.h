@@ -61,7 +61,7 @@ struct ZoneDef {
   // The tag the cell gets when the zone expires ("" = the cell loses its
   // zone); that zone takes its fields from the table
   std::string then;
-  int damage = 0;  // Health each landing takes (Agent::TakeDamage), >= 0
+  int damage = 0;  // Health each landing takes (the turn's ledger, see BaseEnv::GetLastTurnHealth), >= 0
 
   bool operator==(const ZoneDef& o) const {
     return duration == o.duration && steps == o.steps && then == o.then && damage == o.damage;

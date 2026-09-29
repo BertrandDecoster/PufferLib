@@ -1746,9 +1746,8 @@ BaseEnv::LedgerEntry& BaseEnv::LedgerOf(Agent& agent) {
   for (LedgerEntry& e : ledger) {
     if (e.agent == &agent) return e;
   }
-  LedgerEntry e;  // An agent the turn began without
+  LedgerEntry e;  // An agent the turn began without: not Marked as it began
   e.agent = &agent;
-  e.marked = agent.IsMarked();
   ledger.push_back(e);
   return ledger.back();
 }
@@ -1766,28 +1765,30 @@ bool BaseEnv::IsDefeatedThisTurn(const Agent& agent) const {
   return e && e->defeated;
 }
 
-void BaseEnv::HurtInStep(Agent& agent, int amount) {
-  if (amount <= 0) return;
+bool BaseEnv::HurtInStep(Agent& agent, int amount) {
+  if (amount <= 0) return false;
   if (!in_step_) {
     agent.TakeDamage(amount);
-    return;
+    return false;
   }
-  if (!agent.IsAffectable()) return;  // As TakeDamage
+  if (!agent.IsAffectable()) return false;  // As TakeDamage
   LedgerEntry& e = LedgerOf(agent);
   e.damage += amount;
   e.touched = true;
+  return true;
 }
 
-void BaseEnv::HealInStep(Agent& agent, int amount) {
-  if (amount <= 0) return;
+bool BaseEnv::HealInStep(Agent& agent, int amount) {
+  if (amount <= 0) return false;
   if (!in_step_) {
     agent.Heal(amount);
-    return;
+    return false;
   }
-  if (!agent.IsAffectable()) return;  // As Heal (reviving is not healing)
+  if (!agent.IsAffectable()) return false;  // As Heal (reviving is not healing)
   LedgerEntry& e = LedgerOf(agent);
   e.heal += amount;
   e.touched = true;
+  return true;
 }
 
 bool BaseEnv::PlanRevive(Companion& ally, int health, const Companion& caster) {
@@ -1839,8 +1840,9 @@ void BaseEnv::ApplyTurnLedger(bool report) {
       if (e.marked) {
         t.marked_bonus = static_cast<int>(e.damage * Agent::kMarkedDamageMultiplier) - e.damage;
       }
-      agent.ApplyTurnHealth(before - e.damage - t.marked_bonus + e.heal);
-      if (before > 0 && agent.GetHealth() == 0 && !agent.IsAffectable()) {
+      const bool was_affectable = agent.IsAffectable();
+      agent.ApplyTurnHealth(before - e.damage - t.marked_bonus + e.heal, e.damage > 0);
+      if (was_affectable && !agent.IsAffectable()) {
         t.outcome = dynamic_cast<Companion*>(&agent) ? TurnOutcome::Downed : TurnOutcome::Died;
       }
     }
