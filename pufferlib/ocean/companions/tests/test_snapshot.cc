@@ -2105,7 +2105,8 @@ TEST(TestSnapshotRejectsBadV7Data) {
     return s;
   };
   AssertSnapshotRejected(with_status(2, 1), "tag_statuses[0] ('stunned'): status: unknown value 2");
-  AssertSnapshotRejected(with_status(0, 1), "status: unknown value 0");
+  AssertSnapshotRejected(with_status(0, 1),
+                         "tag_statuses[0] ('stunned'): status: none is not a status");
   AssertSnapshotRejected(with_status(9, 1), "status: unknown value 9");
   AssertSnapshotRejected(with_status(1, 0), "tag_statuses[0] ('stunned'): steps");
 
@@ -2164,6 +2165,116 @@ TEST(TestD4MovesZoneCellsWithTheirFields) {
                 Zone("burning", 2, 4, "smoke", 1));
     ASSERT_TRUE(ZoneOf(dst, TransformPosition(b, kRows, kCols, tr)) == Zone("wet", 3, 5, "ice", 2));
     ASSERT_TRUE(dst.GetZoneDefs() == snap.zones);
+  }
+}
+
+// A v7 file ends with its last block: trailing bytes are corrupt.
+TEST(TestBinaryV7RejectsTrailingBytes) {
+  std::vector<uint8_t> bytes = V7Snapshot().Serialize();
+  Snapshot::Deserialize(bytes);  // Sanity
+  bytes.push_back(0);
+  AssertThrowsMentioning([&] { Snapshot::Deserialize(bytes); }, "trailing");
+}
+
+// Every truncation of a v7 buffer is an error (never a crash, never a load).
+TEST(TestBinaryV7EveryTruncationIsRejected) {
+  const std::vector<uint8_t> bytes = V7Snapshot().Serialize();
+  for (size_t n = 0; n < bytes.size(); ++n) {
+    const std::vector<uint8_t> cut(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(n));
+    ASSERT_THROW(Snapshot::Deserialize(cut), std::runtime_error);
+  }
+}
+
+// Timers have a ceiling (kMaxTimerSteps), so `n + 1` during a step never
+// overflows: zone durations and steps, tag status steps, agent and zone tag
+// durations, a skill's tag durations, root_steps and cooldown.
+TEST(TestTimersAreCapped) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const int max = kMaxTimerSteps;
+  Snapshot s = good;
+  s.zones = {{"burning", MakeZone(max, max, "", 0)}};
+  s.tag_statuses = {{"stunned", StatusType::Stunned, max}};
+  s.cell_tags = {MakeCell({1, 2}, "wet", max, max, kAbsent, kAbsent)};
+  s.agents[0].tags = {{"blessed", max}};
+  SynchroEnv(8, 8, 1, 1, 0, 42).LoadSnapshot(BinaryRoundTrip(s));  // The ceiling itself is fine
+
+  s = good;
+  s.zones = {{"burning", MakeZone(max + 1, 2, "", 0)}};
+  AssertSnapshotRejected(s, "zones['burning']: duration");
+  s.zones = {{"burning", MakeZone(2, max + 1, "", 0)}};
+  AssertSnapshotRejected(s, "zones['burning']: steps");
+  s.zones = {{"burning", MakeZone(2, 2147483647, "", 0)}};
+  AssertSnapshotRejected(s, "zones['burning']: steps");
+  s = good;
+  s.cell_tags = {MakeCell({1, 2}, "wet", kAbsent, max + 1, kAbsent, kAbsent)};
+  AssertSnapshotRejected(s, "zone at (1, 2): steps");
+  s.cell_tags = {MakeCell({1, 2}, "wet", max + 1, kAbsent, kAbsent, kAbsent)};
+  AssertSnapshotRejected(s, "zone at (1, 2)");
+  s = good;
+  s.tag_statuses = {{"stunned", StatusType::Stunned, max + 1}};
+  AssertSnapshotRejected(s, "tag_statuses[0] ('stunned'): steps");
+  s = good;
+  s.agents[0].tags = {{"blessed", max + 1}};
+  AssertSnapshotRejected(s, "invalid duration");
+
+  SkillConfig skill;
+  skill.name = "frost";
+  SkillConfig bad = skill;
+  bad.tags = {{"chilled", max}};
+  bad.root_steps = max;
+  bad.cooldown = max;
+  ValidateSkillConfig(bad);
+  bad.tags = {{"chilled", max + 1}};
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "skill 'frost': tags[0] ('chilled')");
+  bad = skill;
+  bad.root_steps = max + 1;
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "root_steps");
+  bad = skill;
+  bad.cooldown = max + 1;
+  AssertThrowsMentioning([&] { ValidateSkillConfig(bad); }, "cooldown");
+
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  ASSERT_FALSE(env.DefineZone("burning", MakeZone(2, max + 1, "", 0)));
+  ASSERT_FALSE(env.SetCellTag({1, 2}, "wet", max + 1));
+  ASSERT_FALSE(env.SetTagStatuses({{"stunned", StatusType::Stunned, max + 1}}));
+  ASSERT_FALSE(env.ApplyTagTo(FirstAgent(env)->GetId(), "blessed", max + 1));
+  ASSERT_TRUE(env.ApplyTagTo(FirstAgent(env)->GetId(), "blessed", max));
+}
+
+// A rejected load changes nothing: the env keeps its zone table, reactions,
+// tag statuses, weaknesses, immunities and zones.
+TEST(TestARejectedV7LoadChangesNothing) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  ASSERT_TRUE(env.DefineZone("burning", MakeZone(2, 4, "smoke", 1)));
+  ASSERT_TRUE(
+      env.SetReactions({MakeReaction("oil", "burning", "burning", {}, 1, true, "burning")}));
+  ASSERT_TRUE(env.SetTagStatuses({{"stunned", StatusType::Stunned, 2}}));
+  const ObjectId a = FirstAgent(env)->GetId();
+  ASSERT_TRUE(env.SetWeaknesses(a, {{"wet", "electrified"}}));
+  ASSERT_TRUE(env.SetImmunities(a, {"burning"}));
+  ASSERT_TRUE(env.SetCellTag({2, 2}, "burning"));
+  const Snapshot before = env.SaveSnapshot();
+
+  Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 7).SaveSnapshot();
+  good.zones = {{"wet", MakeZone(3, 3, "", 0)}};
+  good.reactions = {MakeReaction("wet", "chilled", "stunned", {}, 0, false, "")};
+  good.tag_statuses = {{"rooted", StatusType::Rooted, 1}};
+  good.cell_tags = {MakeCell({3, 3}, "wet", kAbsent, kAbsent, kAbsent, kAbsent)};
+  std::vector<Snapshot> bad(5, good);
+  bad[0].zones["wet"].steps = 0;
+  bad[1].reactions[0].keep = {"fire"};
+  bad[2].tag_statuses[0].steps = 0;
+  bad[3].agents[0].immune = {"wet", "wet"};
+  bad[4].cell_tags[0].damage = -1;
+  for (const Snapshot& s : bad) {
+    ASSERT_THROW(env.LoadSnapshot(s), std::runtime_error);
+    ASSERT_TRUE(env.GetZoneDefs() == before.zones);
+    ASSERT_TRUE(env.GetReactions() == before.reactions);
+    ASSERT_TRUE(env.GetTagStatuses() == before.tag_statuses);
+    ASSERT_TRUE(env.GetWeaknesses(a) == before.agents[0].weak_to);
+    ASSERT_TRUE(env.GetImmunities(a) == before.agents[0].immune);
+    ASSERT_TRUE(ZoneOf(env, {2, 2}) == Zone("burning", 2, 4, "smoke", 1));
+    ASSERT_EQ(CountZones(env), 1);
   }
 }
 

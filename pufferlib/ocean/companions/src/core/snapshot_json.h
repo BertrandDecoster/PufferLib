@@ -14,7 +14,9 @@ namespace companions {
 std::string SnapshotToJson(const Snapshot& snapshot);
 
 // Deserialize snapshot from JSON string. Throws std::runtime_error (never a raw
-// nlohmann exception) on invalid JSON, a missing or mistyped key (grid.cells,
+// nlohmann exception) on invalid JSON, an unknown key at the root or in an
+// agent, a number that is not an int where an int is read (a bool, a float, or
+// out of int's range: never converted), a missing or mistyped key (grid.cells,
 // annotations, patrol_path, ... must be arrays; "zones" an object), an unknown
 // key in a skill / zone / tag / zone table entry / reaction / tag status /
 // weakness object, grid rows / cols <= 0 or more than 2^20 cells, a cell
@@ -25,6 +27,9 @@ std::string SnapshotToJson(const Snapshot& snapshot);
 // Snapshot::ValidateSkillsTagsZones rejects. The message names the section
 // being read, e.g. "cell_tags[3]: key 'tag' not found",
 // "grid.cells[7]: (6, 0) outside 6x9", "agents[0]: unknown faction 'FOE'".
+// The "version" is a lower bound for this reader, not a gate: every key is
+// read whatever the declared version. A tag written twice in the "zones"
+// object is not detected (the JSON parser keeps the last one).
 Snapshot SnapshotFromJson(const std::string& json_str);
 
 // File I/O convenience functions

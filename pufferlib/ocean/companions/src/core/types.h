@@ -39,6 +39,15 @@ constexpr int kMaxNameLength = 31;
 inline bool IsValidNameLength(const std::string& name) {
   return name.size() <= static_cast<size_t>(kMaxNameLength);
 }
+// Longest step timer level data may set (tag and zone durations, zone steps,
+// tag status steps, a skill's root_steps and cooldown, host tag landings): a
+// timer set during a step is kept as n + 1 (Agent::TimerSteps,
+// BaseEnv::ResolveZone), so the ceiling keeps that far from INT_MAX.
+constexpr int kMaxTimerSteps = 1000000;
+// A timer of steps: 1..kMaxTimerSteps, or kPermanentTag (never expires)
+inline bool IsValidTimer(int steps) {
+  return steps == kPermanentTag || (steps > 0 && steps <= kMaxTimerSteps);
+}
 
 // What a zone of some tag is: level data keyed by tag (BaseEnv::DefineZone,
 // the level's zone table), or a per-cell override (BaseEnv::SetCellTag). The

@@ -211,6 +211,15 @@ void ValidateSkillConfig(const SkillConfig& s) {
   check_non_negative("damage", s.damage);
   check_non_negative("root_steps", s.root_steps);
   check_non_negative("cooldown", s.cooldown);
+  // Step timers (n + 1 when set during a step): capped
+  auto check_timer = [&](const char* field, int value) {
+    if (value > kMaxTimerSteps) {
+      throw std::runtime_error(where + field + " must be <= " + std::to_string(kMaxTimerSteps) +
+                               " (got " + std::to_string(value) + ")");
+    }
+  };
+  check_timer("root_steps", s.root_steps);
+  check_timer("cooldown", s.cooldown);
   if (s.revive_percent < 0 || s.revive_percent > 100) {
     throw std::runtime_error(where + "revive_percent must be in [0, 100] (got " +
                              std::to_string(s.revive_percent) + ")");
@@ -245,8 +254,9 @@ void ValidateSkillConfig(const SkillConfig& s) {
     if (!IsValidNameLength(t.tag)) {
       throw std::runtime_error(tag_where + " ('" + t.tag + "'): " + NameLengthError(t.tag));
     }
-    if (t.duration != kPermanentTag && t.duration <= 0) {
-      throw std::runtime_error(tag_where + " ('" + t.tag + "'): duration must be -1 or > 0 (got " +
+    if (!IsValidTimer(t.duration)) {
+      throw std::runtime_error(tag_where + " ('" + t.tag + "'): duration must be -1 or in 1.." +
+                               std::to_string(kMaxTimerSteps) + " (got " +
                                std::to_string(t.duration) + ")");
     }
   }

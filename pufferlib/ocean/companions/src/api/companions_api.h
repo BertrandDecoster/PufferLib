@@ -684,7 +684,8 @@ COMPANIONS_API int32_t companions_find_tag(const Companions_Env* env, const char
 // Land `tag` on an agent for `duration` steps (-1 = permanent). False for an
 // unknown, downed or dead agent (nothing lands on them, the tag is not
 // interned), an agent immune to the tag (nothing lands), a NULL / "" tag or
-// one over 31 bytes, or a duration of 0 or below -1. It is a landing like a
+// one over 31 bytes, or a duration of 0, below -1 or above 1000000 (the
+// env's timer ceiling, kMaxTimerSteps). It is a landing like a
 // skill's or a zone's: the level's tag statuses, the agent's weaknesses and
 // the reactions apply (the env's rules, set by the level). Durations,
 // statuses' and cooldowns included, tick at the end of each step: applied
@@ -698,8 +699,8 @@ COMPANIONS_API bool companions_remove_tag(Companions_Env* env, Companions_Object
 // Zones: one tag per cell ("" or NULL clears), landed on whoever stands there
 // after each step's movement, and on whoever a skill moves there, with
 // `duration` (-1 = permanent); each landing is a Companions_Event_TagApplied.
-// False out of bounds, for a tag over 31 bytes, or for a duration of 0 or
-// below -1 with a tag.
+// False out of bounds, for a tag over 31 bytes, or for a duration of 0,
+// below -1 or above 1000000 with a tag.
 COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, int32_t col, const char* tag, int32_t duration);
 // The cell's tag id, or -1 when it has none. Out of bounds: -1 with the error
 // set ("Position out of bounds").

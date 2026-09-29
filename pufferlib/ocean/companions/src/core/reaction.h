@@ -76,15 +76,16 @@ struct TagWeakness {
 // damage >= 0, zone_becomes only with spread, at most one rule per unordered
 // pair {a, b} (a second one could never fire).
 void ValidateReactions(const std::vector<ReactionRule>& rules);
-// Tag statuses: a status of the env (stunned, marked, rooted), steps > 0, one
-// rule per tag.
+// Tag statuses: a status of the env (stunned, marked, rooted; not none), steps
+// in 1..kMaxTimerSteps, one rule per tag.
 void ValidateTagStatuses(const std::vector<TagStatusRule>& rules);
 // Weaknesses: no pair twice. Immunities: no tag twice.
 void ValidateWeaknesses(const std::vector<TagWeakness>& weak_to);
 void ValidateImmunities(const std::vector<std::string>& immune);
 
 // A zone's fields (the zone table's, a cell's, core/types.h): the landing
-// duration and the steps positive or kPermanentTag, damage >= 0, `then` of
+// duration and the steps IsValidTimer (1..kMaxTimerSteps, or kPermanentTag),
+// damage >= 0, `then` of
 // at most kMaxNameLength bytes ("" = no successor). Cycles are legal: `then`
 // only has to be a valid name (defined in the table or not).
 bool IsValidZoneDef(const ZoneDef& zone);

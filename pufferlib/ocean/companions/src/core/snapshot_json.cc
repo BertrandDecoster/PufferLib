@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstdint>
 #include <fstream>
 #include <initializer_list>
 #include <stdexcept>
+#include <type_traits>
 
 #include "../../third_party/nlohmann/json.hpp"
 #include "annotations.h"
@@ -67,10 +69,47 @@ const json& Key(const json& j, const char* key, const std::string& section) {
   return *it;
 }
 
+// A JSON integer that fits an int: nlohmann's get<int> would take a bool
+// (true -> 1), truncate a float (2.5 -> 2) and wrap an out-of-range number
+// (4294967295 -> -1). `what` names the value in the message.
+int StrictInt(const json& v, const std::string& what) {
+  if (!v.is_number()) {  // The wording of nlohmann's type errors
+    throw std::runtime_error(what + ": type must be number, but is " + v.type_name());
+  }
+  if (!v.is_number_integer()) {
+    throw std::runtime_error(what + ": must be an integer, but is " + v.dump());
+  }
+  const bool fits = v.is_number_unsigned()
+                        ? v.get<uint64_t>() <= static_cast<uint64_t>(INT_MAX)
+                        : v.get<int64_t>() >= INT_MIN && v.get<int64_t>() <= INT_MAX;
+  if (!fits) throw std::runtime_error(what + ": " + v.dump() + " is out of range for an int");
+  return static_cast<int>(v.get<int64_t>());
+}
+
+std::vector<int> StrictIntArray(const json& v, const std::string& what) {
+  if (!v.is_array()) {
+    throw std::runtime_error(what + ": type must be array, but is " + v.type_name());
+  }
+  std::vector<int> out;
+  out.reserve(v.size());
+  for (size_t i = 0; i < v.size(); ++i) {
+    out.push_back(StrictInt(v[i], what + "[" + std::to_string(i) + "]"));
+  }
+  return out;
+}
+
+// Every int (and array of ints) goes through StrictInt
 template <typename T>
 T Get(const json& j, const char* key, const std::string& section) {
   const json& v = Key(j, key, section);
-  return InSection(section + ": " + key, [&] { return v.get<T>(); });
+  const std::string what = section + ": " + key;
+  if constexpr (std::is_same<T, int>::value) {
+    return StrictInt(v, what);
+  } else if constexpr (std::is_same<T, std::vector<int>>::value) {
+    return StrictIntArray(v, what);
+  } else {
+    return InSection(what, [&] { return v.get<T>(); });
+  }
 }
 
 template <typename T>
@@ -200,8 +239,9 @@ json PositionToJson(const Position& pos) {
   return json{{"row", pos.row}, {"col", pos.col}};
 }
 
-Position JsonToPosition(const json& j) {
-  return Position{j.at("row").get<int>(), j.at("col").get<int>()};
+// `section` names the position, e.g. "agents[0].position"
+Position JsonToPosition(const json& j, const std::string& section) {
+  return Position{Get<int>(j, "row", section), Get<int>(j, "col", section)};
 }
 
 // CellSnapshot serialization
@@ -310,45 +350,40 @@ json FSMSnapshotToJson(const FSMSnapshot& fsm) {
 // `section` is "agents[i].fsm".
 FSMSnapshot JsonToFSMSnapshot(const json& j, const std::string& section) {
   FSMSnapshot fsm;
-  fsm.state_type = StringToFSMStateType(j.at("state_type").get<std::string>(), section);
-  fsm.target_id = j.at("target_id").get<int>();
-  fsm.patrol_index = j.at("patrol_index").get<int>();
-  fsm.patrol_forward = j.at("patrol_forward").get<bool>();
-  fsm.detection_range = j.at("detection_range").get<int>();
-  fsm.lose_target_range = j.at("lose_target_range").get<int>();
-  fsm.rng_state = j.at("rng_state").get<uint64_t>();
-  fsm.rng_inc = j.at("rng_inc").get<uint64_t>();
+  RequireObject(j, section);
+  fsm.state_type = StringToFSMStateType(Get<std::string>(j, "state_type", section), section);
+  fsm.target_id = Get<int>(j, "target_id", section);
+  fsm.patrol_index = Get<int>(j, "patrol_index", section);
+  fsm.patrol_forward = Get<bool>(j, "patrol_forward", section);
+  fsm.detection_range = Get<int>(j, "detection_range", section);
+  fsm.lose_target_range = Get<int>(j, "lose_target_range", section);
+  fsm.rng_state = Get<uint64_t>(j, "rng_state", section);
+  fsm.rng_inc = Get<uint64_t>(j, "rng_inc", section);
 
-  for (const auto& pos_json : GetArray(j, "patrol_path", section)) {
-    fsm.patrol_path.push_back(JsonToPosition(pos_json));
+  const json& patrol = GetArray(j, "patrol_path", section);
+  for (size_t i = 0; i < patrol.size(); ++i) {
+    fsm.patrol_path.push_back(JsonToPosition(patrol[i], Indexed(section + ".patrol_path", i)));
   }
 
-  // Attack runtime state
-  if (j.contains("attack_tick_counter")) {
-    fsm.attack_tick_counter = j.at("attack_tick_counter").get<int>();
-  }
+  // Attack runtime state (optional)
+  fsm.attack_tick_counter = GetOr<int>(j, "attack_tick_counter", fsm.attack_tick_counter, section);
   if (j.contains("attack_target_position")) {
-    fsm.attack_target_position = JsonToPosition(j.at("attack_target_position"));
+    fsm.attack_target_position =
+        JsonToPosition(j.at("attack_target_position"), section + ".attack_target_position");
   }
-  if (j.contains("attack_area_width")) {
-    fsm.attack_area_width = j.at("attack_area_width").get<int>();
-  }
-  if (j.contains("attack_area_height")) {
-    fsm.attack_area_height = j.at("attack_area_height").get<int>();
-  }
-  if (j.contains("attack_damage")) {
-    fsm.attack_damage = j.at("attack_damage").get<int>();
-  }
+  fsm.attack_area_width = GetOr<int>(j, "attack_area_width", fsm.attack_area_width, section);
+  fsm.attack_area_height = GetOr<int>(j, "attack_area_height", fsm.attack_area_height, section);
+  fsm.attack_damage = GetOr<int>(j, "attack_damage", fsm.attack_damage, section);
   if (j.contains("attack_filter")) {
-    fsm.attack_filter = static_cast<TargetFilter>(j.at("attack_filter").get<int>());
+    fsm.attack_filter = static_cast<TargetFilter>(Get<int>(j, "attack_filter", section));
   }
 
   // Attack configuration (optional; absent = no attack)
-  fsm.has_attack = j.value("has_attack", false);
-  fsm.attack_effect = j.value("attack_effect", std::string());
-  fsm.telegraph_ticks = j.value("telegraph_ticks", 1);
-  fsm.attack_ticks = j.value("attack_ticks", 1);
-  fsm.recovery_ticks = j.value("recovery_ticks", 1);
+  fsm.has_attack = GetOr<bool>(j, "has_attack", false, section);
+  fsm.attack_effect = GetOr<std::string>(j, "attack_effect", std::string(), section);
+  fsm.telegraph_ticks = GetOr<int>(j, "telegraph_ticks", 1, section);
+  fsm.attack_ticks = GetOr<int>(j, "attack_ticks", 1, section);
+  fsm.recovery_ticks = GetOr<int>(j, "recovery_ticks", 1, section);
 
   return fsm;
 }
@@ -558,7 +593,7 @@ TagStatusRule JsonToTagStatusRule(const json& j, const std::string& section) {
   CheckKeys(j, {"tag", "status", "steps"}, section);
   TagStatusRule r;
   r.tag = Get<std::string>(j, "tag", section);
-  r.status = JsonToStatusType(j, "status", section);
+  r.status = JsonToStatusType(j, "status", section);  // "none": ValidateTagStatuses rejects it
   r.steps = GetOr<int>(j, "steps", r.steps, section);
   return r;
 }
@@ -624,7 +659,9 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
   // Weaknesses and immunities (v7; any agent, when it has some)
   if (!agent.weak_to.empty()) {
     json weak_to = json::array();
-    for (const TagWeakness& w : agent.weak_to) weak_to.push_back(json{{"zone", w.zone}, {"tag", w.tag}});
+    for (const TagWeakness& w : agent.weak_to) {
+      weak_to.push_back(json{{"zone", w.zone}, {"tag", w.tag}});
+    }
     j["weak_to"] = weak_to;
   }
   if (!agent.immune.empty()) j["immune"] = agent.immune;
@@ -634,21 +671,32 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
 
 // `section` is "agents[i]"; the caller turns other JSON errors into it.
 AgentSnapshot JsonToAgentSnapshot(const json& j, const std::string& section) {
+  RequireObject(j, section);
+  // Every key an agent may have (those SnapshotToJson writes, and the
+  // optional ones): a misspelt one is an error, not a silently default field
+  CheckKeys(j, {"id", "agent_type", "position", "prev_position", "health", "max_health",
+                "agent_index", "faction", "direction", "color", "alive", "kind", "statuses",
+                "fsm", "cadence", "tick", "tags", "skills", "cooldowns", "downed",
+                "times_downed", "weak_to", "immune"},
+            section);
   AgentSnapshot agent;
-  agent.id = j.at("id").get<int>();
+  agent.id = Get<int>(j, "id", section);
   agent.type =
-      static_cast<int>(StringToObjectType(j.at("agent_type").get<std::string>(), section));
-  agent.position = JsonToPosition(j.at("position"));
-  agent.prev_position = JsonToPosition(j.at("prev_position"));
-  agent.health = j.at("health").get<int>();
-  agent.max_health = j.at("max_health").get<int>();
-  agent.agent_index = j.at("agent_index").get<int>();
-  agent.faction = static_cast<int>(StringToFaction(j.at("faction").get<std::string>(), section));
+      static_cast<int>(StringToObjectType(Get<std::string>(j, "agent_type", section), section));
+  agent.position = JsonToPosition(Key(j, "position", section), section + ".position");
+  agent.prev_position =
+      JsonToPosition(Key(j, "prev_position", section), section + ".prev_position");
+  agent.health = Get<int>(j, "health", section);
+  agent.max_health = Get<int>(j, "max_health", section);
+  agent.agent_index = Get<int>(j, "agent_index", section);
+  agent.faction =
+      static_cast<int>(StringToFaction(Get<std::string>(j, "faction", section), section));
   agent.direction =
-      static_cast<int>(StringToDirection(j.at("direction").get<std::string>(), section));
-  agent.color = static_cast<int>(StringToActorColor(j.at("color").get<std::string>(), section));
-  agent.alive = j.at("alive").get<bool>();
-  agent.kind = j.value("kind", std::string());
+      static_cast<int>(StringToDirection(Get<std::string>(j, "direction", section), section));
+  agent.color =
+      static_cast<int>(StringToActorColor(Get<std::string>(j, "color", section), section));
+  agent.alive = Get<bool>(j, "alive", section);
+  agent.kind = GetOr<std::string>(j, "kind", std::string(), section);
 
   // Statuses
   const json& statuses = GetArray(j, "statuses", section);
@@ -657,16 +705,17 @@ AgentSnapshot JsonToAgentSnapshot(const json& j, const std::string& section) {
   }
 
   // FSM
-  if (j.at("fsm").is_null()) {
+  const json& fsm = Key(j, "fsm", section);
+  if (fsm.is_null()) {
     agent.has_fsm = false;
   } else {
     agent.has_fsm = true;
-    agent.fsm = JsonToFSMSnapshot(j.at("fsm"), section + ".fsm");
+    agent.fsm = JsonToFSMSnapshot(fsm, section + ".fsm");
   }
 
   // Cadence
-  agent.cadence = j.at("cadence").get<std::vector<int>>();
-  agent.tick = j.at("tick").get<int>();
+  agent.cadence = Get<std::vector<int>>(j, "cadence", section);
+  agent.tick = Get<int>(j, "tick", section);
 
   // Tags, skill slots and cooldowns (v4; absent = none / empty / 0)
   if (j.contains("tags")) {
@@ -714,17 +763,17 @@ json EffectSnapshotToJson(const EffectSnapshot& effect) {
 
 EffectSnapshot JsonToEffectSnapshot(const json& j, const std::string& section) {
   EffectSnapshot effect;
-  effect.effect_name = j.at("effect_name").get<std::string>();
-  effect.target_type = j.at("target_type").get<int>();
-  effect.target_cell = JsonToPosition(j.at("target_cell"));
-  effect.target_actor_id = j.at("target_actor_id").get<int>();
-  effect.target_actors = j.at("target_actors").get<std::vector<int>>();
+  effect.effect_name = Get<std::string>(j, "effect_name", section);
+  effect.target_type = Get<int>(j, "target_type", section);
+  effect.target_cell = JsonToPosition(Key(j, "target_cell", section), section + ".target_cell");
+  effect.target_actor_id = Get<int>(j, "target_actor_id", section);
+  effect.target_actors = Get<std::vector<int>>(j, "target_actors", section);
   effect.direction =
-      static_cast<int>(StringToDirection(j.at("direction").get<std::string>(), section));
-  effect.ticks_remaining = j.at("ticks_remaining").get<int>();
-  effect.in_telegraph = j.at("in_telegraph").get<bool>();
-  effect.loops_remaining = j.at("loops_remaining").get<int>();
-  effect.source_id = j.at("source_id").get<int>();
+      static_cast<int>(StringToDirection(Get<std::string>(j, "direction", section), section));
+  effect.ticks_remaining = Get<int>(j, "ticks_remaining", section);
+  effect.in_telegraph = Get<bool>(j, "in_telegraph", section);
+  effect.loops_remaining = Get<int>(j, "loops_remaining", section);
+  effect.source_id = Get<int>(j, "source_id", section);
   return effect;
 }
 
@@ -753,12 +802,12 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j, const std::string& se
   if (target != "Agent" && target != "Cell") UnknownName(section, "annotation target", target);
   a.target_type = (target == "Agent") ? 1 : 0;
   a.tag = StringToSemanticTag(j.at("tag").get<std::string>(), section);
-  a.owner_lens_id = j.value("owner_lens_id", -1);
+  a.owner_lens_id = GetOr<int>(j, "owner_lens_id", -1, section);
   if (a.target_type == 0 && j.contains("pos")) {
-    a.pos = JsonToPosition(j.at("pos"));
+    a.pos = JsonToPosition(j.at("pos"), section + ".pos");
   }
   if (a.target_type == 1 && j.contains("agent_id")) {
-    a.agent_id = j.at("agent_id").get<ObjectId>();
+    a.agent_id = Get<int>(j, "agent_id", section);
   }
   if (j.contains("params") && j.at("params").is_object()) {
     for (auto it = j.at("params").begin(); it != j.at("params").end(); ++it) {
@@ -782,7 +831,9 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j, const std::string& se
 // revive_percent, context_skills; 7: zones (the zone table), cell_tags'
 // steps / then / damage (and an optional duration: absent fields are the
 // table's), reactions, tag_statuses, agent weak_to / immune. There never was
-// a JSON 3: the number follows the binary format. Versions 2..7 load.
+// a JSON 3: the number follows the binary format. Versions 2..7 load. The
+// version is a lower bound for this reader, not a gate: every key is read
+// whatever the declared version (a "version": 4 file with "zones" gets them).
 static constexpr int kJsonSnapshotVersion = 7;
 static constexpr int kMinJsonSnapshotVersion = 2;
 static constexpr const char* kJsonSnapshotMagic = "SNAP";
@@ -891,6 +942,13 @@ namespace {
 
 Snapshot ReadSnapshot(const json& j) {
   RequireObject(j, "snapshot");
+  // Every top-level key a snapshot may have (those SnapshotToJson writes, the
+  // optional ones and "magic" / "version"): a misspelt one ("reaction") is an
+  // error, not a level silently without its rules
+  CheckKeys(j, {"magic", "version", "grid", "agents", "effects", "tick", "horizon", "rng_state",
+                "d4_value", "patrol_path", "annotations", "skills", "cell_tags", "max_downs",
+                "context_skills", "zones", "reactions", "tag_statuses"},
+            "snapshot");
 
   // Schema validation — magic + version. Payloads saved prior to the F4
   // audit fix won't have either; accept them once but reject future drift.
@@ -930,8 +988,8 @@ Snapshot ReadSnapshot(const json& j) {
     const std::string section = Indexed("grid.cells", i);
     InSection(section, [&] {
       const json& cell_json = cells[i];
-      const int row = cell_json.at("row").get<int>();
-      const int col = cell_json.at("col").get<int>();
+      const int row = Get<int>(cell_json, "row", section);
+      const int col = Get<int>(cell_json, "col", section);
       if (row < 0 || row >= snapshot.rows || col < 0 || col >= snapshot.cols) {
         throw std::runtime_error(section + ": (" + std::to_string(row) + ", " +
                                  std::to_string(col) + ") outside " + dims);
@@ -973,8 +1031,7 @@ Snapshot ReadSnapshot(const json& j) {
   // Patrol path
   const json& patrol = GetArray(j, "patrol_path", "snapshot");
   for (size_t i = 0; i < patrol.size(); ++i) {
-    snapshot.patrol_path.push_back(
-        InSection(Indexed("patrol_path", i), [&] { return JsonToPosition(patrol[i]); }));
+    snapshot.patrol_path.push_back(JsonToPosition(patrol[i], Indexed("patrol_path", i)));
   }
 
   // Semantic annotations (optional: absent in v1-format JSON)
@@ -1016,7 +1073,8 @@ Snapshot ReadSnapshot(const json& j) {
 
   // The level's combo rules (v7; absent = none). The cells resolve against
   // the table when they load (BaseEnv::LoadSnapshot), wherever the file lists
-  // them.
+  // them. A tag written twice in "zones" is not detected: the JSON parser
+  // keeps the last one.
   if (j.contains("zones")) {
     const json& zones = Key(j, "zones", "snapshot");
     RequireObject(zones, "zones");

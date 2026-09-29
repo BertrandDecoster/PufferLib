@@ -66,12 +66,18 @@ void ValidateTagStatuses(const std::vector<TagStatusRule>& rules) {
     const TagStatusRule& r = rules[i];
     const std::string where = "tag_statuses[" + std::to_string(i) + "] ('" + r.tag + "'): ";
     CheckName(where, "tag", r.tag);
+    if (r.status == StatusType::None) {
+      throw std::runtime_error(where + "status: none is not a status");
+    }
     if (r.status != StatusType::Stunned && r.status != StatusType::Marked &&
         r.status != StatusType::Rooted) {
       throw std::runtime_error(where + "status: unknown value " +
                                std::to_string(static_cast<int>(r.status)));
     }
-    if (r.steps <= 0) throw std::runtime_error(where + "steps: must be > 0");
+    if (r.steps <= 0 || r.steps > kMaxTimerSteps) {
+      throw std::runtime_error(where + "steps: " + std::to_string(r.steps) + " (1.." +
+                               std::to_string(kMaxTimerSteps) + ")");
+    }
     for (size_t j = 0; j < i; ++j) {
       if (rules[j].tag == r.tag) {
         throw std::runtime_error(where + "the tag already has tag_statuses[" +
@@ -105,28 +111,27 @@ void ValidateImmunities(const std::vector<std::string>& immune) {
 }
 
 namespace {
-bool IsValidSteps(int n) { return n > 0 || n == kPermanentTag; }  // A step timer, or permanent
+// The one zone rule: "" when `zone` is valid, else "<field>: <what is wrong>"
+std::string ZoneDefError(const ZoneDef& zone) {
+  auto timer = [](const char* what, int n) {
+    return std::string(what) + ": " + std::to_string(n) + " (1.." +
+           std::to_string(kMaxTimerSteps) + ", or -1: permanent)";
+  };
+  if (!IsValidTimer(zone.duration)) return timer("duration", zone.duration);
+  if (!IsValidTimer(zone.steps)) return timer("steps", zone.steps);
+  if (!IsValidNameLength(zone.then)) {
+    return "then: '" + zone.then + "' longer than " + std::to_string(kMaxNameLength) + " bytes";
+  }
+  if (zone.damage < 0) return "damage: negative";
+  return std::string();
+}
 }  // namespace
 
-bool IsValidZoneDef(const ZoneDef& zone) {
-  return IsValidSteps(zone.duration) && IsValidSteps(zone.steps) && zone.damage >= 0 &&
-         IsValidNameLength(zone.then);
-}
+bool IsValidZoneDef(const ZoneDef& zone) { return ZoneDefError(zone).empty(); }
 
 void ValidateZoneDef(const std::string& where, const ZoneDef& zone) {
-  auto steps = [&](const char* what, int n) {
-    if (!IsValidSteps(n)) {
-      throw std::runtime_error(where + ": " + what + ": " + std::to_string(n) +
-                               " (positive, or -1: permanent)");
-    }
-  };
-  steps("duration", zone.duration);
-  steps("steps", zone.steps);
-  if (!IsValidNameLength(zone.then)) {
-    throw std::runtime_error(where + ": then: '" + zone.then + "' longer than " +
-                             std::to_string(kMaxNameLength) + " bytes");
-  }
-  if (zone.damage < 0) throw std::runtime_error(where + ": damage: negative");
+  const std::string error = ZoneDefError(zone);
+  if (!error.empty()) throw std::runtime_error(where + ": " + error);
 }
 
 void ValidateZoneTable(const std::map<std::string, ZoneDef>& zones) {

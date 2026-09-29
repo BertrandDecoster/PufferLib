@@ -267,7 +267,7 @@ struct Snapshot {
   // Throws std::runtime_error unless the v4 data is loadable: every skill
   // passes ValidateSkillConfig and none is kDefaultSkill; agent statuses are known StatusType values (2,
   // the removed Slowed, is rejected); agent and zone tag names non-empty with a
-  // duration positive or kPermanentTag; tag and slot names of at most
+  // duration IsValidTimer (1..kMaxTimerSteps, or kPermanentTag); tag and slot names of at most
   // kMaxNameLength bytes; zones inside the grid; at most kMaxSkillSlots slots /
   // cooldowns per agent, cooldowns >= 0; every non-empty slot names a builtin
   // or one of `skills` (the book LoadSnapshot builds), so slots always hold a
@@ -279,7 +279,8 @@ struct Snapshot {
   // default ones) pass ValidateContextSkills with that same book (so a level
   // may retune a rule's skill, but not give it a cooldown); v7: the zone
   // table passes ValidateZoneTable, each zone cell's present fields
-  // ValidateZoneDef (a duration or steps of 0 or below -1, a negative damage,
+  // ValidateZoneDef (a duration or steps of 0, below -1 or above
+  // kMaxTimerSteps, a negative damage,
   // an overlong then are rejected; any valid name may follow, defined or
   // not: cycles are legal), the reactions ValidateReactions, the tag
   // statuses ValidateTagStatuses (an unknown status is rejected), each

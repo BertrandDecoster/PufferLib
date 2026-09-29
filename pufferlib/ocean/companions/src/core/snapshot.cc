@@ -76,9 +76,7 @@ ZoneDef Snapshot::CellZone(const CellTagSnapshot& zone) const {
 
 namespace {
 
-bool IsValidTagDuration(int duration) {
-  return duration == kPermanentTag || duration > 0;
-}
+bool IsValidTagDuration(int duration) { return IsValidTimer(duration); }
 
 // `what` names the tag's owner, e.g. "zone at (2, 3)".
 void CheckTag(const std::string& tag, int duration, const std::string& what) {
@@ -92,7 +90,8 @@ void CheckTag(const std::string& tag, int duration, const std::string& what) {
   }
   if (!IsValidTagDuration(duration)) {
     throw std::runtime_error("Snapshot: " + what + " tag \"" + tag + "\" has an invalid duration " +
-                             std::to_string(duration) + " (positive or -1)");
+                             std::to_string(duration) + " (1.." + std::to_string(kMaxTimerSteps) +
+                             ", or -1)");
   }
 }
 
@@ -287,7 +286,7 @@ void WriteVector(std::vector<uint8_t>& buffer, const std::vector<T>& vec) {
 // Read primitive types from buffer with bounds checking
 template <typename T>
 T ReadValue(const uint8_t*& ptr, const uint8_t* end) {
-  if (ptr + sizeof(T) > end) {
+  if (sizeof(T) > static_cast<size_t>(end - ptr)) {  // Never forms a pointer past the end
     throw std::runtime_error("Snapshot buffer underflow: not enough data");
   }
   T value;
@@ -299,7 +298,7 @@ T ReadValue(const uint8_t*& ptr, const uint8_t* end) {
 // Read string (length-prefixed) with bounds checking
 std::string ReadString(const uint8_t*& ptr, const uint8_t* end) {
   uint32_t len = ReadValue<uint32_t>(ptr, end);
-  if (ptr + len > end) {
+  if (len > static_cast<size_t>(end - ptr)) {
     throw std::runtime_error("Snapshot buffer underflow: string data truncated");
   }
   std::string str(reinterpret_cast<const char*>(ptr), len);
@@ -1045,7 +1044,16 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
   }
 
   // The level's combo rules (v7+); older snapshots have none.
-  if (version >= 7) ReadLevelRules(ptr, end, snap);
+  if (version >= 7) {
+    ReadLevelRules(ptr, end, snap);
+    // The last block: anything after it is corrupt (older versions did not
+    // check, and keep loading as they did)
+    if (ptr != end) {
+      throw std::runtime_error("Snapshot buffer corrupt: " +
+                               std::to_string(static_cast<size_t>(end - ptr)) +
+                               " trailing bytes after the last block");
+    }
+  }
 
   snap.ValidateSkillsTagsZones();
   return snap;

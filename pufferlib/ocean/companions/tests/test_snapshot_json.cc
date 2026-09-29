@@ -1661,9 +1661,9 @@ TEST(TestJsonCellsTakeTheTablesFieldsTheyOmit) {
   ASSERT_TRUE(env.GetZoneDef("smoke") == MakeZone(kPermanentTag, 2, "", 0));
 }
 
-// The table loads before the cells, wherever the file lists them: here the
+// The table loads before the cells wherever the file lists it: here the
 // cells come first in the text.
-TEST(TestJsonTheTableLoadsBeforeTheCells) {
+TEST(TestJsonTheTableLoadsWhereverTheFileListsIt) {
   json j = LevelJson();
   j.erase("cell_tags");
   j.erase("zones");
@@ -1773,6 +1773,84 @@ TEST(TestJsonRejectsBadV7Data) {
   Snapshot s = SnapshotFromJson(j.dump());
   ASSERT_TRUE(s.tag_statuses == (std::vector<TagStatusRule>{{"stunned", StatusType::Stunned, 1}}));
   ASSERT_TRUE(s.reactions == (std::vector<ReactionRule>{MakeReaction("wet", "ice", "x", {}, 0, false, "")}));
+}
+
+// Every object is strict, the root and the agents included: a misspelt key
+// (a rule that would silently not load) is an error.
+TEST(TestJsonRejectsUnknownRootAndAgentKeys) {
+  for (const char* key : {"reaction", "tag_status", "zone", "tagStatuses", "Zones"}) {
+    json j = LevelJson();
+    j[key] = json::array();
+    AssertJsonErrorMentions(j, {"snapshot: unknown key '" + std::string(key) + "'"});
+  }
+  for (const char* key : {"weakTo", "immunities", "weak", "has_fsm", "downs"}) {
+    json j = LevelJson();
+    j.at("agents").at(0)[key] = json::array();
+    AssertJsonErrorMentions(j, {"agents[0]: unknown key '" + std::string(key) + "'"});
+  }
+  // Every key the writer emits is known, the optional ones included
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  ASSERT_TRUE(env.SetWeaknesses(env.GetMutableObjectManager().GetAllAgents()[0]->GetId(),
+                                {{"wet", "electrified"}}));
+  ASSERT_TRUE(env.SetImmunities(env.GetMutableObjectManager().GetAllAgents()[0]->GetId(), {"wet"}));
+  SnapshotFromJson(SnapshotToJson(env.SaveSnapshot()));
+  SnapshotFromJson(AggroJson().dump());  // An FSM enemy with a kind
+}
+
+// Integers are integers: a bool, a float or a number out of int's range is an
+// error naming the key, never a silent conversion (true -> 1, 2.5 -> 2,
+// 4294967295 -> -1).
+TEST(TestJsonIntegersAreStrict) {
+  const std::vector<json> not_ints = {true, 2.5, 4294967295.0, json(4294967295u),
+                                      json(-2147483649LL), "3"};
+  for (const json& v : not_ints) {
+    json j = LevelJson();
+    j["zones"] = json{{"burning", json{{"steps", v}}}};
+    AssertJsonErrorMentions(j, {"zones['burning']: steps"});
+    j = LevelJson();
+    j.at("cell_tags").at(0)["damage"] = v;
+    AssertJsonErrorMentions(j, {"cell_tags[0]: damage"});
+    j = LevelJson();
+    j["reactions"] =
+        json::array({json{{"a", "wet"}, {"b", "ice"}, {"result", "x"}, {"damage", v}}});
+    AssertJsonErrorMentions(j, {"reactions[0]: damage"});
+    j = LevelJson();
+    j["tag_statuses"] =
+        json::array({json{{"tag", "stunned"}, {"status", "stunned"}, {"steps", v}}});
+    AssertJsonErrorMentions(j, {"tag_statuses[0]: steps"});
+    // Older fields too
+    j = LevelJson();
+    j.at("agents").at(0)["health"] = v;
+    AssertJsonErrorMentions(j, {"agents[0]", "health"});
+    j = LevelJson();
+    j["tick"] = v;
+    AssertJsonErrorMentions(j, {"tick"});
+    j = LevelJson();
+    j.at("agents").at(0).at("position")["row"] = v;
+    AssertJsonErrorMentions(j, {"agents[0]", "row"});
+    j = LevelJson();
+    j.at("agents").at(0)["cooldowns"] = json::array({0, v});
+    AssertJsonErrorMentions(j, {"agents[0]", "cooldowns[1]"});
+  }
+  json j = LevelJson();
+  j.at("agents").at(0)["health"] = 2.5;
+  AssertJsonErrorMentions(j, {"must be an integer"});
+  j = LevelJson();
+  j.at("agents").at(0)["health"] = json(4294967295u);
+  AssertJsonErrorMentions(j, {"out of range"});
+  j = LevelJson();
+  j["zones"] = json{{"burning", json{{"steps", 2147483647}}}};  // An int, over the timer cap
+  AssertJsonErrorMentions(j, {"zones['burning']: steps"});
+  j = LevelJson();
+  j["zones"] = json{{"burning", json{{"steps", -1}, {"duration", 3}}}};  // Negative ints are ints
+  SnapshotFromJson(j.dump());
+}
+
+// "none" is a status name the agents' statuses accept, but not a tag status
+TEST(TestJsonTagStatusNoneIsNotAStatus) {
+  json j = LevelJson();
+  j["tag_statuses"] = json::array({json{{"tag", "stunned"}, {"status", "none"}}});
+  AssertJsonErrorMentions(j, {"tag_statuses[0] ('stunned'): status: none is not a status"});
 }
 
 

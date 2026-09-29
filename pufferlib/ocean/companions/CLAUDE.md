@@ -224,7 +224,8 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
 - Damage is not reported as events yet (`Companions_Event_AgentDamaged` is declared,
   not implemented): read it from the agents' health
 - `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, damage, root_steps,
-  cooldown ≥ 0; tag names non-empty ≤ 31 bytes with duration -1 or > 0, at most
+  cooldown ≥ 0 (root_steps, cooldown ≤ 1,000,000); tag names non-empty ≤ 31 bytes with
+  duration -1 or in 1..1,000,000 (`kMaxTimerSteps`), at most
   `kMaxSkillTags` (32, the C API's `Companions_MAX_SKILL_TAGS`) tags; enums in range;
   `revive_percent` and `affects_downed` as above
 
@@ -327,7 +328,9 @@ tests: `tests/test_zones.cc`):
   older ones), set before the snapshot's zone cells load
 - Refused (cell / table unchanged, nothing interned): out of bounds, an empty tag
   (`DefineZone`; `SetCellTag` "" clears the cell), a tag or `then` over 31 bytes, a
-  duration or steps of 0 or below -1, a negative damage
+  duration or steps of 0, below -1 or above `kMaxTimerSteps` (1,000,000: every step
+  timer level data or the host sets is capped, `IsValidTimer`, so the n + 1 of a timer
+  set during a step never overflows), a negative damage
 - Landed (cause `"zone"`, source -1) on every affectable agent standing there after regular
   movement (before casts and skills), and on any agent a skill motion lands there
   (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
@@ -427,8 +430,8 @@ a status.
 - **Validation** (each setter: false, nothing changed or interned, the reason in `error`):
   every name non-empty, at most 31 bytes; a reaction: `a` != `b`, a `result`, `keep` a
   subset of {a, b} without repeats, `damage` >= 0, `zone_becomes` only with `spread`, one
-  rule per unordered pair; a tag status: stunned / marked / rooted, `steps` > 0, one per
-  tag; weaknesses: no pair twice; immunities: no tag twice; an unknown agent id
+  rule per unordered pair; a tag status: stunned / marked / rooted (not none), `steps`
+  in 1..1,000,000, one per tag; weaknesses: no pair twice; immunities: no tag twice; an unknown agent id
 - **Reports** (per step, see Per-step reports): `GetLastReactions()` (`ReactionReport`:
   rule index, the trigger agent, the triggering tag, its landing's source / cause /
   kind, `spread`, the affected agents in order with `result_landed` / `defeated` /
@@ -522,7 +525,8 @@ follow the same number, binary 1..7):
   agents' statuses, `"stunned" | "marked" | "rooted"`, case-insensitive; `steps` absent
   = 1)
 - v7 validation (`ValidateSkillsTagsZones`, reusing `core/reaction.h`): the table's
-  tags and every name non-empty, at most 31 bytes; durations and steps positive or -1,
+  tags and every name non-empty, at most 31 bytes; durations and steps in 1..1,000,000
+  or -1,
   damages >= 0 (`ValidateZoneTable` / `ValidateZoneDef`, a cell's present fields
   too); the reactions and tag statuses as their setters check them (`keep` a subset
   of {a, b}, an unknown status rejected, ...); each agent's `weak_to` / `immune` (no
@@ -552,8 +556,15 @@ follow the same number, binary 1..7):
   `"downed"`, `"times_downed"` (absent = false, 0; see Downs for their rules); any
   agent (v7, written when it has some): `"weak_to": [{"zone": "wet", "tag":
   "electrified"}]`, `"immune": ["burning"]` (absent = none)
-- Unknown keys in a skill / tag / zone / zone table entry / reaction / tag status /
-  weakness are rejected; `Snapshot::ValidateSkillsTagsZones`
+- Unknown keys are rejected at the root, in an agent, and in a skill / tag / zone /
+  zone table entry / reaction / tag status / weakness (a misspelt `"reaction"` or
+  `"weakTo"` is an error, not a level silently without its rules; grid cells, FSMs,
+  effects and annotations are not checked). Every int is a JSON integer in int's range:
+  a bool, a float or `4294967295` is an error naming the key, never converted. The
+  `"version"` is a lower bound for the reader, not a gate: every key is read whatever
+  the declared version. A tag written twice in `"zones"` is not detected (the JSON
+  parser keeps the last one). A v7 binary file with bytes after its last block is
+  rejected. `Snapshot::ValidateSkillsTagsZones`
   runs before any change (and when JSON / binary snapshots are parsed)
 - Slots always hold a real skill: a non-empty slot naming neither a builtin nor one of
   the snapshot's `skills` is rejected (`LoadSnapshot` throws, the C API returns false;

@@ -134,8 +134,9 @@ TargetFilter TargetFilterFromString(const std::string& s);      // Throws on unk
 
 // Throws std::runtime_error naming the skill and the field unless `s` is
 // usable: non-empty name of at most kMaxNameLength bytes; range,
-// motion_distance, damage, root_steps and cooldown >= 0; tag names non-empty, of at
-// most kMaxNameLength bytes, with a duration of kPermanentTag or > 0, at most
+// motion_distance, damage, root_steps and cooldown >= 0 (root_steps and cooldown
+// at most kMaxTimerSteps); tag names non-empty, of at most kMaxNameLength
+// bytes, with a duration IsValidTimer (1..kMaxTimerSteps, or kPermanentTag), at most
 // kMaxSkillTags of them; enums in
 // range; revive_percent in [0, 100], and > 0 only with affects_downed; an
 // affects_downed skill without tags, damage, root_steps or motion, with

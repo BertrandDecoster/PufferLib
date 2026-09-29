@@ -341,8 +341,8 @@ class BaseEnv {
   SkillPreview PreviewSkill(const Companion& caster, int slot, Direction aim) const;
 
   // Host primitives: land / remove a tag outside of a step. `duration` is a
-  // positive step count or kPermanentTag; ApplyTagTo returns false for 0 or
-  // anything below kPermanentTag, for an empty tag or one longer than
+  // step count (1..kMaxTimerSteps) or kPermanentTag; ApplyTagTo returns false
+  // for any other (IsValidTimer), for an empty tag or one longer than
   // kMaxNameLength, for an agent that is not affectable (downed or dead:
   // the tag is then not interned, like LandTag), and for an agent immune to
   // it (nothing lands). Durations are step timers (see Agent::BeginStep): a tag
@@ -565,8 +565,9 @@ class BaseEnv {
   // zones created after it, not those already there. A tag the table does not
   // define gets the ZoneDef defaults. DefineZone (re)defines `tag`; false
   // (table unchanged) for an empty tag, a tag or `then` longer than
-  // kMaxNameLength, a duration or steps of 0 or below kPermanentTag (as
-  // ApplyTagTo), or a negative damage (IsValidZoneDef, core/reaction.h).
+  // kMaxNameLength, a duration or steps that is not IsValidTimer (0, below
+  // kPermanentTag or above kMaxTimerSteps, as ApplyTagTo), or a negative
+  // damage (IsValidZoneDef, core/reaction.h).
   // Level data like max_downs: copied with the env, kept across a generated
   // Reset, saved in snapshots (v7) and replaced by LoadSnapshot with the
   // snapshot's (none in older ones), before its zone cells load.

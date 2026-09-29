@@ -1038,7 +1038,7 @@ bool BaseEnv::SetCompanionSkill(ObjectId id, int slot, const std::string& skill)
 }
 
 bool BaseEnv::ApplyTagTo(ObjectId id, const std::string& tag, int duration) {
-  if (duration == 0 || duration < kPermanentTag) return false;
+  if (!IsValidTimer(duration)) return false;
   auto* agent = dynamic_cast<Agent*>(object_manager_->GetActor(id));
   if (!agent || tag.empty() || !IsValidNameLength(tag)) return false;
   if (!agent->IsAffectable()) return false;  // Downed or dead: lands and interns nothing
@@ -1779,6 +1779,8 @@ void BaseEnv::ClearEffects() {
 // =============================================================================
 
 Snapshot BaseEnv::SaveSnapshot() const {
+  // Between two steps: timers set during one are kept as n + 1
+  assert(!in_step_ && "SaveSnapshot during a step");
   Snapshot snap;
 
   // Grid dimensions
