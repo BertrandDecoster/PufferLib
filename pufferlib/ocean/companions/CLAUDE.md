@@ -171,6 +171,11 @@ while the actors whose motion is in a later layer still stand where they were:
   last backpedals: it ends (bounded by the path lengths)
 - A body down as the turn begins and a thing no push / pull moves never move and block
   every motion (a walk into a thing is blocked)
+- Known limits: a dash's and a teleport's candidates are planned against the actors as
+  the turn begins (the layer then judges them against where the earlier layers put
+  everyone); in a pile-up of 3-5 forced moves claiming each other's cells, the round's
+  tie-breaks settle a cycle stably but not always on the most natural answer (about 35
+  in 30k fuzzed layouts), always terminating
 - Executed action (`GetExecutedAction`, the C API's): the walk a walker made (a walker then
   pushed keeps it; its final cell is past it), Stay if it did not walk. Events unchanged:
   AgentMoved for any change of cell (`move_action` = that walk, Stay for a teleport / dash
