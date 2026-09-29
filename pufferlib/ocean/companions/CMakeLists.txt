@@ -381,6 +381,16 @@ if(BUILD_DLL)
   )
   add_test(NAME companions_api_parity_test COMMAND companions_api_parity_test)
 
+  # C API 1.5: the rules' reports, outcome previews and level data (with
+  # parity against the C++ env)
+  add_executable(companions_api_reactions_test tests/test_api_reactions.cc)
+  target_link_libraries(companions_api_reactions_test companions_api companions_env companions_core)
+  target_include_directories(companions_api_reactions_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/api
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME companions_api_reactions_test COMMAND companions_api_reactions_test)
+
   # Install DLL and headers
   install(TARGETS companions_api
     RUNTIME DESTINATION bin

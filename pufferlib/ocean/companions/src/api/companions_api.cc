@@ -7,6 +7,8 @@
 #include <cassert>
 #include <cstring>
 #include <deque>
+#include <iterator>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -55,7 +57,15 @@
 // and the last step's skill uses with whom they affected
 // (companions_get_last_skill_use_count / _get_last_skill_use,
 // Companions_SkillUseInfo).
-#define COMPANIONS_VERSION "1.4.0"
+// 1.5.0: the rules' reports and the level data, as data (additive, but
+// Companions_Event's layout changed: consumers must rebuild). Report queries
+// with a source (the last step's, or the outcome preview's): skill uses, tag
+// landings, reactions (with the cells a zone_becomes changed), defeats,
+// downs; companions_preview_skill_outcome; the level data (zone table, cell
+// zones, reaction rules, tag statuses, weaknesses, immunities);
+// Companions_Event_ReactionFired / _AgentDefeated, Companions_Event.tag_kind /
+// tag_reaction / report_index, TagApplied's health_amount (zone damage).
+#define COMPANIONS_VERSION "1.5.0"
 
 // =============================================================================
 // Thread-local error message
@@ -107,6 +117,12 @@ struct Companions_Env {
   // only grows and never renames, so a returned pointer stays valid for the
   // env's lifetime (TagTable's own strings move when it grows).
   mutable std::deque<std::string> tag_names;
+
+  // The last companions_preview_skill_outcome's world (the clone its use
+  // resolved on: its reports are Companions_Report_Preview's), or null.
+  // `mutable` like cached_snapshot: the preview is a const query of the env.
+  // Dropped by a step, a reset and a snapshot load.
+  mutable std::unique_ptr<companions::BaseEnv> preview;
 };
 
 // =============================================================================
@@ -464,6 +480,15 @@ static void ExtractGameState(const Companions_Env* wrapper,
 // Event Generation
 // =============================================================================
 
+// An event with every field zeroed but those whose "none" is -1 (1.5): no
+// reaction (tag_reaction), no report entry (report_index)
+static Companions_Event NewEvent() {
+  Companions_Event evt = {};
+  evt.tag_reaction = -1;
+  evt.report_index = -1;
+  return evt;
+}
+
 static void AddMovementEvents(Companions_Env* wrapper) {
   auto* env = wrapper->env.get();
   auto agents = env->GetObjectManager().GetAllAgents();
@@ -474,7 +499,7 @@ static void AddMovementEvents(Companions_Env* wrapper) {
 
     if (prev != curr) {
       // Agent moved
-      Companions_Event evt = {};
+      Companions_Event evt = NewEvent();
       evt.type = Companions_Event_AgentMoved;
       evt.tick = env->GetTick();
       evt.subject_id = agents[i]->GetId();
@@ -489,7 +514,7 @@ static void AddMovementEvents(Companions_Env* wrapper) {
       // Tried to move but was blocked. Use original_intention_ (pre-collision)
       // because collision resolution overwrites intention_ with Stay, so
       // GetExecutedAction() would report Stay for every blocked agent.
-      Companions_Event evt = {};
+      Companions_Event evt = NewEvent();
       evt.type = Companions_Event_AgentBlocked;
       evt.tick = env->GetTick();
       evt.subject_id = agents[i]->GetId();
@@ -505,35 +530,89 @@ static void AddMovementEvents(Companions_Env* wrapper) {
   }
 }
 
+// Where `id` stands now, {-1, -1} for no actor
+static Companions_Position ActorCell(const companions::BaseEnv& env, companions::ObjectId id) {
+  const companions::Actor* actor = env.GetObjectManager().GetActor(id);
+  return actor ? ToAPIPosition(actor->GetPosition()) : Companions_Position{-1, -1};
+}
+
 // One SkillUsed event per skill use of this step (subject = caster, position
 // = the skill's centre, effect_id = the slot), then one TagApplied per tag
 // landing (subject = the agent, at its cell after the step; effect_id = the
-// tag id; health_source_id = caster or -1 for a zone).
+// tag id; health_source_id = caster or -1 for a zone or the host; tag_kind,
+// tag_reaction; health_amount = the zone damage it dealt), then one
+// ReactionFired per reaction (subject = the trigger, at its cell; effect_id =
+// the rule, effect_name = its result; health_source_id / tag_kind = the
+// triggering landing's), then one AgentDefeated per defeat (subject = the
+// agent, at its cell; effect_id / effect_name = the tag S; health_source_id /
+// tag_kind / tag_reaction = its landing's). report_index = the entry in the
+// report query.
 static void AddSkillAndTagEvents(Companions_Env* wrapper) {
   auto* env = wrapper->env.get();
-  for (const auto& use : env->GetLastSkillUses()) {
-    Companions_Event evt = {};
+  const auto& uses = env->GetLastSkillUses();
+  for (size_t i = 0; i < uses.size(); ++i) {
+    const auto& use = uses[i];
+    Companions_Event evt = NewEvent();
     evt.type = Companions_Event_SkillUsed;
     evt.tick = env->GetTick();
     evt.subject_id = use.caster;
     evt.position = ToAPIPosition(use.target);
     evt.effect_id = use.slot;
     CopyName(evt.effect_name, use.skill);
+    evt.report_index = static_cast<int32_t>(i);
     wrapper->events.push_back(evt);
   }
-  const auto& objects = env->GetObjectManager();
-  for (const auto& landed : env->GetLastTagsApplied()) {
-    Companions_Event evt = {};
+  const auto& landings = env->GetLastTagsApplied();
+  for (size_t i = 0; i < landings.size(); ++i) {
+    const auto& landed = landings[i];
+    Companions_Event evt = NewEvent();
     evt.type = Companions_Event_TagApplied;
     evt.tick = env->GetTick();
     evt.subject_id = landed.agent;
-    const auto* agent = objects.GetActor(landed.agent);
-    evt.position = agent ? ToAPIPosition(agent->GetPosition()) : Companions_Position{-1, -1};
+    evt.position = ActorCell(*env, landed.agent);
     evt.effect_id = landed.tag;
     CopyName(evt.effect_name, env->GetTagTable().Name(landed.tag));
     evt.status_duration = landed.duration;
     evt.health_source_id = landed.source;
+    evt.health_amount = landed.damage;
     evt.tag_fresh = landed.fresh;
+    evt.tag_kind = static_cast<Companions_TagSource>(landed.kind);
+    evt.tag_reaction = landed.reaction;
+    evt.report_index = static_cast<int32_t>(i);
+    wrapper->events.push_back(evt);
+  }
+  const auto& reactions = env->GetLastReactions();
+  for (size_t i = 0; i < reactions.size(); ++i) {
+    const auto& fired = reactions[i];
+    Companions_Event evt = NewEvent();
+    evt.type = Companions_Event_ReactionFired;
+    evt.tick = env->GetTick();
+    evt.subject_id = fired.trigger;
+    evt.position = ActorCell(*env, fired.trigger);
+    evt.effect_id = fired.rule;
+    const auto& rules = env->GetReactions();
+    if (fired.rule >= 0 && static_cast<size_t>(fired.rule) < rules.size()) {
+      CopyName(evt.effect_name, rules[static_cast<size_t>(fired.rule)].result);
+    }
+    evt.health_source_id = fired.source;
+    evt.tag_kind = static_cast<Companions_TagSource>(fired.kind);
+    evt.report_index = static_cast<int32_t>(i);
+    wrapper->events.push_back(evt);
+  }
+  const auto& defeats = env->GetLastDefeats();
+  for (size_t i = 0; i < defeats.size(); ++i) {
+    const auto& defeat = defeats[i];
+    Companions_Event evt = NewEvent();
+    evt.type = Companions_Event_AgentDefeated;
+    evt.tick = env->GetTick();
+    evt.subject_id = defeat.agent;
+    evt.position = ActorCell(*env, defeat.agent);
+    evt.effect_id = defeat.tag;
+    CopyName(evt.effect_name, env->GetTagTable().Name(defeat.tag));
+    evt.health_source_id = defeat.source;
+    evt.tag_kind = static_cast<Companions_TagSource>(defeat.kind);
+    evt.tag_reaction = defeat.reaction;
+    evt.report_index = static_cast<int32_t>(i);
     wrapper->events.push_back(evt);
   }
 }
@@ -543,7 +622,7 @@ static void AddSkillAndTagEvents(Companions_Env* wrapper) {
 static void AddDownEvents(Companions_Env* wrapper) {
   const companions::BaseEnv* env = wrapper->env.get();
   for (companions::ObjectId id : env->GetLastDowns()) {
-    Companions_Event evt = {};
+    Companions_Event evt = NewEvent();
     evt.type = Companions_Event_AgentDowned;
     evt.tick = env->GetTick();
     evt.subject_id = id;
@@ -559,7 +638,7 @@ static void AddDownEvents(Companions_Env* wrapper) {
 static void AddReviveEvents(Companions_Env* wrapper) {
   const companions::BaseEnv* env = wrapper->env.get();
   for (const companions::BaseEnv::Revival& revival : env->GetLastRevives()) {
-    Companions_Event evt = {};
+    Companions_Event evt = NewEvent();
     evt.type = Companions_Event_AgentRevived;
     evt.tick = env->GetTick();
     evt.subject_id = revival.revived;
@@ -817,6 +896,7 @@ COMPANIONS_API void companions_reset(Companions_Env* env,
   }
 
   env->env->Reset(seed);
+  env->preview.reset();
   StartEpisode(*env);
   std::fill(env->last_rewards.begin(), env->last_rewards.end(), 0.0);
   env->events.clear();
@@ -868,11 +948,21 @@ COMPANIONS_API void companions_step(Companions_Env* env,
         static_cast<companions::InteractAction>(interact));
   }
 
-  // Clear events from previous step
+  // Clear events from previous step, and the outcome preview (of the world
+  // before it)
   env->events.clear();
+  env->preview.reset();
 
-  // Step the environment
-  auto result = env->env->Step(cpp_actions);
+  // Step the environment. A step that throws reports the error (nothing
+  // crosses the C boundary); the env is between two steps again (it aborts
+  // the step), out_result untouched.
+  companions::StepResult result;
+  try {
+    result = env->env->Step(cpp_actions);
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return;
+  }
 
   // Update wrapper state
   const bool episode_ended = result.done && !env->last_step_done;
@@ -895,7 +985,7 @@ COMPANIONS_API void companions_step(Companions_Env* env,
 
   // Add the episode end event on the step that ends the episode
   if (episode_ended) {
-    Companions_Event evt = {};
+    Companions_Event evt = NewEvent();
     evt.type = Companions_Event_EpisodeEnd;
     evt.tick = env->env->GetTick();
     evt.episode_success = env->success;
@@ -1100,7 +1190,7 @@ COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectI
   }
   if (!env->env->ApplyTagTo(agent, tag, duration)) {
     SetError("companions_apply_tag: unknown, downed or dead agent, an agent immune to the tag, "
-             "empty or overlong tag, or duration 0 or below -1");
+             "empty or overlong tag, or duration 0, below -1 or above 1000000");
     return false;
   }
   return true;
@@ -1126,7 +1216,8 @@ COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, in
     return false;
   }
   if (!env->env->SetCellTag(companions::Position{row, col}, tag ? tag : "", duration)) {
-    SetError("companions_set_cell_tag: out of bounds, overlong tag, or duration 0 or below -1");
+    SetError("companions_set_cell_tag: out of bounds, overlong tag, or duration 0, below -1 or "
+             "above 1000000");
     return false;
   }
   return true;
@@ -1322,6 +1413,514 @@ COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int
   out->centre = ToAPIPosition(use.target);
   CopyAffected(use.affected, out->affected, out->affected_effects, &out->affected_count,
                &out->affected_total);
+  return true;
+}
+
+// =============================================================================
+// Reports (since 1.5)
+// =============================================================================
+
+}  // extern "C": the report helpers below are C++
+
+static_assert(static_cast<int>(companions::BaseEnv::TagSource::Skill) == Companions_TagSource_Skill &&
+                  static_cast<int>(companions::BaseEnv::TagSource::Zone) ==
+                      Companions_TagSource_Zone &&
+                  static_cast<int>(companions::BaseEnv::TagSource::Reaction) ==
+                      Companions_TagSource_Reaction &&
+                  static_cast<int>(companions::BaseEnv::TagSource::Host) ==
+                      Companions_TagSource_Host,
+              "TagSource out of sync with C API");
+
+// The env holding `source`'s reports: the env itself (LastStep), the last
+// outcome preview's world (Preview; null before any: empty reports). False,
+// error set, for a null env or a source out of range.
+static bool ReportsOf(const Companions_Env* env, Companions_ReportSource source,
+                      const companions::BaseEnv** out) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return false;
+  }
+  switch (source) {
+    case Companions_Report_LastStep:
+      *out = env->env.get();
+      return true;
+    case Companions_Report_Preview:
+      *out = env->preview.get();
+      return true;
+  }
+  SetError("Invalid report source");
+  return false;
+}
+
+// The entry `index` of `source`'s report `get` (a BaseEnv getter), or null
+// with the error set ("Invalid arguments", "Invalid report source", `range`).
+template <typename Getter>
+static auto ReportEntry(const Companions_Env* env, Companions_ReportSource source, int32_t index,
+                        const void* out, Getter get, const char* range,
+                        const companions::BaseEnv** reports)
+    -> decltype(&get(*env->env)[0]) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return nullptr;
+  }
+  if (!ReportsOf(env, source, reports)) return nullptr;
+  if (!*reports || index < 0 || static_cast<size_t>(index) >= get(**reports).size()) {
+    SetError(range);
+    return nullptr;
+  }
+  return &get(**reports)[static_cast<size_t>(index)];
+}
+
+// The size of `source`'s report `get`, 0 with the error set for a bad env or source
+template <typename Getter>
+static int32_t ReportCount(const Companions_Env* env, Companions_ReportSource source, Getter get) {
+  const companions::BaseEnv* reports = nullptr;
+  if (!ReportsOf(env, source, &reports)) return 0;
+  return reports ? static_cast<int32_t>(get(*reports).size()) : 0;
+}
+
+static const std::vector<companions::BaseEnv::SkillUse>& SkillUsesOf(const companions::BaseEnv& e) {
+  return e.GetLastSkillUses();
+}
+static const std::vector<companions::BaseEnv::TagApplication>& LandingsOf(
+    const companions::BaseEnv& e) {
+  return e.GetLastTagsApplied();
+}
+static const std::vector<companions::BaseEnv::ReactionReport>& ReactionsOf(
+    const companions::BaseEnv& e) {
+  return e.GetLastReactions();
+}
+static const std::vector<companions::BaseEnv::DefeatReport>& DefeatsOf(
+    const companions::BaseEnv& e) {
+  return e.GetLastDefeats();
+}
+static const std::vector<companions::ObjectId>& DownsOf(const companions::BaseEnv& e) {
+  return e.GetLastDowns();
+}
+
+// A tag id of `env`'s table by name ("" for none)
+static std::string TagNameIn(const companions::BaseEnv& env, companions::TagId tag) {
+  const companions::TagTable& table = env.GetTagTable();
+  return tag >= 0 && tag < table.Size() ? table.Name(tag) : std::string();
+}
+
+static void ToAPISkillUse(const companions::BaseEnv::SkillUse& use, Companions_SkillUseInfo* out) {
+  std::memset(out, 0, sizeof(*out));
+  out->caster = use.caster;
+  CopyName(out->skill, use.skill);
+  out->slot = use.slot;
+  out->centre = ToAPIPosition(use.target);
+  CopyAffected(use.affected, out->affected, out->affected_effects, &out->affected_count,
+               &out->affected_total);
+}
+
+extern "C" {
+
+COMPANIONS_API int32_t companions_get_skill_use_count(const Companions_Env* env,
+                                                      Companions_ReportSource source) {
+  return ReportCount(env, source, SkillUsesOf);
+}
+
+COMPANIONS_API bool companions_get_skill_use(const Companions_Env* env,
+                                             Companions_ReportSource source, int32_t index,
+                                             Companions_SkillUseInfo* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* use =
+      ReportEntry(env, source, index, out, SkillUsesOf, "Skill use index out of range", &reports);
+  if (!use) return false;
+  ToAPISkillUse(*use, out);
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_tag_landing_count(const Companions_Env* env,
+                                                        Companions_ReportSource source) {
+  return ReportCount(env, source, LandingsOf);
+}
+
+COMPANIONS_API bool companions_get_tag_landing(const Companions_Env* env,
+                                               Companions_ReportSource source, int32_t index,
+                                               Companions_TagLanding* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* landed =
+      ReportEntry(env, source, index, out, LandingsOf, "Tag landing index out of range", &reports);
+  if (!landed) return false;
+  std::memset(out, 0, sizeof(*out));
+  out->agent = landed->agent;
+  CopyName(out->tag, TagNameIn(*reports, landed->tag));
+  out->duration = landed->duration;
+  out->source = landed->source;
+  CopyName(out->cause, landed->cause);
+  out->kind = static_cast<Companions_TagSource>(landed->kind);
+  out->reaction = landed->reaction;
+  out->fresh = landed->fresh;
+  out->damage = landed->damage;
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_reaction_count(const Companions_Env* env,
+                                                     Companions_ReportSource source) {
+  return ReportCount(env, source, ReactionsOf);
+}
+
+COMPANIONS_API bool companions_get_reaction(const Companions_Env* env,
+                                            Companions_ReportSource source, int32_t index,
+                                            Companions_ReactionInfo* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* fired =
+      ReportEntry(env, source, index, out, ReactionsOf, "Reaction index out of range", &reports);
+  if (!fired) return false;
+  std::memset(out, 0, sizeof(*out));
+  out->rule = fired->rule;
+  // The rule's tags (the reports' env holds the rules they index)
+  const auto& rules = reports->GetReactions();
+  if (fired->rule >= 0 && static_cast<size_t>(fired->rule) < rules.size()) {
+    const companions::ReactionRule& rule = rules[static_cast<size_t>(fired->rule)];
+    CopyName(out->a, rule.a);
+    CopyName(out->b, rule.b);
+    CopyName(out->result, rule.result);
+    if (!fired->cells.empty()) CopyName(out->zone_becomes, rule.zone_becomes);
+  }
+  out->trigger = fired->trigger;
+  CopyName(out->tag, TagNameIn(*reports, fired->tag));
+  out->source = fired->source;
+  CopyName(out->cause, fired->cause);
+  out->kind = static_cast<Companions_TagSource>(fired->kind);
+  out->spread = fired->spread;
+  const size_t n = std::min(fired->affected.size(), static_cast<size_t>(Companions_MAX_AGENTS));
+  for (size_t i = 0; i < n; ++i) {
+    const companions::BaseEnv::ReactionOutcome& o = fired->affected[i];
+    out->affected[i] = o.agent;
+    out->affected_result_landed[i] = o.result_landed;
+    out->affected_defeated[i] = o.defeated;
+    out->affected_damage[i] = o.damage;
+  }
+  out->affected_count = static_cast<int32_t>(n);
+  out->affected_total = static_cast<int32_t>(fired->affected.size());
+  out->cell_count = static_cast<int32_t>(fired->cells.size());
+  return true;
+}
+
+COMPANIONS_API bool companions_get_reaction_cell(const Companions_Env* env,
+                                                 Companions_ReportSource source,
+                                                 int32_t reaction_index, int32_t cell_index,
+                                                 Companions_Position* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* fired = ReportEntry(env, source, reaction_index, out, ReactionsOf,
+                                  "Reaction index out of range", &reports);
+  if (!fired) return false;
+  if (cell_index < 0 || static_cast<size_t>(cell_index) >= fired->cells.size()) {
+    SetError("Reaction cell index out of range");
+    return false;
+  }
+  *out = ToAPIPosition(fired->cells[static_cast<size_t>(cell_index)]);
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_defeat_count(const Companions_Env* env,
+                                                   Companions_ReportSource source) {
+  return ReportCount(env, source, DefeatsOf);
+}
+
+COMPANIONS_API bool companions_get_defeat(const Companions_Env* env,
+                                          Companions_ReportSource source, int32_t index,
+                                          Companions_DefeatInfo* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* defeat =
+      ReportEntry(env, source, index, out, DefeatsOf, "Defeat index out of range", &reports);
+  if (!defeat) return false;
+  std::memset(out, 0, sizeof(*out));
+  out->agent = defeat->agent;
+  CopyName(out->zone, TagNameIn(*reports, defeat->zone));
+  CopyName(out->tag, TagNameIn(*reports, defeat->tag));
+  out->source = defeat->source;
+  CopyName(out->cause, defeat->cause);
+  out->kind = static_cast<Companions_TagSource>(defeat->kind);
+  out->reaction = defeat->reaction;
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_down_count(const Companions_Env* env,
+                                                 Companions_ReportSource source) {
+  return ReportCount(env, source, DownsOf);
+}
+
+COMPANIONS_API bool companions_get_down(const Companions_Env* env,
+                                        Companions_ReportSource source, int32_t index,
+                                        Companions_ObjectId* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* down = ReportEntry(env, source, index, out, DownsOf, "Down index out of range",
+                                 &reports);
+  if (!down) return false;
+  *out = *down;
+  return true;
+}
+
+// The companion `agent` of `env` (errors as companions_preview_skill), or null
+static const companions::Companion* PreviewedCompanion(const Companions_Env* env,
+                                                       Companions_ObjectId agent) {
+  const companions::Actor* actor = env->env->GetObjectManager().GetActor(agent);
+  if (!dynamic_cast<const companions::Agent*>(actor)) {
+    SetError("Agent not found");
+    return nullptr;
+  }
+  const auto* comp = dynamic_cast<const companions::Companion*>(actor);
+  if (!comp) SetError("Not a companion");
+  return comp;
+}
+
+// `aim` as a companions::Direction; false ("Invalid direction") outside Up..Right
+static bool ToDirection(Companions_Direction aim, companions::Direction* out) {
+  switch (aim) {
+    case Companions_Direction_Up: *out = companions::Direction::Up; return true;
+    case Companions_Direction_Down: *out = companions::Direction::Down; return true;
+    case Companions_Direction_Left: *out = companions::Direction::Left; return true;
+    case Companions_Direction_Right: *out = companions::Direction::Right; return true;
+  }
+  SetError("Invalid direction");
+  return false;
+}
+
+COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
+                                                     Companions_ObjectId agent, int32_t slot,
+                                                     Companions_Direction aim,
+                                                     Companions_SkillOutcome* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (!PreviewedCompanion(env, agent)) return false;
+  if (slot < 0 || slot >= Companions_MAX_SKILL_SLOTS) {
+    SetError("Skill slot out of range");
+    return false;
+  }
+  companions::Direction dir = companions::Direction::Up;
+  if (!ToDirection(aim, &dir)) return false;
+  try {
+    companions::BaseEnv::SkillOutcome outcome = env->env->PreviewSkillOutcome(agent, slot, dir);
+    if (!outcome.world) {
+      SetError("Not a companion");
+      return false;
+    }
+    env->preview = std::move(outcome.world);
+    const companions::BaseEnv& world = *env->preview;
+    std::memset(out, 0, sizeof(*out));
+    out->usable = outcome.usable;
+    out->skill_use_count = static_cast<int32_t>(world.GetLastSkillUses().size());
+    out->tag_landing_count = static_cast<int32_t>(world.GetLastTagsApplied().size());
+    out->reaction_count = static_cast<int32_t>(world.GetLastReactions().size());
+    out->defeat_count = static_cast<int32_t>(world.GetLastDefeats().size());
+    out->down_count = static_cast<int32_t>(world.GetLastDowns().size());
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  }
+}
+
+// =============================================================================
+// Level data (since 1.5)
+// =============================================================================
+
+static void ToAPIZoneDef(const std::string& tag, const companions::ZoneDef& def,
+                         Companions_ZoneDefInfo* out) {
+  std::memset(out, 0, sizeof(*out));
+  CopyName(out->tag, tag);
+  out->duration = def.duration;
+  out->steps = def.steps;
+  CopyName(out->then, def.then);
+  out->damage = def.damage;
+}
+
+COMPANIONS_API int32_t companions_get_zone_def_count(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  return static_cast<int32_t>(env->env->GetZoneDefs().size());
+}
+
+COMPANIONS_API bool companions_get_zone_def(const Companions_Env* env, int32_t index,
+                                            Companions_ZoneDefInfo* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const auto& table = env->env->GetZoneDefs();
+  if (index < 0 || static_cast<size_t>(index) >= table.size()) {
+    SetError("Zone index out of range");
+    return false;
+  }
+  auto it = table.begin();
+  std::advance(it, index);
+  ToAPIZoneDef(it->first, it->second, out);
+  return true;
+}
+
+COMPANIONS_API bool companions_find_zone_def(const Companions_Env* env, const char* tag,
+                                             Companions_ZoneDefInfo* out) {
+  if (!env || !env->env || !tag || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const auto& table = env->env->GetZoneDefs();
+  auto it = table.find(tag);
+  if (it == table.end()) {
+    SetError((std::string("Unknown zone: ") + tag).c_str());
+    return false;
+  }
+  ToAPIZoneDef(it->first, it->second, out);
+  return true;
+}
+
+COMPANIONS_API bool companions_get_cell_zone(const Companions_Env* env, int32_t row, int32_t col,
+                                             Companions_CellZone* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (row < 0 || row >= env->env->GetRows() || col < 0 || col >= env->env->GetCols()) {
+    SetError("Position out of bounds");
+    return false;
+  }
+  const companions::BaseEnv::CellTag zone = env->env->GetCellTag(companions::Position{row, col});
+  std::memset(out, 0, sizeof(*out));
+  if (zone.tag == companions::kInvalidTag) return true;
+  out->has_zone = true;
+  CopyName(out->tag, TagNameIn(*env->env, zone.tag));
+  out->duration = zone.duration;
+  out->steps = zone.steps;
+  CopyName(out->then, TagNameIn(*env->env, zone.then));
+  out->damage = zone.damage;
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_reaction_rule_count(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  return static_cast<int32_t>(env->env->GetReactions().size());
+}
+
+COMPANIONS_API bool companions_get_reaction_rule(const Companions_Env* env, int32_t index,
+                                                 Companions_ReactionRuleInfo* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const auto& rules = env->env->GetReactions();
+  if (index < 0 || static_cast<size_t>(index) >= rules.size()) {
+    SetError("Reaction rule index out of range");
+    return false;
+  }
+  const companions::ReactionRule& rule = rules[static_cast<size_t>(index)];
+  std::memset(out, 0, sizeof(*out));
+  CopyName(out->a, rule.a);
+  CopyName(out->b, rule.b);
+  CopyName(out->result, rule.result);
+  for (const std::string& k : rule.keep) {
+    if (k == rule.a) out->keep_a = true;
+    if (k == rule.b) out->keep_b = true;
+  }
+  out->damage = rule.damage;
+  out->spread = rule.spread;
+  CopyName(out->zone_becomes, rule.zone_becomes);
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_tag_status_count(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  return static_cast<int32_t>(env->env->GetTagStatuses().size());
+}
+
+COMPANIONS_API bool companions_get_tag_status(const Companions_Env* env, int32_t index,
+                                              Companions_TagStatusInfo* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const auto& rules = env->env->GetTagStatuses();
+  if (index < 0 || static_cast<size_t>(index) >= rules.size()) {
+    SetError("Tag status index out of range");
+    return false;
+  }
+  const companions::TagStatusRule& rule = rules[static_cast<size_t>(index)];
+  std::memset(out, 0, sizeof(*out));
+  CopyName(out->tag, rule.tag);
+  out->status = ToAPIStatusType(rule.status);
+  out->steps = rule.steps;
+  return true;
+}
+
+// The agent `id` of `env`, or null ("Agent not found")
+static const companions::Agent* LevelAgent(const Companions_Env* env, Companions_ObjectId id) {
+  const auto* agent =
+      dynamic_cast<const companions::Agent*>(env->env->GetObjectManager().GetActor(id));
+  if (!agent) SetError("Agent not found");
+  return agent;
+}
+
+COMPANIONS_API int32_t companions_get_agent_weakness_count(const Companions_Env* env,
+                                                           Companions_ObjectId agent) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  const companions::Agent* a = LevelAgent(env, agent);
+  return a ? static_cast<int32_t>(a->GetWeakTo().size()) : 0;
+}
+
+COMPANIONS_API bool companions_get_agent_weakness(const Companions_Env* env,
+                                                  Companions_ObjectId agent, int32_t index,
+                                                  Companions_Weakness* out) {
+  if (!env || !env->env || !out) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const companions::Agent* a = LevelAgent(env, agent);
+  if (!a) return false;
+  const auto& weak_to = a->GetWeakTo();
+  if (index < 0 || static_cast<size_t>(index) >= weak_to.size()) {
+    SetError("Weakness index out of range");
+    return false;
+  }
+  const companions::Agent::WeakTo& w = weak_to[static_cast<size_t>(index)];
+  std::memset(out, 0, sizeof(*out));
+  CopyName(out->zone, TagNameIn(*env->env, w.zone));
+  CopyName(out->tag, TagNameIn(*env->env, w.tag));
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_agent_immunity_count(const Companions_Env* env,
+                                                           Companions_ObjectId agent) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  const companions::Agent* a = LevelAgent(env, agent);
+  return a ? static_cast<int32_t>(a->GetImmune().size()) : 0;
+}
+
+COMPANIONS_API bool companions_get_agent_immunity(const Companions_Env* env,
+                                                  Companions_ObjectId agent, int32_t index,
+                                                  char* out_tag) {
+  if (!env || !env->env || !out_tag) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  const companions::Agent* a = LevelAgent(env, agent);
+  if (!a) return false;
+  const auto& immune = a->GetImmune();
+  if (index < 0 || static_cast<size_t>(index) >= immune.size()) {
+    SetError("Immunity index out of range");
+    return false;
+  }
+  const std::string name = TagNameIn(*env->env, immune[static_cast<size_t>(index)]);
+  std::strncpy(out_tag, name.c_str(), Companions_SKILL_NAME_LEN - 1);
+  out_tag[Companions_SKILL_NAME_LEN - 1] = '\0';
   return true;
 }
 
@@ -1560,6 +2159,7 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
     std::vector<uint8_t> buffer(data, data + data_size);
     companions::Snapshot snap = companions::Snapshot::Deserialize(buffer);
     env->env->LoadSnapshot(snap);
+    env->preview.reset();
 
     // Update wrapper state
     StartEpisode(*env);
@@ -1689,6 +2289,7 @@ COMPANIONS_API bool companions_load_snapshot_json(
   try {
     companions::Snapshot snap = companions::SnapshotFromJson(json_str);
     env->env->LoadSnapshot(snap);
+    env->preview.reset();
 
     // Update wrapper state
     StartEpisode(*env);
@@ -1735,6 +2336,7 @@ COMPANIONS_API bool companions_load_snapshot_json_file(
   try {
     companions::Snapshot snap = companions::LoadSnapshotFromJsonFile(filepath);
     env->env->LoadSnapshot(snap);
+    env->preview.reset();
 
     // Update wrapper state
     StartEpisode(*env);

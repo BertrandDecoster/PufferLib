@@ -228,6 +228,9 @@ class Agent : public Actor {
   // ==========================================================================
   void BeginStep() { in_step_ = true; }
   void EndStep();  // A living agent's timers lose a step; expired ones go
+  // A step that threw (BaseEnv::AbortStep): between two steps again, its
+  // timers not ticked
+  void AbortStep() { in_step_ = false; }
 
   // ==========================================================================
   // Status Effects

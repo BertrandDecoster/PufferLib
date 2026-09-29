@@ -44,8 +44,11 @@ companions/                    # Standalone pure C++ implementation
   `tests/test_api.cc`
 - Zones' lifetime, successor, damage per landing and the zone table: `companions_zones_test`
   (`tests/test_zones.cc`)
-- Reactions, weaknesses, immunities, tag statuses, their reports and the landing order:
-  `companions_reactions_test` (`tests/test_reactions.cc`)
+- Reactions, weaknesses, immunities, tag statuses, their reports and the landing order,
+  outcome previews (`PreviewSkillOutcome`), a step that throws:
+  `companions_reactions_test` (`tests/test_reactions.cc`); their C API side (1.5: report
+  queries of both sources, events, level data, outcome previews, parity with the C++
+  env): `companions_api_reactions_test` (`tests/test_api_reactions.cc`)
 - v7 snapshots (the zone table, the zone cells' fields, reactions, tag statuses,
   weaknesses, immunities): binary in `tests/test_snapshot.cc`, JSON in
   `tests/test_snapshot_json.cc`, a zone's timer across a load in `tests/test_zones.cc`, a
@@ -284,6 +287,20 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
   earlier caster's push / pull / damage / revive changes what a later one reaches; a use
   whose movement is Stay keeps the caster's facing. It says whom the skill affects, not
   where a push / pull then moves them
+- `PreviewSkillOutcome(caster id, slot, aim)`: what the use would DO, reports included:
+  resolved on a `Clone()` (nothing in the env changes or is interned) by the step's own
+  code for a use (`ResolveSkillUse`, shared with `ResolveSkills`), as the next step would
+  resolve it were it the step's only change: no movement, no zone landing on those
+  standing on zones, no enemy acting, no end-of-step timers. The clone is mid-step
+  around the use (`in_step_`, `Agent::BeginStep`), so what the use sets (a
+  `zone_becomes` zone, a status) is stored as the step stores it. `SkillOutcome {usable,
+  world}`: the clone after the use, whose `GetLast*` are the use's reports (skill use,
+  landings, reactions, defeats, revives, and the downs it caused, not the unreported ones
+  from between steps); tag ids are the clone's (read names in its table). Unusable (as
+  `PreviewSkill`): nothing resolved, empty reports; `world` null for an id naming no
+  companion. Costs a copy of the env (a UI query). The step may differ as `PreviewSkill`
+  says, and also lands the zones on those standing on them first (a tag they did not
+  carry yet can react or defeat before the use)
 - `AffectedAgent { id, effects }`, `SkillEffect` bit flags: `Tags` 1, `Damage` 2,
   `Root` 4, `Motion` 8 (it really changes cell: a push against a wall is no Motion),
   `Revive` 16; 0 = affected, nothing applies (the caster gets only what its `self_*`
@@ -443,7 +460,9 @@ a status.
   result: its reaction's index in `GetLastReactions()`). A result keeps the source and
   cause of the landing that triggered its reaction; its `fresh` reads the agent before
   the reaction removed the originals (a result that is one of them is not fresh on an
-  agent that carried it). Not in the C API yet
+  agent that carried it). A `ReactionReport`'s `cells`: the cells its spread region
+  became `zone_becomes`, row-major (empty when the region kept its zone), so a host
+  sees "the oil caught fire" without diffing. C API: 1.5 (see Per-step reports)
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
 (damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
@@ -460,16 +479,16 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 | BaseEnv | Content | C API event |
 |---------|---------|-------------|
 | `GetLastSkillUses()` | caster, skill (the effective one), target (centre; landing cell for a self skill), slot, `affected` (the agents it affected, in processing order, with what it did to each: see Previews) | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill); the whole use, `affected` included: `companions_get_last_skill_use_count` / `companions_get_last_skill_use` (not an event: never cut by the event cap) |
-| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"` / `"host"`; a result: its trigger's), `fresh`, `damage` (the zone damage it dealt; 0 when none: a skill's landing, a harmless zone, an agent no longer affectable), `kind` (`TagSource`), `reaction` (a result: its index in `GetLastReactions()`, else -1); the last three not in the C API yet | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
-| `GetLastReactions()` | `ReactionReport`: rule, trigger, tag, source / cause / kind of the triggering landing, `spread`, `affected` (agent, `result_landed`, `defeated`, `damage`), in the order they fired | none yet |
-| `GetLastDefeats()` | `DefeatReport`: agent, zone (P), tag (S), source / cause / kind / `reaction` of the landing of S | none yet |
+| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"` / `"host"`; a result: its trigger's), `fresh`, `damage` (the zone damage it dealt; 0 when none: a skill's landing, a harmless zone, an agent no longer affectable), `kind` (`TagSource`), `reaction` (a result: its index in `GetLastReactions()`, else -1) | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh; 1.5: tag_kind, tag_reaction, health_amount = damage, report_index); the whole report: `companions_get_tag_landing*` |
+| `GetLastReactions()` | `ReactionReport`: rule, trigger, tag, source / cause / kind of the triggering landing, `spread`, `affected` (agent, `result_landed`, `defeated`, `damage`), `cells` (what became `zone_becomes`), in the order they fired | `Companions_Event_ReactionFired` (1.5: subject = trigger, effect_id = rule, effect_name = result, health_source_id / tag_kind, report_index); `companions_get_reaction*` |
+| `GetLastDefeats()` | `DefeatReport`: agent, zone (P), tag (S), source / cause / kind / `reaction` of the landing of S | `Companions_Event_AgentDefeated` (1.5: effect_id / effect_name = S, health_source_id / tag_kind / tag_reaction, report_index); `companions_get_defeat*` |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
 | `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
-  AgentDowned, AgentRevived, SkillUsed, TagApplied, EpisodeEnd (grouped by kind, not in time order: a companion revived then
+  AgentDowned, AgentRevived, SkillUsed, TagApplied, ReactionFired, AgentDefeated, EpisodeEnd (grouped by kind, not in time order: a companion revived then
   downed again in one step has its second AgentDowned before its AgentRevived); at most
   `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest.
   The state changes (movement, down, revive) come first, so SkillUsed / TagApplied are cut
@@ -477,7 +496,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   movement, one revive, two downs = 4 events; fits for up to 15 agents). Reviving the same
   companion twice in a step needs a skill downing it between the two revives; only then
   can state-change events be dropped
-- C API (`src/api/companions_api.h`, version 1.4.0: 1.2 removed the legacy cast,
+- C API (`src/api/companions_api.h`, version 1.5.0 (1.5 below): 1.2 removed the legacy cast,
   1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
   `Companions_GameState.downs` / `max_downs` / `team_down`, `Companions_End_TeamDown` (4),
   `Companions_Event_AgentDowned` (17); 1.4 added revives and context skills:
@@ -504,6 +523,23 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   2 skill slots (effective and equipped) and cooldowns; name buffers are 32 bytes
   (31 + NUL). The context rules themselves are not exposed (a host reads their effect in
   `skills`, or in a preview's `skill`; level tools read them in the snapshot JSON)
+- C API 1.5.0 (`Companions_Event` layout changed: consumers rebuild): the rules as data.
+  Report queries with a `Companions_ReportSource` (`LastStep`: the env's `GetLast*`, the
+  host's landings since the step included; `Preview`: the last outcome preview's world,
+  dropped by a step, reset or load), never capped: `companions_get_skill_use*`,
+  `_tag_landing*` (`Companions_TagLanding`: names, cause, `Companions_TagSource` kind,
+  reaction, fresh, damage), `_reaction*` (`Companions_ReactionInfo`: the rule's a / b /
+  result, trigger, triggering landing, spread, affected with outcomes, `zone_becomes` and
+  `cell_count`; `companions_get_reaction_cell`), `_defeat*`, `_down*`;
+  `companions_preview_skill_outcome` (`PreviewSkillOutcome`, the clone kept in the
+  wrapper); level data, read-only: `companions_get_zone_def*` / `_find_zone_def` (the
+  table, sorted by tag), `companions_get_cell_zone` (a cell's resolved zone, remaining
+  steps included), `_reaction_rule*`, `_tag_status*`, `_agent_weakness*`,
+  `_agent_immunity*`; events `ReactionFired` (19) / `AgentDefeated` (20) after TagApplied;
+  `Companions_Event.tag_kind` / `tag_reaction` / `report_index` (-1 when none). A step
+  that throws sets the error and returns (the exception no longer crosses the boundary;
+  `BaseEnv::Step` aborts the step, `AbortStep`, so `SaveSnapshot`, which now throws
+  inside a step, works after it)
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots

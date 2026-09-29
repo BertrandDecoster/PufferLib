@@ -122,6 +122,15 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   ClearStepReports();
   for (Agent* agent : object_manager_->GetAllAgents()) agent->BeginStep();
   in_step_ = true;
+  // A step that throws before its end (TickZones) leaves the env between two
+  // steps again (AbortStep), not stuck inside one: a later SaveSnapshot would
+  // refuse, and every timer set later would be kept one step too long.
+  struct StepScope {
+    BaseEnv& env;
+    ~StepScope() {
+      if (env.in_step_) env.AbortStep();
+    }
+  } step_scope{*this};
 
   // Pre-step hook
   PreStep();
@@ -1207,8 +1216,11 @@ void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const st
   if (spread && !spec.zone_becomes.empty()) {
     const CellTag becomes =
         ResolveZone(tags_.Intern(spec.zone_becomes), GetZoneDef(spec.zone_becomes));
+    std::vector<Position>& cells = last_reactions_[static_cast<size_t>(index)].cells;
     for (size_t i = 0; i < region.size(); ++i) {
-      if (region[i]) cell_tags_[i] = becomes;
+      if (!region[i]) continue;
+      cell_tags_[i] = becomes;
+      cells.push_back({static_cast<int>(i) / cols_, static_cast<int>(i) % cols_});
     }
   }
 }
@@ -1390,6 +1402,11 @@ void BaseEnv::ApplyZoneTags() {
   }
 }
 
+void BaseEnv::AbortStep() {
+  in_step_ = false;
+  for (Agent* agent : object_manager_->GetAllAgents()) agent->AbortStep();
+}
+
 void BaseEnv::TickZones() {
   // The step is over: a successor created below lasts its n next steps
   in_step_ = false;
@@ -1451,19 +1468,52 @@ void BaseEnv::ResolveSkills() {
     }
     assert(intended && "a skill use GatherIntentions did not record");
     if (!intended) continue;
-    const int rule = intended->rule;
-    const std::string& name = rule >= 0 ? context_skills_[static_cast<size_t>(rule)].skill
-                                        : comp->GetSkill(slot);
-    const SkillConfig* found = skills_.Find(name);
-    if (!found) continue;
-    // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
-    const SkillConfig skill = *found;
-    SkillTargets targets = UseSkill(*comp, skill);
-    // Cooldowns belong to the equipped skill: a context skill does not spend it
-    if (rule < 0) comp->SetCooldown(slot, skill.cooldown);
-    last_skill_uses_.push_back(
-        {comp->GetId(), skill.name, targets.centre, slot, std::move(targets.affected)});
+    ResolveSkillUse(*comp, slot, intended->rule);
   }
+}
+
+void BaseEnv::ResolveSkillUse(Companion& comp, int slot, int rule) {
+  const std::string& name = rule >= 0 ? context_skills_[static_cast<size_t>(rule)].skill
+                                      : comp.GetSkill(slot);
+  const SkillConfig* found = skills_.Find(name);
+  if (!found) return;
+  // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
+  const SkillConfig skill = *found;
+  SkillTargets targets = UseSkill(comp, skill);
+  // Cooldowns belong to the equipped skill: a context skill does not spend it
+  if (rule < 0) comp.SetCooldown(slot, skill.cooldown);
+  last_skill_uses_.push_back(
+      {comp.GetId(), skill.name, targets.centre, slot, std::move(targets.affected)});
+}
+
+BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
+                                                   Direction aim) const {
+  SkillOutcome outcome;
+  if (!dynamic_cast<const Companion*>(object_manager_->GetActor(caster))) return outcome;
+  std::unique_ptr<BaseEnv> world = Clone();
+  // The use's reports only: not the last step's (nor the host's since), not
+  // the downs between steps the next step reports
+  world->ClearStepReports();
+  for (Companion* c : world->object_manager_->GetAllCompanions()) c->TakeUnreportedDowns();
+  auto* comp = dynamic_cast<Companion*>(world->object_manager_->GetActor(caster));
+  assert(comp && "a clone keeps the ids");
+  // As the step, around its skills: timers set from here on are step timers
+  for (Agent* agent : world->object_manager_->GetAllAgents()) agent->BeginStep();
+  world->in_step_ = true;
+  // As GatherIntentions decides: the stunned (and the downed) stay, then a
+  // use CanUseSkill allows, with the context read now
+  const ContextSkillRule* rule = nullptr;
+  outcome.usable = !comp->IsStunned() && world->CanUseSkill(*comp, slot, rule);
+  if (outcome.usable) {
+    comp->SetDirection(aim);  // GatherIntentions: the movement aims
+    world->ResolveSkillUse(
+        *comp, slot, rule ? static_cast<int>(rule - world->context_skills_.data()) : -1);
+  }
+  for (Companion* c : world->object_manager_->GetAllCompanions()) {
+    for (int n = c->TakeUnreportedDowns(); n > 0; --n) world->last_downs_.push_back(c->GetId());
+  }
+  outcome.world = std::move(world);
+  return outcome;
 }
 
 BaseEnv::SkillPreview BaseEnv::PreviewSkill(const Companion& caster, int slot,
@@ -1779,8 +1829,10 @@ void BaseEnv::ClearEffects() {
 // =============================================================================
 
 Snapshot BaseEnv::SaveSnapshot() const {
-  // Between two steps: timers set during one are kept as n + 1
-  assert(!in_step_ && "SaveSnapshot during a step");
+  // Between two steps: timers set during one are kept as n + 1, so a state
+  // saved inside a step would load with them one step too long (a Step that
+  // threw is not inside one: it aborts, see AbortStep)
+  if (in_step_) throw std::logic_error("SaveSnapshot during a step");
   Snapshot snap;
 
   // Grid dimensions

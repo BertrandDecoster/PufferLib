@@ -653,6 +653,10 @@ TEST(TestZoneBecomesTakesTheTablesFieldsAndBurnsOut) {
   ASSERT_TRUE(Has(env, cook, "burning"));
   ASSERT_EQ(cook->GetHealth(), 9);
 
+  // The report says which cells caught fire, in row-major order (the
+  // disconnected oil cell is not among them)
+  ASSERT_EQ(r.cells.size(), kitchen.size());
+  for (size_t i = 0; i < kitchen.size(); ++i) ASSERT_TRUE(r.cells.at(i) == kitchen.at(i));
   for (Position p : kitchen) {
     const BaseEnv::CellTag z = env.GetCellTag(p);
     ASSERT_EQ(z.tag, Id(env, "burning"));
@@ -1337,6 +1341,285 @@ TEST(TestAClonedWorldResolvesTheSameReactions) {
   ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
   ASSERT_EQ(clone->GetLastDefeats().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastTagsApplied().size(), clone->GetLastTagsApplied().size());
+}
+
+// =============================================================================
+// A reaction's zone change
+// =============================================================================
+
+// Only a spread with a zone_becomes changes cells: a reaction on the agent
+// alone, or a spread that keeps the region's zone, reports none.
+TEST(TestOnlyAZoneBecomesReportsCells) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("oil", "burning", "burning").Spreads().r,
+                            Rule("wet", "chilled", "stunned").r}),
+          "reactions");
+  GiveBolt(env, 0, "fireball", "burning");
+  Place(env, 0, {2, 1});
+  Agent* gob = AddEnemy(env, {2, 4});
+  SetZones(env, {{2, 4}, {2, 5}}, "oil");
+  Agent* imp = AddEnemy(env, {6, 6});
+  Require(env.ApplyTagTo(imp->GetId(), "wet", kPermanentTag), "wet");
+  Require(env.ApplyTagTo(imp->GetId(), "chilled", kPermanentTag), "chilled: reacts");
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastReactions().at(0).cells.empty());  // The imp alone
+  env.Step(With(env, 0, Use(MovementAction::Right)));
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastReactions().at(0).trigger, gob->GetId());
+  ASSERT_TRUE(env.GetLastReactions().at(0).spread);
+  ASSERT_TRUE(env.GetLastReactions().at(0).cells.empty());  // Still oil
+  ASSERT_EQ(env.GetCellTag({2, 5}).tag, Id(env, "oil"));
+}
+
+// =============================================================================
+// Outcome previews: the use resolved on a clone
+// =============================================================================
+
+// The kitchen of TestASavedWorldPlaysTheSameReactions, with every rule at
+// work in one fireball: it defeats the gob (weak to (oil, burning)) on the
+// oil, which spreads the reaction over the oil (the imp is immune to
+// burning; the pal burns; the cook, a companion weak to (oil, burning), is
+// defeated by the result: it goes down) and sets it ablaze (zone_becomes).
+// The fireball also lands "scorched", a tag nothing interned yet. A chilled
+// frosty on the lake (wet + chilled -> stunned, a tag status). Returns the
+// env after a first step of Stays: everyone standing on a zone carries its
+// tag (the zones landed), so the next step's zone landings set nothing off.
+struct Kitchen {
+  std::unique_ptr<SynchroEnv> env;
+  ObjectId caster = kInvalidObjectId, cook = kInvalidObjectId, gob = kInvalidObjectId;
+  ObjectId imp = kInvalidObjectId, pal = kInvalidObjectId;
+};
+static Kitchen MakeKitchen() {
+  Kitchen k;
+  k.env = std::make_unique<SynchroEnv>(10, 10, 2, 1, 0, 42);
+  SynchroEnv& env = *k.env;
+  MakeArena(env);
+  Require(env.SetReactions({Rule("oil", "burning", "burning").Hurts(1).Spreads("burning").r,
+                            Rule("wet", "chilled", "stunned").r}),
+          "reactions");
+  Require(env.SetTagStatuses({{"stunned", StatusType::Stunned, 2}}), "statuses");
+  Require(env.DefineZone("burning", Zone().Lasts(3).Then("ash").Hurts(1).def), "burning");
+  Require(env.DefineZone("ash", Zone().Lasts(2).def), "ash");
+  SkillConfig fireball;
+  fireball.name = "fireball";
+  fireball.targeting = SkillTargeting::Projectile;
+  fireball.range = 3;
+  // "scorched" first: the gob is defeated by "burning", and then gets nothing
+  fireball.tags = {{"scorched", 2}, {"burning", kPermanentTag}};
+  env.GetMutableSkillBook().Define(fireball);
+  k.caster = Place(env, 0, {2, 1})->GetId();
+  Require(env.SetCompanionSkill(k.caster, 0, "fireball"), "fireball");
+  k.cook = Place(env, 1, {2, 6})->GetId();
+  k.gob = AddEnemy(env, {2, 4})->GetId();
+  k.imp = AddEnemy(env, {2, 5})->GetId();
+  k.pal = AddEnemy(env, {3, 5})->GetId();
+  Agent* frosty = AddEnemy(env, {5, 5}, 6);
+  Require(env.SetWeaknesses(k.gob, {{"oil", "burning"}}), "gob weak_to");
+  Require(env.SetWeaknesses(k.cook, {{"oil", "burning"}}), "cook weak_to");
+  Require(env.SetImmunities(k.imp, {"burning"}), "immune");
+  Require(env.ApplyTagTo(frosty->GetId(), "chilled", kPermanentTag), "chilled");
+  SetZones(env, {{2, 4}, {2, 5}, {2, 6}, {3, 5}}, "oil");
+  SetZones(env, {{5, 5}}, "wet");
+  env.Step(Stays(env));
+  return k;
+}
+
+// The reports of `env` (its GetLast*), the landings from `first_landing` on,
+// by names and agent indices
+static std::string ReportTrace(const BaseEnv& env, size_t first_landing = 0) {
+  std::ostringstream out;
+  for (const auto& u : env.GetLastSkillUses()) {
+    out << "use " << Idx(env, u.caster) << " " << u.skill << " " << u.slot << " "
+        << u.target.row << "," << u.target.col << ":";
+    for (const auto& a : u.affected) out << " " << Idx(env, a.id) << "/" << a.effects;
+    out << "\n";
+  }
+  const auto& landings = env.GetLastTagsApplied();
+  for (size_t i = first_landing; i < landings.size(); ++i) {
+    const auto& t = landings[i];
+    out << "tag " << Idx(env, t.agent) << " " << Name(env, t.tag) << " " << t.duration << " "
+        << Idx(env, t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
+        << static_cast<int>(t.kind) << " " << t.reaction << "\n";
+  }
+  for (const auto& r : env.GetLastReactions()) {
+    out << "reaction " << r.rule << " " << Idx(env, r.trigger) << " " << Name(env, r.tag) << " "
+        << Idx(env, r.source) << " " << r.cause << " " << static_cast<int>(r.kind) << " "
+        << r.spread << ":";
+    for (const auto& o : r.affected) {
+      out << " " << Idx(env, o.agent) << "/" << o.result_landed << "/" << o.defeated << "/"
+          << o.damage;
+    }
+    out << " cells";
+    for (const Position& p : r.cells) out << " " << p.row << "," << p.col;
+    out << "\n";
+  }
+  for (const auto& d : env.GetLastDefeats()) {
+    out << "defeat " << Idx(env, d.agent) << " " << Name(env, d.zone) << " " << Name(env, d.tag)
+        << " " << Idx(env, d.source) << " " << d.cause << " " << static_cast<int>(d.kind) << " "
+        << d.reaction << "\n";
+  }
+  for (ObjectId id : env.GetLastDowns()) out << "down " << Idx(env, id) << "\n";
+  for (const auto& r : env.GetLastRevives()) {
+    out << "revive " << Idx(env, r.reviver) << " " << Idx(env, r.revived) << " " << r.health << "\n";
+  }
+  return out.str();
+}
+
+// The preview predicts exactly what the next step then does when that use is
+// its only change: the same skill use, landings, reactions (the oil catching
+// fire included), defeats (one through a weakness to the fireball's own tag,
+// one through a result) and downs, field by field. The step also lands the
+// zones on those standing on them first (re-landings here, setting nothing
+// off): its landings are the preview's after those.
+TEST(TestAnOutcomePreviewIsWhatTheStepDoes) {
+  Kitchen k = MakeKitchen();
+  SynchroEnv& env = *k.env;
+  const auto* caster = dynamic_cast<const Companion*>(env.GetObjectManager().GetActor(k.caster));
+  const Direction facing = caster->GetDirection();
+  const BaseEnv::SkillOutcome outcome = env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
+  ASSERT_TRUE(outcome.usable);
+  ASSERT_TRUE(outcome.world != nullptr);
+  const BaseEnv& world = *outcome.world;
+  // The zone landings the step makes before the skills: a clone stepped
+  // without the use
+  std::unique_ptr<BaseEnv> quiet = env.Clone();
+  quiet->Step(Stays(*quiet));
+  const size_t zone_landings = quiet->GetLastTagsApplied().size();
+  ASSERT_TRUE(zone_landings > 0);
+  ASSERT_TRUE(quiet->GetLastReactions().empty());
+  ASSERT_TRUE(quiet->GetLastDefeats().empty());
+
+  ASSERT_TRUE(caster->GetDirection() == facing);  // The preview aimed a clone
+  env.Step(With(env, 0, Use(MovementAction::Right)));
+  const std::string expected = ReportTrace(env, zone_landings);
+  const std::string got = ReportTrace(world);
+  if (got != expected) {
+    throw std::runtime_error("the preview differs:\n" + got + "--- the step ---\n" + expected);
+  }
+  // Everything this test is about happened
+  ASSERT_EQ(world.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(world.GetLastReactions().size(), static_cast<size_t>(1));
+  const BaseEnv::ReactionReport& r = world.GetLastReactions().at(0);
+  ASSERT_TRUE(r.spread);
+  ASSERT_EQ(r.cells.size(), static_cast<size_t>(4));  // The oil catches fire
+  bool immune = false;
+  for (const auto& o : r.affected) immune = immune || !o.result_landed;
+  ASSERT_TRUE(immune);  // The imp
+  ASSERT_EQ(world.GetLastDefeats().size(), static_cast<size_t>(2));
+  ASSERT_TRUE(world.GetLastDefeats().at(0).kind == TagSource::Skill);     // The gob
+  ASSERT_TRUE(world.GetLastDefeats().at(1).kind == TagSource::Reaction);  // The cook
+  ASSERT_EQ(world.GetLastDowns().size(), static_cast<size_t>(1));
+  ASSERT_EQ(world.GetLastDowns().at(0), k.cook);
+  ASSERT_EQ(world.GetCellTag({3, 5}).tag, world.GetTagTable().Find("burning"));
+}
+
+// A preview changes nothing: the env's state (its snapshot), its reports,
+// its tag table (the fireball's "scorched" is interned by the clone only)
+TEST(TestAnOutcomePreviewChangesNothing) {
+  Kitchen k = MakeKitchen();
+  SynchroEnv& env = *k.env;
+  const std::vector<uint8_t> before = env.SaveSnapshot().Serialize();
+  const std::string reports = ReportTrace(env);
+  const int tags = env.GetTagTable().Size();
+  ASSERT_EQ(Id(env, "scorched"), kInvalidTag);
+  const BaseEnv::SkillOutcome outcome = env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
+  ASSERT_TRUE(outcome.usable);
+  ASSERT_TRUE(env.SaveSnapshot().Serialize() == before);
+  ASSERT_EQ(ReportTrace(env), reports);
+  ASSERT_EQ(env.GetTagTable().Size(), tags);
+  ASSERT_EQ(Id(env, "scorched"), kInvalidTag);
+  ASSERT_TRUE(outcome.world->GetTagTable().Find("scorched") != kInvalidTag);
+  // And the env still plays as if never previewed
+  std::unique_ptr<BaseEnv> never = env.Clone();
+  env.Step(With(env, 0, Use(MovementAction::Right)));
+  never->Step(With(*never, 0, Use(MovementAction::Right)));
+  ASSERT_EQ(Trace(env), Trace(*never));
+}
+
+// An unusable use (a stunned caster, a disabled slot, a downed caster, a
+// skill cooling down) resolves nothing: empty reports. An id naming no
+// companion gives no world.
+TEST(TestAnOutcomePreviewOfAnUnusableSkillIsEmpty) {
+  Kitchen k = MakeKitchen();
+  SynchroEnv& env = *k.env;
+  auto empty = [](const BaseEnv::SkillOutcome& o) {
+    return o.world && o.world->GetLastSkillUses().empty() &&
+           o.world->GetLastTagsApplied().empty() && o.world->GetLastReactions().empty() &&
+           o.world->GetLastDefeats().empty() && o.world->GetLastDowns().empty();
+  };
+  BaseEnv::SkillOutcome o = env.PreviewSkillOutcome(k.caster, 1, Direction::Right);
+  ASSERT_FALSE(o.usable);  // Slot 1 is not enabled yet
+  ASSERT_TRUE(empty(o));
+  ASSERT_TRUE(env.PreviewSkillOutcome(k.gob, 0, Direction::Right).world == nullptr);
+  ASSERT_TRUE(env.PreviewSkillOutcome(12345, 0, Direction::Right).world == nullptr);
+
+  Agent* caster = dynamic_cast<Agent*>(env.GetMutableObjectManager().GetActor(k.caster));
+  caster->ApplyStatus(StatusType::Stunned, 1);
+  o = env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
+  ASSERT_FALSE(o.usable);
+  ASSERT_TRUE(empty(o));
+  caster->ClearStatus(StatusType::Stunned);
+
+  auto* comp = dynamic_cast<Companion*>(caster);
+  comp->SetCooldown(0, 2);
+  o = env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
+  ASSERT_FALSE(o.usable);
+  ASSERT_TRUE(empty(o));
+  comp->SetCooldown(0, 0);
+
+  // A down between two steps is the next step's report, not the preview's
+  env.SpawnEffect("kill", EffectTarget::AtCell({2, 1}));
+  ASSERT_TRUE(comp->IsDowned());
+  o = env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
+  ASSERT_FALSE(o.usable);
+  ASSERT_TRUE(empty(o));
+  env.Step(Stays(env));
+  ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
+}
+
+// =============================================================================
+// A step that throws
+// =============================================================================
+
+// A SynchroEnv whose PreStep throws once armed
+class ThrowingEnv : public SynchroEnv {
+ public:
+  using SynchroEnv::SynchroEnv;
+  bool armed = false;
+
+ protected:
+  void PreStep() override {
+    if (armed) throw std::runtime_error("PreStep failed");
+    SynchroEnv::PreStep();
+  }
+};
+
+// The env is between two steps again: it saves, and a timer set now is not
+// taken for one set inside a step (kept as n + 1).
+TEST(TestAStepThatThrowsLeavesTheStep) {
+  ThrowingEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Require(env.DefineZone("burning", Zone().Lasts(2).def), "burning");
+  Agent* a = Place(env, 0, {3, 3});
+  env.armed = true;
+  bool threw = false;
+  try {
+    env.Step(Stays(env));
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+  env.armed = false;
+  env.SaveSnapshot();  // It would throw inside a step
+  Require(env.SetCellTag({4, 4}, "burning"), "zone");
+  ASSERT_EQ(env.GetCellTag({4, 4}).steps, 2);
+  a->ApplyStatus(StatusType::Rooted, 2);
+  ASSERT_EQ(a->GetStatuses().at(0).duration, 2);
+  env.Step(Stays(env));
+  env.Step(Stays(env));
+  ASSERT_EQ(env.GetCellTag({4, 4}).tag, kInvalidTag);  // Its 2 next steps
+  ASSERT_FALSE(a->IsRooted());
 }
 
 // =============================================================================

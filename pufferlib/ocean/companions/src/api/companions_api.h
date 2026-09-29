@@ -6,7 +6,7 @@
 // =============================================================================
 // Versioning
 // =============================================================================
-// companions_version() is "1.4.0". 1.1 changed struct layouts
+// companions_version() is "1.5.0". 1.1 changed struct layouts
 // (Companions_AgentState, Companions_Event, Companions_StepResult): consumers
 // must be rebuilt against this header, never mixed with a 1.0 DLL or header.
 // 1.2 removed the legacy generic companion cast (its on/off setter and
@@ -52,6 +52,44 @@
 // earlier 1.4.0 commits of this branch are NOT compatible with this header
 // either, even when they load: the struct sizes changed
 // (Companions_SkillPreview, Companions_SkillUseInfo). Rebuild both sides.
+// 1.5 made the env's rules readable as data, and changed a struct layout
+// (Companions_Event: tag_kind, tag_reaction, report_index): consumers must
+// rebuild against this header. The rest is additive:
+// - report queries with a source (Companions_ReportSource: the last step's,
+//   or the last outcome preview's), never cut by the event cap: skill uses
+//   (companions_get_skill_use*; companions_get_last_skill_use* stay, equal
+//   to the LastStep source), tag landings (Companions_TagLanding: cause and
+//   Companions_TagSource kind, the reaction a result comes from, the zone
+//   damage dealt), reactions (Companions_ReactionInfo: the rule and its tags,
+//   the trigger, the affected agents with their outcomes, and the cells a
+//   zone_becomes changed: companions_get_reaction_cell), defeats
+//   (Companions_DefeatInfo) and downs; see "Reports" below for the landing
+//   order (immunity, the tag and its status, weakness, reaction, zone damage);
+// - companions_preview_skill_outcome: a use resolved on a copy of the env,
+//   its reports read with Companions_Report_Preview;
+// - the level data, read-only: the zone table (companions_get_zone_def*,
+//   companions_find_zone_def), a cell's zone with its remaining steps
+//   (companions_get_cell_zone), the reaction rules, the tag statuses, each
+//   agent's weaknesses and immunities;
+// - events Companions_Event_ReactionFired (19) and _AgentDefeated (20);
+//   TagApplied's tag_kind / tag_reaction (a reaction's result no longer
+//   reads as its caster's skill landing it) and health_amount (the zone
+//   damage it dealt);
+// - snapshot v7 through the existing load / save functions (binary and
+//   JSON): the zone table, zones with their remaining steps, successor and
+//   damage, the reactions, the tag statuses, weaknesses and immunities.
+// Behaviour changes in 1.5: every tag landing (a skill's, a zone's, a
+// reaction's result, companions_apply_tag's) goes through the level's rules
+// (the landing order above); companions_apply_tag and companions_set_cell_tag
+// refuse a duration above 1000000 (the env's timer ceiling), and
+// companions_apply_tag an agent immune to the tag; companions_set_cell_tag
+// takes the zone's steps, successor and damage from the level's zone table
+// (the defaults for a tag it does not define: permanent, none, 0); a JSON
+// snapshot with an unknown root or agent key, or a non-integer where an
+// integer goes (a bool, a float, a number out of range, a negative RNG
+// state), is rejected; a step that throws sets the error and returns
+// (out_result untouched) instead of letting the exception cross the C
+// boundary.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -65,7 +103,7 @@
 // =============================================================================
 // - Each Companions_Env instance is NOT thread-safe, const getters included
 //   (some fill internal caches: companions_get_tag_name,
-//   companions_get_snapshot_size). Do not call functions on the same
+//   companions_get_snapshot_size, companions_preview_skill_outcome). Do not call functions on the same
 //   environment from multiple threads simultaneously, even read-only ones.
 // - Different Companions_Env instances can be used concurrently from
 //   different threads.
@@ -84,7 +122,11 @@
 // =============================================================================
 // Currently implemented events, in this order within a step: the movement
 // events (AgentMoved / AgentBlocked, per agent in agent order), then
-// AgentDowned, AgentRevived, SkillUsed, TagApplied, EpisodeEnd:
+// AgentDowned, AgentRevived, SkillUsed, TagApplied, ReactionFired,
+// AgentDefeated, EpisodeEnd. Since 1.5, report_index gives a SkillUsed,
+// TagApplied, ReactionFired or AgentDefeated event's entry in its report
+// query (Companions_Report_LastStep, see "Reports"), -1 for the others;
+// tag_reaction is -1 but where said below:
 // - Companions_Event_AgentMoved: Agent moved to a new position (by walking,
 //   or by a skill: a teleport, dash, push or pull)
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
@@ -106,18 +148,38 @@
 //   subject_id = caster, position = the skill's centre (the landing cell for
 //   a self-targeted skill such as teleport), effect_id = the slot (0-based),
 //   effect_name = skill name.
-// - Companions_Event_TagApplied: a tag landed on an agent (from a skill or a
-//   zone, see companions_set_cell_tag): subject_id = agent, position = its
-//   cell after the step, effect_id = the tag id (see companions_get_tag_name),
-//   effect_name = tag name, status_duration = duration (-1 = permanent),
-//   health_source_id = caster (-1 for a zone), tag_fresh = the agent did not
-//   carry the tag just before this landing.
+// - Companions_Event_TagApplied: a tag landed on an agent (from a skill, a
+//   zone (see companions_set_cell_tag) or a reaction's result), in landing
+//   order: subject_id = agent, position = its cell after the step, effect_id
+//   = the tag id (see companions_get_tag_name), effect_name = tag name,
+//   status_duration = duration (-1 = permanent), health_source_id = caster
+//   (-1 for a zone; a result: its trigger's source), tag_fresh = the agent
+//   did not carry the tag just before this landing. Since 1.5: tag_kind =
+//   what landed it (Companions_TagSource: a result is Reaction, so a host
+//   never takes it for its caster's skill landing it and reacts again),
+//   tag_reaction = a result's reaction (its companions_get_reaction index),
+//   health_amount = the zone damage this landing dealt (0 when none). The
+//   host's landings (companions_apply_tag) are not events: read them in the
+//   reports (kind Host).
+// - Companions_Event_ReactionFired: a reaction fired (since 1.5):
+//   subject_id = the agent the triggering tag landed on, position = its cell
+//   after the step, effect_id = the rule's index (companions_get_reaction_rule),
+//   effect_name = the rule's result, health_source_id / tag_kind = the
+//   triggering landing's source and kind. Whom it affected and the cells it
+//   changed: companions_get_reaction (report_index).
+// - Companions_Event_AgentDefeated: a weakness (P, S) defeated an agent
+//   (since 1.5): subject_id = the agent, position = its cell after the step,
+//   effect_id / effect_name = the tag S (id and name), health_source_id /
+//   tag_kind / tag_reaction = the landing of S's source, kind and reaction.
+//   A companion goes down (its AgentDowned too), another agent dies. The
+//   zone P: companions_get_defeat (report_index).
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
 //   reported once per false->true transition of done, on the step where it
 //   happens: the steps a host keeps playing afterwards (done stays true) do
 //   not repeat it; reset and snapshot loads start a new episode.
 //   effect_id = the Companions_EndReason (see companions_get_end_reason).
-// A step reports at most Companions_MAX_EVENTS events, in the order above.
+// A step reports at most Companions_MAX_EVENTS events, in the order above
+// (the report queries are never cut: they are the whole truth).
 // When there are more, the ones past the cap are dropped, except EpisodeEnd:
 // a step that ends the episode always reports it, as the last event (the
 // others are then cut to Companions_MAX_EVENTS - 1). events_dropped counts
@@ -419,7 +481,18 @@ typedef enum {
   Companions_Event_TagApplied = 16,  // See "Event System" at the top
   Companions_Event_AgentDowned = 17,  // A companion went down (subject_id, position; see "Event System")
   Companions_Event_AgentRevived = 18,  // A downed companion got up (see "Event System")
+  Companions_Event_ReactionFired = 19,  // A reaction fired (see "Event System"). Since 1.5
+  Companions_Event_AgentDefeated = 20,  // A weakness defeated an agent (see "Event System"). Since 1.5
 } Companions_EventType;
+
+// What landed a tag (Companions_TagLanding.kind, Companions_Event.tag_kind).
+// Since 1.5
+typedef enum {
+  Companions_TagSource_Skill = 0,     // A skill's tags: source = the caster, cause = the skill
+  Companions_TagSource_Zone = 1,      // A zone: source -1, cause "zone"
+  Companions_TagSource_Reaction = 2,  // A reaction's result: source and cause of the landing that triggered it
+  Companions_TagSource_Host = 3,      // companions_apply_tag: source -1, cause "host"
+} Companions_TagSource;
 
 // Why an episode ended (companions_get_end_reason, EpisodeEnd's effect_id)
 typedef enum {
@@ -468,6 +541,19 @@ typedef struct {
 
   // For TagApplied (health_source_id = caster, -1 for a zone):
   bool tag_fresh;  // The agent did not carry the tag just before this landing
+  // Since 1.5. For TagApplied, ReactionFired and AgentDefeated (see "Event
+  // System"): what landed the tag (for ReactionFired: the triggering tag; for
+  // AgentDefeated: the tag that defeated it), and, when that tag is a
+  // reaction's result, that reaction's index in companions_get_reaction
+  // (-1: not a result; always -1 for ReactionFired and the other events)
+  Companions_TagSource tag_kind;
+  int32_t tag_reaction;
+  // Since 1.5: this event's entry in its uncapped report query, read with
+  // Companions_Report_LastStep: SkillUsed -> companions_get_skill_use,
+  // TagApplied -> companions_get_tag_landing, ReactionFired ->
+  // companions_get_reaction, AgentDefeated -> companions_get_defeat; -1 for
+  // the other events
+  int32_t report_index;
 
   // For EpisodeEnd (effect_id = the Companions_EndReason):
   bool episode_success;
@@ -699,6 +785,10 @@ COMPANIONS_API bool companions_remove_tag(Companions_Env* env, Companions_Object
 // Zones: one tag per cell ("" or NULL clears), landed on whoever stands there
 // after each step's movement, and on whoever a skill moves there, with
 // `duration` (-1 = permanent); each landing is a Companions_Event_TagApplied.
+// Since 1.5 the zone's other fields (its steps, its successor, its damage per
+// landing) come from the level's zone table for that tag (see
+// companions_find_zone_def; the defaults when it does not define the tag:
+// permanent, no successor, harmless); companions_get_cell_zone reads them.
 // False out of bounds, for a tag over 31 bytes, or for a duration of 0,
 // below -1 or above 1000000 with a tag.
 COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, int32_t col, const char* tag, int32_t duration);
@@ -891,6 +981,291 @@ COMPANIONS_API int32_t companions_get_last_skill_use_count(const Companions_Env*
 // ("Skill use index out of range").
 COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int32_t index,
                                                   Companions_SkillUseInfo* out);
+
+// =============================================================================
+// Reports: tag landings, reactions, defeats, downs (since 1.5)
+// =============================================================================
+//
+// What the env's rules did, as data and never cut (unlike the events, capped
+// at Companions_MAX_EVENTS). Every tag landing (a skill's, a zone's, a
+// reaction's result, the host's companions_apply_tag) resolves in this order:
+// 1. immunity: an agent immune to the tag gets nothing (no report);
+// 2. the tag lands (a Companions_TagLanding) with the status the level's tag
+//    statuses bind to it;
+// 3. weakness: the tag is S of one of the agent's (P, S) and the zone of the
+//    cell it stands on provides P: defeated (a Companions_DefeatInfo: an
+//    agent dies, a companion goes down), and it gets nothing more;
+// 4. reaction (never for a result): the first of the level's rules pairing
+//    the tag with one the agent carries fires (a Companions_ReactionInfo):
+//    its affected agents (the zone region's when it spreads) lose the
+//    originals not kept, get the result (a landing of kind Reaction, through
+//    steps 1-3: a result can defeat) and the damage; then a spread region
+//    becomes the rule's zone_becomes (the reaction's cells);
+// 5. a zone's landing then deals the zone's damage (Companions_TagLanding.
+//    damage), if the agent is still affectable.
+// Reports come in the order things happened; a landing's and a defeat's
+// reaction index point into the same source's reactions.
+//
+// Two sources hold reports, read by the same functions:
+// - Companions_Report_LastStep: the env's own: the last step's, plus the
+//   host's landings since (companions_apply_tag: kind Host, with what they
+//   set off; no events). The next step, a reset or a snapshot load empties
+//   them. Its skill uses are those of companions_get_last_skill_use*.
+// - Companions_Report_Preview: the last companions_preview_skill_outcome's,
+//   until the next outcome preview, step, reset or snapshot load (a host
+//   change in between does not update it: preview again). Empty before any.
+// Names (tags, causes) are copied in: they always fit (31 bytes at most).
+typedef enum {
+  Companions_Report_LastStep = 0,
+  Companions_Report_Preview = 1,
+} Companions_ReportSource;
+
+// One tag landing
+typedef struct {
+  Companions_ObjectId agent;
+  char tag[Companions_SKILL_NAME_LEN];
+  int32_t duration;  // Steps, -1 = permanent (a reaction's result always is)
+  // The caster, -1 for a zone or the host; a result: the source of the
+  // landing that triggered its reaction
+  Companions_ObjectId source;
+  // The skill's name, "zone" or "host"; a result: the cause of the landing
+  // that triggered its reaction
+  char cause[Companions_SKILL_NAME_LEN];
+  Companions_TagSource kind;
+  int32_t reaction;  // A result (kind Reaction): its reaction's index; else -1
+  // The agent did not carry the tag just before (a result: before its
+  // reaction removed the originals)
+  bool fresh;
+  // The zone damage this landing dealt (the zone's, before Marked); 0 when
+  // none: not a zone's landing, a harmless zone, an agent a weakness defeated
+  // or a reaction's damage downed or killed
+  int32_t damage;
+} Companions_TagLanding;
+
+// One reaction that fired
+typedef struct {
+  // The level's rule (companions_get_reaction_rule index) and its tags
+  int32_t rule;
+  char a[Companions_SKILL_NAME_LEN];
+  char b[Companions_SKILL_NAME_LEN];
+  char result[Companions_SKILL_NAME_LEN];
+  Companions_ObjectId trigger;          // The agent the triggering tag landed on
+  char tag[Companions_SKILL_NAME_LEN];  // The triggering tag (a or b)
+  // The triggering landing's source, cause and kind (never Reaction)
+  Companions_ObjectId source;
+  char cause[Companions_SKILL_NAME_LEN];
+  Companions_TagSource kind;
+  bool spread;  // Over the trigger's zone region (else the trigger alone)
+  // The agents it affected, in agent-index order (the trigger included,
+  // unless a weakness defeated it), each with: the result landed on it
+  // (false: immune), the result defeated it (a weakness), the rule's damage
+  // it took (before Marked; 0 for a defeated agent). The first
+  // Companions_MAX_AGENTS: affected_count; affected_total counts them all.
+  Companions_ObjectId affected[Companions_MAX_AGENTS];
+  bool affected_result_landed[Companions_MAX_AGENTS];
+  bool affected_defeated[Companions_MAX_AGENTS];
+  int32_t affected_damage[Companions_MAX_AGENTS];
+  int32_t affected_count;
+  int32_t affected_total;
+  // The zone the spread region became ("" when it kept its zone) and how
+  // many cells did (companions_get_reaction_cell); 0 without a change
+  char zone_becomes[Companions_SKILL_NAME_LEN];
+  int32_t cell_count;
+} Companions_ReactionInfo;
+
+// One agent a weakness (P, S) defeated: S landed on it while it stood on a
+// zone providing P
+typedef struct {
+  Companions_ObjectId agent;
+  char zone[Companions_SKILL_NAME_LEN];  // P
+  char tag[Companions_SKILL_NAME_LEN];   // S
+  // The landing of S: its source, cause, kind, and its reaction's index when
+  // S is a result (-1 otherwise)
+  Companions_ObjectId source;
+  char cause[Companions_SKILL_NAME_LEN];
+  Companions_TagSource kind;
+  int32_t reaction;
+} Companions_DefeatInfo;
+
+// Every count below is 0, and every getter false with `out` untouched, for a
+// null env ("Invalid environment"; a getter: "Invalid arguments", a null
+// `out` too) or a source that is not a Companions_ReportSource ("Invalid
+// report source"); a getter is also false for an index out of range ("Skill
+// use index out of range", "Tag landing index out of range", "Reaction index
+// out of range", "Defeat index out of range", "Down index out of range").
+// The skill uses (Companions_SkillUseInfo, as companions_get_last_skill_use)
+COMPANIONS_API int32_t companions_get_skill_use_count(const Companions_Env* env,
+                                                      Companions_ReportSource source);
+COMPANIONS_API bool companions_get_skill_use(const Companions_Env* env,
+                                             Companions_ReportSource source, int32_t index,
+                                             Companions_SkillUseInfo* out);
+// The tag landings, in the order they landed
+COMPANIONS_API int32_t companions_get_tag_landing_count(const Companions_Env* env,
+                                                        Companions_ReportSource source);
+COMPANIONS_API bool companions_get_tag_landing(const Companions_Env* env,
+                                               Companions_ReportSource source, int32_t index,
+                                               Companions_TagLanding* out);
+// The reactions, in the order they fired
+COMPANIONS_API int32_t companions_get_reaction_count(const Companions_Env* env,
+                                                     Companions_ReportSource source);
+COMPANIONS_API bool companions_get_reaction(const Companions_Env* env,
+                                            Companions_ReportSource source, int32_t index,
+                                            Companions_ReactionInfo* out);
+// Cell `cell_index` (0-based, below the reaction's cell_count) that reaction
+// `reaction_index` turned into its zone_becomes, in row-major order. False as
+// the getters, and for a cell index out of range ("Reaction cell index out of
+// range").
+COMPANIONS_API bool companions_get_reaction_cell(const Companions_Env* env,
+                                                 Companions_ReportSource source,
+                                                 int32_t reaction_index, int32_t cell_index,
+                                                 Companions_Position* out);
+// The defeats, in the order they happened
+COMPANIONS_API int32_t companions_get_defeat_count(const Companions_Env* env,
+                                                   Companions_ReportSource source);
+COMPANIONS_API bool companions_get_defeat(const Companions_Env* env,
+                                          Companions_ReportSource source, int32_t index,
+                                          Companions_DefeatInfo* out);
+// The downs, one companion id per down (as the AgentDowned events): the last
+// step's (a down between two steps, a host effect, is the next step's), or
+// those the previewed use caused.
+COMPANIONS_API int32_t companions_get_down_count(const Companions_Env* env,
+                                                 Companions_ReportSource source);
+COMPANIONS_API bool companions_get_down(const Companions_Env* env,
+                                        Companions_ReportSource source, int32_t index,
+                                        Companions_ObjectId* out);
+
+// What an outcome preview found (since 1.5); its reports are read with
+// Companions_Report_Preview.
+typedef struct {
+  // As Companions_SkillPreview.usable; false: nothing was resolved (empty reports)
+  bool usable;
+  int32_t skill_use_count;  // 1 when usable, else 0
+  int32_t tag_landing_count;
+  int32_t reaction_count;
+  int32_t defeat_count;
+  int32_t down_count;
+} Companions_SkillOutcome;
+
+// What companion `agent` using its slot `slot` aimed `aim` would DO now,
+// reports included: the use is resolved on a copy of the env (it clones the
+// env: meant for a UI, not the RL hot path) by the step's own code, as the
+// next step would resolve it were it the step's only change: no movement, no
+// zone landing on those who stand on it, no enemy acting, no end-of-step
+// timers. Nothing in the env changes (its state, reports and snapshot stay
+// as they were; no tag is interned). The reports replace the previous
+// preview's (Companions_Report_Preview): the use, its tag landings (the
+// skill's, a zone's where a skill motion lands someone, the reactions'
+// results), its reactions (with the cells a zone_becomes changed), its
+// defeats and the downs it caused. The real step may differ as
+// companions_preview_skill says, and it also lands the zones on those
+// standing on them before the skills (reported first: a tag they did not
+// carry yet can react or defeat before the use). False, `out` and the
+// preview reports untouched, for the arguments companions_preview_skill
+// refuses (same errors).
+COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
+                                                     Companions_ObjectId agent, int32_t slot,
+                                                     Companions_Direction aim,
+                                                     Companions_SkillOutcome* out);
+
+// =============================================================================
+// Level data: zones, reactions, tag statuses, weaknesses, immunities (since 1.5)
+// =============================================================================
+//
+// Read-only: a level sets them through its snapshot (JSON v7: "zones",
+// "reactions", "tag_statuses", per agent "weak_to" / "immune"); a snapshot
+// load replaces them, a reset keeps the zone table, reactions and tag
+// statuses and drops the agents' weaknesses and immunities (new agents).
+// Every count is 0 and every getter false with `out` untouched for a null
+// env ("Invalid environment"; a getter: "Invalid arguments", a null `out`
+// too), and a getter for an index out of range (its error names it).
+
+// A zone of the level's zone table: what a zone created by name gets
+// (companions_set_cell_tag, a successor, a reaction's zone_becomes)
+typedef struct {
+  char tag[Companions_SKILL_NAME_LEN];
+  int32_t duration;  // The tag's duration as it lands, -1 = permanent
+  int32_t steps;     // The zone's lifetime in steps, -1 = never expires
+  char then[Companions_SKILL_NAME_LEN];  // Its successor's tag ("" = none)
+  int32_t damage;    // Per landing
+} Companions_ZoneDefInfo;
+
+// The zone table, sorted by tag (byte order) ("Zone index out of range")
+COMPANIONS_API int32_t companions_get_zone_def_count(const Companions_Env* env);
+COMPANIONS_API bool companions_get_zone_def(const Companions_Env* env, int32_t index,
+                                            Companions_ZoneDefInfo* out);
+// The entry for `tag`. False for a null env, tag or out ("Invalid
+// arguments") or a tag the table does not define ("Unknown zone: <tag>"; a
+// zone of that tag gets the defaults: duration -1, steps -1, no successor,
+// damage 0).
+COMPANIONS_API bool companions_find_zone_def(const Companions_Env* env, const char* tag,
+                                             Companions_ZoneDefInfo* out);
+
+// A cell's zone as the cell holds it (its own copy, resolved when it was set)
+typedef struct {
+  bool has_zone;  // False: no zone (the rest "" / 0)
+  char tag[Companions_SKILL_NAME_LEN];
+  int32_t duration;  // As it lands, -1 = permanent
+  int32_t steps;     // The steps it still lasts (read between two steps), -1 = forever
+  char then[Companions_SKILL_NAME_LEN];  // What it becomes when it expires ("" = nothing)
+  int32_t damage;
+} Companions_CellZone;
+
+// False for a null env or out ("Invalid arguments") or a cell out of bounds
+// ("Position out of bounds").
+COMPANIONS_API bool companions_get_cell_zone(const Companions_Env* env, int32_t row, int32_t col,
+                                             Companions_CellZone* out);
+
+// A reaction rule of the level: two tags on one agent react into a third
+typedef struct {
+  char a[Companions_SKILL_NAME_LEN];
+  char b[Companions_SKILL_NAME_LEN];
+  char result[Companions_SKILL_NAME_LEN];
+  bool keep_a;  // a stays on the affected agents
+  bool keep_b;
+  int32_t damage;  // To each affected agent
+  bool spread;     // Over the trigger's zone region when that zone provides a or b
+  char zone_becomes[Companions_SKILL_NAME_LEN];  // What a spread region becomes ("" = unchanged)
+} Companions_ReactionRuleInfo;
+
+// In level order: the first matching rule fires ("Reaction rule index out of range")
+COMPANIONS_API int32_t companions_get_reaction_rule_count(const Companions_Env* env);
+COMPANIONS_API bool companions_get_reaction_rule(const Companions_Env* env, int32_t index,
+                                                 Companions_ReactionRuleInfo* out);
+
+// A tag that applies a status as it lands, for `steps` steps
+typedef struct {
+  char tag[Companions_SKILL_NAME_LEN];
+  Companions_StatusType status;
+  int32_t steps;
+} Companions_TagStatusInfo;
+
+// In level order ("Tag status index out of range")
+COMPANIONS_API int32_t companions_get_tag_status_count(const Companions_Env* env);
+COMPANIONS_API bool companions_get_tag_status(const Companions_Env* env, int32_t index,
+                                              Companions_TagStatusInfo* out);
+
+// An agent's weakness (P, S): S landing on it while it stands on a zone
+// providing P defeats it
+typedef struct {
+  char zone[Companions_SKILL_NAME_LEN];  // P
+  char tag[Companions_SKILL_NAME_LEN];   // S
+} Companions_Weakness;
+
+// An agent's weaknesses, and its immunities (tags that never land on it), in
+// the order its level lists them. Also 0 / false for an id naming no agent
+// ("Agent not found"); "Weakness index out of range" / "Immunity index out of
+// range". The immunity getter writes the tag into `out_tag`, a buffer of
+// Companions_SKILL_NAME_LEN bytes.
+COMPANIONS_API int32_t companions_get_agent_weakness_count(const Companions_Env* env,
+                                                           Companions_ObjectId agent);
+COMPANIONS_API bool companions_get_agent_weakness(const Companions_Env* env,
+                                                  Companions_ObjectId agent, int32_t index,
+                                                  Companions_Weakness* out);
+COMPANIONS_API int32_t companions_get_agent_immunity_count(const Companions_Env* env,
+                                                           Companions_ObjectId agent);
+COMPANIONS_API bool companions_get_agent_immunity(const Companions_Env* env,
+                                                  Companions_ObjectId agent, int32_t index,
+                                                  char* out_tag);
 
 // =============================================================================
 // Configuration Queries

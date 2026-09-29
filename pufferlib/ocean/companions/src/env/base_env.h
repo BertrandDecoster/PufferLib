@@ -340,6 +340,33 @@ class BaseEnv {
   // Computed whatever `usable` says (what the skill would do if it could).
   SkillPreview PreviewSkill(const Companion& caster, int slot, Direction aim) const;
 
+  // What `caster` using its slot `slot` aimed `aim` would DO now, reports
+  // included: the use is resolved on a clone of the env (Clone(); nothing in
+  // this env changes, nothing is interned here), by the step's own code for a
+  // use (ResolveSkillUse), as the next step would resolve it were it the
+  // step's only change: no movement, no zones landing on those who stand on
+  // them, no enemy acting, no end-of-step timers. The clone is mid-step
+  // around the use (in_step_, Agent::BeginStep), so what the use sets (a
+  // zone_becomes zone, a tag status, a root) is stored as the step stores it.
+  // The clone's reports are the use's: GetLastSkillUses (the use, or none when
+  // it is not usable), GetLastTagsApplied, GetLastReactions, GetLastDefeats,
+  // GetLastRevives and GetLastDowns (the downs the use caused, not those
+  // between steps still to report). Tag ids in them are the clone's (a skill's
+  // tags may not be interned in this env yet): read their names in the
+  // clone's GetTagTable().
+  // Costs a copy of the env: meant for a UI, not the RL hot path. The real
+  // step may differ as PreviewSkill says (everyone moves first, the zones
+  // land on those standing on them, the casters resolve in agent order).
+  struct SkillOutcome {
+    // As SkillPreview::usable; false: nothing was resolved (empty reports)
+    bool usable = false;
+    // The clone, as the use left it: mid-step, its timers not ticked (read
+    // its reports and state; do not step or save it). Null for an id naming
+    // no companion.
+    std::unique_ptr<BaseEnv> world;
+  };
+  SkillOutcome PreviewSkillOutcome(ObjectId caster, int slot, Direction aim) const;
+
   // Host primitives: land / remove a tag outside of a step. `duration` is a
   // step count (1..kMaxTimerSteps) or kPermanentTag; ApplyTagTo returns false
   // for any other (IsValidTimer), for an empty tag or one longer than
@@ -443,6 +470,10 @@ class BaseEnv {
     // Every agent it affected, in agent-index order (the trigger included,
     // unless a weakness defeated it: then possibly none)
     std::vector<ReactionOutcome> affected;
+    // The cells the spread region became the rule's zone_becomes, in
+    // row-major order (empty when the region kept its zone: no spread, or no
+    // zone_becomes), so a host knows the zone changed without diffing the grid
+    std::vector<Position> cells;
   };
   // `rule` indexes the current reactions: a SetReactions between the step and
   // the read makes it stale.
@@ -585,8 +616,9 @@ class BaseEnv {
   // zones with every field as their cell holds it; tags by name; downs,
   // max_downs; the context skills, always explicit, but for those the book
   // no longer allows: see GetContextSkills; the zone table, the reactions,
-  // the tag statuses and each agent's weaknesses / immunities). Meant
-  // between two steps (a zone's steps are then the steps to come).
+  // the tag statuses and each agent's weaknesses / immunities). Between two
+  // steps (a zone's steps are then the steps to come): std::logic_error
+  // inside one (a Step that threw is not: it aborts, AbortStep).
   virtual Snapshot SaveSnapshot() const;
 
   // Load state from a snapshot. The skill book is reset to the builtins, then
@@ -676,10 +708,15 @@ class BaseEnv {
   const ContextSkillRule* ActiveContextRule(const Companion& comp, int slot) const;
   // The one evaluation of a condition (a new condition: one more case)
   bool ContextHolds(ContextCondition condition, const Companion& comp) const;
-  // Uses the skill fixed by GatherIntentions (intended_skills_); sets the
-  // slot's cooldown only for an equipped skill. The SkillUse reports the
-  // effective skill's name.
+  // Uses the skill fixed by GatherIntentions (intended_skills_) through
+  // ResolveSkillUse.
   void ResolveSkills();         // After movement, in agent-index order
+  // One use, as the step resolves it (ResolveSkills, PreviewSkillOutcome):
+  // the skill of context rule `rule` (index in context_skills_), or the
+  // slot's equipped one for -1; UseSkill; the slot's cooldown only for an
+  // equipped skill; the SkillUse report (the effective skill's name). Nothing
+  // for a skill the book lacks.
+  void ResolveSkillUse(Companion& comp, int slot, int rule);
   // Where a skill use lands and whom it affects: steps 1-2 of UseSkill, the
   // one implementation of targeting (UseSkill and PreviewSkill both use it).
   struct SkillTargets {
@@ -762,6 +799,10 @@ class BaseEnv {
   // End of Step, after the agents' timers: every timed zone loses a step, and
   // an expired one becomes its successor (or nothing). Ends the step (in_step_).
   void TickZones();
+  // A Step that threw: between two steps again (in_step_ and the agents'
+  // Agent::AbortStep), its timers not ticked, so a later SaveSnapshot or
+  // timer set is not taken for one inside a step
+  void AbortStep();
   // `def` for `tag` on a cell: its steps as a step timer (n + 1 in a step),
   // its successor interned. Validated by the caller.
   CellTag ResolveZone(TagId tag, const ZoneDef& def);

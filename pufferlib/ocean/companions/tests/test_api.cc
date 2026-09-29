@@ -90,7 +90,7 @@ TEST(TestVersion) {
   // 1.2.2 made every timer tick at the end of a step; 1.3 added downs
   // (struct layouts changed); 1.4 added equipped_skills and AgentRevived
   // (struct layouts changed)
-  ASSERT_EQ(std::string(version), std::string("1.4.0"));
+  ASSERT_EQ(std::string(version), std::string("1.5.0"));
   std::cout << "  Version: " << version << std::endl;
 }
 
