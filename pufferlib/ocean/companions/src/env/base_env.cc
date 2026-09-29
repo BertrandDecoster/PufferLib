@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -64,7 +65,6 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       zone_defs_(other.zone_defs_),
       in_step_(other.in_step_),
       pending_zones_(other.pending_zones_),
-      intended_skills_(other.intended_skills_),
       max_downs_(other.max_downs_),
       context_skills_(other.context_skills_),
       reactions_(other.reactions_),
@@ -116,7 +116,6 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     reaction_affected_.clear();
     hit_agents_.clear();
     turn_.Clear();
-    intended_skills_ = other.intended_skills_;
     max_downs_ = other.max_downs_;
     context_skills_ = other.context_skills_;
     reactions_ = other.reactions_;
@@ -726,10 +725,10 @@ std::vector<Action> BaseEnv::LegalActions(int agent_idx) const {
 
 void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
   auto agents = object_manager_->GetAllAgents();
-  // Indexed like `agents`: ResolveSkills reads them by the same index, so
-  // nothing may add or remove agents between GatherIntentions and
-  // ResolveSkills (it falls back to the caster's id if something did).
-  intended_skills_.assign(agents.size(), IntendedSkill{});
+  // The intents phase: every skill use is planned here, from the world as
+  // the turn begins (nobody has moved yet), in agent-index order
+  // (turn_.plans, applied by ResolveSkills)
+  turn_.plan_count = 0;
   for (size_t i = 0; i < agents.size() && i < actions.size(); ++i) {
     Agent* agent = agents[i];
 
@@ -755,16 +754,16 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
     // A companion using a skill (its slot's effective one: a context rule's,
     // else the equipped one, kDefaultSkill when nothing else is there) stays
     // put: the movement only aims (Stay keeps the facing). A skill it cannot
-    // use is dropped and the move applies. The skill is fixed here, for
-    // ResolveSkills: what happens later in the step does not change it.
+    // use is dropped and the move applies. The use is planned here (its
+    // skill, cells and targets, its cooldown spent): what happens later in
+    // the step does not change the plan.
     if (decoded.interact != InteractAction::None) {
       if (Companion* comp = dynamic_cast<Companion*>(agent)) {
         const int slot = SkillSlotOf(decoded.interact);
         const ContextSkillRule* rule = nullptr;
         if (CanUseSkill(*comp, slot, rule)) {
-          intended_skills_[i] = {comp->GetId(), slot,
-                                 rule ? static_cast<int>(rule - context_skills_.data()) : -1};
           if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
+          AddSkillPlan(*comp, static_cast<int>(i), slot, RuleIndex(rule), comp->GetDirection());
           agent->SetIntention({MovementAction::Stay, decoded.interact});
           continue;
         }
@@ -951,6 +950,8 @@ void BaseEnv::ExecuteValidatedMovements() {
 
     if (from != to) {
       movements.push_back({agent->GetId(), from, to});
+      // Its own motion this turn (a forced move leaves a companion there)
+      if (in_step_) LedgerOf(*agent).moved_itself = true;
     }
   }
 
@@ -1044,6 +1045,10 @@ bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted()
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot) const {
   const ContextSkillRule* rule = nullptr;
   return CanUseSkill(comp, slot, rule);
+}
+
+int BaseEnv::RuleIndex(const ContextSkillRule* rule) const {
+  return rule ? static_cast<int>(rule - context_skills_.data()) : -1;
 }
 
 bool BaseEnv::CanUseSkill(const Companion& comp, int slot, const ContextSkillRule*& rule) const {
@@ -1753,10 +1758,21 @@ BaseEnv::LedgerEntry& BaseEnv::LedgerOf(Agent& agent) {
 }
 
 const BaseEnv::LedgerEntry* BaseEnv::FindLedger(const Agent& agent) const {
-  for (const LedgerEntry& e : turn_.ledger) {
+  const std::vector<LedgerEntry>& ledger = turn_.ledger;
+  const int index = agent.GetAgentIndex();  // Its entry when the indices are dense
+  if (index >= 0 && static_cast<size_t>(index) < ledger.size() &&
+      ledger[static_cast<size_t>(index)].agent == &agent) {
+    return &ledger[static_cast<size_t>(index)];
+  }
+  for (const LedgerEntry& e : ledger) {
     if (e.agent == &agent) return &e;
   }
   return nullptr;
+}
+
+bool BaseEnv::MovedItselfThisTurn(const Agent& agent) const {
+  const LedgerEntry* e = FindLedger(agent);
+  return e && e->moved_itself;
 }
 
 bool BaseEnv::IsDefeatedThisTurn(const Agent& agent) const {
@@ -1797,7 +1813,7 @@ bool BaseEnv::PlanRevive(Companion& ally, int health, const Companion& caster) {
   // As Companion::Revive will clamp it
   health = std::max(1, std::min(health, ally.GetMaxHealth()));
   e.touched = true;
-  // Casters resolve in agent-index order: an earlier one giving as much keeps it
+  // The uses hit in caster agent-index order: an earlier one giving as much keeps it
   if (e.reviver != kInvalidObjectId && health <= e.revive_health) return false;
   if (e.reviver != kInvalidObjectId) {
     // The earlier use keeps the ally in its affected, without Revive
@@ -1868,8 +1884,9 @@ void BaseEnv::ApplyTurnOutcomes() {
   effect_system_->CancelDeadSources();
 }
 
-std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const {
-  std::vector<Position> cells{centre};
+void BaseEnv::AreaCells(Position centre, SkillArea area, std::vector<Position>& cells) const {
+  cells.clear();
+  cells.push_back(centre);
   if (area == SkillArea::Cross) {
     // Priority order of the ring: up, right, down, left (vortex relies on it).
     for (Direction d : {Direction::Up, Direction::Right, Direction::Down, Direction::Left}) {
@@ -1879,60 +1896,206 @@ std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const 
       if (grid_->IsInBounds(p)) cells.push_back(p);
     }
   }
-  return cells;
 }
 
-// Sequential, by design: casters resolve one by one in agent-index order
-// (deterministic; earlier casters claim landings first), each from where it
-// stands NOW. So an earlier caster's push / pull can move a later caster before
-// it acts (its aim, range and area start from the new cell), and a caster
-// rooted earlier in this pass still resolves its own skill this step, even a
-// dash / teleport: whether it may use a skill was decided when intentions were
-// gathered, and the root blocks from the next step.
+// Simultaneous casters: every use was planned in the intents phase
+// (GatherIntentions: AddSkillPlan) from the world as the turn began, so a
+// caster aims from the cell it began the turn on, whoever moves it this
+// turn, and a caster rooted this turn still resolves its use (usability was
+// decided with the intentions; the root blocks from the next step).
+// Pass 1 is TEMPORARY (the one motion phase replaces it) and the only order
+// an outcome still depends on: two motions onto one cell (the lower caster
+// index first; a dash / teleport before any forced move), two forced moves on
+// one actor (added one after the other, from where the first left it).
 void BaseEnv::ResolveSkills() {
-  const std::vector<Agent*> agents = object_manager_->GetAllAgents();
-  for (size_t i = 0; i < agents.size(); ++i) {
-    Agent* agent = agents[i];
-    if (!agent->IsAffectable()) continue;
-    auto* comp = dynamic_cast<Companion*>(agent);
-    if (!comp) continue;
-    int slot = SkillSlotOf(agent->GetExecutedAction().interact);
-    if (slot < 0 || slot >= kEnabledSkillSlots) continue;
-    // The skill GatherIntentions fixed (whoever an earlier caster revived or
-    // downed since, the context read then holds): at the agent's index, else
-    // (the agents changed mid-step, which they must not) by the caster's id
-    auto matches = [&](const IntendedSkill& r) {
-      return r.caster == comp->GetId() && r.slot == slot &&
-             r.rule < static_cast<int>(context_skills_.size());
-    };
-    const IntendedSkill* intended =
-        i < intended_skills_.size() && matches(intended_skills_[i]) ? &intended_skills_[i] : nullptr;
-    if (!intended) {
-      for (const IntendedSkill& r : intended_skills_) {
-        if (matches(r)) {
-          intended = &r;
-          break;
-        }
-      }
+  const size_t count = turn_.plan_count;
+  // Pass 1: the motions, every caster's own first, then the pushes / pulls
+  for (size_t i = 0; i < count; ++i) CasterMotion(turn_.plans[i]);
+  for (size_t i = 0; i < count; ++i) AreaMotion(turn_.plans[i]);
+  // Pass 2: the hits, on the plans' cells as everyone now stands
+  for (size_t i = 0; i < count; ++i) UseSkill(turn_.plans[i]);
+}
+
+bool BaseEnv::PlanSkillUse(const Companion& caster, int slot, int rule, Direction aim,
+                           SkillPlan& plan) const {
+  const std::string& name = rule >= 0 ? context_skills_[static_cast<size_t>(rule)].skill
+                                      : caster.GetSkill(slot);
+  const SkillConfig* found = skills_.Find(name);
+  if (!found) return false;
+  plan.caster = caster.GetId();
+  plan.agent_index = caster.GetAgentIndex();
+  plan.slot = slot;
+  plan.rule = rule;
+  plan.skill = *found;  // Deliberate copy (see SkillPlan::skill)
+  plan.moved.clear();
+  plan.did.clear();
+  ResolveSkillTargets(caster, plan.skill, aim, plan);
+  return true;
+}
+
+bool BaseEnv::AddSkillPlan(Companion& comp, int agent_index, int slot, int rule, Direction aim) {
+  std::vector<SkillPlan>& plans = turn_.plans;
+  if (turn_.plan_count == plans.size()) plans.emplace_back();
+  SkillPlan& plan = plans[turn_.plan_count];
+  if (!PlanSkillUse(comp, slot, rule, aim, plan)) return false;
+  plan.agent_index = agent_index;
+  ++turn_.plan_count;
+  // Spent as it is planned: the use happened, whatever it then reaches.
+  // Cooldowns belong to the equipped skill: a context skill does not spend it.
+  if (rule < 0) comp.SetCooldown(slot, plan.skill.cooldown);
+  return true;
+}
+
+void BaseEnv::CasterMotion(SkillPlan& plan) {
+  if (plan.caster_candidates.empty()) return;
+  auto* caster = dynamic_cast<Agent*>(object_manager_->GetActor(plan.caster));
+  if (!caster || !caster->IsAffectable()) return;
+  // Its landing, else the next candidate nobody holds now (an earlier
+  // caster's landing, a walker's cell), else it stays
+  for (const Position& p : plan.caster_candidates) {
+    if (!CanLand(*grid_, *object_manager_, p, plan.caster)) continue;
+    if (p != caster->GetPosition()) {
+      MoveActor(*caster, p);  // Lands its zone
+      if (in_step_) LedgerOf(*caster).moved_itself = true;
     }
-    assert(intended && "a skill use GatherIntentions did not record");
-    if (!intended) continue;
-    ResolveSkillUse(*comp, slot, intended->rule);
+    return;
   }
 }
 
-void BaseEnv::ResolveSkillUse(Companion& comp, int slot, int rule) {
-  const std::string& name = rule >= 0 ? context_skills_[static_cast<size_t>(rule)].skill
-                                      : comp.GetSkill(slot);
-  const SkillConfig* found = skills_.Find(name);
-  if (!found) return;
-  // Deliberate copy: UseSkill must not observe a Define (it invalidates `found`).
-  const SkillConfig skill = *found;
-  SkillTargets targets = UseSkill(comp, skill);
-  // Cooldowns belong to the equipped skill: a context skill does not spend it
-  if (rule < 0) comp.SetCooldown(slot, skill.cooldown);
-  last_skill_uses_.push_back(
-      {comp.GetId(), skill.name, targets.centre, slot, std::move(targets.affected)});
+void BaseEnv::AreaMotion(SkillPlan& plan) {
+  for (const SkillPlan::Forced& f : plan.forced) {
+    Actor* thing = object_manager_->GetActor(f.actor);
+    if (!thing || !thing->IsAlive()) continue;
+    if (const auto* agent = dynamic_cast<const Agent*>(thing)) {
+      if (!agent->IsAffectable()) continue;
+      // A companion's own motion (a walk, its dash / teleport) wins over a
+      // forced move: it stays where it went
+      if (dynamic_cast<const Companion*>(agent) && MovedItselfThisTurn(*agent)) continue;
+    }
+    // From where it stands now (TEMPORARY: the one motion phase sums the
+    // forced moves), by the landing rule
+    const Position from = thing->GetPosition();
+    const int distance = std::max(std::abs(f.dr), std::abs(f.dc));
+    const int dr = (f.dr > 0) - (f.dr < 0);
+    const int dc = (f.dc > 0) - (f.dc < 0);
+    const Position to = ResolveDashWith(*grid_, from, dr, dc, distance, [&](Position q) {
+      return CanLand(*grid_, *object_manager_, q, f.actor);
+    });
+    if (to == from) continue;  // Stopped right away: moved nothing
+    MoveActor(*thing, to);     // Lands its zone
+    plan.moved.push_back(f.actor);
+  }
+}
+
+void BaseEnv::UseSkill(SkillPlan& plan) {
+  auto* caster = dynamic_cast<Companion*>(object_manager_->GetActor(plan.caster));
+  if (!caster) return;
+  const SkillConfig& skill = plan.skill;
+  std::vector<Agent*>& agents = turn_.hit;  // Parallel to plan.did
+  std::vector<char>& on_area = turn_.hit_on_area;
+  agents.clear();
+  on_area.clear();
+  plan.did.clear();
+  auto on = [](const std::vector<Position>& cells, Position p) {
+    return std::find(cells.begin(), cells.end(), p) != cells.end();
+  };
+  auto moved = [&plan](ObjectId id) {
+    return std::find(plan.moved.begin(), plan.moved.end(), id) != plan.moved.end();
+  };
+  auto hit = [&](Agent* a, bool area) {
+    plan.did.push_back({a->GetId(), 0});
+    agents.push_back(a);
+    on_area.push_back(area ? 1 : 0);
+  };
+
+  // 1. Whom it hits: its planned cells, on whoever stands there now (after
+  // the walking and every use's motion), plus whom its own push / pull moved.
+  // First those it planned on (the preview's order): walking out of its
+  // cells dodges it...
+  for (const AffectedAgent& p : plan.predicted) {
+    auto* a = dynamic_cast<Agent*>(object_manager_->GetActor(p.id));
+    if (!a || !Affects(skill, *caster, *a)) continue;
+    const bool area = moved(p.id) || on(plan.area, a->GetPosition());
+    if (area || on(plan.path, a->GetPosition())) hit(a, area);
+  }
+  // ...then whoever else stands on them (walking in gets hit), in cell order
+  for (int part = 0; part < 2; ++part) {
+    for (const Position& p : part == 0 ? plan.area : plan.path) {
+      auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
+      if (!a || !Affects(skill, *caster, *a)) continue;
+      const ObjectId id = a->GetId();
+      if (std::any_of(plan.did.begin(), plan.did.end(),
+                      [id](const AffectedAgent& x) { return x.id == id; })) {
+        continue;
+      }
+      hit(a, part == 0);
+    }
+  }
+  auto self_spared = [&](size_t i, bool self_flag) { return agents[i] == caster && !self_flag; };
+
+  // 2. Tags (area and path). Nobody becomes unaffectable during a step
+  // (downs and deaths wait for the end of the turn: a caster its landing zone
+  // takes to 0 still gets its own use); an agent that is not (a host call in
+  // a hook) gets nothing, and the use reports nothing on it.
+  for (size_t i = 0; i < agents.size(); ++i) {
+    if (skill.tags.empty() || self_spared(i, skill.self_tags) || !agents[i]->IsAffectable()) {
+      continue;
+    }
+    bool landed = false;  // An agent immune to all of them gets none
+    for (const SkillTagSpec& t : skill.tags) {
+      landed |= LandTag(*agents[i], t.tag, t.duration, caster->GetId(), skill.name,
+                        TagSource::Skill);
+    }
+    if (landed) plan.did[i].effects |= kSkillEffectTags;
+  }
+
+  // 3. Damage, on the same agents (after the tags), into the turn's ledger:
+  // an agent it takes to 0 goes down or dies at the end of the turn.
+  for (size_t i = 0; i < agents.size(); ++i) {
+    if (skill.damage <= 0 || self_spared(i, skill.self_damage) || !agents[i]->IsAffectable()) {
+      continue;
+    }
+    HurtInStep(*agents[i], skill.damage);
+    plan.did[i].effects |= kSkillEffectDamage;
+  }
+
+  // 4. Revive: its planned revives (allies down as the turn began) get up
+  // where they lie, at the end of the turn (an affects_downed skill has no
+  // tags, damage, root or motion). Two revivers on one ally: the Revive
+  // effect stays on the use credited (PlanRevive).
+  for (size_t i = 0; i < agents.size(); ++i) {
+    auto* comp = dynamic_cast<Companion*>(agents[i]);
+    if (skill.revive_percent <= 0 || !comp || !comp->IsAlive() || !comp->IsDowned() ||
+        std::find(plan.revives.begin(), plan.revives.end(), comp->GetId()) == plan.revives.end()) {
+      continue;
+    }
+    const int health = (comp->GetMaxHealth() * skill.revive_percent + 99) / 100;
+    bool revived = false;
+    if (in_step_) {
+      revived = PlanRevive(*comp, health, *caster);
+    } else if (comp->Revive(health)) {
+      revived = true;
+      last_revives_.push_back({caster->GetId(), comp->GetId(), comp->GetHealth()});
+    }
+    if (revived) plan.did[i].effects |= kSkillEffectRevive;
+  }
+
+  // 5. Root, on the area only (Rooted for the next root_steps steps, a step
+  // timer, see Agent::BeginStep). 6. Motion: whom its forced moves really
+  // moved (pass 1).
+  for (size_t i = 0; i < agents.size(); ++i) {
+    if (skill.root_steps > 0 && on_area[i] && !self_spared(i, skill.self_root) &&
+        agents[i]->IsAffectable()) {
+      agents[i]->ApplyStatus(StatusType::Rooted, skill.root_steps);
+      plan.did[i].effects |= kSkillEffectRoot;
+    }
+    if (moved(plan.did[i].id)) plan.did[i].effects |= kSkillEffectMotion;
+  }
+
+  last_skill_uses_.push_back({caster->GetId(), skill.name, plan.centre, plan.slot, plan.did});
+  // No Agent* outlives the use
+  agents.clear();
+  on_area.clear();
 }
 
 BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
@@ -1951,13 +2114,14 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
   world->in_step_ = true;
   world->BeginTurn();
   // As GatherIntentions decides: the stunned (and the downed) stay, then a
-  // use CanUseSkill allows, with the context read now
+  // use CanUseSkill allows, with the context read now, planned (its cooldown
+  // spent), then applied as the step applies the turn's plans
   const ContextSkillRule* rule = nullptr;
   outcome.usable = !comp->IsStunned() && world->CanUseSkill(*comp, slot, rule);
   if (outcome.usable) {
     comp->SetDirection(aim);  // GatherIntentions: the movement aims
-    world->ResolveSkillUse(
-        *comp, slot, rule ? static_cast<int>(rule - world->context_skills_.data()) : -1);
+    world->AddSkillPlan(*comp, comp->GetAgentIndex(), slot, world->RuleIndex(rule), aim);
+    world->ResolveSkills();
   }
   // The zones the use sets at the end of the step (its reactions' cells),
   // committed as the step's end would, then the turn's end (health, downs,
@@ -1979,12 +2143,15 @@ BaseEnv::SkillPreview BaseEnv::PreviewSkill(const Companion& caster, int slot,
   // As the step decides: GatherIntentions makes the stunned stay, then keeps
   // a use CanUseSkill allows
   preview.usable = !caster.IsStunned() && CanUseSkill(caster, slot);
-  const SkillConfig* skill = preview.skill.empty() ? nullptr : skills_.Find(preview.skill);
-  if (!skill) return preview;
-  SkillTargets targets = ResolveSkillTargets(caster, *skill, aim);
-  preview.centre = targets.centre;
-  preview.caster_landing = targets.landing;
-  preview.affected = std::move(targets.affected);
+  if (preview.skill.empty()) return preview;
+  // The use's plan, as the intents phase would make it now
+  SkillPlan plan;
+  if (!PlanSkillUse(caster, slot, RuleIndex(ActiveContextRule(caster, slot)), aim, plan)) {
+    return preview;
+  }
+  preview.centre = plan.centre;
+  preview.caster_landing = plan.landing;
+  preview.affected = std::move(plan.predicted);
   return preview;
 }
 
@@ -2026,78 +2193,101 @@ Position BaseEnv::PushLanding(const SkillConfig& skill, Position p, Position cen
                          skill.motion_distance, can_land);
 }
 
-std::optional<Position> BaseEnv::PullFrom(const SkillConfig& skill, Position centre,
+std::optional<Position> BaseEnv::PullFrom(const SkillConfig& skill,
+                                          const std::vector<Position>& area,
                                           const Agent& caster, Position landing) const {
   // CanLand with nobody excepted, the caster on its landing cell
+  const Position centre = area.front();
   if (!grid_->IsInBounds(centre) || !grid_->IsWalkable(centre)) return std::nullopt;
   const Actor* on_centre = ActorAfterMotion(centre, caster, landing);
   if (on_centre && on_centre->IsAlive()) return std::nullopt;
-  const std::vector<Position> cells = AreaCells(centre, skill.area);
-  for (size_t i = 1; i < cells.size(); ++i) {  // The ring, by priority
-    if (MotionThingAt(cells[i], skill, caster, landing)) return cells[i];
+  for (size_t i = 1; i < area.size(); ++i) {  // The ring, by priority
+    if (MotionThingAt(area[i], skill, caster, landing)) return area[i];
   }
   return std::nullopt;
 }
 
-BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
-                                                   const SkillConfig& skill,
-                                                   Direction aim) const {
+void BaseEnv::ResolveSkillTargets(const Companion& caster, const SkillConfig& skill,
+                                  Direction aim, SkillPlan& plan) const {
   int dr = 0, dc = 0;
   DirectionDelta(aim, dr, dc);
   const Position from = caster.GetPosition();
-  std::vector<Position> path;  // Cells crossed by a dash (tag_path)
-  SkillTargets t;
+  plan.origin = from;
+  plan.caster_candidates.clear();
+  plan.area.clear();
+  plan.path.clear();
+  plan.predicted.clear();
+  plan.found_on.clear();
+  plan.forced.clear();
+  plan.revives.clear();
 
-  // 1. The caster's own motion, and the skill's centre.
+  // 1. The caster's own motion, and the skill's centre. A tag_path dash's
+  // crossed cells are its path.
+  std::vector<Position>* crossed = skill.tag_path ? &plan.path : nullptr;
   switch (skill.motion) {
     case SkillMotion::Dash:
-      t.landing = ResolveDash(*grid_, *object_manager_, from, dr, dc, skill.motion_distance,
-                              caster.GetId(), &path);
+      plan.landing = ResolveDash(*grid_, *object_manager_, from, dr, dc, skill.motion_distance,
+                                 caster.GetId(), crossed);
       break;
     case SkillMotion::Teleport:
-      t.landing = ResolveTeleport(*grid_, *object_manager_, from, dr, dc,
-                                  skill.motion_distance, caster.GetId());
+      plan.landing = ResolveTeleport(*grid_, *object_manager_, from, dr, dc,
+                                     skill.motion_distance, caster.GetId());
       break;
     default:
-      t.landing = from;
+      plan.landing = from;
       break;
   }
-  t.centre = from;
+  // Its fallbacks, should another motion take the landing first: the
+  // landing, then each closer walkable cell of its line (a dash's line is
+  // pathable up to its landing; a teleport's may cross walls)
+  if (plan.landing != from) {
+    const int steps = std::abs(plan.landing.row - from.row) + std::abs(plan.landing.col - from.col);
+    for (int i = steps; i >= 1; --i) {
+      const Position p{from.row + dr * i, from.col + dc * i};
+      if (grid_->IsInBounds(p) && grid_->IsWalkable(p)) plan.caster_candidates.push_back(p);
+    }
+  }
+  plan.centre = from;
   switch (skill.targeting) {
     case SkillTargeting::Self:
-      t.centre = t.landing;
+      plan.centre = plan.landing;
       break;
     case SkillTargeting::Ground:
-      t.centre = ResolveGroundTarget(*grid_, from, dr, dc, skill.range);
+      plan.centre = ResolveGroundTarget(*grid_, from, dr, dc, skill.range);
       break;
     case SkillTargeting::Projectile: {
       // Line rule, but the first agent the skill affects stops it (a downed
       // one is passed over, and a standing one by an affects_downed skill).
+      // Traced once, as the turn begins: its stop cell is its centre, fixed
+      // (an agent then walking into the line before it is not hit, one
+      // walking off it is missed).
       Position cur = from;
       for (int i = 0; i < skill.range; ++i) {
         Position next{cur.row + dr, cur.col + dc};
         if (!grid_->IsInBounds(next) || !grid_->IsPathable(next)) break;
         cur = next;
-        const Agent* hit = AgentAfterMotion(cur, caster, t.landing);
+        const Agent* hit = AgentAfterMotion(cur, caster, plan.landing);
         if (hit && hit != &caster && Affects(skill, caster, *hit)) break;
       }
-      t.centre = cur;
+      plan.centre = cur;
       break;
     }
   }
 
-  // 2. Affected agents: on the area, then (tag_path) on the dash path.
-  std::vector<Position> found_on;  // Parallel to t.affected
-  CollectAffected(AreaCells(t.centre, skill.area), skill, caster, t.landing, t.affected,
-                  found_on);
-  const size_t on_area = t.affected.size();
-  if (skill.tag_path) CollectAffected(path, skill, caster, t.landing, t.affected, found_on);
+  // 2. Its cells, then the agents on them it affects: on the area, then
+  // (tag_path) on the dash's path.
+  AreaCells(plan.centre, skill.area, plan.area);
+  CollectAffected(plan.area, skill, caster, plan.landing, plan.predicted, plan.found_on);
+  const size_t on_area = plan.predicted.size();
+  CollectAffected(plan.path, skill, caster, plan.landing, plan.predicted, plan.found_on);
 
   // 3. What the use does to each (the caster only as its self_* flags allow).
   std::optional<Position> pulled_from;
-  if (skill.motion == SkillMotion::PullIn) pulled_from = PullFrom(skill, t.centre, caster, t.landing);
-  for (size_t i = 0; i < t.affected.size(); ++i) {
-    const Agent* a = AgentAfterMotion(found_on[i], caster, t.landing);
+  if (skill.motion == SkillMotion::PullIn) {
+    pulled_from = PullFrom(skill, plan.area, caster, plan.landing);
+  }
+  for (size_t i = 0; i < plan.predicted.size(); ++i) {
+    const Agent* a = AgentAfterMotion(plan.found_on[i], caster, plan.landing);
     const bool self = a == &caster;
     const bool area = i < on_area;
     unsigned e = 0;
@@ -2113,111 +2303,39 @@ BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
     // Only a downed companion gets up (an affects_downed skill reaches the downed only)
     if (skill.revive_percent > 0 && a->IsDowned() && dynamic_cast<const Companion*>(a)) {
       e |= kSkillEffectRevive;
+      plan.revives.push_back(a->GetId());
     }
     if (area && skill.root_steps > 0 && (!self || skill.self_root)) e |= kSkillEffectRoot;
-    if (area && found_on[i] != t.centre) {  // The ring
+    if (area && plan.found_on[i] != plan.centre) {  // The ring
       // Pushed only if the push would move it (a wall right behind it stops
-      // it), read as AreaMotion reads it: the caster on its landing cell
-      const Position p = found_on[i];
+      // it), the caster on its landing cell
+      const Position p = plan.found_on[i];
       const bool pushed = skill.motion == SkillMotion::PushOut &&
-                          MotionThingAt(p, skill, caster, t.landing) == a &&
-                          PushLanding(skill, p, t.centre, a->GetId(), caster, t.landing) != p;
-      const bool pulled = pulled_from && *pulled_from == found_on[i];
+                          MotionThingAt(p, skill, caster, plan.landing) == a &&
+                          PushLanding(skill, p, plan.centre, a->GetId(), caster, plan.landing) != p;
+      const bool pulled = pulled_from && *pulled_from == plan.found_on[i];
       if (pushed || pulled) e |= kSkillEffectMotion;
     }
-    t.affected[i].effects = e;
-  }
-  return t;
-}
-
-BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& skill) {
-  // 1-2. The caster's landing, the centre and the affected agents, as
-  // PreviewSkill sees them (the one implementation of targeting), then the
-  // caster's own motion (it lands its cell's zone tag, which no targeting
-  // reads).
-  SkillTargets targets = ResolveSkillTargets(caster, skill, caster.GetDirection());
-  MoveActor(caster, targets.landing);
-  const Position centre = targets.centre;
-  // The agents, parallel to targets.affected, whose effects become what the
-  // use DID (the decision above is what it does unless its own damage downs
-  // or kills an agent first, or a motion moves nothing).
-  std::vector<Agent*> agents;
-  agents.reserve(targets.affected.size());
-  for (const AffectedAgent& t : targets.affected) {
-    agents.push_back(dynamic_cast<Agent*>(object_manager_->GetActor(t.id)));
-    assert(agents.back() && "ResolveSkillTargets gives agents");
-  }
-  auto has = [&](size_t i, unsigned e) { return agents[i] && (targets.affected[i].effects & e); };
-  auto drop = [&](size_t i, unsigned e) { targets.affected[i].effects &= ~e; };
-
-  // 3. Tags land on who was there at impact (area and path). Nobody becomes
-  // unaffectable during a step (downs and deaths wait for the end of the
-  // turn: a caster its landing zone takes to 0 still gets its own use); an
-  // agent that is not (a host call in a hook) gets nothing, and the use
-  // reports nothing on it.
-  for (size_t i = 0; i < agents.size(); ++i) {
-    if (!has(i, kSkillEffectTags)) continue;
-    if (!agents[i]->IsAffectable()) {
-      drop(i, kSkillEffectTags);
-      continue;
-    }
-    bool landed = false;  // An agent immune to all of them gets none
-    for (const SkillTagSpec& t : skill.tags) {
-      landed |= LandTag(*agents[i], t.tag, t.duration, caster.GetId(), skill.name,
-                        TagSource::Skill);
-    }
-    if (!landed) drop(i, kSkillEffectTags);
+    plan.predicted[i].effects = e;
   }
 
-  // 4. Damage, on the same agents (after the tags), into the turn's ledger:
-  // an agent it takes to 0 goes down or dies at the end of the turn, so it is
-  // still rooted and moved below.
-  for (size_t i = 0; i < agents.size(); ++i) {
-    if (!has(i, kSkillEffectDamage)) continue;
-    if (agents[i]->IsAffectable()) {
-      HurtInStep(*agents[i], skill.damage);
-    } else {
-      drop(i, kSkillEffectDamage);
-    }
-  }
-
-  // 5. Revive: the downed it affects get up where they lie at the end of the
-  // turn (an affects_downed skill has no tags, damage, root or motion). Two
-  // revivers on one ally: the Revive effect stays on the use credited
-  // (PlanRevive).
-  for (size_t i = 0; i < agents.size(); ++i) {
-    if (!has(i, kSkillEffectRevive)) continue;
-    auto* comp = dynamic_cast<Companion*>(agents[i]);
-    const int health = comp ? (comp->GetMaxHealth() * skill.revive_percent + 99) / 100 : 0;
-    bool revived = false;
-    if (comp && comp->IsAlive() && comp->IsDowned()) {
-      if (in_step_) {
-        revived = PlanRevive(*comp, health, caster);
-      } else if (comp->Revive(health)) {
-        revived = true;
-        last_revives_.push_back({caster.GetId(), comp->GetId(), comp->GetHealth()});
+  // 4. The forced moves, on the things on the ring as the turn begins (not
+  // only agents: any living actor MotionThingAt allows): a push moves each
+  // away from the centre by motion_distance, a pull takes its one thing into
+  // the centre.
+  if (skill.motion == SkillMotion::PushOut && skill.motion_distance > 0) {
+    for (size_t i = 1; i < plan.area.size(); ++i) {
+      const Position p = plan.area[i];
+      if (const Actor* thing = MotionThingAt(p, skill, caster, plan.landing)) {
+        plan.forced.push_back({thing->GetId(), (p.row - plan.centre.row) * skill.motion_distance,
+                               (p.col - plan.centre.col) * skill.motion_distance});
       }
     }
-    if (!revived) drop(i, kSkillEffectRevive);
+  } else if (pulled_from) {
+    const Actor* thing = MotionThingAt(*pulled_from, skill, caster, plan.landing);
+    plan.forced.push_back({thing->GetId(), plan.centre.row - pulled_from->row,
+                           plan.centre.col - pulled_from->col});
   }
-
-  // 6. Root, before anything moves (Rooted for the next root_steps steps, a
-  // step timer, see Agent::BeginStep). Then the area motion; Motion is what
-  // it really moved.
-  for (size_t i = 0; i < agents.size(); ++i) {
-    if (!has(i, kSkillEffectRoot)) continue;
-    if (agents[i]->IsAffectable()) {
-      agents[i]->ApplyStatus(StatusType::Rooted, skill.root_steps);
-    } else {
-      drop(i, kSkillEffectRoot);
-    }
-  }
-  const std::vector<ObjectId> moved = AreaMotion(skill, centre, caster);
-  for (AffectedAgent& t : targets.affected) {
-    t.effects &= ~kSkillEffectMotion;
-    if (std::find(moved.begin(), moved.end(), t.id) != moved.end()) t.effects |= kSkillEffectMotion;
-  }
-  return targets;
 }
 
 bool BaseEnv::Affects(const SkillConfig& skill, const Agent& caster, const Agent& agent) const {
@@ -2242,33 +2360,6 @@ void BaseEnv::CollectAffected(const std::vector<Position>& cells, const SkillCon
       found_on.push_back(p);
     }
   }
-}
-
-std::vector<ObjectId> BaseEnv::AreaMotion(const SkillConfig& skill, Position centre,
-                                          const Agent& caster) {
-  std::vector<ObjectId> moved;
-  // The caster already stands on its landing cell: the world as it is now.
-  const Position here = caster.GetPosition();
-  auto move = [&](const Actor* thing, Position to) {
-    if (to == thing->GetPosition()) return;  // Stopped right away: moved nothing
-    moved.push_back(thing->GetId());
-    MoveActor(*object_manager_->GetActor(thing->GetId()), to);
-  };
-  if (skill.motion == SkillMotion::PushOut) {
-    // Ring cells push in 4 different directions: no two pushes compete.
-    const std::vector<Position> cells = AreaCells(centre, skill.area);
-    for (size_t i = 1; i < cells.size(); ++i) {
-      const Position p = cells[i];
-      const Actor* thing = MotionThingAt(p, skill, caster, here);
-      if (!thing) continue;
-      move(thing, PushLanding(skill, p, centre, thing->GetId(), caster, here));
-    }
-  } else if (skill.motion == SkillMotion::PullIn) {
-    if (std::optional<Position> from = PullFrom(skill, centre, caster, here)) {
-      move(MotionThingAt(*from, skill, caster, here), centre);
-    }
-  }
-  return moved;
 }
 
 // =============================================================================

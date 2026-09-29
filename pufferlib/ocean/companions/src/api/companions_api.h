@@ -983,10 +983,10 @@ typedef struct {
 
 // Preview companion `agent`'s slot `slot` (0-based, below
 // Companions_MAX_SKILL_SLOTS) aimed `aim`, as the next step would resolve it
-// were it the step's only change. The step may differ: it moves everyone
-// first (the enemies too), then resolves the skills one caster at a time in
-// agent order, so an earlier caster's push, pull, damage or revive changes
-// what a later one reaches; a use whose movement is Stay keeps the
+// were it the step's only change (the step plans every use like this, from
+// the world as the turn begins). The step may differ: its hits land on the
+// planned cells on whoever stands there after everyone moved (the enemies
+// too) and every use's push / pull / dash; a use whose movement is Stay keeps the
 // companion's facing (preview it with Companions_AgentState.facing). The
 // preview is filled whatever `usable` says (what the skill would do if it
 // could). False, `out` untouched, for a null env or `out` ("Invalid

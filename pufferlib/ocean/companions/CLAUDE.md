@@ -133,14 +133,16 @@ The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque
 *does* is the level's data (reactions, weaknesses, immunities, tag statuses) or the
 host's business. But the env simulates every mechanic: targeting, motion, tags, roots,
 cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
-`core/context_skill.{h,cc}`, `env/skill_motion.{h,cc}`, `env/base_env.cc` (`ResolveSkills`,
-`UseSkill`, `ResolveSkillTargets`, `PreviewSkill`, `EffectiveSkill`, `Affects`, `AreaMotion`).
+`core/context_skill.{h,cc}`, `env/skill_motion.{h,cc}`, `env/base_env.cc` (`PlanSkillUse`,
+`ResolveSkillTargets`, `ResolveSkills`, `CasterMotion`, `AreaMotion`, `UseSkill`,
+`PreviewSkill`, `EffectiveSkill`, `Affects`).
 
 **Step order** (`BaseEnv::Step`):
 1. Clear the per-step reports, `BeginStep` on every agent
-2. `PreStep` (enemy FSM) → `GatherIntentions` (fixes each skill use's effective skill:
-   the context rules are read here, once, before anyone moves) → `ResolveCollisions` →
-   `ExecuteValidatedMovements`
+2. `PreStep` (enemy FSM) → `GatherIntentions`, the intents phase: every skill use is
+   PLANNED here from the world as the turn begins (`AddSkillPlan`: its effective skill,
+   the context rules read once, its cells and targets, its cooldown spent; see "Multiple
+   casters") → `ResolveCollisions` → `ExecuteValidatedMovements`
 3. `ApplyZoneTags`, the zone phase (every affectable agent on a zone cell: alive, not
    downed; one landing each), in sub-phases, each over ALL the landings: a. immunity,
    the tag and its status; b. weaknesses; c. reactions, gathered then applied (every
@@ -148,8 +150,10 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
    per agent); d. the zone's damage on those still affectable (see Zones and
    Reactions). From here to the end of the step the zone map is READ-ONLY: a
    reaction's `zone_becomes` waits in a pending buffer
-4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
-   order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
+4. `ResolveInteractions` → `ResolveSkills`, the plans in two passes (TEMPORARY: the one
+   motion phase replaces pass 1): 1. every caster's dash / teleport (`CasterMotion`),
+   then every push / pull (`AreaMotion`), in caster order; 2. every use's hits
+   (`UseSkill`), in caster order (see "Resolution of one skill")
 5. Effects tick, `CommitPendingZones` (the step's reaction zones, in the order they were
    recorded: a later write to the same cell wins), `ApplyTurnOutcomes` (the turn's
    health, see below), `EndStep` on every agent (tags,
@@ -274,13 +278,22 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
 - "Affected" (`BaseEnv::Affects`) = affectable (alive, not downed; for an
   `affects_downed` skill: alive and downed), passes `filter`, and `friendly_fire` or not
   of the caster's faction. Push / pull also move living non-agent actors (no faction check)
-- Resolution of one skill (`UseSkill`): `ResolveSkillTargets` (pure, shared with
-  `PreviewSkill`: the caster's landing, the centre, the affected agents (area in cell
-  order, then a `tag_path` dash's path) and what the use will do to each, read with the
-  caster already on its landing cell) → caster motion → tags → damage → revive → root
-  (area only, before anything moves) → push / pull. The damage goes into the turn's
-  ledger: an agent it takes to 0 is still rooted and moved, and still affected by
-  anything else this turn (down or dead at its end)
+- Resolution of one skill: its PLAN (`PlanSkillUse` → `ResolveSkillTargets`, pure,
+  shared with `PreviewSkill`, from the world as the turn begins, the caster read on its
+  planned landing cell: the landing and its fallbacks (the closer walkable cells of the
+  line), the centre, its CELLS (the area; a `tag_path` dash's crossed path), the
+  predicted affected agents (area in cell order, then the path) and what it will do to
+  each, the forced moves (each ring thing a push moves away from the centre by
+  `motion_distance`, the one thing a pull takes into the centre, as offsets), the
+  revives (allies down as the turn began)) → pass 1: the caster's motion (the first
+  candidate it can land on now, else it stays), then the forced moves (each from where
+  its actor stands now; a companion that moved itself this turn keeps its own motion) →
+  pass 2 (`UseSkill`): the hits land on the planned cells, on whoever stands there after
+  every motion, plus whom its own push / pull moved (walking out dodges, walking in gets
+  hit; a projectile's line is traced once, as the turn begins: its stop cell is fixed, an
+  agent walking into the line before it is not hit) → tags → damage → revive → root
+  (area only). The damage goes into the turn's ledger: an agent it takes to 0 is still
+  affected by anything else this turn (down or dead at its end)
 - Damage is not reported as events yet (`Companions_Event_AgentDamaged` is declared,
   not implemented): read it from the agents' health
 - `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, damage, root_steps,
@@ -289,11 +302,16 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
   `kMaxSkillTags` (32, the C API's `Companions_MAX_SKILL_TAGS`) tags; enums in range;
   `revive_percent` and `affects_downed` as above
 
-**Multiple casters** resolve sequentially, in agent-index order, each from its CURRENT
-position: an earlier push / pull can move a later caster before it acts (aim, range and
-area start from its new cell), and earlier casters claim landing cells first. A caster
-rooted earlier in the pass still resolves its skill this step (usability is decided in
-`GatherIntentions`; the root blocks from the next step).
+**Multiple casters** are simultaneous: every use is planned from the world as the turn
+BEGINS (`GatherIntentions`), so a caster aims from the cell it began the turn on even if
+another use pulls it this turn, and its cooldown is spent when the use is planned (the
+use happened, whatever it then reaches). A caster down as the turn begins cannot cast;
+one going down this turn still casts. A caster rooted this turn still resolves its skill
+(the root blocks from the next step). An agent's index changes no outcome but the report
+order (uses in caster index order) and, while pass 1 is TEMPORARY, the motion clashes:
+two motions onto one cell (the lower caster index first; a dash / teleport before any
+push / pull), two forced moves on one actor (one after the other). A dash / teleport
+losing its landing falls back along its line and keeps its planned area and centre.
 
 **Revive** (a skill with `revive_percent` > 0; the builtin `revive`):
 - `Companion::Revive(health)`: the downed companion gets up where it lies, with
@@ -340,15 +358,18 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 - `PreviewSkill(caster, slot, aim)`: what that slot's effective skill, aimed `aim`, would
   do NOW (a pure query: nothing moves, lands, hurts, revives or is interned): `usable`
   (the step would use it: not stunned, `CanUseSkill`), `skill`, `centre`,
-  `caster_landing`, `affected`. Same code as the step (`ResolveSkillTargets`), so
-  preview and use cannot drift; computed whatever `usable` says. The step may still
-  differ: it moves everyone first (enemies too), then resolves casters one by one, so an
-  earlier caster's push / pull / damage / revive changes what a later one reaches; a use
-  whose movement is Stay keeps the caster's facing. It says whom the skill affects, not
-  where a push / pull then moves them
+  `caster_landing`, `affected`. It is the use's plan (`PlanSkillUse`), as the step would
+  make it now, so preview and plan cannot drift; computed whatever `usable` says. What
+  the step DOES may still differ: the hits land on the planned cells on whoever stands
+  there after everyone moved (enemies too) and every use's motion, and a dash / teleport
+  whose landing another motion took falls back; a use whose movement is Stay keeps the
+  caster's facing. It says whom the skill affects, not where a push / pull then moves them
+- `SkillUse::affected`: what the use DID, those it predicted still on its cells (or moved
+  by its own push / pull) in the preview's order, then those who walked or were moved
+  onto its cells, in cell order (nobody moved: the preview's agents and effects)
 - `PreviewSkillOutcome(caster id, slot, aim)`: what the use would DO, reports included:
   resolved on a `Clone()` (nothing in the env changes or is interned) by the step's own
-  code for a use (`ResolveSkillUse`, shared with `ResolveSkills`), as the next step would
+  code for a use (`AddSkillPlan` then `ResolveSkills`), as the next step would
   resolve it were it the step's only change: no movement, no zone landing on those
   standing on zones, no enemy acting, no end-of-step timers. The clone is mid-step
   around the use (`in_step_`, `Agent::BeginStep`), so what the use sets (a
@@ -585,8 +606,9 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - Report order in a step: the zone phase first (every zone landing in agent-index
   order; its landing defeats; its reactions in trigger agent-index order; their result
   landings in the same firing order, each firing's in its affected order; then the
-  result defeats, in first-hit order: firing, then affected order), then the skill phase in resolution order (a skill motion's zone
-  landing inside its use). The C API reads the same vectors (its
+  result defeats, in first-hit order: firing, then affected order), then the skill phase:
+  the zone landings of its motions (pass 1: dashes / teleports, then pushes / pulls, in
+  caster order), then each use's hits and skill use, in caster order. The C API reads the same vectors (its
   `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
   AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a down from between the

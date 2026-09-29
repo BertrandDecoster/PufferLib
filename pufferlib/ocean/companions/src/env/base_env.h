@@ -367,13 +367,15 @@ class BaseEnv {
   // step: a pure query (nothing moves, no tag lands, no damage, no revive,
   // nothing is interned). The skill is the slot's effective one
   // (EffectiveSkill, context rules included); its centre, landing and
-  // affected agents come from the same code as the step's UseSkill
-  // (ResolveSkillTargets), so the preview and the use cannot drift.
-  // The step itself may differ: it resolves movement first (everyone's
-  // walks, the enemies' included), then the skills one caster at a time in
-  // agent-index order, so an earlier caster's push / pull / damage / revive
-  // (or a walk into the line) changes what a later one reaches. A use whose
-  // movement is Stay keeps the caster's facing: preview it with that facing.
+  // affected agents are the use's plan, made by the same code as the step's
+  // (PlanSkillUse: ResolveSkillTargets), so the preview and the plan cannot
+  // drift: the step plans every use from the world as the turn begins.
+  // What the step then DOES may differ: the plan's cells are fixed, but the
+  // hits land on whoever stands on them after everyone moved (the walks,
+  // the enemies' included, then the uses' own motions): an agent walking out
+  // of them dodges, one walking in is hit; a dash / teleport whose landing
+  // another motion took first falls back. A use whose movement is Stay keeps
+  // the caster's facing: preview it with that facing.
   // The preview says whom the skill affects and how (SkillEffect), not
   // where a push / pull then moves them.
   struct SkillPreview {
@@ -395,8 +397,8 @@ class BaseEnv {
   // What `caster` using its slot `slot` aimed `aim` would DO now, reports
   // included: the use is resolved on a clone of the env (Clone(); nothing in
   // this env changes, nothing is interned here), by the step's own code for a
-  // use (ResolveSkillUse), as the next step would resolve it were it the
-  // step's only change: no movement, no zones landing on those who stand on
+  // use (AddSkillPlan, ResolveSkills), as the next step would resolve it were
+  // it the step's only change: no movement, no zones landing on those who stand on
   // them, no enemy acting, no end-of-step timers. The clone is mid-step
   // around the use (in_step_, Agent::BeginStep), so what the use sets (a
   // zone_becomes zone, a tag status, a root) is stored as the step stores it;
@@ -412,8 +414,8 @@ class BaseEnv {
   // Each call returns its own world (the C API keeps one: its last
   // preview's). Costs a copy of the env: meant for a UI, not the RL hot
   // path. The real
-  // step may differ as PreviewSkill says (everyone moves first, the zones
-  // land on those standing on them, the casters resolve in agent order).
+  // step may differ as PreviewSkill says (everyone moves, the zones land on
+  // those standing on them, the other uses move and hit too).
   struct SkillOutcome {
     // As SkillPreview::usable; false: nothing was resolved (empty reports)
     bool usable = false;
@@ -443,12 +445,13 @@ class BaseEnv {
     std::string skill;
     Position target;  // The skill's centre: landing cell for Self skills
     int slot = 0;     // The caster's slot it was used from (0-based)
-    // The agents it affected, in the order it processed them: those on its
-    // area (cell order: the centre, then up, right, down, left for a Cross),
-    // then those on a tag_path dash's path, each with what the use did to it
-    // (SkillEffect). The same agents PreviewSkill gives before the step
-    // (ResolveSkillTargets); their Root / Motion / Revive may differ from the
-    // preview's prediction (see SkillEffect).
+    // The agents it affected, each with what the use did to it (SkillEffect):
+    // first those its plan predicted (PreviewSkill's order: its area in cell
+    // order, the centre, then up, right, down, left for a Cross, then a
+    // tag_path dash's path) still on its cells after the motions, or moved
+    // by its own push / pull; then whoever else stands on its cells then
+    // (walked in, moved there by another use), in cell order. Nobody moved:
+    // the preview's agents and effects.
     std::vector<AffectedAgent> affected;
   };
   // What landed a tag (TagApplication::kind)
@@ -493,14 +496,16 @@ class BaseEnv {
   };
   // What the last Step did (cleared at the start of every Step, and by
   // LoadSnapshot, hence by every Reset).
-  // Skills resolve one caster at a time in agent-index order, each from its
-  // current cell: an earlier push / pull can move a later caster (ResolveSkills).
+  // Every skill use is planned from the world as the turn began (casters are
+  // simultaneous: ResolveSkills), and reported in caster agent-index order.
   // Report order in a step: the zone phase first (its zone landings, every
   // one, in agent-index order; its landing defeats; its reactions in trigger
   // agent-index order, their result landings in that firing order, then the
   // results' defeats, in first-hit order: the firing, then its affected
-  // order), then the skill phase's, in resolution order. The C API's
-  // report_index fields follow these orders.
+  // order), then the skill phase's: the zone landings of the uses' motions
+  // (casters' dashes / teleports, then pushes / pulls, caster order), then
+  // each use's hits, in caster order. The C API's report_index fields follow
+  // these orders.
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
   // Companions that went down since the last report, one entry per down:
@@ -825,7 +830,9 @@ class BaseEnv {
   // according to d4_transform_
   void ApplyD4Transform();
 
-  // Collision resolution (the new system)
+  // Collision resolution (the new system). GatherIntentions is also the
+  // intents phase of the skills: every use is planned there (AddSkillPlan),
+  // from the world as the turn begins.
   void GatherIntentions(const std::vector<Action>& actions);
   void CaptureOriginalIntentions();  // Save intentions before collision resolution
   void ResolveCollisions();
@@ -835,8 +842,8 @@ class BaseEnv {
   // Movement execution
   void ExecuteValidatedMovements();
 
-  // Interaction resolution, after movement: companion skills (FSM attacks go
-  // through the effect system)
+  // Interaction resolution, after movement: the companions' planned skill
+  // uses (ResolveSkills; FSM attacks go through the effect system)
   void ResolveInteractions();
 
   // Skills (see GetSkillBook)
@@ -855,28 +862,85 @@ class BaseEnv {
   const ContextSkillRule* ActiveContextRule(const Companion& comp, int slot) const;
   // The one evaluation of a condition (a new condition: one more case)
   bool ContextHolds(ContextCondition condition, const Companion& comp) const;
-  // Uses the skill fixed by GatherIntentions (intended_skills_) through
-  // ResolveSkillUse.
-  void ResolveSkills();         // After movement, in agent-index order
-  // One use, as the step resolves it (ResolveSkills, PreviewSkillOutcome):
-  // the skill of context rule `rule` (index in context_skills_), or the
-  // slot's equipped one for -1; UseSkill; the slot's cooldown only for an
-  // equipped skill; the SkillUse report (the effective skill's name). Nothing
-  // for a skill the book lacks.
-  void ResolveSkillUse(Companion& comp, int slot, int rule);
-  // Where a skill use lands and whom it affects: steps 1-2 of UseSkill, the
-  // one implementation of targeting (UseSkill and PreviewSkill both use it).
-  struct SkillTargets {
-    Position landing;                // The caster's cell after its own motion
-    Position centre;                 // By the skill's targeting
-    // On the area (cell order), then on a tag_path dash's path, with the
-    // effects decided before the use (UseSkill then reports what it did)
-    std::vector<AffectedAgent> affected;
+  // One skill use, planned from the world as the turn begins (the intents
+  // phase: GatherIntentions), then applied after the walking (ResolveSkills).
+  // Every cell is fixed by the plan; who stands on them is read when it
+  // applies. Kept in the turn's scratch (turn_.plans), reused step to step.
+  struct SkillPlan {
+    ObjectId caster = kInvalidObjectId;
+    int agent_index = -1;  // The caster's (the action vector's index)
+    int slot = 0;
+    int rule = -1;         // Index in context_skills_ of the rule that gave it; -1: equipped
+    // A copy: a Define during the step (it invalidates the book's pointers)
+    // does not reach a planned use
+    SkillConfig skill;
+    Position origin;   // The caster's cell as the turn began
+    Position centre;   // By the skill's targeting, from the origin
+    Position landing;  // Where its dash / teleport lands (planned), else the origin
+    // Where its dash / teleport may end, preferred first: the landing, then
+    // each closer walkable cell of its line (empty: the caster stays). Who
+    // holds them is read as the caster moves: it takes the first free one,
+    // else stays.
+    std::vector<Position> caster_candidates;
+    std::vector<Position> area;  // AreaCells(centre): the centre, then the ring
+    std::vector<Position> path;  // A dash's crossed cells (hit by a tag_path dash)
+    // PreviewSkill's answer: whom it would affect and how, in its order
+    std::vector<AffectedAgent> predicted;
+    std::vector<Position> found_on;  // Parallel to predicted: the cell each was found on
+    // A push / pull on a thing on the ring as the turn began: its offset
+    // (away from the centre times motion_distance, or 1 cell into it)
+    struct Forced {
+      ObjectId actor = kInvalidObjectId;
+      int dr = 0, dc = 0;
+    };
+    std::vector<Forced> forced;
+    std::vector<ObjectId> revives;  // Downed allies it gets up (down as the turn began)
+    // Applying it
+    std::vector<ObjectId> moved;      // The actors its forced moves really moved
+    std::vector<AffectedAgent> did;   // What it did: its SkillUse::affected
   };
-  // Pure: reads the world as it is, with the caster already on its landing
-  // cell (AgentAfterMotion), for `aim` (UseSkill passes the caster's facing).
-  SkillTargets ResolveSkillTargets(const Companion& caster, const SkillConfig& skill,
-                                   Direction aim) const;
+  // Pure: the plan of `caster` using the skill of context rule `rule` (index
+  // in context_skills_), or its slot's equipped one for -1, aimed `aim`, from
+  // the world as it is (ResolveSkillTargets). False (plan unspecified) for a
+  // skill the book lacks.
+  bool PlanSkillUse(const Companion& caster, int slot, int rule, Direction aim,
+                    SkillPlan& plan) const;
+  // A use of the turn, as the intents phase fixes it (GatherIntentions,
+  // PreviewSkillOutcome): PlanSkillUse into turn_.plans, then the slot's
+  // cooldown, spent now (the use happened, whatever it then reaches), only
+  // for an equipped skill. False when there is nothing to plan.
+  bool AddSkillPlan(Companion& comp, int agent_index, int slot, int rule, Direction aim);
+  // After the walking and the zone phase, the turn's plans in two passes
+  // (TEMPORARY: the one motion phase replaces pass 1):
+  //   1. every plan's caster motion (CasterMotion), then every plan's forced
+  //      moves (AreaMotion), each in caster order. The only order the
+  //      outcome still depends on: two motions clashing over a cell, two
+  //      forced moves on one actor;
+  //   2. every plan's hits (UseSkill), in caster order.
+  void ResolveSkills();
+  // Pass 1: the caster's dash / teleport, to the first of its candidates it
+  // can land on now (CanLand), else it stays. It lands the cell's zone.
+  void CasterMotion(SkillPlan& plan);
+  // Pass 1: the forced moves, each moving its actor by its offset from where
+  // it stands now (the landing rule, ResolveDashWith), landing the zone of
+  // its new cell; recorded in plan.moved when it really moved. A companion
+  // that moved itself this turn (walked, dashed, teleported) keeps its own
+  // motion: no forced move. A thing no longer alive (or an agent no longer
+  // affectable) is not moved.
+  void AreaMotion(SkillPlan& plan);
+  // Pass 2: the plan's hits, on the plan's cells as they stand now, plus
+  // whom its own forced moves moved (see SkillUse::affected): tags, then
+  // damage, then revive (its planned revives), then root (area only), each
+  // as the caster's self_* flags allow; Motion = moved by its forced moves.
+  // Then the SkillUse report.
+  void UseSkill(SkillPlan& plan);
+  // Where a skill use lands and whom it affects, the one implementation of
+  // targeting (PlanSkillUse and PreviewSkill both use it). Pure: fills
+  // everything of `plan` from `origin` to `revives` (clearing them first),
+  // reading the world as it is, with the caster already on its landing cell
+  // (AgentAfterMotion), for `aim`.
+  void ResolveSkillTargets(const Companion& caster, const SkillConfig& skill, Direction aim,
+                           SkillPlan& plan) const;
   // The actor on `p` once `caster` moved from its cell to `landing` (the
   // caster on `landing`, nobody on the cell it left), as GetActorAt gives it
   const Actor* ActorAfterMotion(Position p, const Agent& caster, Position landing) const;
@@ -884,25 +948,23 @@ class BaseEnv {
   const Agent* AgentAfterMotion(Position p, const Agent& caster, Position landing) const;
   // What a skill's area motion may move on `p` (caster on `landing`): a
   // living actor, an agent only if the skill affects it, the caster only
-  // with self_motion. Shared by ResolveSkillTargets and AreaMotion.
+  // with self_motion. The planner's (ResolveSkillTargets: the forced moves).
   const Actor* MotionThingAt(Position p, const SkillConfig& skill, const Agent& caster,
                              Position landing) const;
-  // Where a PushOut moves `mover`, on ring cell `p`, away from `centre`
-  // (ResolveDash's rule, landings read with the caster on `landing`, as the
-  // step reads them once the caster moved). Shared by ResolveSkillTargets
-  // and AreaMotion.
+  // Where a PushOut would move `mover`, on ring cell `p`, away from `centre`
+  // (ResolveDash's rule, landings read with the caster on `landing`): the
+  // planner's prediction of its Motion effect.
   Position PushLanding(const SkillConfig& skill, Position p, Position centre, ObjectId mover,
                        const Agent& caster, Position landing) const;
-  // The ring cell a PullIn takes its one thing from (caster on `landing`):
-  // the first MotionThingAt by ring priority (up, right, down, left), only
-  // into a walkable centre no living actor holds; nullopt for none.
-  std::optional<Position> PullFrom(const SkillConfig& skill, Position centre, const Agent& caster,
-                                   Position landing) const;
-  // Resolves one skill (caster motion, area, tags, damage, revive, root, area
-  // motion); returns its targets (centre and affected, for the SkillUse).
-  SkillTargets UseSkill(Companion& caster, const SkillConfig& skill);
-  // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for Cross.
-  std::vector<Position> AreaCells(Position centre, SkillArea area) const;
+  // The ring cell a PullIn takes its one thing from (caster on `landing`;
+  // `area`: AreaCells of the centre, the centre first): the first
+  // MotionThingAt by ring priority (up, right, down, left), only into a
+  // walkable centre no living actor holds; nullopt for none.
+  std::optional<Position> PullFrom(const SkillConfig& skill, const std::vector<Position>& area,
+                                   const Agent& caster, Position landing) const;
+  // `centre`, then its in-bounds orthogonal ring (up, right, down, left) for
+  // Cross, into `cells` (replaced)
+  void AreaCells(Position centre, SkillArea area, std::vector<Position>& cells) const;
   // The one definition of "affected": a standing agent (alive, not downed),
   // or for an affects_downed skill a downed one, passing the skill's filter
   // and, without friendly fire, not of the caster's faction (so never the
@@ -1043,11 +1105,6 @@ class BaseEnv {
   // `def` for `tag` on a cell: its steps as a step timer (n + 1 in a step),
   // its successor interned. Validated by the caller.
   CellTag ResolveZone(TagId tag, const ZoneDef& def);
-  // PushOut (each ring MotionThingAt, away from the centre) / PullIn
-  // (PullFrom's thing into the centre), read from the world as it is then;
-  // returns the ids of the actors it really moved.
-  std::vector<ObjectId> AreaMotion(const SkillConfig& skill, Position centre,
-                                   const Agent& caster);
 
   int rows_;
   int cols_;
@@ -1102,16 +1159,8 @@ class BaseEnv {
   // CanUseSkill, also giving the rule that gives the slot its effective skill
   // (nullptr: the equipped one): the context is evaluated once per use.
   bool CanUseSkill(const Companion& comp, int slot, const ContextSkillRule*& rule) const;
-
-  // The skill each agent's use settled on when the step read the intentions
-  // (GatherIntentions), for ResolveSkills: indexed like GetAllAgents() (the
-  // action vector), rebuilt every step.
-  struct IntendedSkill {
-    ObjectId caster = kInvalidObjectId;
-    int slot = -1;  // -1: no skill use
-    int rule = -1;  // Index in context_skills_ of the rule that gave it; -1: equipped
-  };
-  std::vector<IntendedSkill> intended_skills_;
+  // Index in context_skills_ of `rule` (one of them), -1 for nullptr
+  int RuleIndex(const ContextSkillRule* rule) const;
 
   int max_downs_ = kDefaultMaxDowns;  // Level data (SetMaxDowns)
   // Level data (SetContextSkills)
@@ -1171,17 +1220,37 @@ class BaseEnv {
     bool touched = false;   // Any activity (a hit, a heal, a defeat, a revive)
     int revive_health = 0;  // The HP it gets up with (the highest planned)
     ObjectId reviver = kInvalidObjectId;  // kInvalidObjectId: no revive
+    // It moved itself this turn (walked, or its own dash / teleport moved
+    // it): a forced move then leaves a companion where its own motion put it
+    // (AreaMotion). Not health: never reported.
+    bool moved_itself = false;
   };
   struct Turn {
     // Per agent, in agent-index order as the turn began (BeginTurn); an agent
     // created during the turn is appended when first touched (not Marked)
     std::vector<LedgerEntry> ledger;
-    void Clear() { ledger.clear(); }  // Keeps the capacity
+    // The turn's skill plans, in caster agent-index order: the first
+    // plan_count are this turn's; the rest keep their capacity for the next
+    // turns (no allocation once grown)
+    std::vector<SkillPlan> plans;
+    size_t plan_count = 0;
+    // UseSkill's scratch: the agents a use hits (parallel to its `did`), and
+    // whether each is hit on the area (else on the path only)
+    std::vector<Agent*> hit;
+    std::vector<char> hit_on_area;
+    void Clear() {  // Keeps the capacity
+      ledger.clear();
+      plan_count = 0;
+      hit.clear();
+      hit_on_area.clear();
+    }
   };
   Turn turn_;
   // Its entry (appended for an agent the turn began without)
   LedgerEntry& LedgerOf(Agent& agent);
   const LedgerEntry* FindLedger(const Agent& agent) const;
+  // A companion that moved itself this turn (LedgerEntry::moved_itself)
+  bool MovedItselfThisTurn(const Agent& agent) const;
   // During a step: a weakness already defeated it this turn
   bool IsDefeatedThisTurn(const Agent& agent) const;
   // `caster`'s revive of `ally` (down as the turn began) with `health`: kept

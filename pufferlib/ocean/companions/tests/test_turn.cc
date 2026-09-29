@@ -1,9 +1,12 @@
 // Copyright 2024
 // Unit tests for the phased turn: a turn totals every agent's damage and
 // heals (Marked on the total), and its downs, deaths and revives happen at its
-// end; nothing changes HP, alive or down during a Step
+// end; nothing changes HP, alive or down during a Step. Every skill use is
+// planned from the world as the turn began (simultaneous casters).
 
+#include <algorithm>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -434,18 +437,26 @@ TEST(TestAWeaknessDefeatIsZeroWhateverTheHeals) {
   ASSERT_EQ(t.change, -5);
 }
 
-// A defeated agent stays in play until the end of the turn: its own reaction
-// fires and reaches it (result and damage), and a later skill pushes it
+// A defeated agent stays in play until the end of the turn: pushed along the
+// lake this turn, it is electrified where it stands after the motion (the
+// storm's cell), defeated there, and its own reaction still fires and
+// reaches it (result and damage); the push that moved it hits it too
 TEST(TestADefeatedAgentStillGetsResultsAndPushesThisTurn) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   Require(env.SetReactions({Rule("wet", "electrified", "shocked", 1, true)}), "reactions");
-  GiveBolt(env, 0, "spark", "electrified");
+  SkillConfig storm;  // Electrifies the cell 2 ahead
+  storm.name = "storm";
+  storm.targeting = SkillTargeting::Ground;
+  storm.range = 2;
+  storm.tags = {{"electrified", kPermanentTag}};
+  env.GetMutableSkillBook().Define(storm);
+  Require(env.SetCompanionSkill(AgentAt(env, 0)->GetId(), 0, "storm"), "storm");
   GiveGust(env, 1);
-  Place(env, 0, {3, 1});  // Sparks right: (3,2), (3,3), the imp on (3,4)
-  Place(env, 1, {3, 5});  // Gusts: the imp on its left ring cell
+  Place(env, 0, {3, 1});  // Storms right: (3,3)
+  Place(env, 1, {3, 5});  // Gusts: the imp on its left ring cell, pushed to (3,3)
   Agent* imp = AddEnemy(env, {3, 4}, 5);
-  Require(env.SetCellTag({3, 4}, "wet"), "lake");
+  for (Position p : {Position{3, 3}, Position{3, 4}}) Require(env.SetCellTag(p, "wet"), "lake");
   Require(env.SetWeaknesses(imp->GetId(), {{"wet", "electrified"}}), "weak_to");
   std::vector<Action> actions = Stays(env);
   actions[0] = Use(MovementAction::Right);
@@ -688,6 +699,378 @@ TEST(TestAThrowingStepAppliesTheLedger) {
   env.SaveSnapshot();  // Between two steps
   env.Step(Stays(env));
   ASSERT_EQ(a->GetHealth(), 9);  // Applied once
+}
+
+// =============================================================================
+// Skill uses planned from the world as the turn began
+// =============================================================================
+
+static std::string TagName(const BaseEnv& env, TagId tag) {
+  return tag == kInvalidTag ? std::string("-") : env.GetTagTable().Name(tag);
+}
+
+// The last step's reports and the world it left, by ROLE (ids and agent
+// indices dropped), the lines sorted: two worlds that differ only in their
+// agents' order must give the same text.
+static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles) {
+  auto role = [&roles](ObjectId id) {
+    auto it = roles.find(id);
+    return it == roles.end() ? std::string("-") : it->second;
+  };
+  std::vector<std::string> lines;
+  for (const auto& u : env.GetLastSkillUses()) {
+    std::ostringstream out;
+    out << "use " << role(u.caster) << " " << u.skill << " " << u.slot << " " << u.target.row
+        << "," << u.target.col << ":";
+    std::vector<std::string> affected;
+    for (const auto& a : u.affected) {
+      affected.push_back(role(a.id) + "/" + std::to_string(a.effects));
+    }
+    std::sort(affected.begin(), affected.end());
+    for (const std::string& a : affected) out << " " << a;
+    lines.push_back(out.str());
+  }
+  for (const auto& t : env.GetLastTagsApplied()) {
+    std::ostringstream out;
+    out << "tag " << role(t.agent) << " " << TagName(env, t.tag) << " " << t.duration << " "
+        << role(t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
+        << static_cast<int>(t.kind) << " " << (t.reaction >= 0);
+    lines.push_back(out.str());
+  }
+  for (const auto& r : env.GetLastReactions()) {
+    lines.push_back("reaction " + std::to_string(r.rule) + " " + role(r.trigger) + " " +
+                    TagName(env, r.tag) + " " + std::to_string(r.affected.size()));
+  }
+  for (const auto& d : env.GetLastDefeats()) lines.push_back("defeat " + role(d.agent));
+  for (ObjectId id : env.GetLastDowns()) lines.push_back("down " + role(id));
+  for (const auto& r : env.GetLastRevives()) {
+    lines.push_back("revive " + role(r.reviver) + " " + role(r.revived));
+  }
+  for (const auto& t : env.GetLastTurnHealth()) {
+    lines.push_back("health " + role(t.agent) + " " + std::to_string(t.damage) + " " +
+                    std::to_string(t.heal) + " " + std::to_string(t.change) + " " +
+                    std::to_string(static_cast<int>(t.outcome)));
+  }
+  for (const Agent* a : env.GetObjectManager().GetAllAgents()) {
+    std::ostringstream out;
+    out << "agent " << role(a->GetId()) << " " << a->GetHealth() << " " << a->IsAffectable()
+        << " " << a->GetPosition().row << "," << a->GetPosition().col << ":";
+    std::vector<std::string> marks;
+    for (const AgentTag& t : a->GetTags()) {
+      marks.push_back(TagName(env, t.id) + "/" + std::to_string(t.duration));
+    }
+    for (const auto& st : a->GetStatuses()) {
+      marks.push_back("s" + std::to_string(static_cast<int>(st.type)) + "/" +
+                      std::to_string(st.duration));
+    }
+    if (const auto* c = dynamic_cast<const Companion*>(a)) {
+      marks.push_back("cooldown/" + std::to_string(c->GetCooldown(0)));
+    }
+    std::sort(marks.begin(), marks.end());
+    for (const std::string& m : marks) out << " " << m;
+    lines.push_back(out.str());
+  }
+  std::sort(lines.begin(), lines.end());
+  std::ostringstream out;
+  for (const std::string& l : lines) out << l << "\n";
+  return out.str();
+}
+
+using Affected = std::vector<BaseEnv::AffectedAgent>;
+constexpr unsigned kTagsFx = BaseEnv::kSkillEffectTags;
+constexpr unsigned kRootFx = BaseEnv::kSkillEffectRoot;
+constexpr unsigned kMotionFx = BaseEnv::kSkillEffectMotion;
+
+static int IndexOf(const BaseEnv& env, ObjectId id) {
+  return dynamic_cast<const Agent*>(env.GetObjectManager().GetActor(id))->GetAgentIndex();
+}
+
+// Three casters, whatever their indices: V's vortex (right, centre (3,4))
+// pulls F from its up ring cell; F's fireball aims down from (2,4), where F
+// began the turn (centre (5,4), not (6,4) from the cell it is pulled to), and
+// burns and pushes the gob E on its right ring cell; B's bolt (down) zaps V;
+// the gob G on the vortex's right ring cell is rooted. Sequential casters
+// made F's aim depend on who came first; the plans read the world as the turn
+// began, so only the report order depends on the indices.
+TEST(TestSwappingTwoCastersIndicesChangesNoOutcome) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 3, 1, 0, 42);
+    MakeArena(env);
+    const int v = swapped ? 2 : 0, f = 1, b = swapped ? 0 : 2;
+    Agent* vortex = Place(env, v, {3, 1});
+    Agent* fire = Place(env, f, {2, 4});
+    Agent* bolt = Place(env, b, {1, 1});
+    Agent* e = AddEnemy(env, {5, 5});
+    Agent* g = AddEnemy(env, {3, 5});
+    Require(env.SetCompanionSkill(vortex->GetId(), 0, "vortex"), "vortex");
+    Require(env.SetCompanionSkill(fire->GetId(), 0, "fireball"), "fireball");
+    GiveBolt(env, b, "zap", "zapped");
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(v)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(f)] = Use(MovementAction::Down);
+    actions[static_cast<size_t>(b)] = Use(MovementAction::Down);
+    env.Step(actions);
+    ASSERT_TRUE(fire->GetPosition() == (Position{3, 4}));  // Pulled
+    ASSERT_TRUE(fire->IsRooted());
+    ASSERT_TRUE(e->GetPosition() == (Position{5, 6}));     // Pushed
+    ASSERT_TRUE(Has(env, e, "burning"));
+    ASSERT_TRUE(g->GetPosition() == (Position{3, 5}));
+    ASSERT_TRUE(g->IsRooted());
+    ASSERT_TRUE(Has(env, vortex, "zapped"));
+    const auto& uses = env.GetLastSkillUses();
+    ASSERT_EQ(uses.size(), static_cast<size_t>(3));
+    for (size_t i = 1; i < uses.size(); ++i) {  // Reported in caster index order
+      ASSERT_TRUE(IndexOf(env, uses[i - 1].caster) < IndexOf(env, uses[i].caster));
+    }
+    for (const auto& u : uses) {
+      if (u.caster == fire->GetId()) ASSERT_TRUE(u.target == (Position{5, 4}));
+    }
+    traces[swapped] = RoleTrace(env, {{vortex->GetId(), "V"},
+                                      {fire->GetId(), "F"},
+                                      {bolt->GetId(), "B"},
+                                      {e->GetId(), "E"},
+                                      {g->GetId(), "G"}});
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
+  }
+}
+
+// A bolt's line is traced as the turn began: it stops on the gob's cell (3,2).
+// The gob walks on along the line to (3,3), out of it: missed (the line is
+// not traced again). A blast's gob walking off its ring dodges it too.
+TEST(TestAnEnemyWalkingAwayIsMissed) {
+  {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {3, 1});
+    GiveBolt(env, 0, "zap", "zapped", 2);
+    Agent* gob = AddEnemy(env, {3, 2});
+    env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Right)});
+    ASSERT_TRUE(gob->GetPosition() == (Position{3, 3}));
+    ASSERT_FALSE(Has(env, gob, "zapped"));
+    ASSERT_EQ(gob->GetHealth(), 5);
+    ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).target == (Position{3, 2}));
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).affected.empty());
+  }
+  {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    SkillConfig blast;  // A cross 3 ahead, burning and 1 damage, no motion
+    blast.name = "blast";
+    blast.targeting = SkillTargeting::Ground;
+    blast.range = 3;
+    blast.area = SkillArea::Cross;
+    blast.tags = {{"burning", kPermanentTag}};
+    blast.damage = 1;
+    env.GetMutableSkillBook().Define(blast);
+    Agent* caster = Place(env, 0, {3, 1});  // Right: centre (3,4)
+    Require(env.SetCompanionSkill(caster->GetId(), 0, "blast"), "blast");
+    Agent* gob = AddEnemy(env, {2, 4});     // Its up ring cell: walks up, out
+    env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Up)});
+    ASSERT_TRUE(gob->GetPosition() == (Position{1, 4}));
+    ASSERT_FALSE(Has(env, gob, "burning"));
+    ASSERT_EQ(gob->GetHealth(), 5);
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).affected.empty());
+  }
+}
+
+// The cells are fixed as the turn began, the hits land on whoever stands on
+// them after the walking: a gob walking onto the fireball's ring burns (a
+// push is planned on who stood there as the turn began: it is not pushed); a
+// gob walking onto the bolt's impact cell is hit; one walking into the bolt's
+// line before that cell is not (the line is not traced again).
+TEST(TestAnAgentWalkingIntoTheAreaIsHit) {
+  {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});  // Fireball right: centre (3,4)
+    Require(env.SetCompanionSkill(caster->GetId(), 0, "fireball"), "fireball");
+    Agent* gob = AddEnemy(env, {2, 5});     // Walks left onto the up ring cell (2,4)
+    env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Left)});
+    ASSERT_TRUE(gob->GetPosition() == (Position{2, 4}));
+    ASSERT_TRUE(Has(env, gob, "burning"));
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).affected == (Affected{{gob->GetId(), kTagsFx}}));
+  }
+  {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {5, 1});
+    GiveBolt(env, 0, "zap", "zapped", 1);      // Right: nobody on the line, centre (5,4)
+    Agent* in_line = AddEnemy(env, {6, 3});    // Walks up into the line: (5,3)
+    Agent* on_impact = AddEnemy(env, {6, 4});  // Walks up onto the impact cell: (5,4)
+    const Action up = EncodeAction(MovementAction::Up);
+    env.Step({Use(MovementAction::Right), up, up});
+    ASSERT_TRUE(in_line->GetPosition() == (Position{5, 3}));
+    ASSERT_TRUE(on_impact->GetPosition() == (Position{5, 4}));
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).target == (Position{5, 4}));
+    ASSERT_TRUE(Has(env, on_impact, "zapped"));
+    ASSERT_EQ(on_impact->GetHealth(), 4);
+    ASSERT_FALSE(Has(env, in_line, "zapped"));
+    ASSERT_EQ(in_line->GetHealth(), 5);
+  }
+}
+
+// Exposes the intents phase
+class PlanningEnv : public SynchroEnv {
+ public:
+  using SynchroEnv::SynchroEnv;
+  void Gather(const std::vector<Action>& actions) { GatherIntentions(actions); }
+};
+
+// The cooldown is spent as the use is planned (the intents phase), and a use
+// whose target walked out of its area still happened: spent, reported,
+// affecting nobody.
+TEST(TestTheCooldownIsSpentWhenTheUseIsPlanned) {
+  {
+    PlanningEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});
+    Require(env.SetCompanionSkill(caster->GetId(), 0, "fireball"), "fireball");
+    env.Gather({Use(MovementAction::Right)});
+    ASSERT_EQ(AsCompanion(caster)->GetCooldown(0), 3);
+  }
+  {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});
+    GiveBolt(env, 0, "zap", "zapped");
+    SkillConfig zap = *env.GetSkillBook().Find("zap");
+    zap.cooldown = 3;
+    env.GetMutableSkillBook().Define(zap);
+    Agent* gob = AddEnemy(env, {3, 2});  // Stops the bolt as the turn begins, walks away
+    env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Down)});
+    ASSERT_TRUE(gob->GetPosition() == (Position{4, 2}));
+    ASSERT_FALSE(Has(env, gob, "zapped"));
+    ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).affected.empty());
+    ASSERT_EQ(AsCompanion(caster)->GetCooldown(0), 3);
+    env.Step(Stays(env));
+    ASSERT_EQ(AsCompanion(caster)->GetCooldown(0), 2);
+  }
+}
+
+// A caster down as the turn begins cannot cast; one the turn takes to 0 still
+// casts (it goes down at the end)
+TEST(TestACasterDownAtTurnStartCannotCastOneGoingDownStillCasts) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* down = Place(env, 0, {3, 1});
+  Agent* going = Place(env, 1, {5, 1});
+  Require(env.SetCompanionSkill(down->GetId(), 0, "fireball"), "fireball");
+  GiveBolt(env, 1, "zap", "zapped");
+  going->SetMaxHealth(5);
+  going->RestoreHealth(1);
+  Require(env.SetCellTag({5, 1}, "burning", Hurting(1)), "fire");
+  Agent* gob = AddEnemy(env, {5, 3});
+  DownCompanion(env, 0);
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Right), kStay});
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastSkillUses().at(0).caster, going->GetId());
+  ASSERT_TRUE(Has(env, gob, "zapped"));
+  ASSERT_EQ(AsCompanion(down)->GetCooldown(0), 0);  // No use
+  ASSERT_TRUE(AsCompanion(down)->IsDowned());
+  ASSERT_TRUE(AsCompanion(going)->IsDowned());      // At the end
+}
+
+// A bolt stopped as the turn began by the first gob (3,2), which walks away
+// (down): its cells are the turn's start's, so it hits nobody, not the gob
+// behind (3,4) either
+TEST(TestAProjectileStopsOnTheFirstAgentAsTheTurnBegan) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 1});
+  GiveBolt(env, 0, "zap", "zapped");
+  Agent* first = AddEnemy(env, {3, 2});
+  Agent* behind = AddEnemy(env, {3, 4});
+  env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Down), kStay});
+  ASSERT_TRUE(first->GetPosition() == (Position{4, 2}));
+  ASSERT_TRUE(env.GetLastSkillUses().at(0).target == (Position{3, 2}));
+  ASSERT_TRUE(env.GetLastSkillUses().at(0).affected.empty());
+  ASSERT_FALSE(Has(env, first, "zapped"));
+  ASSERT_FALSE(Has(env, behind, "zapped"));
+}
+
+// A vortex (right: centre (3,4)) plans its pull on the ring thing as the turn
+// began: the ally above (first by ring priority). The ally walks away up: its
+// own motion wins (not pulled; out of the cells, not rooted either), and the
+// pull does not take the gob on the right ring cell instead: the gob is only
+// rooted where it stands.
+TEST(TestAPullTakesTheRingThingAsTheTurnBegan) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});
+  Agent* ally = Place(env, 1, {2, 4});
+  Agent* gob = AddEnemy(env, {3, 5});
+  Require(env.SetCompanionSkill(caster->GetId(), 0, "vortex"), "vortex");
+  const BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(caster), 0, Direction::Right);
+  ASSERT_TRUE(p.affected ==
+              (Affected{{ally->GetId(), kRootFx | kMotionFx}, {gob->GetId(), kRootFx}}));
+  env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Up), kStay});
+  ASSERT_TRUE(ally->GetPosition() == (Position{1, 4}));
+  ASSERT_FALSE(ally->IsRooted());
+  ASSERT_TRUE(gob->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(gob->IsRooted());
+  ASSERT_TRUE(env.GetLastSkillUses().at(0).affected == (Affected{{gob->GetId(), kRootFx}}));
+}
+
+// Two dashes planned onto one cell (3,5): the lower index lands there; the
+// other falls back along its line to the next free cell (4,5) and keeps its
+// planned area and centre (3,5), so its cross electrifies the winner there.
+TEST(TestADashLosingItsLandingFallsBackAndKeepsItsArea) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  env.GetMutableGrid().SetCell({2, 5}, CellKind::Wall);  // b's dash up stops at (3,5)
+  Agent* a = Place(env, 0, {3, 1});                      // Dashes right to (3,5)
+  Agent* b = Place(env, 1, {6, 5});                      // Dashes up to (3,5)
+  Require(env.SetCompanionSkill(a->GetId(), 0, "lightningStep"), "a");
+  Require(env.SetCompanionSkill(b->GetId(), 0, "lightningStep"), "b");
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Up)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(b->GetPosition() == (Position{4, 5}));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
+  ASSERT_TRUE(env.GetLastSkillUses().at(1).target == (Position{3, 5}));
+  ASSERT_TRUE(Has(env, a, "electrified"));  // On b's centre
+  ASSERT_TRUE(Has(env, b, "electrified"));  // On a's down ring cell
+}
+
+// A tag_path dash's path is its crossed cells as the turn began: a gob
+// walking off it dodges, one walking onto it is hit (the dash crosses the
+// cells, whoever stands there after the walking)
+TEST(TestADashPathIsItsCellsAsTheTurnBegan) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* caster = Place(env, 0, {3, 1});  // lightningStep right: path (3,2)-(3,4), lands (3,5)
+  Require(env.SetCompanionSkill(caster->GetId(), 0, "lightningStep"), "lightningStep");
+  Agent* off = AddEnemy(env, {3, 3});   // Walks down, off the path
+  Agent* onto = AddEnemy(env, {2, 2});  // Walks down, onto the path
+  const Action down = EncodeAction(MovementAction::Down);
+  env.Step({Use(MovementAction::Right), down, down});
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(off->GetPosition() == (Position{4, 3}));
+  ASSERT_TRUE(onto->GetPosition() == (Position{3, 2}));
+  ASSERT_FALSE(Has(env, off, "electrified"));
+  ASSERT_TRUE(Has(env, onto, "electrified"));
+  ASSERT_TRUE(env.GetLastSkillUses().at(0).affected ==
+              (Affected{{caster->GetId(), 0}, {onto->GetId(), kTagsFx}}));
+}
+
+// Pushes and pulls move the things (not only agents) on the ring as the turn
+// began: a boulder pushed off a fireball's ring, one pulled into a vortex
+TEST(TestPushesAndPullsMoveThingsPlannedAsTheTurnBegan) {
+  for (const char* skill : {"fireball", "vortex"}) {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});  // Right: centre (3,4)
+    Require(env.SetCompanionSkill(caster->GetId(), 0, skill), skill);
+    Actor* boulder = env.GetMutableObjectManager().CreateActor<Actor>({3, 5});  // Right ring cell
+    env.Step({Use(MovementAction::Right)});
+    const bool push = std::string(skill) == "fireball";
+    ASSERT_TRUE(boulder->GetPosition() == (push ? Position{3, 6} : Position{3, 4}));
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).affected.empty());  // Agents only
+  }
 }
 
 // =============================================================================

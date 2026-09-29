@@ -1099,20 +1099,23 @@ TEST(TestRootedStatusStrings) {
 // Resolution order and area edge cases
 // =============================================================================
 
-TEST(TestLaterCasterActsFromWhereAnEarlierSkillMovedIt) {
+// Every use is planned from the world as the turn began: b, pulled into a's
+// vortex this turn, still aims from the cell it began the turn on.
+TEST(TestCastersAimFromWhereTheTurnBegan) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 1});   // vortex right: target (3,4)
-  Agent* b = Place(env, 1, {2, 4});   // above the target: pulled in first
+  Agent* b = Place(env, 1, {2, 4});   // above the target: pulled in
   env.SetCompanionSkill(a->GetId(), 0, "vortex");
   env.SetCompanionSkill(b->GetId(), 0, "fireball");
   env.Step({Use(MovementAction::Right), Use(MovementAction::Down)});
   ASSERT_TRUE(b->GetPosition() == (Position{3, 4}));
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
   ASSERT_EQ(env.GetLastSkillUses()[1].skill, std::string("fireball"));
-  // 3 down from the pulled cell (3,4), not from (2,4), which would give (5,4).
-  ASSERT_TRUE(env.GetLastSkillUses()[1].target == (Position{6, 4}));
-  // Rooted by the earlier vortex, it still cast this step; root blocks next step.
+  // 3 down from (2,4), where b began the turn, not from the pulled cell (3,4),
+  // which would give (6,4).
+  ASSERT_TRUE(env.GetLastSkillUses()[1].target == (Position{5, 4}));
+  // Rooted by the vortex, it still cast this step; root blocks next step.
   ASSERT_TRUE(b->HasStatus(StatusType::Rooted));
   ASSERT_EQ(AsCompanion(b)->GetCooldown(0), 3);
   env.Step({kStay, EncodeAction(MovementAction::Right)});
@@ -1487,7 +1490,8 @@ TEST(TestZoneTagsFollowSkillMotions) {
     ASSERT_TRUE(a->GetPosition() == (Position{3, 5}));
     ASSERT_TRUE(Has(env, a, "oil"));
   }
-  {  // A fireball pushes `up` from (2,4) onto a wet cell (1,4)
+  {  // A fireball pushes `up` from (2,4) onto a wet cell (1,4): every use's
+     // motions come first (the zone lands then), then its hits (the tags)
     SynchroEnv env(10, 10, 2, 1, 0, 42);
     MakeArena(env);
     env.SetCellTag({1, 4}, "wet", kPermanentTag);
@@ -1497,10 +1501,11 @@ TEST(TestZoneTagsFollowSkillMotions) {
     env.Step({Use(MovementAction::Right), kStay});
     ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));
     ASSERT_TRUE(Has(env, up, "wet"));
+    ASSERT_TRUE(Has(env, up, "burning"));
     const auto& landed = env.GetLastTagsApplied();
     ASSERT_EQ(landed.size(), static_cast<size_t>(2));
-    ASSERT_EQ(landed[0].cause, std::string("fireball"));
-    ASSERT_EQ(landed[1].cause, std::string("zone"));
+    ASSERT_EQ(landed[0].cause, std::string("zone"));
+    ASSERT_EQ(landed[1].cause, std::string("fireball"));
   }
   {  // A vortex pulls `up` from (2,4) onto a wet centre (3,4)
     SynchroEnv env(10, 10, 2, 1, 0, 42);
@@ -2422,22 +2427,27 @@ TEST(TestPreviewPushOfTheCasterItself) {
   ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
 }
 
-// The step's SkillUse lists whom it affected: a later caster reaches what an
-// earlier one left (not what a preview before the step saw).
+// The step's SkillUse lists whom it affected, on the cells its plan fixed as
+// the turn began (the preview's before the step): b, pulled this turn, still
+// aims from (2,4). An ally walking onto b's ring is hit there.
 TEST(TestSkillUseAffectedIsTheStepsOwn) {
-  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 1});   // vortex right: centre (3,4)
-  Agent* b = Place(env, 1, {2, 4});   // above the centre: pulled in first
+  Agent* b = Place(env, 1, {2, 4});   // above the centre: pulled in
+  Agent* c = Place(env, 2, {6, 5});   // walks up onto b's right ring cell (5,5)
   env.SetCompanionSkill(a->GetId(), 0, "vortex");
   env.SetCompanionSkill(b->GetId(), 0, "fireball");
   const BaseEnv::SkillPreview before = env.PreviewSkill(*AsCompanion(b), 0, Direction::Down);
   ASSERT_TRUE(before.centre == (Position{5, 4}));  // From (2,4), before the pull
-  env.Step({Use(MovementAction::Right), Use(MovementAction::Down)});
+  ASSERT_TRUE(before.affected.empty());
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Down),
+            EncodeAction(MovementAction::Up)});
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
   ASSERT_TRUE(env.GetLastSkillUses()[0].affected == (Affected{{b->GetId(), kRootFx | kMotionFx}}));
-  ASSERT_TRUE(env.GetLastSkillUses()[1].target == (Position{6, 4}));  // From (3,4)
-  ASSERT_TRUE(env.GetLastSkillUses()[1].affected.empty());
+  ASSERT_TRUE(env.GetLastSkillUses()[1].target == before.centre);
+  ASSERT_TRUE(env.GetLastSkillUses()[1].affected == (Affected{{c->GetId(), kTagsFx}}));
+  ASSERT_TRUE(c->GetPosition() == (Position{5, 5}));  // Not planned as the turn began: not pushed
 }
 
 // =============================================================================
