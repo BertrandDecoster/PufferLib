@@ -114,6 +114,12 @@ class BaseEnv {
   // SetTaskLens). Subclasses normally should not override.
   virtual bool IsSuccess() const { return success_; }
   virtual void ResetSuccess() { success_ = false; }
+  // Whether a lens's success still counts: latched already, or the episode
+  // not ended yet (no end reason latched; the step that reaches the horizon
+  // included, its reason is latched after). Once the episode ended otherwise
+  // (the horizon, the team down: the level is lost), nothing succeeds any
+  // more: Step latches no success and the lenses pay no win reward.
+  bool SuccessCounts() const { return success_ || end_reason_ == EndReason::None; }
   // The latched outcome and end reason. SetTaskLens, LoadSnapshot and Reset
   // clear them (a new episode).
   void ResetOutcome() {

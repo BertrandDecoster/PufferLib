@@ -211,7 +211,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     // leave a winning configuration (matches pre-TaskLens semantics where
     // CalculateRewards set success_ once per episode). The only outcome a
     // lens latches: a task fails only by the team down or the horizon (IsDone).
-    if (!success_ && task_lens_->IsSuccess(*this)) success_ = true;
+    // Never once the episode ended (SuccessCounts): past the horizon, the
+    // level is lost.
+    if (!success_ && SuccessCounts() && task_lens_->IsSuccess(*this)) success_ = true;
   }
   result.rewards = reward_buffer_;
 
@@ -255,9 +257,10 @@ EndReason BaseEnv::GetEndReason() const {
 }
 
 EndReason BaseEnv::ComputeEndReason() const {
-  // IsDone's terms, the success first, then the team down: on a done env,
-  // what is left is the horizon
-  if (IsSuccess()) return EndReason::Success;
+  // IsDone's terms (success_, not the virtual IsSuccess, as IsDone reads it),
+  // the success first, then the team down: on a done env, what is left is the
+  // horizon
+  if (success_) return EndReason::Success;
   if (IsTeamDown()) return EndReason::TeamDown;
   assert(tick_ >= horizon_ && "ComputeEndReason on an env that is not done");
   return EndReason::Horizon;

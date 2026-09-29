@@ -837,7 +837,11 @@ success), else `TeamDown` (`IsTeamDown()`, any env: the level is lost), else `Ho
 (tick >= horizon). Only a team down or the horizon fails a task (a bad situation stays
 salvageable): no lens has a failure of its own (Aggro's dead enemy, a Dodge companion
 down), and `TaskFailed` (3) is no longer produced (since C API 1.6; the value stays,
-the enums are append-only). A lens's own `IsDone` (success or horizon) is for tests and
+the enums are append-only). No success after the episode ended otherwise: `Step`
+latches one only while `BaseEnv::SuccessCounts()` (success latched, or no end reason
+latched yet: the horizon step itself still can), and the lenses pay their win reward
+only then (a goal reached, or a Dodge companion revived, past the horizon wins
+nothing: the level is lost). A lens's own `IsDone` (success or horizon) is for tests and
 tools; `BaseEnv` never calls it. The reason is fixed when done first
 becomes true (latched by `Step`, `SetTaskLens*` and `LoadSnapshot`, cleared by
 `ResetOutcome`): a team down after the horizon, or after loading a snapshot at

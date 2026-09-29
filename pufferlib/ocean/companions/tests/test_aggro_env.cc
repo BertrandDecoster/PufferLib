@@ -904,6 +904,23 @@ TEST(TestAKillAfterASuccessKeepsTheSuccess) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
 }
 
+// The enemy lured onto the target after the horizon is no success: the
+// episode ended there. Nothing latches; kTimePenalty, no kWinReward.
+TEST(TestNoAggroSuccessAfterTheHorizon) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 2);
+  AgentFSM* goblin = GoblinNextToCompanion(env, 3);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  env.Step({stay, stay});
+  ASSERT_TRUE(env.Step({stay, stay}).done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  env.GetMutableObjectManager().UpdatePosition(goblin->GetId(), env.GetTargetPosition());
+  StepResult after = env.Step({stay, stay});
+  ASSERT_TRUE(after.done);
+  ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  for (double r : after.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
+}
+
 // The end reason is fixed when done first becomes true: a kill after the
 // horizon changes nothing, the episode ended at the horizon.
 TEST(TestAKillAfterTheHorizonKeepsTheHorizonEndReason) {

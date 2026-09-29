@@ -13,7 +13,8 @@ namespace companions {
 // horizon fails a task): an ally may revive it before the horizon.
 //
 // Rewards: kSurvivalBonus per step while nobody is down (0 while someone is),
-// plus kWinReward on success.
+// plus kWinReward on success (while it counts: BaseEnv::SuccessCounts, so
+// not after the horizon ended the episode with someone down).
 class DodgeLens : public TaskLens {
  public:
   static constexpr double kSurvivalBonus = 0.1;

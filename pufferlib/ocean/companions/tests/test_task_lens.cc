@@ -1,6 +1,7 @@
 // Copyright 2024
 // Test suite for TaskLens interface
 
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -324,6 +325,33 @@ TEST(TestResetAndLoadSnapshotClearTheLatchedOutcome) {
   aggro.Reset();
   ASSERT_FALSE(aggro.IsDone());
   ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
+}
+
+// Reaching the goal after the horizon is no success: the episode ended there
+// (the level is lost), nothing latches and no kWinReward is paid. After a
+// latched success, the goal still pays it.
+TEST(TestNoSynchroSuccessAfterTheHorizon) {
+  const Action stay = EncodeAction(MovementAction::Stay);
+  SynchroEnv late(6, 6, 1, 1, 0, 42, 0, 2);
+  late.Step({stay});
+  ASSERT_TRUE(late.Step({stay}).done);
+  ASSERT_TRUE(late.GetEndReason() == EndReason::Horizon);
+  ObjectManager& om = late.GetMutableObjectManager();
+  om.UpdatePosition(om.GetAllCompanions()[0]->GetId(), late.GetSynchroPositions()[0]);
+  StepResult after = late.Step({stay});
+  ASSERT_TRUE(after.done);
+  ASSERT_FALSE(late.IsSuccess());
+  ASSERT_TRUE(late.GetEndReason() == EndReason::Horizon);
+  ASSERT_TRUE(std::abs(after.rewards[0]) < 1e-9);  // Progress minus time, no win
+
+  SynchroEnv won(6, 6, 1, 1, 0, 42, 0, 2);
+  ObjectManager& wom = won.GetMutableObjectManager();
+  wom.UpdatePosition(wom.GetAllCompanions()[0]->GetId(), won.GetSynchroPositions()[0]);
+  ASSERT_TRUE(won.Step({stay}).rewards[0] > SynchroEnv::kWinReward - 1e-9);
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(won.Step({stay}).rewards[0] > SynchroEnv::kWinReward - 1e-9);
+    ASSERT_TRUE(won.GetEndReason() == EndReason::Success);
+  }
 }
 
 // Why the episode ended: None while it runs, then the latched success, or the

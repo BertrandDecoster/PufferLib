@@ -36,8 +36,9 @@ double SynchroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   double time_penalty = -static_cast<double>(num_agents) * kProgressReward;
   double reward = kProgressReward * static_cast<double>(on_synchro) + time_penalty;
 
-  // Win reward if all synchro cells are covered
-  if (IsSuccess(env)) {
+  // Win reward if all synchro cells are covered, while a success counts (not
+  // past an episode ended otherwise: BaseEnv::SuccessCounts)
+  if (IsSuccess(env) && env.SuccessCounts()) {
     reward += kWinReward;
   }
 

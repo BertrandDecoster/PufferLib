@@ -15,7 +15,8 @@ namespace companions {
 // dead enemy just leaves it unwinnable until the horizon (only a team down or
 // the horizon fails a task).
 //
-// Rewards: kWinReward on success, kTimePenalty per other step (a kill's
+// Rewards: kWinReward on success (while it counts: BaseEnv::SuccessCounts,
+// not past an episode ended otherwise), kTimePenalty per other step (a kill's
 // included): a killed-enemy episode returns what timing out does,
 // horizon * kTimePenalty, whatever the step of the kill. A kill after a
 // latched success pays kTimePenalty, like any step with the enemy off the

@@ -142,7 +142,7 @@ TEST(TestDodgeEnvDeath) {
   env.Step(actions);
 
   // Should be done but not successful: the lone companion is down, so the
-  // whole team is (TeamDown comes before the env's own failure)
+  // whole team is (TeamDown)
   ASSERT_TRUE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());
   ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
@@ -233,6 +233,27 @@ TEST(TestDodgeEnvRevivedBeforeTheHorizonSucceeds) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
   for (double r : last.rewards) {
     ASSERT_EQ(r, DodgeEnv::kSurvivalBonus + DodgeEnv::kWinReward);
+  }
+}
+
+// The horizon ended the episode (a companion down there): a revive after it
+// succeeds no more. Nothing latches, no kWinReward; the survival bonus is
+// paid again (nobody is down).
+TEST(TestDodgeEnvNoSuccessAfterTheHorizon) {
+  DodgeEnv env(7, 2, 100, 2, 42);  // Horizon 2, no hazards
+  const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
+  Companion* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
+  companion->TakeDamage(companion->GetHealth());
+  env.Step(stay);
+  ASSERT_TRUE(env.Step(stay).done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  ASSERT_TRUE(companion->Revive(1));
+  for (int i = 0; i < 2; ++i) {
+    StepResult after = env.Step(stay);
+    ASSERT_TRUE(after.done);
+    ASSERT_FALSE(env.IsSuccess());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+    for (double r : after.rewards) ASSERT_EQ(r, DodgeEnv::kSurvivalBonus);
   }
 }
 

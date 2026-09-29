@@ -28,7 +28,9 @@ double DodgeLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   (void)agent_id;  // Same reward for all agents in cooperative task
   if (AnyCompanionIncapacitated(env)) return 0.0;  // No success either
   double reward = kSurvivalBonus;
-  if (IsSuccess(env)) reward += kWinReward;
+  // While a success counts (not past an episode ended otherwise:
+  // BaseEnv::SuccessCounts)
+  if (IsSuccess(env) && env.SuccessCounts()) reward += kWinReward;
   return reward;
 }
 

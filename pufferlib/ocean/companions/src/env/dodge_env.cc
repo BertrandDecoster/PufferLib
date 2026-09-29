@@ -243,7 +243,7 @@ void DodgeEnv::PreStep() {
 
 void DodgeEnv::PostStep() {
   // The outcome is the lens's (DodgeLens: everyone up at the horizon), latched
-  // by BaseEnv::Step after this hook.
+  // by BaseEnv::Step after this hook: a DodgeEnv without a lens never succeeds.
 
   // Spawn hazards at regular intervals, AFTER movement has resolved so the
   // companion-cell exclusion inside SpawnHazard sees their new position.

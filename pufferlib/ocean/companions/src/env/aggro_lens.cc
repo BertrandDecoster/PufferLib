@@ -46,7 +46,9 @@ bool AggroLens::IsSuccess(const BaseEnv& env) const {
 double AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   (void)agent_id;  // Same reward for all agents in cooperative task
 
-  if (IsSuccess(env)) {
+  // While a success counts (not past an episode ended otherwise:
+  // BaseEnv::SuccessCounts)
+  if (IsSuccess(env) && env.SuccessCounts()) {
     return kWinReward;
   }
   return kTimePenalty;
