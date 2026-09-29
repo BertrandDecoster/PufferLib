@@ -600,13 +600,15 @@ TEST(TestACopyKeepsItsLens) {
   ASSERT_TRUE(clone->GetTaskLens()->GetKind() == TaskLens::kDodge);
 }
 
-// A DodgeEnv copy runs the Dodge lens too (its copy constructor set none).
+// A DodgeEnv copy runs the Dodge lens too (before, a copy had no lens).
 TEST(TestADodgeEnvCopyKeepsItsLens) {
   DodgeEnv dodge;
   DodgeEnv dodge_copy(dodge);
   ASSERT_TRUE(dodge_copy.GetTaskLens() != nullptr);
   ASSERT_TRUE(dodge_copy.GetTaskLens()->GetKind() == TaskLens::kDodge);
-  ASSERT_TRUE(dodge.Clone()->GetTaskLens() != nullptr);
+  std::unique_ptr<BaseEnv> clone = dodge.Clone();
+  ASSERT_TRUE(clone->GetTaskLens() != nullptr);
+  ASSERT_TRUE(clone->GetTaskLens()->GetKind() == TaskLens::kDodge);
 }
 
 // A copy and an assignment keep the latched outcome, even once the world no
@@ -630,6 +632,7 @@ TEST(TestACopyKeepsItsLatchedOutcome) {
   ASSERT_TRUE(copy.GetTaskLens()->GetKind() == TaskLens::kSynchro);
 
   SynchroEnv assigned(6, 6, 1, 1, 0, 42, 0, 10);
+  ASSERT_TRUE(assigned.SetTaskLens(std::make_unique<DodgeLens>()));
   assigned = win;
   ASSERT_TRUE(assigned.IsSuccess());
   ASSERT_TRUE(assigned.GetEndReason() == EndReason::Success);
