@@ -138,14 +138,31 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 2. `PreStep` (enemy FSM) → `GatherIntentions` (fixes each skill use's effective skill:
    the context rules are read here, once, before anyone moves) → `ResolveCollisions` →
    `ExecuteValidatedMovements`
-3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed; one
-   landing each: immunity, the tag and its status, weakness, reaction, then the zone's
-   damage if it is still affectable, see Zones and Reactions)
+3. `ApplyZoneTags`, the zone phase (every affectable agent on a zone cell: alive, not
+   downed; one landing each), in sub-phases, each over ALL the landings: a. immunity,
+   the tag and its status; b. weaknesses; c. reactions (every trigger found first,
+   then fired one by one); d. the zone's damage on those still affectable (see Zones
+   and Reactions). From here to the end of the step the zone map is READ-ONLY: a
+   reaction's `zone_becomes` waits in a pending buffer
 4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
    order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
-5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), `TickZones`
-   (zone lifetimes tick, expired zones become their successor), the downs since the
-   last report (`GetLastDowns`, after `EndStep`), `tick_++`, `PostStep`, rewards (TaskLens)
+5. Effects tick, `CommitPendingZones` (the step's reaction zones, in the order they were
+   recorded: a later write to the same cell wins), `EndStep` on every agent (tags,
+   statuses, cooldowns tick), `TickZones` (zone lifetimes tick, expired zones become
+   their successor), the downs since the last report (`GetLastDowns`, after `EndStep`),
+   `tick_++`, `PostStep`, rewards (TaskLens)
+
+**A step reads one zone map** (`BaseEnv::pending_zones_`): the map as the step began
+(after `PreStep`) is the map every read of the step sees: zone landings (the zone phase
+and a skill motion's landing), weaknesses (P), spread regions. A reaction's
+`zone_becomes` during a step is recorded, and the map changes at its end, before the
+timers (stored n + 1, so it covers its n next steps): a zone a reaction creates first
+lands NEXT step. So the order of the agents never changes an outcome of the zone phase
+(only the order of the reports), and it cannot cascade within a step: a spread fires
+once per trigger (N triggers in one region = N firings, each reaching everyone), and
+waits a step before its zone lands. Between two steps (a host's `ApplyTagTo`) there is
+no phase: a landing resolves at once and its `zone_becomes` applies at once. A step
+that throws commits what it recorded (`AbortStep`)
 
 **Step timers** (`Agent::BeginStep` / `EndStep`; zones: `BaseEnv::TickZones`): tag and
 status durations, cooldowns and zone lifetimes all count steps and all tick at the END of
@@ -294,7 +311,9 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
   resolve it were it the step's only change: no movement, no zone landing on those
   standing on zones, no enemy acting, no end-of-step timers. The clone is mid-step
   around the use (`in_step_`, `Agent::BeginStep`), so what the use sets (a
-  `zone_becomes` zone, a status) is stored as the step stores it. `SkillOutcome {usable,
+  `zone_becomes` zone, a status) is stored as the step stores it (the zones its
+  reactions set, their reports' `cells`, are committed after the use as the end of the
+  step would, timers not ticked). `SkillOutcome {usable,
   world}`: the clone after the use, whose `GetLast*` are the use's reports (skill use,
   landings, reactions, defeats, revives, and the downs it caused, not the unreported ones
   from between steps); tag ids are the clone's (read names in its table). Unusable (as
@@ -353,24 +372,34 @@ tests: `tests/test_zones.cc`):
   movement (before casts and skills), and on any agent a skill motion lands there
   (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
 - **One landing, in order** (see Reactions): immunity (nothing lands, no damage), the
-  tag and its tag status (`LandTag`), weakness (a defeated agent gets nothing more, but
-  its reaction may still spread), reaction, then the zone's own `damage`
-  (`ApplyZoneTag`), only if the agent is still affectable:
+  tag and its tag status (`PutTag`), weakness (a defeated agent gets nothing more, but
+  its reaction may still spread), reaction, then the zone's own `damage`, only if the
+  agent is still affectable:
   through `Agent::TakeDamage` (Marked applies, a companion goes down and keeps the tag).
   Reported as the landing's `damage` (the zone's, before Marked; 0 when none was dealt:
   a weakness defeated it, a reaction's damage downed or killed it).
-  The downed and the dead get no landing at all. The damage is the zone that LANDED (a
-  copy taken before the landing): an agent whose reaction changed its own cell
-  (`zone_becomes`) still takes the old zone's damage that step
-- `ApplyZoneTags` lands the zones agent by agent (index order): a zone a reaction creates
-  during the pass (`zone_becomes`) lands on the agents after it in that pass, the agents
-  before it got the old one
+  The downed and the dead get no landing at all
+- **The zone phase** (`ApplyZoneTags` → `CollectZoneLanding` per agent, then
+  `ResolveZoneLandings`) runs those steps as sub-phases, each over every landing (agent
+  order only orders the reports): a. every agent's landing (immunity, tag, status);
+  b. the weaknesses; c. the reactions: every landing's trigger is found first (the
+  first rule pairing the landed tag with one the agent carries, on the state after a
+  and b; a weakness-defeated agent still triggers a spreading one), then they fire in
+  trigger agent-index order, so one firing's outcome (removing the tag another agent
+  needed) never cancels another's trigger; d. each zone's damage. A skill motion's
+  landing (`MoveActor` → `ApplyZoneTag`) is the same phases over that one landing
+- **A step reads one map** (see Step order): a zone a reaction creates during a step
+  (`zone_becomes`) is written at the end of the step and first lands next step, tag and
+  damage; everything in the step (the zone phase, a skill motion landing on the cell,
+  weaknesses, spread regions) reads the zone as the step began
 - A caster its landing zone downs or kills gets nothing from its own skill (its
   `SkillUse` reports no Tags / Damage on it), but the rest of the use still runs: the
   others it affects are tagged, hurt, rooted, pushed
 - Lifetime: `steps` is a step timer (see Step timers): set between two steps, the zone
   lands during the n next steps; set during a step (a rule of the env), it also covers
-  the rest of that step (kept as n + 1, `BaseEnv::in_step_`) and reads n after it. `-1` =
+  the rest of that step (kept as n + 1, `BaseEnv::in_step_`) and reads n after it (a
+  reaction's `zone_becomes` is kept as n + 1 too but written at the end of the step, so
+  it lands during exactly its n next steps). `-1` =
   never expires. Zones tick in `TickZones`, right after the agents' `EndStep`; an
   expired zone becomes its successor `then`, a zone by name (the table's fields; created
   after the step, it lands from the next step and lasts its n next steps), or the cell
@@ -415,23 +444,30 @@ a status.
      reported. Each affected agent, in turn: loses `a` and `b` but those in `keep`, gets
      `result` (a permanent tag, through steps 1-3: an immune agent does not get it, a
      weakness defeats it), then takes `damage` (`TakeDamage`, if still affectable).
-     Every outcome reads the map as it was: the spread region becomes `zone_becomes`
-     (a zone by name: the table's fields, a step timer) LAST, after every outcome
+     Every outcome reads the map as the step began: the spread region becomes
+     `zone_becomes` (a zone by name: the table's fields, a step timer) at the END of the
+     step (recorded after every outcome; `ReactionReport::cells` lists the cells); a
+     host landing between steps changes it at once
   5. (a zone's landing) the zone's damage, see Zones
-- Whatever a landing sets off happens at once, inside it (a reaction during a skill's
-  tags, before its damage; during `ApplyZoneTags`; inside `ApplyTagTo`)
+- Whatever a skill's or the host's landing sets off happens at once, inside it (a
+  reaction during a skill's tags, before its damage; inside `ApplyTagTo`), but for the
+  zone change (end of step). The zone phase resolves its landings together, in
+  sub-phases (see Zones). A trigger alone that an earlier firing of the phase downed
+  or killed has nobody left to affect: nothing fires (as a defeated one)
 - Consequences of these rules worth knowing when writing a level: a zone re-lands its
   tag every step, so an agent carrying a reaction's result that is also one of its
   originals (`wet + electrified -> electrified`) reacts again with every landing of the
   other one (standing in the lake: every step). Spreading with `zone_becomes` = the
   other original (wet), everyone in the lake keeps the result, so every step each
-  agent's wet landing re-fires it, in agent-index order: N agents in the lake, N
-  firings per step, each over the whole region (N x `damage` to each), each one
-  re-setting the lake (it never runs out). A result in {a, b} is a trap: the level
+  agent's wet landing is a trigger (all found before any fires): N agents in the lake,
+  N firings per step, each over the whole region (N x `damage` to each), each one
+  re-setting the lake at the end of the step (it never runs out). A result in {a, b} is a trap: the level
   should give the result another name (`wet + electrified -> shocked`); the env keeps
   the rule as it is. A spread from an agent standing on a zone providing the TRIGGER
   tag (an oiled agent walking into the `burning` zone) spreads over that zone's region,
-  and `zone_becomes` then re-sets it (its lifetime starts again). A tag status re-lands
+  and `zone_becomes` then re-sets it at the end of the step (its lifetime starts
+  again). Two casters igniting the same oil in one step both fire (the oil is still
+  oil for the second). A tag status re-lands
   with every landing of its tag, so a zone whose tag carries Rooted or Stunned holds an
   agent indefinitely (a rooted agent can't walk out)
 - **Level data** (`SetReactions(rules, error)` / `GetReactions()`,
@@ -464,7 +500,9 @@ a status.
   agent that carried it). A `ReactionReport`'s `cells`: the cells it (re)set to
   `zone_becomes`, row-major (empty without a spread or a `zone_becomes`; a
   `zone_becomes` equal to the region's zone still lists them, its lifetime restarting),
-  so a host sees "the oil caught fire" without diffing. C API: 1.5 (see Per-step reports)
+  so a host sees "the oil caught fire" without diffing; during a step they change at
+  its end (two reactions writing one cell: the later one wins), between steps at once.
+  C API: 1.5 (see Per-step reports)
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
 (damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
@@ -489,6 +527,11 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
+- Report order in a step: the zone phase first (every zone landing in agent-index
+  order; its defeats; its reactions as they fired, trigger agent-index order, each
+  followed by its result landings), then the skill phase in resolution order (a skill
+  motion's zone landing inside its use). The C API reads the same vectors (its
+  `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
   AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a companion revived then
   downed again in one step has its second AgentDowned before its AgentRevived); at most

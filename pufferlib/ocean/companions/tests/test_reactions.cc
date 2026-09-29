@@ -1,8 +1,11 @@
 // Copyright 2024
 // Unit tests for reactions, weaknesses, immunities and tag statuses: the
-// combo rules as level data, resolved inside each tag landing
+// combo rules as level data, resolved inside each tag landing (the zone
+// phase: in sub-phases over every landing), a step reading one zone map
 
+#include <algorithm>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -696,8 +699,10 @@ TEST(TestZoneBecomesFollowsTheSuccessorChain) {
   ASSERT_EQ(env.GetCellTag({3, 4}).tag, kInvalidTag);
 }
 
-// The zone's own damage belongs to the zone that landed: an agent whose
-// reaction changed its own cell still takes the OLD zone's damage that step.
+// A step reads one zone map: an agent whose reaction changes its own cell
+// (zone_becomes) lands and takes the zone as the step began (the hot oil's
+// damage); the new zone (ash) is written at the end of the step. Unchanged
+// numbers: the old rule (the damage of the zone that landed) gave the same.
 TEST(TestAReactionChangingItsOwnCellStillTakesTheOldZonesDamage) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -718,9 +723,12 @@ TEST(TestAReactionChangingItsOwnCellStillTakesTheOldZonesDamage) {
 // A trap of the rules (kept: the level names another result): a result that
 // is one of its triggers (wet + electrified -> electrified), spreading with
 // zone_becomes = the other one (wet). Everyone in the lake keeps the result,
-// so each step every agent's wet landing re-fires it, in agent-index order:
-// N agents, N firings, each over the whole region (N damage each), and each
-// one re-sets the lake (its lifetime starts again).
+// so each step every agent's wet landing is a trigger (the zone phase finds
+// them all before any fires): N agents, N firings (once per trigger), each
+// over the whole region (N damage each), and each one re-sets the lake at the
+// end of the step (its lifetime starts again). Unchanged numbers: the old
+// agent-by-agent pass also re-fired once per agent (each firing re-landing
+// the result every trigger needs).
 TEST(TestAResultThatIsATriggerReFiresOncePerAgentInTheZone) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -910,8 +918,9 @@ TEST(TestTheZoneDamageIsZeroWhenTheReactionDownedOrKilled) {
 
 // A zone's landing that defeats (weak to (oil, oil)) deals no zone damage
 // (reported 0), but the reaction it starts still spreads: the companion on
-// the same hot oil (landed before it, 2 damage) gets the outcome, and the oil
-// becomes ash.
+// the same hot oil gets the outcome (1 damage) and, in sub-phase d, the oil's
+// own (2 damage), and the oil becomes ash at the end of the step. The reports
+// keep the zone phase's order: both zone landings, then the result.
 TEST(TestAZoneLandingDefeatStillSpreadsItsReaction) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -1576,6 +1585,324 @@ TEST(TestAnOutcomePreviewOfAnUnusableSkillIsEmpty) {
   ASSERT_TRUE(empty(o));
   env.Step(Stays(env));
   ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
+}
+
+// =============================================================================
+// A step reads one zone map: reaction zones commit at its end
+// =============================================================================
+
+// The last step's reports and the world it left, by ROLE (ids and agent
+// indices dropped), the report lines sorted: two worlds that differ only in
+// their agents' order must give the same text.
+static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles) {
+  auto role = [&roles](ObjectId id) {
+    auto it = roles.find(id);
+    return it == roles.end() ? std::string("-") : it->second;
+  };
+  std::vector<std::string> lines;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    std::ostringstream out;
+    out << "tag " << role(t.agent) << " " << Name(env, t.tag) << " " << t.duration << " "
+        << role(t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
+        << static_cast<int>(t.kind) << " " << (t.reaction >= 0);
+    lines.push_back(out.str());
+  }
+  for (const auto& r : env.GetLastReactions()) {
+    std::ostringstream out;
+    out << "reaction " << r.rule << " " << role(r.trigger) << " " << Name(env, r.tag) << " "
+        << role(r.source) << " " << r.cause << " " << static_cast<int>(r.kind) << " " << r.spread
+        << ":";
+    std::vector<std::string> outcomes;
+    for (const auto& o : r.affected) {
+      outcomes.push_back(role(o.agent) + "/" + std::to_string(o.result_landed) + "/" +
+                         std::to_string(o.defeated) + "/" + std::to_string(o.damage));
+    }
+    std::sort(outcomes.begin(), outcomes.end());
+    for (const std::string& o : outcomes) out << " " << o;
+    out << " cells";
+    for (const Position& p : r.cells) out << " " << p.row << "," << p.col;
+    lines.push_back(out.str());
+  }
+  for (const auto& d : env.GetLastDefeats()) {
+    lines.push_back("defeat " + role(d.agent) + " " + Name(env, d.zone) + " " + Name(env, d.tag));
+  }
+  for (const Agent* a : env.GetObjectManager().GetAllAgents()) {
+    std::ostringstream out;
+    out << "agent " << role(a->GetId()) << " " << a->GetHealth() << " " << a->IsAffectable()
+        << " " << a->GetPosition().row << "," << a->GetPosition().col << ":";
+    std::vector<std::string> tags;
+    for (const AgentTag& t : a->GetTags()) tags.push_back(Name(env, t.id) + "/" + std::to_string(t.duration));
+    std::sort(tags.begin(), tags.end());
+    for (const std::string& t : tags) out << " " << t;
+    for (const auto& s : a->GetStatuses()) out << " s" << static_cast<int>(s.type) << "/" << s.duration;
+    lines.push_back(out.str());
+  }
+  std::sort(lines.begin(), lines.end());
+  std::ostringstream out;
+  for (const std::string& l : lines) out << l << "\n";
+  for (int r = 0; r < env.GetRows(); ++r) {
+    for (int c = 0; c < env.GetCols(); ++c) {
+      const BaseEnv::CellTag z = env.GetCellTag({r, c});
+      if (z.tag == kInvalidTag) continue;
+      out << "zone " << r << "," << c << " " << Name(env, z.tag) << " " << z.steps << " "
+          << z.damage << "\n";
+    }
+  }
+  return out.str();
+}
+
+// The final review's repro, with combos_duo's rules (oil + burning -> burning,
+// spreading, the oil becoming the burning zone: 5 steps, 1 damage per
+// landing): an igniter carrying burning steps onto the oil a bystander stands
+// on. It used to depend on who came first in agent-index order (the igniter
+// first: the bystander then landed the NEW fire the same step, 8 HP; the
+// bystander first: 9 HP). A step now reads one map: both land the oil, the
+// reaction fires (1 damage each), and the fire, committed at the end of the
+// step, first lands NEXT step and covers exactly its 5 next steps. Both orders
+// play the same, step by step, field by field.
+TEST(TestTheZonePhaseDoesNotDependOnTheAgentsOrder) {
+  std::string traces[2];
+  for (int igniter_index : {0, 1}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions(CombosRules()), "reactions");
+    Require(env.DefineZone("burning", Zone().Lasts(5).Hurts(1).def), "burning zone");
+    Agent* igniter = Place(env, igniter_index, {3, 3});
+    Agent* bystander = Place(env, 1 - igniter_index, {3, 5});
+    const std::map<ObjectId, std::string> roles = {{igniter->GetId(), "igniter"},
+                                                   {bystander->GetId(), "bystander"}};
+    Require(env.ApplyTagTo(igniter->GetId(), "burning", kPermanentTag), "burning");
+    const std::vector<Position> oil = {{3, 4}, {3, 5}, {3, 6}};
+    SetZones(env, oil, "oil");
+
+    env.Step(With(env, igniter_index, kRight));  // Onto the oil
+    ASSERT_TRUE(igniter->GetPosition() == (Position{3, 4}));
+    ASSERT_EQ(bystander->GetHealth(), 9);  // The reaction only (not 8: no new fire this step)
+    ASSERT_EQ(igniter->GetHealth(), 9);
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+    ASSERT_EQ(env.GetLastReactions().at(0).trigger, igniter->GetId());
+    ASSERT_EQ(env.GetLastReactions().at(0).cells.size(), oil.size());
+    for (const auto& t : env.GetLastTagsApplied()) {
+      if (t.kind == TagSource::Zone) ASSERT_EQ(t.tag, Id(env, "oil"));  // Only the old zone
+    }
+    for (Position p : oil) {
+      ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "burning"));  // Committed at the end
+      ASSERT_EQ(env.GetCellTag(p).steps, 5);                 // Its 5 next steps
+    }
+    std::string trace = RoleTrace(env, roles);
+    for (int step = 1; step <= 6; ++step) {
+      env.Step(Stays(env));
+      trace += "--- step\n" + RoleTrace(env, roles);
+      if (step <= 5) {  // The fire lands, tag and damage
+        ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(2));
+        for (const auto& t : env.GetLastTagsApplied()) {
+          ASSERT_EQ(t.tag, Id(env, "burning"));
+          ASSERT_TRUE(t.kind == TagSource::Zone);
+          ASSERT_EQ(t.damage, 1);
+        }
+        ASSERT_TRUE(env.GetLastReactions().empty());  // No oil left on them
+      } else {
+        ASSERT_TRUE(env.GetLastTagsApplied().empty());  // Burnt out
+      }
+      ASSERT_EQ(bystander->GetHealth(), 9 - std::min(step, 5));
+      ASSERT_EQ(igniter->GetHealth(), 9 - std::min(step, 5));
+    }
+    for (Position p : oil) ASSERT_EQ(env.GetCellTag(p).tag, kInvalidTag);
+    traces[igniter_index] = trace;
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
+  }
+}
+
+// The zone phase fixes its triggers before any outcome: two electrified
+// agents in the lake (wet + electrified -> shocked, keeping wet, spreading,
+// 1 damage) both trigger, even though the first firing takes the other's
+// electrified away. Two firings, each over both (2 damage each), whatever
+// their order.
+TEST(TestTheZonePhaseFixesItsTriggersBeforeAnyOutcome) {
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions(
+                {Rule("wet", "electrified", "shocked").Keep({"wet"}).Hurts(1).Spreads().r}),
+            "reactions");
+    Agent* a = Place(env, swapped ? 1 : 0, {3, 4});
+    Agent* b = Place(env, swapped ? 0 : 1, {3, 5});
+    for (Agent* x : {a, b}) Require(env.ApplyTagTo(x->GetId(), "electrified", kPermanentTag), "e");
+    SetZones(env, {{3, 4}, {3, 5}}, "wet");
+    env.Step(Stays(env));
+    const auto& fired = env.GetLastReactions();
+    ASSERT_EQ(fired.size(), static_cast<size_t>(2));
+    const auto agents = env.GetObjectManager().GetAllAgents();
+    for (size_t i = 0; i < fired.size(); ++i) {
+      ASSERT_EQ(fired.at(i).trigger, agents.at(i)->GetId());  // Trigger agent-index order
+      ASSERT_TRUE(fired.at(i).kind == TagSource::Zone);
+      ASSERT_EQ(fired.at(i).affected.size(), static_cast<size_t>(2));
+    }
+    for (Agent* x : {a, b}) {
+      ASSERT_EQ(x->GetHealth(), 8);
+      ASSERT_TRUE(Has(env, x, "shocked"));
+      ASSERT_TRUE(Has(env, x, "wet"));
+      ASSERT_FALSE(Has(env, x, "electrified"));
+    }
+    // The zone phase's reports: every zone landing first, then the firings
+    // (each with its result landings)
+    const auto& landed = env.GetLastTagsApplied();
+    ASSERT_EQ(landed.size(), static_cast<size_t>(6));
+    ASSERT_TRUE(landed.at(0).kind == TagSource::Zone);
+    ASSERT_TRUE(landed.at(1).kind == TagSource::Zone);
+    for (size_t i = 2; i < 6; ++i) {
+      ASSERT_TRUE(landed.at(i).kind == TagSource::Reaction);
+      ASSERT_EQ(landed.at(i).reaction, static_cast<int>(i - 2) / 2);
+    }
+  }
+}
+
+// A fireball igniting the oil: the zone stays oil for the rest of the step
+// (a second caster's fireball on the same oil fires again, a dash landing on
+// it lands oil), and becomes fire at the end of the step, landing from the
+// next one. The rule keeps the oil, so the gob, still oiled, reacts again.
+TEST(TestASkillIgnitingTheOilLeavesItOilUntilTheEndOfTheStep) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("oil", "burning", "ablaze").Keep({"oil"}).Spreads("fire").r}),
+          "reactions");
+  Require(env.DefineZone("fire", Zone().Lasts(2).def), "fire");
+  GiveBolt(env, 0, "fireball", "burning");
+  GiveBolt(env, 1, "fireball", "burning");
+  Place(env, 0, {2, 1});  // Aims right: (2, 2), (2, 3), the gob
+  Place(env, 1, {5, 4});  // Aims up: (4, 4), (3, 4), the gob
+  Agent* dasher = Place(env, 2, {6, 6});
+  Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+  Agent* gob = AddEnemy(env, {2, 4});
+  const std::vector<Position> oil = {{2, 4}, {2, 5}, {2, 6}};
+  SetZones(env, oil, "oil");
+  std::vector<Action> actions = Stays(env);
+  actions[0] = Use(MovementAction::Right);
+  actions[1] = Use(MovementAction::Up);
+  actions[2] = Use(MovementAction::Up);  // Dashes 4 up, onto the oil at (2, 6)
+  env.Step(actions);
+
+  ASSERT_TRUE(dasher->GetPosition() == (Position{2, 6}));
+  const auto& fired = env.GetLastReactions();
+  ASSERT_EQ(fired.size(), static_cast<size_t>(2));  // Both fireballs: once per trigger
+  for (const auto& r : fired) {
+    ASSERT_EQ(r.trigger, gob->GetId());
+    ASSERT_TRUE(r.kind == TagSource::Skill);
+    ASSERT_TRUE(r.spread);
+    ASSERT_EQ(r.cells.size(), oil.size());  // What becomes fire at the end of the step
+  }
+  ASSERT_EQ(fired.at(1).source, env.GetObjectManager().GetAllAgents().at(1)->GetId());
+  // The dash landed the oil: the zone as the step began
+  bool dash_landed_oil = false;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    if (t.agent == dasher->GetId() && t.kind == TagSource::Zone) {
+      ASSERT_EQ(t.tag, Id(env, "oil"));
+      dash_landed_oil = true;
+    }
+  }
+  ASSERT_TRUE(dash_landed_oil);
+  ASSERT_TRUE(Has(env, dasher, "oil"));
+  for (Position p : oil) {
+    ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "fire"));
+    ASSERT_EQ(env.GetCellTag(p).steps, 2);
+  }
+
+  env.Step(Stays(env));  // The fire lands from the next step
+  int fire_landings = 0;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    if (t.kind == TagSource::Zone && t.tag == Id(env, "fire")) ++fire_landings;
+  }
+  ASSERT_EQ(fire_landings, 2);  // The gob and the dasher
+  ASSERT_TRUE(Has(env, gob, "fire"));
+  ASSERT_TRUE(Has(env, dasher, "fire"));
+}
+
+// A weakness in the skill phase reads the map as the step began: the imp,
+// weak to (oil, zap), stands on the oil a first caster just set ablaze; the
+// second caster's zap still finds oil under it (fire only at the end of the
+// step): defeated.
+TEST(TestASkillPhaseWeaknessReadsTheMapAsTheStepBegan) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("oil", "burning", "burning").Spreads("fire").r}), "reactions");
+  GiveBolt(env, 0, "fireball", "burning");
+  GiveBolt(env, 1, "zapper", "zap");
+  Place(env, 0, {2, 1});  // Aims right at the gob
+  Place(env, 1, {6, 5});  // Aims up: (5, 5), (4, 5), the imp
+  Agent* gob = AddEnemy(env, {2, 4});
+  Agent* imp = AddEnemy(env, {3, 5});
+  Require(env.SetWeaknesses(imp->GetId(), {{"oil", "zap"}}), "weak_to");
+  SetZones(env, {{2, 4}, {2, 5}, {3, 5}}, "oil");
+  std::vector<Action> actions = Stays(env);
+  actions[0] = Use(MovementAction::Right);
+  actions[1] = Use(MovementAction::Up);
+  env.Step(actions);
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastReactions().at(0).trigger, gob->GetId());
+  ASSERT_FALSE(imp->IsAlive());
+  ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastDefeats().at(0).agent, imp->GetId());
+  ASSERT_EQ(env.GetLastDefeats().at(0).zone, Id(env, "oil"));
+  ASSERT_EQ(env.GetCellTag({3, 5}).tag, Id(env, "fire"));  // After the step
+}
+
+// The end of the step commits the zone changes in the order the reactions
+// fired: two reactions writing the same lake, the later one wins (the
+// trigger with the higher agent index, in the zone phase). The zone it
+// leaves covers exactly its next steps.
+TEST(TestTheLaterReactionsZoneWinsAtTheEndOfTheStep) {
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions({Rule("wet", "electrified", "shocked").Spreads("charged").r,
+                              Rule("wet", "burning", "steamed").Spreads("steam").r}),
+            "reactions");
+    Require(env.DefineZone("charged", Zone().Lasts(2).def), "charged");
+    Require(env.DefineZone("steam", Zone().Lasts(3).def), "steam");
+    Agent* sparky = Place(env, swapped ? 1 : 0, {3, 4});
+    Agent* torch = Place(env, swapped ? 0 : 1, {3, 5});
+    Require(env.ApplyTagTo(sparky->GetId(), "electrified", kPermanentTag), "electrified");
+    Require(env.ApplyTagTo(torch->GetId(), "burning", kPermanentTag), "burning");
+    const std::vector<Position> lake = {{3, 4}, {3, 5}, {3, 6}};
+    SetZones(env, lake, "wet");
+    env.Step(Stays(env));
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(2));
+    for (const auto& r : env.GetLastReactions()) ASSERT_EQ(r.cells.size(), lake.size());
+    const char* winner = swapped ? "charged" : "steam";  // The later trigger's
+    const int steps = swapped ? 2 : 3;
+    for (Position p : lake) {
+      ASSERT_EQ(env.GetCellTag(p).tag, Id(env, winner));
+      ASSERT_EQ(env.GetCellTag(p).steps, steps);
+    }
+    for (int i = 1; i <= steps; ++i) {
+      env.Step(Stays(env));
+      ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(2));  // Its next steps
+      ASSERT_EQ(env.GetLastTagsApplied().at(0).tag, Id(env, winner));
+    }
+    for (Position p : lake) ASSERT_EQ(env.GetCellTag(p).tag, kInvalidTag);
+  }
+}
+
+// Between two steps there is no phase: a host landing's zone_becomes
+// applies at once (and reads its steps: the n next ones).
+TEST(TestAHostLandingChangesTheZoneAtOnce) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("oil", "burning", "burning").Spreads("fire").r}), "reactions");
+  Require(env.DefineZone("fire", Zone().Lasts(2).Hurts(1).def), "fire");
+  Agent* a = Place(env, 0, {3, 3});
+  SetZones(env, {{3, 3}, {3, 4}}, "oil");
+  env.Step(Stays(env));  // Oiled
+  Require(env.ApplyTagTo(a->GetId(), "burning", kPermanentTag), "burning");
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastReactions().at(0).cells.size(), static_cast<size_t>(2));
+  ASSERT_EQ(env.GetCellTag({3, 3}).tag, Id(env, "fire"));
+  ASSERT_EQ(env.GetCellTag({3, 3}).steps, 2);
+  env.Step(Stays(env));  // The fire lands this very next step
+  ASSERT_EQ(env.GetLastTagsApplied().at(0).tag, Id(env, "fire"));
+  ASSERT_EQ(a->GetHealth(), 9);
 }
 
 // =============================================================================

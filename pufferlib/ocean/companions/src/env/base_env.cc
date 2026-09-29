@@ -56,6 +56,7 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       cell_tags_(other.cell_tags_),
       zone_defs_(other.zone_defs_),
       in_step_(other.in_step_),
+      pending_zones_(other.pending_zones_),
       intended_skills_(other.intended_skills_),
       max_downs_(other.max_downs_),
       context_skills_(other.context_skills_),
@@ -93,6 +94,8 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     cell_tags_ = other.cell_tags_;
     zone_defs_ = other.zone_defs_;
     in_step_ = other.in_step_;
+    pending_zones_ = other.pending_zones_;
+    zone_landings_.clear();  // Scratch: it would point at the other env's agents
     intended_skills_ = other.intended_skills_;
     max_downs_ = other.max_downs_;
     context_skills_ = other.context_skills_;
@@ -150,7 +153,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Update FSM after movements (so FSM sees actual positions)
   UpdateAgentFSM();
 
-  // Zones land on whoever stands on them, before casts and skills
+  // Zones land on whoever stands on them, before casts and skills. From here
+  // to the end of the step the zone map is read-only: a reaction's
+  // zone_becomes waits in pending_zones_ (CommitPendingZones, below).
   ApplyZoneTags();
 
   // Resolve interactions (attacks, effects)
@@ -159,6 +164,10 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Tick active effects (advance timers, apply damage/push)
   // Effect pushes move agents without zone tags: they get them next step if they stay.
   effect_system_->Tick();
+
+  // The zones the step's reactions set: the map changes here, once (they
+  // first land next step)
+  CommitPendingZones();
 
   // Every timer (tags, statuses, cooldowns, then the zones') ticks here, at
   // the end of the step
@@ -1065,6 +1074,19 @@ bool BaseEnv::RemoveTagFrom(ObjectId id, const std::string& tag) {
 
 bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                       const std::string& cause, TagSource kind, int reaction) {
+  // 1-2. Immunity, the tag and its status
+  if (!PutTag(agent, tag, duration, source, cause, kind, reaction)) return false;
+  // 3. Weakness: a defeated agent gets nothing more (no reaction outcome, and
+  //    no zone damage: ResolveZoneLandings finds it no longer affectable).
+  ResolveWeakness(agent, tag, source, cause, kind, reaction);
+  // 4. Reaction: results never trigger one. A defeated trigger still starts
+  //    it (its tags stay): a spread reaches the others and changes the zone.
+  if (kind != TagSource::Reaction) ResolveReaction(agent, tag, source, cause, kind);
+  return true;
+}
+
+bool BaseEnv::PutTag(Agent& agent, TagId tag, int duration, ObjectId source,
+                     const std::string& cause, TagSource kind, int reaction) {
   if (duration == 0 || !agent.IsAffectable()) return false;  // Lands nothing, so reports nothing
   // 1. Immunity: an immune agent gets nothing (no report, no zone damage).
   if (agent.IsImmuneTo(tag)) return false;
@@ -1085,12 +1107,6 @@ bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
       break;
     }
   }
-  // 3. Weakness: a defeated agent gets nothing more (no reaction outcome, and
-  //    no zone damage: ApplyZoneTag finds it no longer affectable).
-  ResolveWeakness(agent, tag, source, cause, kind, reaction);
-  // 4. Reaction: results never trigger one. A defeated trigger still starts
-  //    it (its tags stay): a spread reaches the others and changes the zone.
-  if (kind != TagSource::Reaction) ResolveReaction(agent, tag, source, cause, kind);
   return true;
 }
 
@@ -1105,7 +1121,8 @@ void BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const st
                               TagSource kind, int reaction) {
   const std::vector<Agent::WeakTo>& weak_to = agent.GetWeakTo();
   if (weak_to.empty()) return;
-  // P is asked of the map (the zone it stands on now), never of its tags
+  // P is asked of the map (the zone it stands on, as the step began: a step
+  // changes the map only at its end), never of its tags
   const TagId here = GetCellTag(agent.GetPosition()).tag;
   if (here == kInvalidTag) return;
   for (const Agent::WeakTo& w : weak_to) {
@@ -1147,23 +1164,32 @@ std::vector<char> BaseEnv::ZoneRegion(Position start) const {
 
 void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                               TagSource kind) {
+  const int rule = FindReaction(agent, tag);
+  if (rule >= 0) FireReaction(agent, tag, rule, source, cause, kind);
+}
+
+int BaseEnv::FindReaction(const Agent& agent, TagId tag) const {
   // The first rule, in level order, pairing `tag` with a tag the agent carries
-  int rule = -1;
-  for (size_t i = 0; i < resolved_reactions_.size() && rule < 0; ++i) {
+  for (size_t i = 0; i < resolved_reactions_.size(); ++i) {
     const ResolvedReaction& r = resolved_reactions_[i];
     if ((r.a == tag && agent.HasTag(r.b)) || (r.b == tag && agent.HasTag(r.a))) {
-      rule = static_cast<int>(i);
+      return static_cast<int>(i);
     }
   }
-  if (rule < 0) return;
+  return -1;
+}
+
+void BaseEnv::FireReaction(Agent& agent, TagId tag, int rule, ObjectId source,
+                           const std::string& cause, TagSource kind) {
   const ReactionRule& spec = reactions_[static_cast<size_t>(rule)];
   const ResolvedReaction& r = resolved_reactions_[static_cast<size_t>(rule)];
 
   // Who: the region of the zone it stands on, when that zone provides a or b
-  // (asked of the map), else the agent alone
+  // (asked of the map, as the step began), else the agent alone
   const TagId here = GetCellTag(agent.GetPosition()).tag;
   const bool spread = spec.spread && here != kInvalidTag && (here == r.a || here == r.b);
-  // A defeated trigger alone: nobody left to affect, nothing fires
+  // A trigger alone no longer affectable (defeated, or downed by an earlier
+  // firing): nobody left to affect, nothing fires
   if (!spread && !agent.IsAffectable()) return;
   std::vector<char> region;
   std::vector<Agent*> affected;
@@ -1189,8 +1215,8 @@ void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const st
   fired.spread = spread;
   last_reactions_.push_back(std::move(fired));
 
-  // The outcome, agent by agent (each read on the map as it is: the region
-  // changes last)
+  // The outcome, agent by agent (each read on the map as the step began: the
+  // region changes at the end of the step, or last between two steps)
   for (Agent* a : affected) {
     if (!a->IsAffectable()) continue;  // Nothing reaches it any more
     ReactionOutcome outcome;
@@ -1212,14 +1238,21 @@ void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const st
   }
 
   // The region becomes zone_becomes (a zone by name: the table's fields; a
-  // step timer, so set during a step it also covers the rest of it)
+  // step timer, so set during a step it is kept as n + 1). During a step the
+  // map is read-only: the change waits for the end of the step
+  // (CommitPendingZones) and first lands next step. Between two steps (a
+  // host landing) there is no phase: it applies at once.
   if (spread && !spec.zone_becomes.empty()) {
     const CellTag becomes =
         ResolveZone(tags_.Intern(spec.zone_becomes), GetZoneDef(spec.zone_becomes));
     std::vector<Position>& cells = last_reactions_[static_cast<size_t>(index)].cells;
     for (size_t i = 0; i < region.size(); ++i) {
       if (!region[i]) continue;
-      cell_tags_[i] = becomes;
+      if (in_step_) {
+        pending_zones_.push_back({i, becomes});
+      } else {
+        cell_tags_[i] = becomes;
+      }
       cells.push_back({static_cast<int>(i) / cols_, static_cast<int>(i) % cols_});
     }
   }
@@ -1381,25 +1414,76 @@ BaseEnv::CellTag BaseEnv::GetCellTag(Position cell) const {
   return cell_tags_[static_cast<size_t>(cell.row * cols_ + cell.col)];
 }
 
+namespace {
+const std::string kZoneCause = "zone";  // A zone landing's cause
+}  // namespace
+
 void BaseEnv::ApplyZoneTag(Agent& agent) {
-  // A copy: the zone that lands (a reaction may change the cell meanwhile)
-  const CellTag c = GetCellTag(agent.GetPosition());
-  if (c.tag == kInvalidTag) return;
-  const size_t landing = last_tags_applied_.size();  // Its report entry
-  if (!LandTag(agent, c.tag, c.duration, kInvalidObjectId, "zone", TagSource::Zone)) return;
-  // 5. The zone's own damage, last: only on an agent still affectable once
-  // the tag landed (and its weakness / reaction resolved)
-  if (c.damage > 0 && agent.IsAffectable()) {
-    last_tags_applied_[landing].damage = c.damage;
-    agent.TakeDamage(c.damage);
-  }
+  zone_landings_.clear();
+  CollectZoneLanding(agent);
+  ResolveZoneLandings();
 }
 
 void BaseEnv::ApplyZoneTags() {
   if (cell_tags_.empty()) return;
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (agent->IsAffectable()) ApplyZoneTag(*agent);
+  zone_landings_.clear();
+  // a. Every affectable agent on a zone gets its tag (agent-index order: the
+  //    order of the reports, never of an outcome)
+  for (Agent* agent : object_manager_->GetAllAgents()) CollectZoneLanding(*agent);
+  ResolveZoneLandings();
+}
+
+void BaseEnv::CollectZoneLanding(Agent& agent) {
+  if (!agent.IsAffectable()) return;
+  // A copy: the zone that lands (its damage is dealt in sub-phase d)
+  const CellTag zone = GetCellTag(agent.GetPosition());
+  if (zone.tag == kInvalidTag) return;
+  const size_t report = last_tags_applied_.size();  // Its report entry
+  if (!PutTag(agent, zone.tag, zone.duration, kInvalidObjectId, kZoneCause, TagSource::Zone, -1)) {
+    return;  // Immune: no landing, no damage
   }
+  ZoneLanding landing;
+  landing.agent = &agent;
+  landing.zone = zone;
+  landing.report = report;
+  zone_landings_.push_back(landing);
+}
+
+void BaseEnv::ResolveZoneLandings() {
+  // b. The weaknesses (P read on the map as the step began)
+  for (const ZoneLanding& l : zone_landings_) {
+    if (l.agent->IsAffectable()) {
+      ResolveWeakness(*l.agent, l.zone.tag, kInvalidObjectId, kZoneCause, TagSource::Zone, -1);
+    }
+  }
+  // c. The reactions: every trigger first (after a and b: a defeated agent
+  //    keeps its tags, so it still triggers), then the firings, so no
+  //    outcome cancels another agent's trigger
+  for (ZoneLanding& l : zone_landings_) l.rule = FindReaction(*l.agent, l.zone.tag);
+  for (const ZoneLanding& l : zone_landings_) {
+    if (l.rule >= 0) {
+      FireReaction(*l.agent, l.zone.tag, l.rule, kInvalidObjectId, kZoneCause, TagSource::Zone);
+    }
+  }
+  // d. The zone's own damage, last: only on an agent still affectable (not
+  //    defeated, not downed or killed by a reaction's damage)
+  for (const ZoneLanding& l : zone_landings_) {
+    if (l.zone.damage > 0 && l.agent->IsAffectable()) {
+      last_tags_applied_[l.report].damage = l.zone.damage;
+      l.agent->TakeDamage(l.zone.damage);
+    }
+  }
+  zone_landings_.clear();
+}
+
+void BaseEnv::CommitPendingZones() {
+  if (pending_zones_.empty()) return;
+  if (cell_tags_.empty()) {  // Cleared during the step (a hook): a fresh map
+    cell_tags_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), CellTag{});
+  }
+  // In the order recorded: a later write to the same cell wins
+  for (const PendingZone& z : pending_zones_) cell_tags_[z.cell] = z.zone;
+  pending_zones_.clear();
 }
 
 void BaseEnv::RepointFsmRng(const pcg32* from, pcg32* to) {
@@ -1410,6 +1494,7 @@ void BaseEnv::RepointFsmRng(const pcg32* from, pcg32* to) {
 }
 
 void BaseEnv::AbortStep() {
+  CommitPendingZones();  // What the step did before the throw stays
   in_step_ = false;
   for (Agent* agent : object_manager_->GetAllAgents()) agent->AbortStep();
 }
@@ -1516,6 +1601,9 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
     world->ResolveSkillUse(
         *comp, slot, rule ? static_cast<int>(rule - world->context_skills_.data()) : -1);
   }
+  // The zones the use sets at the end of the step (its reactions' cells),
+  // committed as the step's end would, the timers not ticked
+  world->CommitPendingZones();
   for (Companion* c : world->object_manager_->GetAllCompanions()) {
     for (int n = c->TakeUnreportedDowns(); n > 0; --n) world->last_downs_.push_back(c->GetId());
   }
@@ -2027,6 +2115,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   ClearStepReports();  // They name the old world's ObjectIds
   ClearCellTags();     // World state: replaced by the snapshot's zones below
   in_step_ = false;    // Between two steps, even after a Step that threw
+  pending_zones_.clear();  // The old world's: the snapshot's zones replace them
 
   // The level's combo rules (validated above; none in a snapshot before v7).
   // The zone table first: the zone cells below resolve against it.

@@ -352,7 +352,9 @@ class BaseEnv {
   // step's only change: no movement, no zones landing on those who stand on
   // them, no enemy acting, no end-of-step timers. The clone is mid-step
   // around the use (in_step_, Agent::BeginStep), so what the use sets (a
-  // zone_becomes zone, a tag status, a root) is stored as the step stores it.
+  // zone_becomes zone, a tag status, a root) is stored as the step stores it;
+  // the zones its reactions set (their reports' cells) are committed after
+  // the use, as the end of the step would (their timers not ticked).
   // The clone's reports are the use's: GetLastSkillUses (the use, or none when
   // it is not usable), GetLastTagsApplied, GetLastReactions, GetLastDefeats,
   // GetLastRevives and GetLastDowns (the downs the use caused, not those
@@ -444,6 +446,10 @@ class BaseEnv {
   // LoadSnapshot, hence by every Reset).
   // Skills resolve one caster at a time in agent-index order, each from its
   // current cell: an earlier push / pull can move a later caster (ResolveSkills).
+  // Report order in a step: the zone phase first (its zone landings, every
+  // one, in agent-index order; then its defeats; then its reactions in the
+  // order they fired, trigger agent-index order, each followed by its result
+  // landings), then the skill phase's, in resolution order.
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
   // Companions that went down since the last report, one entry per down:
@@ -481,7 +487,8 @@ class BaseEnv {
     // row-major order (empty without a spread or a zone_becomes; a
     // zone_becomes equal to the region's zone still lists them: the tag
     // stays, its lifetime starts again), so a host knows the zone changed
-    // without diffing the grid
+    // without diffing the grid. During a step they change at its end (a
+    // later reaction writing the same cell wins); between steps, at once.
     std::vector<Position> cells;
   };
   // `rule` indexes the current reactions: a SetReactions between the step and
@@ -521,12 +528,23 @@ class BaseEnv {
   //      agent-index order, else the agent alone) each lose the originals not
   //      kept, get the result (a permanent tag, through steps 1-3) and the
   //      damage (if still affectable); then a spread region becomes
-  //      zone_becomes. A defeated agent alone affects nobody: nothing fires
-  //      (not reported); spreading, it fires without it;
+  //      zone_becomes (at the end of the step, see below). A defeated agent
+  //      alone affects nobody: nothing fires (not reported); spreading, it
+  //      fires without it;
   //   5. a zone's landing then deals the zone's damage, if the agent is still
-  //      affectable (ApplyZoneTag). It is the zone that landed: an agent whose
-  //      reaction changed its own cell (zone_becomes) still takes the OLD
-  //      zone's damage that step.
+  //      affectable.
+  // A step reads ONE zone map, the map as it began: a reaction's
+  // zone_becomes during a step waits (pending_zones_) and the map changes at
+  // the end of the step (CommitPendingZones, before the timers tick), so a
+  // zone a reaction creates first lands NEXT step; weaknesses (P), spread
+  // regions and skill motions landing on a zone all read the unchanged map.
+  // The zone phase (ApplyZoneTags) runs the steps above as sub-phases, each
+  // over every zone landing (ResolveZoneLandings: 1-2 for all, 3 for all,
+  // 4 with every trigger found before any fires, 5 for all), so the order of
+  // the agents never changes an outcome (only the order of the reports).
+  // The skill phase resolves each landing at once, casters in agent-index
+  // order. Between two steps (the host's ApplyTagTo) there is no phase: a
+  // landing resolves at once and its zone_becomes applies at once.
   // Level data (reactions, tag statuses): like the zone table, copied with the
   // env, kept across a generated Reset, saved in snapshots (v7) and replaced
   // by LoadSnapshot with the snapshot's (none in older ones). Per-agent data
@@ -559,7 +577,9 @@ class BaseEnv {
   // the tag from any source when it arrives.
   // Each landing then deals the zone's `damage` (Agent::TakeDamage: Marked
   // applies, a companion goes down), if the agent is still affectable once
-  // the tag landed; reported in the landing's TagApplication::damage.
+  // the tag landed and the weaknesses and reactions resolved; reported in
+  // the landing's TagApplication::damage. A step reads one map (see
+  // SetReactions): a zone a reaction sets during it first lands next step.
   // A zone lives `steps` steps (a step timer, like tags: set between two
   // steps it lands during the n next steps; set during a step it also covers
   // the rest of that step, kept as n + 1 and read n after it), or forever
@@ -786,38 +806,81 @@ class BaseEnv {
                        std::vector<AffectedAgent>& affected,
                        std::vector<Position>& found_on) const;
   // One tag landing on an agent: steps 1-4 of the landing order (see
-  // SetReactions): false when nothing landed (an agent not affectable, or
-  // immune to the tag), else true (even if a weakness defeated it). `reaction`
-  // is the index in last_reactions_ of the reaction whose result this is
-  // (kind Reaction), else -1.
+  // SetReactions), all at once (a skill's, a result's, the host's; a zone's
+  // goes through the phases of ResolveZoneLandings instead): false when
+  // nothing landed (an agent not affectable, or immune to the tag), else true
+  // (even if a weakness defeated it). `reaction` is the index in
+  // last_reactions_ of the reaction whose result this is (kind Reaction),
+  // else -1.
   bool LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                const std::string& cause, TagSource kind, int reaction = -1);
   bool LandTag(Agent& agent, const std::string& tag, int duration, ObjectId source,
                const std::string& cause, TagSource kind);  // Interns, forwards
+  // Steps 1-2: immunity, then the tag (reported) and its tag status. False
+  // when nothing landed, as LandTag.
+  bool PutTag(Agent& agent, TagId tag, int duration, ObjectId source, const std::string& cause,
+              TagSource kind, int reaction);
   // Step 3: `tag` just landed on `agent`; defeats it on a matching weakness
-  // (reported, with `reaction`: the landing's, see LandTag).
+  // (reported, with `reaction`: the landing's, see LandTag). P is read on the
+  // map, which a step never changes before its end (see pending_zones_).
   void ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind, int reaction);
-  // Step 4: the reaction `tag`, just landed on `agent`, triggers (if any).
-  // A defeated `agent` still triggers it, but only a spread one fires (it
-  // reaches the others): alone, nobody is left to affect.
+  // Step 4 at once: FindReaction, then FireReaction.
   void ResolveReaction(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind);
+  // The first rule, in level order, pairing `tag` (just landed on `agent`)
+  // with a tag it carries (the reverse too), or -1
+  int FindReaction(const Agent& agent, TagId tag) const;
+  // Fires rule `rule`, triggered by `tag` landing on `agent`: the outcome on
+  // each affected agent (the region of the zone under it when the rule
+  // spreads and that zone provides a or b, else the agent alone), then the
+  // region's zone_becomes: recorded in pending_zones_ during a step (the map
+  // changes at its end, CommitPendingZones), written at once between two
+  // steps (a host landing). A trigger no longer affectable (a weakness
+  // defeated it, an earlier firing's damage downed it) still fires a spread
+  // one (it reaches the others); alone, nobody is left: nothing fires, nothing
+  // is reported.
+  void FireReaction(Agent& agent, TagId tag, int rule, ObjectId source,
+                    const std::string& cause, TagSource kind);
   // The connected region (4 neighbours) of the zone on `start`: the cells
   // carrying that zone's tag, reachable from `start` through such cells, as a
   // row-major mask of rows_ * cols_ (empty when `start` has no zone)
   std::vector<char> ZoneRegion(Position start) const;
-  // Skill motions: a living agent moved onto a zone cell gets its tag. Only
-  // the landing cell applies its zone: cells a dash crosses do not (a decision).
+  // Skill motions: a living agent moved onto a zone cell gets its zone (the
+  // zone as the step began: ApplyZoneTag). Only the landing cell applies its
+  // zone: cells a dash crosses do not (a decision).
   void MoveActor(Actor& actor, Position to);
-  void ApplyZoneTag(Agent& agent);  // The zone of the cell it stands on, if any
-  void ApplyZoneTags();             // Every living agent (after movement)
+  // The zone of the cell `agent` stands on, if any: ResolveZoneLandings with
+  // that one landing (a skill motion's)
+  void ApplyZoneTag(Agent& agent);
+  // The zone phase (after movement, before skills): every affectable agent
+  // on a zone, together (CollectZoneLanding, then ResolveZoneLandings)
+  void ApplyZoneTags();
+  // Sub-phase a of a zone landing: immunity, the zone's tag and its status
+  // (PutTag), recorded in zone_landings_ (nothing for an unaffectable agent,
+  // an agent on no zone, an immune agent)
+  void CollectZoneLanding(Agent& agent);
+  // Sub-phases b-d over every landing of zone_landings_, each phase over all
+  // of them (agent-index order only orders the reports): b. the weaknesses
+  // (defeats); c. the reactions: the triggers are ALL found first (the
+  // state after a and b, FindReaction), then fired one by one (trigger
+  // agent-index order), so one firing's outcome never cancels another's
+  // trigger; d. the zone damage of each landing still affectable. The map
+  // they read is the map as the step began (a firing's zone_becomes waits in
+  // pending_zones_), so the order of the agents never changes an outcome.
+  void ResolveZoneLandings();
+  // End of Step, before the agents' timers: the zone changes the step's
+  // reactions recorded (pending_zones_), in the order they were recorded (a
+  // later write to the same cell wins), their timers as set during the step
+  // (n + 1, so after TickZones they cover their n next steps).
+  void CommitPendingZones();
   // End of Step, after the agents' timers: every timed zone loses a step, and
   // an expired one becomes its successor (or nothing). Ends the step (in_step_).
   void TickZones();
   // A Step that threw: between two steps again (in_step_ and the agents'
   // Agent::AbortStep), its timers not ticked, so a later SaveSnapshot or
-  // timer set is not taken for one inside a step
+  // timer set is not taken for one inside a step. It keeps what the step did,
+  // its pending zone changes committed.
   void AbortStep();
   // `def` for `tag` on a cell: its steps as a step timer (n + 1 in a step),
   // its successor interned. Validated by the caller.
@@ -858,6 +921,15 @@ class BaseEnv {
   // From the start of a Step to the world's timer tick (TickZones): a timer
   // the world sets then (a zone's) is kept as n + 1, like Agent::BeginStep's.
   bool in_step_ = false;
+  // A step reads one zone map: the zones a reaction's zone_becomes sets
+  // during a step (cell index into cell_tags_, the zone as ResolveZone made
+  // it) wait here until its end (CommitPendingZones), in the order they were
+  // recorded. Empty between two steps. Reused: no allocation once grown.
+  struct PendingZone {
+    size_t cell = 0;
+    CellTag zone;
+  };
+  std::vector<PendingZone> pending_zones_;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the
   // hot path. Audit F11.
   mutable std::vector<double> reward_buffer_;
@@ -896,6 +968,17 @@ class BaseEnv {
   std::vector<TagId> tag_status_ids_;  // Parallel to tag_statuses_
   std::vector<ReactionReport> last_reactions_;
   std::vector<DefeatReport> last_defeats_;
+
+  // Scratch of one zone phase (ResolveZoneLandings): each zone landing, with
+  // the zone that landed (a copy), its report entry and the reaction it
+  // triggers. Never copied (it points at this env's agents); reused.
+  struct ZoneLanding {
+    Agent* agent = nullptr;
+    CellTag zone;
+    size_t report = 0;  // Its entry in last_tags_applied_
+    int rule = -1;      // The reaction it triggers (FindReaction), or -1
+  };
+  std::vector<ZoneLanding> zone_landings_;
 };
 
 }  // namespace companions
