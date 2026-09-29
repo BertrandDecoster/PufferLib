@@ -228,10 +228,8 @@ static std::string Name(const BaseEnv& env, TagId tag) {
   return tag == kInvalidTag ? "" : env.GetTagTable().Name(tag);
 }
 
-// The reports of `source`, the landings from `first_landing` on, by names and
-// agent indices
-static std::string ApiTrace(const Companions_Env* env, Companions_ReportSource source,
-                            int32_t first_landing = 0) {
+// The reports of `source`, by names and agent indices
+static std::string ApiTrace(const Companions_Env* env, Companions_ReportSource source) {
   std::ostringstream out;
   for (int32_t i = 0; i < companions_get_skill_use_count(env, source); ++i) {
     Companions_SkillUseInfo u = {};
@@ -243,7 +241,7 @@ static std::string ApiTrace(const Companions_Env* env, Companions_ReportSource s
     }
     out << "\n";
   }
-  for (int32_t i = first_landing; i < companions_get_tag_landing_count(env, source); ++i) {
+  for (int32_t i = 0; i < companions_get_tag_landing_count(env, source); ++i) {
     Companions_TagLanding t = {};
     ASSERT_TRUE(companions_get_tag_landing(env, source, i, &t));
     out << "tag " << ApiIdx(env, t.agent) << " " << t.tag << " " << t.duration << " "
@@ -784,9 +782,9 @@ TEST(TestAReactionSaysWhichCellsChanged) {
 // =============================================================================
 
 // The preview predicts exactly what the next step does when the fireball is
-// its only change (its reports, field by field, after the zone landings the
-// step makes first), and changes nothing in the env: its snapshot, its
-// reports, its tags ("scorched" is interned by the step only).
+// its only change (its reports, field by field: the zone landings first, as
+// the step makes them, then the use's), and changes nothing in the env: its
+// snapshot, its reports, its tags ("scorched" is interned by the step only).
 TEST(TestAnOutcomePreviewThroughTheApi) {
   Companions_Env* env = LoadKitchen(KitchenJson());
   ApiStep(env);  // Everyone on a zone carries its tag: the next zone landings set nothing off
@@ -810,8 +808,16 @@ TEST(TestAnOutcomePreviewThroughTheApi) {
   ASSERT_EQ(outcome.reaction_count, companions_get_reaction_count(env, Companions_Report_Preview));
   ASSERT_EQ(outcome.defeat_count, companions_get_defeat_count(env, Companions_Report_Preview));
   ASSERT_EQ(outcome.down_count, companions_get_down_count(env, Companions_Report_Preview));
+  // The zone landings first (re-landings setting nothing off), then the use's
+  constexpr int32_t kZoneLandings = 5;
+  for (int32_t i = 0; i < kZoneLandings; ++i) {
+    Companions_TagLanding t = {};
+    ASSERT_TRUE(companions_get_tag_landing(env, Companions_Report_Preview, i, &t));
+    ASSERT_EQ(t.kind, Companions_TagSource_Zone);
+  }
   Companions_TagLanding first = {};
-  ASSERT_TRUE(companions_get_tag_landing(env, Companions_Report_Preview, 0, &first));
+  ASSERT_TRUE(companions_get_tag_landing(env, Companions_Report_Preview, kZoneLandings, &first));
+  ASSERT_EQ(first.kind, Companions_TagSource_Skill);
   ASSERT_EQ(std::string(first.tag), std::string("scorched"));  // Named, though not interned here
 
   // Nothing changed
@@ -840,16 +846,9 @@ TEST(TestAnOutcomePreviewThroughTheApi) {
   const std::string preview = ApiTrace(env, Companions_Report_Preview);
 
   ApiStep(env, kCaster);
-  // The step's zone landings come first: re-landings setting nothing off
-  const int32_t total = companions_get_tag_landing_count(env, Companions_Report_LastStep);
-  const int32_t zone_landings = total - outcome.tag_landing_count;
-  ASSERT_EQ(zone_landings, 5);
-  for (int32_t i = 0; i < zone_landings; ++i) {
-    Companions_TagLanding t = {};
-    ASSERT_TRUE(companions_get_tag_landing(env, Companions_Report_LastStep, i, &t));
-    ASSERT_EQ(t.kind, Companions_TagSource_Zone);
-  }
-  ExpectSame(preview, ApiTrace(env, Companions_Report_LastStep, zone_landings), "the preview");
+  ASSERT_EQ(companions_get_tag_landing_count(env, Companions_Report_LastStep),
+            outcome.tag_landing_count);
+  ExpectSame(preview, ApiTrace(env, Companions_Report_LastStep), "the preview");
   for (int32_t i = 0; i < outcome.skill_use_count; ++i) {
     Companions_SkillUseInfo u = {};
     ASSERT_TRUE(companions_get_skill_use(env, Companions_Report_LastStep, i, &u));
@@ -857,7 +856,7 @@ TEST(TestAnOutcomePreviewThroughTheApi) {
   }
   for (int32_t i = 0; i < outcome.tag_landing_count; ++i) {
     Companions_TagLanding t = {};
-    ASSERT_TRUE(companions_get_tag_landing(env, Companions_Report_LastStep, zone_landings + i, &t));
+    ASSERT_TRUE(companions_get_tag_landing(env, Companions_Report_LastStep, i, &t));
     ASSERT_TRUE(std::memcmp(&t, &landings[static_cast<size_t>(i)], sizeof(t)) == 0);
   }
   for (int32_t i = 0; i < outcome.reaction_count; ++i) {

@@ -1560,9 +1560,8 @@ static Kitchen MakeKitchen() {
   return k;
 }
 
-// The reports of `env` (its GetLast*), the landings from `first_landing` on,
-// by names and agent indices
-static std::string ReportTrace(const BaseEnv& env, size_t first_landing = 0) {
+// The reports of `env` (its GetLast*), by names and agent indices
+static std::string ReportTrace(const BaseEnv& env) {
   std::ostringstream out;
   for (const auto& u : env.GetLastSkillUses()) {
     out << "use " << Idx(env, u.caster) << " " << u.skill << " " << u.slot << " "
@@ -1571,7 +1570,7 @@ static std::string ReportTrace(const BaseEnv& env, size_t first_landing = 0) {
     out << "\n";
   }
   const auto& landings = env.GetLastTagsApplied();
-  for (size_t i = first_landing; i < landings.size(); ++i) {
+  for (size_t i = 0; i < landings.size(); ++i) {
     const auto& t = landings[i];
     out << "tag " << Idx(env, t.agent) << " " << Name(env, t.tag) << " " << t.duration << " "
         << Idx(env, t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
@@ -1609,50 +1608,73 @@ static std::string ReportTrace(const BaseEnv& env, size_t first_landing = 0) {
 // The preview predicts exactly what the next step then does when that use is
 // its only change: the same skill use, landings, reactions (the oil catching
 // fire included), defeats (one through a weakness to the fireball's own tag,
-// one through a result), the turn's health and downs, field by field. The step also lands the
-// zones on those standing on them first (re-landings here, setting nothing
-// off): its landings are the preview's after those.
+// one through a result), the turn's health and downs, field by field. The
+// preview runs the whole turn: the zones land on everyone standing on them
+// (the gob, the target, on its oil; re-landings here, setting nothing off),
+// as in the step, then the use's hits. And with the caster standing in a
+// fire: it gets its landing and the fire's damage, in the preview as in the
+// step.
 TEST(TestAnOutcomePreviewIsWhatTheStepDoes) {
-  Kitchen k = MakeKitchen();
-  SynchroEnv& env = *k.env;
-  const auto* caster = dynamic_cast<const Companion*>(env.GetObjectManager().GetActor(k.caster));
-  const Direction facing = caster->GetDirection();
-  const BaseEnv::SkillOutcome outcome = env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
-  ASSERT_TRUE(outcome.usable);
-  ASSERT_TRUE(outcome.world != nullptr);
-  const BaseEnv& world = *outcome.world;
-  // The zone landings the step makes before the skills: a clone stepped
-  // without the use
-  std::unique_ptr<BaseEnv> quiet = env.Clone();
-  quiet->Step(Stays(*quiet));
-  const size_t zone_landings = quiet->GetLastTagsApplied().size();
-  ASSERT_TRUE(zone_landings > 0);
-  ASSERT_TRUE(quiet->GetLastReactions().empty());
-  ASSERT_TRUE(quiet->GetLastDefeats().empty());
-
-  ASSERT_TRUE(caster->GetDirection() == facing);  // The preview aimed a clone
-  env.Step(With(env, 0, Use(MovementAction::Right)));
-  const std::string expected = ReportTrace(env, zone_landings);
-  const std::string got = ReportTrace(world);
-  if (got != expected) {
-    throw std::runtime_error("the preview differs:\n" + got + "--- the step ---\n" + expected);
+  for (bool caster_in_fire : {false, true}) {
+    Kitchen k = MakeKitchen();
+    SynchroEnv& env = *k.env;
+    if (caster_in_fire) Require(env.SetCellTag({2, 1}, "burning"), "the caster's fire");
+    const auto* caster =
+        dynamic_cast<const Companion*>(env.GetObjectManager().GetActor(k.caster));
+    const Direction facing = caster->GetDirection();
+    const BaseEnv::SkillOutcome outcome =
+        env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
+    ASSERT_TRUE(outcome.usable);
+    ASSERT_TRUE(outcome.world != nullptr);
+    const BaseEnv& world = *outcome.world;
+    ASSERT_TRUE(caster->GetDirection() == facing);  // The preview aimed a clone
+    // The zone landings alone: a clone stepped without the use
+    std::unique_ptr<BaseEnv> quiet = env.Clone();
+    quiet->Step(Stays(*quiet));
+    ASSERT_TRUE(quiet->GetLastReactions().empty());
+    ASSERT_TRUE(quiet->GetLastDefeats().empty());
+    env.Step(With(env, 0, Use(MovementAction::Right)));
+    const std::string expected = ReportTrace(env);
+    const std::string got = ReportTrace(world);
+    if (got != expected) {
+      throw std::runtime_error("the preview differs:\n" + got + "--- the step ---\n" + expected);
+    }
+    // Everything this test is about happened
+    ASSERT_EQ(world.GetLastSkillUses().size(), static_cast<size_t>(1));
+    // The zone landings come first (everyone standing on a zone: the oil on
+    // the gob, the imp, the pal and the cook, the lake on frosty, and the
+    // fire on the caster), as a step without the use lands them
+    const auto& landings = world.GetLastTagsApplied();
+    const size_t zones = quiet->GetLastTagsApplied().size();
+    ASSERT_EQ(zones, static_cast<size_t>(caster_in_fire ? 6 : 5));
+    for (size_t i = 0; i < zones; ++i) {
+      ASSERT_TRUE(landings.at(i).kind == BaseEnv::TagSource::Zone);
+    }
+    ASSERT_TRUE(landings.at(zones).kind == BaseEnv::TagSource::Skill);
+    ASSERT_EQ(world.GetLastReactions().size(), static_cast<size_t>(1));
+    const BaseEnv::ReactionReport& r = world.GetLastReactions().at(0);
+    ASSERT_TRUE(r.spread);
+    ASSERT_EQ(r.cells.size(), static_cast<size_t>(4));  // The oil catches fire
+    bool immune = false;
+    for (const auto& o : r.affected) immune = immune || !o.result_landed;
+    ASSERT_TRUE(immune);  // The imp
+    ASSERT_EQ(world.GetLastDefeats().size(), static_cast<size_t>(2));
+    ASSERT_TRUE(world.GetLastDefeats().at(0).kind == BaseEnv::TagSource::Skill);     // The gob
+    ASSERT_TRUE(world.GetLastDefeats().at(1).kind == BaseEnv::TagSource::Reaction);  // The cook
+    ASSERT_EQ(world.GetLastDowns().size(), static_cast<size_t>(1));
+    ASSERT_EQ(world.GetLastDowns().at(0), k.cook);
+    ASSERT_FALSE(world.GetLastTurnHealth().empty());
+    ASSERT_EQ(world.GetCellTag({3, 5}).tag, world.GetTagTable().Find("burning"));
+    // The caster's own turn: the fire's damage (1), or nothing
+    bool caster_hurt = false;
+    for (const auto& t : world.GetLastTurnHealth()) {
+      if (t.agent != k.caster) continue;
+      ASSERT_EQ(t.damage, 1);
+      ASSERT_EQ(t.change, -1);
+      caster_hurt = true;
+    }
+    ASSERT_EQ(caster_hurt, caster_in_fire);
   }
-  // Everything this test is about happened
-  ASSERT_EQ(world.GetLastSkillUses().size(), static_cast<size_t>(1));
-  ASSERT_EQ(world.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::ReactionReport& r = world.GetLastReactions().at(0);
-  ASSERT_TRUE(r.spread);
-  ASSERT_EQ(r.cells.size(), static_cast<size_t>(4));  // The oil catches fire
-  bool immune = false;
-  for (const auto& o : r.affected) immune = immune || !o.result_landed;
-  ASSERT_TRUE(immune);  // The imp
-  ASSERT_EQ(world.GetLastDefeats().size(), static_cast<size_t>(2));
-  ASSERT_TRUE(world.GetLastDefeats().at(0).kind == TagSource::Skill);     // The gob
-  ASSERT_TRUE(world.GetLastDefeats().at(1).kind == TagSource::Reaction);  // The cook
-  ASSERT_EQ(world.GetLastDowns().size(), static_cast<size_t>(1));
-  ASSERT_EQ(world.GetLastDowns().at(0), k.cook);
-  ASSERT_FALSE(world.GetLastTurnHealth().empty());
-  ASSERT_EQ(world.GetCellTag({3, 5}).tag, world.GetTagTable().Find("burning"));
 }
 
 // The preview's world shows the zones the use sets at the end of the step:

@@ -433,24 +433,25 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   by its own push / pull) in the preview's order, then those who walked or were moved
   onto its cells, in cell order (nobody moved: the preview's agents and effects)
 - `PreviewSkillOutcome(caster id, slot, aim)`: what the use would DO, reports included:
-  resolved on a `Clone()` (nothing in the env changes or is interned) by the step's own
-  code for a use (`AddSkillPlan`, the motion phase with only its motions, then the tag
-  phase: `TagPhase`), as the next step would resolve it were it the step's only change:
-  nobody else moves, zones land only on those its motions moved (their final cell;
-  TEMPORARY until the preview runs a whole turn: a caster standing in a fire gets no
-  landing in its preview), no
-  enemy acting, no end-of-step timers. The clone is mid-step
-  around the use (`in_step_`, `Agent::BeginStep`), so what the use sets (a
-  `zone_becomes` zone, a status) is stored as the step stores it (the zones its
-  reactions set, their reports' `cells`, are committed after the use as the end of the
-  step would, timers not ticked). `SkillOutcome {usable,
-  world}`: the clone after the use, whose `GetLast*` are the use's reports (skill use,
-  landings, reactions, defeats, revives, and the downs it caused, not the unreported ones
+  one turn run on a `Clone()` (nothing in the env changes or is interned) by the step's
+  own turn (`ResolveTurn`), with that use as its only change: the use planned as the
+  intents phase plans it (`AddSkillPlan`, its cooldown spent), everyone else stays (no
+  walk, no other use), no FSM decides (no `PreStep`), no effect activates (no
+  `PlanTurn`: a strike winding up stays so); then the motion phase (that use's
+  motions), the tag phase (the zones land on EVERY agent affectable as the turn began,
+  on its final cell, as in a step: a caster standing in a fire gets its landing and its
+  damage; then the use's hits, the weaknesses, the reactions), the pending zones
+  committed, the turn's end (`ApplyTurnOutcomes`: health, downs, deaths, defeats,
+  revives). No timer ticks, no `PostStep`, no rewards or verdict; the clone is left
+  mid-step (`in_step_`, `Agent::BeginStep`), so what the use sets (a `zone_becomes`
+  zone, a status) is stored as the step stores it before its tick. `SkillOutcome
+  {usable, world}`: the clone after the turn, whose `GetLast*` are the turn's reports as
+  the step would make them (skill use, landings: the zones' first, reactions, defeats,
+  revives, turn health, odd motions, and the downs of the turn, not the unreported ones
   from between steps); tag ids are the clone's (read names in its table). Unusable (as
   `PreviewSkill`): nothing resolved, empty reports; `world` null for an id naming no
-  companion. Costs a copy of the env (a UI query). The step may differ as `PreviewSkill`
-  says, and also lands the zones on those standing on them first (a tag they did not
-  carry yet can react or defeat before the use)
+  companion. Costs a copy of the env (a UI query). The real step may differ: the others
+  walk and cast, the enemies act, the effects land, clashes follow
 - `AffectedAgent { id, effects }`, `SkillEffect` bit flags: `Tags` 1, `Damage` 2,
   `Root` 4, `Motion` 8 (it really changes cell: a push against a wall is no Motion),
   `Revive` 16; 0 = affected, nothing applies (the caster gets only what its `self_*`
@@ -528,8 +529,7 @@ tests: `tests/test_zones.cc`):
   another's (a firing that would down B does not stop B's own reaction), so the
   agents' final state does not depend on the order (the zones and the reports: see
   "A step reads one zone map"); d. each zone's damage. The outcome preview runs the
-  same phase over the zone landings of those its motions moved and its use's hits
-  (`TagPhase(true)`)
+  same phase (its turn: every zone landing, its use's hits)
 - **A step reads one map** (see Step order): a zone a reaction creates during a step
   (`zone_becomes`) is written at the end of the step and first lands next step, tag and
   damage; everything in the step (the tag phase, weaknesses, spread regions) reads the

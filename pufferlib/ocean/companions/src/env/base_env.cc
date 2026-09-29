@@ -187,39 +187,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Capture original intentions before the motion phase modifies them
   CaptureOriginalIntentions();
 
-  // The motion phase, in layers: teleports, dashes, walks, then the forced
-  // moves (the skills' and the effects' pushes, pulls) on whoever stands on
-  // their cells
-  MotionPhase();
-
-  // Snapshot the executed actions (post-motion, pre-clear) so the C API can
-  // read them after Step returns (GetIntention() alone would be {Stay, None}
-  // after ClearIntention), then clear the intentions
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    agent->CaptureExecutedAction();
-    agent->ClearIntention();
-  }
-
-  // Update FSM after movements (so FSM sees actual positions)
-  UpdateAgentFSM();
-
-  // The tag phase: every tag of the turn lands together (the zones on
-  // everyone's final cell, then every skill use's hits), then the weaknesses
-  // and the reactions resolve together. From here to the end of the step the
-  // zone map is read-only: a reaction's zone_becomes waits in pending_zones_
-  // (CommitPendingZones, below).
-  TagPhase(false);
-
-  // The effects' hits (damage and heals into the ledger, statuses acting
-  // from the next turn) on whoever stands on their cells now
-  ApplyEffectHits();
-
-  // The zones the step's reactions set: the map changes here, once (they
-  // first land next step)
-  CommitPendingZones();
-
-  // The turn's end: its health totals, downs, deaths and revives, at once
-  ApplyTurnOutcomes();
+  // The turn's phases from its motion to its end (motion, tags, the effects'
+  // hits, the pending zones, the turn's health and outcomes)
+  ResolveTurn(true);
 
   // Every timer (tags, statuses, cooldowns, then the zones') ticks here, at
   // the end of the step
@@ -282,6 +252,42 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   LatchEndReason();
 
   return result;
+}
+
+void BaseEnv::ResolveTurn(bool fsm) {
+  // The motion phase, in layers: teleports, dashes, walks, then the forced
+  // moves (the skills' and the effects' pushes, pulls) on whoever stands on
+  // their cells
+  MotionPhase();
+
+  // Snapshot the executed actions (post-motion, pre-clear) so the C API can
+  // read them after Step returns (GetIntention() alone would be {Stay, None}
+  // after ClearIntention), then clear the intentions
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    agent->CaptureExecutedAction();
+    agent->ClearIntention();
+  }
+
+  // Update FSM after movements (so FSM sees actual positions)
+  if (fsm) UpdateAgentFSM();
+
+  // The tag phase: every tag of the turn lands together (the zones on
+  // everyone's final cell, then every skill use's hits), then the weaknesses
+  // and the reactions resolve together. From here to the end of the turn the
+  // zone map is read-only: a reaction's zone_becomes waits in pending_zones_
+  // (CommitPendingZones, below).
+  TagPhase();
+
+  // The effects' hits (damage and heals into the ledger, statuses acting
+  // from the next turn) on whoever stands on their cells now
+  ApplyEffectHits();
+
+  // The zones the turn's reactions set: the map changes here, once (they
+  // first land next turn)
+  CommitPendingZones();
+
+  // The turn's end: its health totals, downs, deaths and revives, at once
+  ApplyTurnOutcomes();
 }
 
 int BaseEnv::GetDowns() const {
@@ -844,7 +850,6 @@ BaseEnv::MotionIntent* BaseEnv::FindMotion(ObjectId id) {
 }
 
 void BaseEnv::MotionPhase() {
-  turn_.moved.clear();
   for (MotionKind layer : {MotionKind::Teleport, MotionKind::Dash, MotionKind::Walk,
                            MotionKind::Forced}) {
     GatherLayer(layer);
@@ -1198,7 +1203,6 @@ void BaseEnv::ExecuteLayer(MotionKind layer) {
     m.moved = to != m.from;
     if (!m.moved) continue;
     object_manager_->UpdatePosition(m.actor->GetId(), to);
-    turn_.moved.push_back(m.actor);
   }
   if (layer != MotionKind::Forced) return;
   // The effects' pushes, as the forced layer executed them (their sum with
@@ -1897,17 +1901,13 @@ namespace {
 const std::string kZoneCause = "zone";  // A zone landing's cause
 }  // namespace
 
-void BaseEnv::TagPhase(bool moved_only) {
+void BaseEnv::TagPhase() {
   assert(turn_.landings.empty() && "a tag phase inside a tag phase");
   // a. Every landing of the turn, put at once (immunity, the tag, its
   //    status; agent-local): the zones first, each affectable agent's final
   //    cell (agent-index order)...
   if (!cell_tags_.empty()) {
-    const std::vector<Actor*>& moved = turn_.moved;
-    for (Agent* agent : object_manager_->GetAllAgents()) {
-      if (moved_only && std::find(moved.begin(), moved.end(), agent) == moved.end()) continue;
-      CollectZoneLanding(*agent);
-    }
+    for (Agent* agent : object_manager_->GetAllAgents()) CollectZoneLanding(*agent);
   }
   // ...then every use's hits (caster order: UseSkill puts its tags as
   // landings, and applies its own damage, revives and roots). Only the order
@@ -2481,23 +2481,23 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
   world->BeginTurn();
   // As GatherIntentions decides: the stunned (and the downed) stay, then a
   // use CanUseSkill allows, with the context read now, planned (its cooldown
-  // spent), then applied as the step applies the turn's plans
+  // spent)
   const ContextSkillRule* rule = nullptr;
   outcome.usable = !comp->IsStunned() && world->CanUseSkill(*comp, slot, rule);
   if (outcome.usable) {
     comp->SetDirection(aim);  // GatherIntentions: the movement aims
     world->AddSkillPlan(*comp, slot, world->RuleIndex(rule), aim);
-    // The motion phase with that use's motions only (everyone else stays),
-    // then the tag phase: the zones of those it moved, and its hits
+    // Then the turn, as the step runs it, with that use alone: everyone else
+    // stays (no walks, no other use), no FSM decides (no PreStep, no FSM
+    // update) and no effect activates (no PlanTurn: an effect winding up
+    // stays so). The motion phase (that use's motions), the tag phase (the
+    // zones on EVERY agent affectable as the turn began, on its final cell;
+    // the use's hits), the pending zones committed, the turn's end (health,
+    // downs, deaths, defeats, revives); the timers not ticked, no PostStep,
+    // no rewards or verdict.
     for (Agent* agent : world->object_manager_->GetAllAgents()) agent->ClearIntention();
-    world->MotionPhase();
-    world->TagPhase(true);
+    world->ResolveTurn(false);
   }
-  // The zones the use sets at the end of the step (its reactions' cells),
-  // committed as the step's end would, then the turn's end (health, downs,
-  // deaths, revives), the timers not ticked
-  world->CommitPendingZones();
-  world->ApplyTurnOutcomes();
   for (Companion* c : world->object_manager_->GetAllCompanions()) {
     for (int n = c->TakeUnreportedDowns(); n > 0; --n) world->last_downs_.push_back(c->GetId());
   }

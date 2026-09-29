@@ -413,28 +413,33 @@ class BaseEnv {
 
   // What `caster` using its slot `slot` aimed `aim` would DO now, reports
   // included: the use is resolved on a clone of the env (Clone(); nothing in
-  // this env changes, nothing is interned here), by the step's own code for a
-  // use (AddSkillPlan, the motion phase with that use's motions only, the
-  // tag phase: TagPhase), as the next step would resolve it were it the
-  // step's only change: nobody else moves, the zones land only on those its
-  // motions moved (their final cell), no enemy acting, no end-of-step
-  // timers. The clone is mid-step
-  // around the use (in_step_, Agent::BeginStep), so what the use sets (a
-  // zone_becomes zone, a tag status, a root) is stored as the step stores it;
-  // the zones its reactions set (their reports' cells) are committed after
-  // the use, then the turn's end applies its health (downs, deaths, defeats,
-  // revives), as the end of the step would (the timers not ticked).
-  // The clone's reports are the use's: GetLastSkillUses (the use, or none when
-  // it is not usable), GetLastTagsApplied, GetLastReactions, GetLastDefeats,
-  // GetLastRevives, GetLastTurnHealth and GetLastDowns (the downs the use
-  // caused, not those between steps still to report). Tag ids in them are
-  // the clone's (a skill's tags may not be interned in this env yet): read
-  // their names in the clone's GetTagTable().
+  // this env changes, nothing is interned here) by the step's own turn
+  // (ResolveTurn), as the next step would resolve it were that use its only
+  // change: the use planned as the intents phase plans it (AddSkillPlan: its
+  // cooldown spent), everyone else stays (no walk, no other use), no FSM
+  // decides (no PreStep) and no effect activates (no PlanTurn: a strike
+  // winding up stays so); then the motion phase (that use's motions), the
+  // tag phase (the zones land on every agent affectable as the turn began,
+  // on its final cell, as in a real turn: a caster standing in a fire gets
+  // its landing; then the use's hits; the weaknesses and reactions), the
+  // zones its reactions set committed (CommitPendingZones), and the turn's
+  // end (ApplyTurnOutcomes: health, downs, deaths, defeats, revives). No
+  // timer ticks, no PostStep, no rewards or verdict. The clone is left
+  // mid-step (in_step_, Agent::BeginStep), so what the use sets (a
+  // zone_becomes zone, a tag status, a root) is stored as the step stores it
+  // before its end-of-step tick.
+  // The clone's reports are the turn's, as the step would report them:
+  // GetLastSkillUses (the use, or none when it is not usable),
+  // GetLastTagsApplied (the zone landings first, then the use's),
+  // GetLastReactions, GetLastDefeats, GetLastRevives, GetLastTurnHealth,
+  // GetLastOddMotions and GetLastDowns (the downs of the turn, not those
+  // between steps still to report). Tag ids in them are the clone's (a
+  // skill's tags may not be interned in this env yet): read their names in
+  // the clone's GetTagTable().
   // Each call returns its own world (the C API keeps one: its last
   // preview's). Costs a copy of the env: meant for a UI, not the RL hot
-  // path. The real
-  // step may differ as PreviewSkill says (everyone moves, the zones land on
-  // everyone's final cell, the other uses move and hit too).
+  // path. The real step may differ: the others walk and use their skills,
+  // the enemies act, the effects land, and clashes follow (see PreviewSkill).
   struct SkillOutcome {
     // As SkillPreview::usable; false: nothing was resolved (empty reports)
     bool usable = false;
@@ -978,13 +983,17 @@ class BaseEnv {
   // tag, its status), in report order: the zones, each affectable agent's
   // final cell (CollectZoneLanding, agent-index order), then every use's
   // hits (UseSkill, caster order: its tags, and its own damage, revives and
-  // roots, all agent-local); b-d. ResolveTurnLandings. `moved_only`: the
-  // zones of the agents the motion phase moved only (PreviewSkillOutcome:
-  // those who stand still get no zone there; TEMPORARY, T6: the preview runs
-  // a whole turn: a caster standing in a fire gets no landing in its
-  // preview). Effects land no tags: their hits come after this phase
-  // (ApplyEffectHits).
-  void TagPhase(bool moved_only);
+  // roots, all agent-local); b-d. ResolveTurnLandings. Effects land no
+  // tags: their hits come after this phase (ApplyEffectHits).
+  void TagPhase();
+
+  // The turn from its motion to its end, after its intents: MotionPhase, the
+  // executed actions captured (intentions cleared), the FSMs' post-motion
+  // update (`fsm`), TagPhase, ApplyEffectHits, CommitPendingZones,
+  // ApplyTurnOutcomes. Step runs it with `fsm`; PreviewSkillOutcome without
+  // (its clone planned one use and no effect: see there). The timers are not
+  // ticked here (Step: EndStep, TickZones).
+  void ResolveTurn(bool fsm);
 
   // Skills (see GetSkillBook)
   // Empties the per-step reports (skill uses, tags applied, reactions,
@@ -1429,10 +1438,9 @@ class BaseEnv {
     std::vector<char> hit_on_area;
     // The motion phase's intents of one layer (see MotionPhase), in rank
     // order: the first motion_count are the layer's; the rest keep their
-    // capacity. `moved`: every actor a layer moved this turn.
+    // capacity.
     std::vector<MotionIntent> motions;
     size_t motion_count = 0;
-    std::vector<Actor*> moved;
     // The tag phase's (TagPhase): every landing of the turn, in report order;
     // the firings c1 found; the tags the rules that fired took from the agent
     // judged (their originals not kept)
@@ -1450,7 +1458,6 @@ class BaseEnv {
       hit.clear();
       hit_on_area.clear();
       motion_count = 0;
-      moved.clear();
       landings.clear();
       firings.clear();
       taken.clear();

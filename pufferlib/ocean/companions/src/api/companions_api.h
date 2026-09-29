@@ -1212,23 +1212,25 @@ typedef struct {
 } Companions_SkillOutcome;
 
 // What companion `agent` using its slot `slot` aimed `aim` would DO now,
-// reports included: the use is resolved on a copy of the env (it clones the
-// env: meant for a UI, not the RL hot path) by the step's own code, as the
-// next step would resolve it were it the step's only change: no movement, no
-// zone landing on those who stand on it, no enemy acting, no end-of-step
-// timers. Nothing in the env changes (its state, reports and snapshot stay
-// as they were; no tag is interned). The reports replace the previous
-// preview's (Companions_Report_Preview): the use, its tag landings (the
-// skill's, a zone's where a skill motion lands someone, the reactions'
-// results), its reactions (with the cells a zone_becomes (re)set), its
-// defeats, the downs it caused and its revives. One preview is held at a
-// time: to compare several aims or slots, read each one's reports before
-// the next preview. The real step may differ as
-// companions_preview_skill says, and it also lands the zones on those
-// standing on them before the skills (reported first: a tag they did not
-// carry yet can react or defeat before the use). False, `out` and the
-// preview reports untouched, for the arguments companions_preview_skill
-// refuses (same errors).
+// reports included: one turn is run on a copy of the env (it clones the env:
+// meant for a UI, not the RL hot path) by the step's own code, with that use
+// as its only change: everyone else stays (no walk, no other use), no enemy
+// decides, no effect activates (a strike winding up stays so), no end-of-step
+// timers. The turn is otherwise the step's: the use's motions, then the zones
+// land on every agent standing on one (as the step lands them: a caster
+// standing in a fire gets its landing and its damage), the use's hits, the
+// weaknesses and reactions, the zones they set, the turn's health and its
+// downs, deaths, defeats and revives. Nothing in the env changes (its state,
+// reports and snapshot stay as they were; no tag is interned). The reports
+// replace the previous preview's (Companions_Report_Preview), as the step
+// would report that turn: the use, its tag landings (the zones' first, then
+// the skill's, then the reactions' results), its reactions (with the cells a
+// zone_becomes (re)set), its defeats, the downs, its revives. One preview is
+// held at a time: to compare several aims or slots, read each one's reports
+// before the next preview. The real step may differ: the others move and
+// use their skills, the enemies act, the effects land, and the motions clash
+// (see companions_preview_skill). False, `out` and the preview reports
+// untouched, for the arguments companions_preview_skill refuses (same errors).
 COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
                                                      Companions_ObjectId agent, int32_t slot,
                                                      Companions_Direction aim,

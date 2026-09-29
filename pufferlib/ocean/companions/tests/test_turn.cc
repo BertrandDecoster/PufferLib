@@ -761,9 +761,9 @@ static std::string TagName(const BaseEnv& env, TagId tag) {
 // agents' order must give the same text. Without `credits`, what a reaction
 // credits (its triggering tag, its results' source and cause: the first
 // matching skill landing in report order, a report-only effect of the
-// indices) is left out.
+// indices) is left out. Without `timers`, the timers' values are left out.
 static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles,
-                             bool credits = true) {
+                             bool credits = true, bool timers = true) {
   auto role = [&roles](ObjectId id) {
     auto it = roles.find(id);
     return it == roles.end() ? std::string("-") : it->second;
@@ -809,15 +809,17 @@ static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::s
     out << "agent " << role(a->GetId()) << " " << a->GetHealth() << " " << a->IsAffectable()
         << " " << a->GetPosition().row << "," << a->GetPosition().col << ":";
     std::vector<std::string> marks;
+    // Without `timers`, what a timer holds is left out (a preview's world is
+    // not ticked): the durations, the cooldowns
     for (const AgentTag& t : a->GetTags()) {
-      marks.push_back(TagName(env, t.id) + "/" + std::to_string(t.duration));
+      marks.push_back(TagName(env, t.id) + (timers ? "/" + std::to_string(t.duration) : ""));
     }
     for (const auto& st : a->GetStatuses()) {
-      marks.push_back("s" + std::to_string(static_cast<int>(st.type)) + "/" +
-                      std::to_string(st.duration));
+      marks.push_back("s" + std::to_string(static_cast<int>(st.type)) +
+                      (timers ? "/" + std::to_string(st.duration) : ""));
     }
     if (const auto* c = dynamic_cast<const Companion*>(a)) {
-      marks.push_back("cooldown/" + std::to_string(c->GetCooldown(0)));
+      if (timers) marks.push_back("cooldown/" + std::to_string(c->GetCooldown(0)));
     }
     std::sort(marks.begin(), marks.end());
     for (const std::string& m : marks) out << " " << m;
@@ -2858,6 +2860,123 @@ TEST(TestTheRearOfALinePacksBehindItsFront) {
     ASSERT_TRUE(rear->GetPosition() == (Position{4, 3}));
     ASSERT_TRUE(front->GetPosition() == (Position{4, 4}));
   }
+}
+
+// =============================================================================
+// Previews run the turn
+// =============================================================================
+
+// An outcome preview is the turn where the use is the only change: everyone
+// else stays, and the zones land on EVERY agent standing on one as the turn
+// began, moved or not (the caster in its fire, X on its acid far away), as
+// the step does. A's gust (1 damage) pushes B onto the wet and the gob onto
+// the oil. The preview's reports and its world (health, positions, tags) are
+// the step's, field by field.
+TEST(TestAnOutcomePreviewIsTheTurnWhereEveryoneElseStays) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* a = Place(env, 0, {4, 2});
+  SkillConfig gust;
+  gust.name = "gust";
+  gust.targeting = SkillTargeting::Self;
+  gust.area = SkillArea::Cross;
+  gust.motion = SkillMotion::PushOut;
+  gust.motion_distance = 1;
+  gust.damage = 1;
+  gust.self_damage = false;
+  env.GetMutableSkillBook().Define(gust);
+  Require(env.SetCompanionSkill(a->GetId(), 0, "gust"), "gust");
+  Agent* b = Place(env, 1, {4, 3});
+  Agent* gob = AddEnemy(env, {3, 2});
+  Agent* x = AddEnemy(env, {7, 7});
+  Require(env.DefineZone("fire", Hurting(1)), "fire");
+  Require(env.DefineZone("acid", Hurting(2)), "acid");
+  Require(env.SetCellTag({4, 2}, "fire"), "fire cell");
+  Require(env.SetCellTag({4, 4}, "wet"), "wet cell");
+  Require(env.SetCellTag({2, 2}, "oil"), "oil cell");
+  Require(env.SetCellTag({7, 7}, "acid"), "acid cell");
+  const std::map<ObjectId, std::string> roles = {
+      {a->GetId(), "A"}, {b->GetId(), "B"}, {gob->GetId(), "G"}, {x->GetId(), "X"}};
+
+  const BaseEnv::SkillOutcome outcome = env.PreviewSkillOutcome(a->GetId(), 0, Direction::Up);
+  ASSERT_TRUE(outcome.usable);
+  const BaseEnv& world = *outcome.world;
+  env.Step(With(env, 0, Use(MovementAction::Up)));
+  const std::string expected = RoleTrace(env, roles, true, false);
+  const std::string got = RoleTrace(world, roles, true, false);
+  if (got != expected) {
+    throw std::runtime_error("the preview differs:\n" + got + "--- the step ---\n" + expected);
+  }
+  // What this test is about happened
+  ASSERT_TRUE(ZonesLanded(world, world.GetObjectManager().GetAllAgents()[0]) ==
+              std::vector<std::string>{"fire"});
+  ASSERT_EQ(a->GetHealth(), 9);  // Its fire
+  ASSERT_TRUE(b->GetPosition() == (Position{4, 4}));
+  ASSERT_TRUE(Has(env, b, "wet"));
+  ASSERT_EQ(b->GetHealth(), 9);  // The gust
+  ASSERT_TRUE(gob->GetPosition() == (Position{2, 2}));
+  ASSERT_TRUE(Has(env, gob, "oil"));
+  ASSERT_EQ(x->GetHealth(), 3);  // Its acid, far away
+}
+
+// The preview runs no FSM and activates no effect: the goblin's strike
+// (wound up, due this turn) and a hazard telegraphed for this turn stay out of
+// it (the companion's turn: its fire alone), the goblin stays where it is.
+// And it never changes the env: its state (snapshot), its effects (their
+// timers), its goblin's FSM state and RNG, its reports, its odd-motion count.
+// The step then lands both.
+TEST(TestAnOutcomePreviewActivatesNothingAndChangesNothing) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* c = Place(env, 0, {3, 4});
+  AgentFSM* gob = AddStriker(env, {3, 3}, "goblin_attack");  // A builtin (wind-up 1)
+  GiveBolt(env, 0, "jab", nullptr, 1);
+  Require(env.DefineZone("fire", Hurting(1)), "fire");
+  WindUp(env, gob);
+  SpawnNextStep(env, "drip", {3, 4}, 2, TargetFilter::Companion);
+  Require(env.SetCellTag({3, 4}, "fire"), "fire cell");
+  auto effects = [](const BaseEnv& e) {
+    std::ostringstream out;
+    for (const ActiveEffect& a : e.GetActiveEffects()) {
+      out << a.config->name << " " << a.ticks_remaining << " " << a.in_telegraph << " "
+          << a.loops_remaining << " " << a.source_id << "\n";
+    }
+    return out.str();
+  };
+  const std::vector<uint8_t> state = env.SaveSnapshot().Serialize();
+  const std::string effects_before = effects(env);
+  const std::string fsm_before = gob->GetCurrentState()->GetName();
+  const pcg32 rng_before = goblin_rng;
+  const long long odd_before = env.GetOddMotionCount();
+  const size_t reports_before = env.GetLastTagsApplied().size();
+  ASSERT_FALSE(effects_before.empty());
+
+  const BaseEnv::SkillOutcome outcome = env.PreviewSkillOutcome(c->GetId(), 0, Direction::Left);
+  ASSERT_TRUE(outcome.usable);
+  const BaseEnv& world = *outcome.world;
+  // The companion: its fire alone; the goblin: the jab, where it stood
+  ASSERT_EQ(TurnOf(world, world.GetObjectManager().GetAllAgents()[0]).damage, 1);
+  const Agent* world_gob = world.GetObjectManager().GetAllAgents()[1];
+  ASSERT_EQ(TurnOf(world, world_gob).damage, 1);
+  ASSERT_TRUE(world_gob->GetPosition() == (Position{3, 3}));
+  ASSERT_EQ(effects(world), effects_before);  // Nothing activated, nothing ticked
+
+  // The env is untouched
+  ASSERT_TRUE(env.SaveSnapshot().Serialize() == state);
+  ASSERT_EQ(effects(env), effects_before);
+  ASSERT_EQ(gob->GetCurrentState()->GetName(), fsm_before);
+  pcg32 now = goblin_rng, then = rng_before;
+  ASSERT_EQ(now(), then());
+  ASSERT_EQ(env.GetOddMotionCount(), odd_before);
+  ASSERT_EQ(env.GetLastTagsApplied().size(), reports_before);
+  ASSERT_EQ(c->GetHealth(), 10);
+
+  // The step: the fire (1), the strike (1) and the hazard (2)
+  env.Step(With(env, 0, Use(MovementAction::Left)));
+  ASSERT_EQ(TurnOf(env, c).damage, 4);
+  ASSERT_EQ(c->GetHealth(), 6);
+  ASSERT_EQ(gob->GetHealth(), 4);
 }
 
 // =============================================================================
