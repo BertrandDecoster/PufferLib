@@ -375,6 +375,8 @@ class BaseEnv {
     Host = 3,      // ApplyTagTo (source kInvalidObjectId, cause "host")
   };
   struct TagApplication {
+    // No default kind: every landing path says what landed it
+    explicit TagApplication(TagSource source_kind) : kind(source_kind) {}
     ObjectId agent = kInvalidObjectId;
     TagId tag = kInvalidTag;
     // Steps, or kPermanentTag. A step timer (see Agent::BeginStep): landed
@@ -387,14 +389,16 @@ class BaseEnv {
     // Skill name, "zone" or "host". A reaction's result: the cause of the
     // landing that triggered it (its kind says it is a result).
     std::string cause;
-    bool fresh = false;                  // The agent did not have the tag before
+    // The agent did not have the tag before (a result: before its reaction
+    // removed the originals, so a result that is one of them is not fresh)
+    bool fresh = false;
     // The zone damage this landing dealt (CellTag::damage as given, before
     // Marked, like SkillConfig::damage), after the tag. 0 when none was
     // dealt: a skill's landing (a skill's damage is its SkillUse's Damage
     // effect), a harmless zone, an agent no longer affectable once the tag
     // landed (a weakness defeated it, a reaction's damage downed or killed it).
     int damage = 0;
-    TagSource kind = TagSource::Skill;
+    TagSource kind;
     int reaction = -1;  // A result: its reaction's index in GetLastReactions(); else -1
   };
   struct Revival {
@@ -424,7 +428,7 @@ class BaseEnv {
     int damage = 0;  // The rule's damage it dealt (before Marked); 0 when none: a defeated agent
   };
   // One reaction that fired (in the order they fired)
-  struct Reaction {
+  struct ReactionReport {
     int rule = -1;                        // Index in GetReactions()
     ObjectId trigger = kInvalidObjectId;  // The agent the triggering tag landed on
     TagId tag = kInvalidTag;              // The triggering tag (the rule's a or b)
@@ -438,10 +442,12 @@ class BaseEnv {
     // unless a weakness defeated it: then possibly none)
     std::vector<ReactionOutcome> affected;
   };
-  const std::vector<Reaction>& GetLastReactions() const { return last_reactions_; }
+  // `rule` indexes the current reactions: a SetReactions between the step and
+  // the read makes it stale.
+  const std::vector<ReactionReport>& GetLastReactions() const { return last_reactions_; }
   // One agent defeated by a weakness (P, S): S landed on it while it stood on
   // a zone providing P
-  struct Defeat {
+  struct DefeatReport {
     ObjectId agent = kInvalidObjectId;
     TagId zone = kInvalidTag;  // P
     TagId tag = kInvalidTag;   // S
@@ -449,8 +455,9 @@ class BaseEnv {
     ObjectId source = kInvalidObjectId;
     std::string cause;
     TagSource kind = TagSource::Skill;
+    int reaction = -1;  // S a result: its reaction's index in GetLastReactions(); else -1
   };
-  const std::vector<Defeat>& GetLastDefeats() const { return last_defeats_; }
+  const std::vector<DefeatReport>& GetLastDefeats() const { return last_defeats_; }
 
   // ==========================================================================
   // Reactions, weaknesses, immunities, tag statuses (core/reaction.h)
@@ -490,12 +497,14 @@ class BaseEnv {
   bool SetWeaknesses(ObjectId agent, const std::vector<TagWeakness>& weak_to,
                      std::string* error = nullptr);
   std::vector<TagWeakness> GetWeaknesses(ObjectId agent) const;  // {} for no agent
+  // An immunity blocks landings only: a tag the agent already carries stays
+  // until it expires or a reaction removes it.
   bool SetImmunities(ObjectId agent, const std::vector<std::string>& immune,
                      std::string* error = nullptr);
   std::vector<std::string> GetImmunities(ObjectId agent) const;  // {} for no agent
 
   // Zones: a cell may carry one tag, landed (with `duration`, cause "zone",
-  // source kInvalidObjectId) on every living agent standing on it after the
+  // source kInvalidObjectId) on every affectable agent standing on it after the
   // regular movement of every Step (before skills), and on any
   // agent a skill moves onto it. Each landing is reported; its `fresh` is that
   // of TagApplication (the agent did not carry the tag just before this
@@ -717,9 +726,9 @@ class BaseEnv {
   bool LandTag(Agent& agent, const std::string& tag, int duration, ObjectId source,
                const std::string& cause, TagSource kind);  // Interns, forwards
   // Step 3: `tag` just landed on `agent`; defeats it on a matching weakness
-  // (reported).
+  // (reported, with `reaction`: the landing's, see LandTag).
   void ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
-                       TagSource kind);
+                       TagSource kind, int reaction);
   // Step 4: the reaction `tag`, just landed on `agent`, triggers (if any).
   // A defeated `agent` still triggers it, but only a spread one fires (it
   // reaches the others): alone, nobody is left to affect.
@@ -812,8 +821,8 @@ class BaseEnv {
   std::vector<ResolvedReaction> resolved_reactions_;  // Parallel to reactions_
   std::vector<TagStatusRule> tag_statuses_;
   std::vector<TagId> tag_status_ids_;  // Parallel to tag_statuses_
-  std::vector<Reaction> last_reactions_;
-  std::vector<Defeat> last_defeats_;
+  std::vector<ReactionReport> last_reactions_;
+  std::vector<DefeatReport> last_defeats_;
 };
 
 }  // namespace companions

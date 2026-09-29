@@ -298,7 +298,7 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
   the tag is present after steps t .. t+d-1 (and during step t+d, until its end)
 - No gameplay effect by themselves; the level's rules give them one (see Reactions). Host
   primitives: `ApplyTagTo` / `RemoveTagFrom` (`ApplyTagTo` refuses a downed or dead agent
-  and then interns nothing, like `LandTag`, and an agent immune to the tag). `ApplyTagTo`
+  (interning nothing) and an agent immune to the tag). `ApplyTagTo`
   is a landing like any other (`TagSource::Host`, cause `"host"`, source -1): tag
   statuses, weaknesses and reactions apply, and it is reported (`GetLastTagsApplied`,
   `GetLastReactions`, `GetLastDefeats`) until the next `Step` clears the reports (the C
@@ -393,10 +393,17 @@ a status.
 - Consequences of these rules worth knowing when writing a level: a zone re-lands its
   tag every step, so an agent carrying a reaction's result that is also one of its
   originals (`wet + electrified -> electrified`) reacts again with every landing of the
-  other one (standing in the lake: every step); a spread from an agent standing on a
-  zone providing the TRIGGER tag (an oiled agent walking into the `burning` zone)
-  spreads over that zone's region, and `zone_becomes` then re-sets it (its lifetime
-  starts again)
+  other one (standing in the lake: every step). Spreading with `zone_becomes` = the
+  other original (wet), everyone in the lake keeps the result, so every step each
+  agent's wet landing re-fires it, in agent-index order: N agents in the lake, N
+  firings per step, each over the whole region (N x `damage` to each), each one
+  re-setting the lake (it never runs out). A result in {a, b} is a trap: the level
+  should give the result another name (`wet + electrified -> shocked`); the env keeps
+  the rule as it is. A spread from an agent standing on a zone providing the TRIGGER
+  tag (an oiled agent walking into the `burning` zone) spreads over that zone's region,
+  and `zone_becomes` then re-sets it (its lifetime starts again). A tag status re-lands
+  with every landing of its tag, so a zone whose tag carries Rooted or Stunned holds an
+  agent indefinitely (a rooted agent can't walk out)
 - **Level data** (`SetReactions(rules, error)` / `GetReactions()`,
   `SetTagStatuses(rules, error)` / `GetTagStatuses()`): like the zone table, copied with
   the env, kept across a generated `Reset` (`LoadGeneratedLevel`), replaced by
@@ -405,19 +412,25 @@ a status.
 - **Per agent** (`SetWeaknesses(agent, weak_to, error)` / `GetWeaknesses`,
   `SetImmunities(agent, immune, error)` / `GetImmunities`; `Agent::GetWeakTo` /
   `GetImmune` / `IsImmuneTo`, tag ids): on the agent, copied with it, gone when a load
-  or a generated `Reset` re-creates the agents
+  or a generated `Reset` re-creates the agents. An immunity blocks landings only: a tag
+  the agent already carries stays until it expires or a reaction removes it
 - **Validation** (each setter: false, nothing changed or interned, the reason in `error`):
   every name non-empty, at most 31 bytes; a reaction: `a` != `b`, a `result`, `keep` a
   subset of {a, b} without repeats, `damage` >= 0, `zone_becomes` only with `spread`, one
   rule per unordered pair; a tag status: stunned / marked / rooted, `steps` > 0, one per
   tag; weaknesses: no pair twice; immunities: no tag twice; an unknown agent id
-- **Reports** (per step, see Per-step reports): `GetLastReactions()` (rule index, the
-  trigger agent, the triggering tag, its landing's source / cause / kind, `spread`, the
-  affected agents in order with `result_landed` / `defeated` / `damage`),
-  `GetLastDefeats()` (agent, P, S, the landing of S: source / cause / kind), and each
-  `TagApplication`'s `kind` (`TagSource`: Skill 0, Zone 1, Reaction 2, Host 3) and
-  `reaction` (a result: its reaction's index in `GetLastReactions()`). A result keeps
-  the source and cause of the landing that triggered its reaction. Not in the C API yet
+- **Reports** (per step, see Per-step reports): `GetLastReactions()` (`ReactionReport`:
+  rule index, the trigger agent, the triggering tag, its landing's source / cause /
+  kind, `spread`, the affected agents in order with `result_landed` / `defeated` /
+  `damage`; `rule` indexes the current reactions, so a `SetReactions` between the step
+  and the read makes it stale), `GetLastDefeats()` (`DefeatReport`: agent, P, S, the
+  landing of S: source / cause / kind / `reaction`, the index of the reaction whose
+  result S is, else -1), and each `TagApplication`'s `kind` (`TagSource`: Skill 0, Zone
+  1, Reaction 2, Host 3; no default, every landing path sets it) and `reaction` (a
+  result: its reaction's index in `GetLastReactions()`). A result keeps the source and
+  cause of the landing that triggered its reaction; its `fresh` reads the agent before
+  the reaction removed the originals (a result that is one of them is not fresh on an
+  agent that carried it). Not in the C API yet
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
 (damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
@@ -435,8 +448,8 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 |---------|---------|-------------|
 | `GetLastSkillUses()` | caster, skill (the effective one), target (centre; landing cell for a self skill), slot, `affected` (the agents it affected, in processing order, with what it did to each: see Previews) | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill); the whole use, `affected` included: `companions_get_last_skill_use_count` / `companions_get_last_skill_use` (not an event: never cut by the event cap) |
 | `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"` / `"host"`; a result: its trigger's), `fresh`, `damage` (the zone damage it dealt; 0 when none: a skill's landing, a harmless zone, an agent no longer affectable), `kind` (`TagSource`), `reaction` (a result: its index in `GetLastReactions()`, else -1); the last three not in the C API yet | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh) |
-| `GetLastReactions()` | rule, trigger, tag, source / cause / kind of the triggering landing, `spread`, `affected` (agent, `result_landed`, `defeated`, `damage`), in the order they fired | none yet |
-| `GetLastDefeats()` | agent, zone (P), tag (S), source / cause / kind of the landing of S | none yet |
+| `GetLastReactions()` | `ReactionReport`: rule, trigger, tag, source / cause / kind of the triggering landing, `spread`, `affected` (agent, `result_landed`, `defeated`, `damage`), in the order they fired | none yet |
+| `GetLastDefeats()` | `DefeatReport`: agent, zone (P), tag (S), source / cause / kind / `reaction` of the landing of S | none yet |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
 | `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
 

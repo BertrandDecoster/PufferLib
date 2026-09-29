@@ -1060,14 +1060,13 @@ bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
   // 1. Immunity: an immune agent gets nothing (no report, no zone damage).
   if (agent.IsImmuneTo(tag)) return false;
   // 2. The tag, and the status bound to it (a step timer, like the tag's).
-  TagApplication landed;
+  TagApplication landed(kind);
   landed.agent = agent.GetId();
   landed.tag = tag;
   landed.duration = duration;
   landed.source = source;
   landed.cause = cause;
-  landed.fresh = !agent.HasTag(tag);
-  landed.kind = kind;
+  landed.fresh = !agent.HasTag(tag);  // A result: ResolveReaction corrects it
   landed.reaction = reaction;
   agent.ApplyTag(tag, duration);
   last_tags_applied_.push_back(std::move(landed));
@@ -1079,7 +1078,7 @@ bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
   }
   // 3. Weakness: a defeated agent gets nothing more (no reaction outcome, and
   //    no zone damage: ApplyZoneTag finds it no longer affectable).
-  ResolveWeakness(agent, tag, source, cause, kind);
+  ResolveWeakness(agent, tag, source, cause, kind, reaction);
   // 4. Reaction: results never trigger one. A defeated trigger still starts
   //    it (its tags stay): a spread reaches the others and changes the zone.
   if (kind != TagSource::Reaction) ResolveReaction(agent, tag, source, cause, kind);
@@ -1089,14 +1088,12 @@ bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
 bool BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration, ObjectId source,
                       const std::string& cause, TagSource kind) {
   if (duration == 0 || !agent.IsAffectable()) return false;  // Lands nothing, so interns nothing
-  // An agent is only immune to interned tags: one never interned lands
-  const TagId known = tags_.Find(tag);
-  if (known != kInvalidTag && agent.IsImmuneTo(known)) return false;
+  // An immune agent: SetImmunities interned the tag, so this interns nothing new
   return LandTag(agent, tags_.Intern(tag), duration, source, cause, kind);
 }
 
 void BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
-                              TagSource kind) {
+                              TagSource kind, int reaction) {
   const std::vector<Agent::WeakTo>& weak_to = agent.GetWeakTo();
   if (weak_to.empty()) return;
   // P is asked of the map (the zone it stands on now), never of its tags
@@ -1105,13 +1102,14 @@ void BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const st
   for (const Agent::WeakTo& w : weak_to) {
     if (w.tag != tag || w.zone != here) continue;
     agent.Defeat();
-    Defeat d;
+    DefeatReport d;
     d.agent = agent.GetId();
     d.zone = w.zone;
     d.tag = w.tag;
     d.source = source;
     d.cause = cause;
     d.kind = kind;
+    d.reaction = reaction;
     last_defeats_.push_back(std::move(d));
     return;
   }
@@ -1174,7 +1172,7 @@ void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const st
   }
 
   const int index = static_cast<int>(last_reactions_.size());
-  Reaction fired;
+  ReactionReport fired;
   fired.rule = rule;
   fired.trigger = agent.GetId();
   fired.tag = tag;
@@ -1190,11 +1188,14 @@ void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const st
     if (!a->IsAffectable()) continue;  // Nothing reaches it any more
     ReactionOutcome outcome;
     outcome.agent = a->GetId();
+    const bool carried = a->HasTag(r.result);  // Before the originals go
     if (!r.keep_a) a->RemoveTag(r.a);
     if (!r.keep_b) a->RemoveTag(r.b);
     const size_t defeats = last_defeats_.size();
+    const size_t landing = last_tags_applied_.size();  // The result's report entry
     outcome.result_landed =
         LandTag(*a, r.result, kPermanentTag, source, cause, TagSource::Reaction, index);
+    if (outcome.result_landed) last_tags_applied_[landing].fresh = !carried;
     outcome.defeated = last_defeats_.size() > defeats;
     if (spec.damage > 0 && a->IsAffectable()) {
       outcome.damage = spec.damage;
@@ -1609,6 +1610,7 @@ BaseEnv::SkillTargets BaseEnv::ResolveSkillTargets(const Companion& caster,
     // Tags: at least one of them lands (an agent immune to all gets none)
     const bool lands_a_tag =
         std::any_of(skill.tags.begin(), skill.tags.end(), [&](const SkillTagSpec& tag) {
+          if (a->GetImmune().empty()) return true;
           const TagId id = tags_.Find(tag.tag);  // Never interned: nobody is immune to it
           return id == kInvalidTag || !a->IsImmuneTo(id);
         });

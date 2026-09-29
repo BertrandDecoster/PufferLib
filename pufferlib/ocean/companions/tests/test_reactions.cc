@@ -164,7 +164,10 @@ static void SetZones(SynchroEnv& env, const std::vector<Position>& cells, const 
 }
 
 // The combos_duo rules (CombosLevelData.htn's locationCombo / comboSpreads),
-// with a damage of 1 for the spreading ones
+// with a damage of 1 for the spreading ones. Their results are triggers
+// (wet + electrified -> electrified): in a zone they re-fire every step, once
+// per agent (TestAResultThatIsATriggerReFiresOncePerAgentInTheZone), so the
+// real level will name a result that is not a trigger (-> shocked).
 static std::vector<ReactionRule> CombosRules() {
   return {Rule("wet", "electrified", "electrified").Hurts(1).Spreads("wet").r,
           Rule("oil", "burning", "burning").Hurts(1).Spreads("burning").r,
@@ -319,7 +322,7 @@ TEST(TestAReactionIsUnordered) {
     ASSERT_TRUE(Has(env, a, "shocked"));
 
     ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-    const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+    const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
     ASSERT_EQ(r.rule, 0);
     ASSERT_EQ(r.trigger, a->GetId());
     ASSERT_EQ(r.tag, Id(env, second));
@@ -358,6 +361,32 @@ TEST(TestKeepLeavesTheListedOriginals) {
   ASSERT_FALSE(Has(env, a, "oil"));
   ASSERT_TRUE(Has(env, a, "burning"));
   ASSERT_TRUE(Has(env, a, "smoking"));
+}
+
+// A result's `fresh` reads the agent before the reaction removed its
+// originals: a result that is one of them (wet + electrified -> electrified)
+// is not fresh on the agent that carried it, fresh on one that did not.
+TEST(TestAResultIsFreshOnlyIfTheAgentDidNotCarryIt) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("wet", "electrified", "electrified").Spreads().r}),
+          "reactions");
+  Agent* a = Place(env, 0, {3, 3});
+  Agent* b = Place(env, 1, {3, 4});
+  SetZones(env, {{3, 3}, {3, 4}}, "wet");
+  env.Step(Stays(env));  // Both wet
+  Require(env.ApplyTagTo(a->GetId(), "electrified", kPermanentTag), "electrified");
+  std::vector<BaseEnv::TagApplication> results;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    if (t.kind == TagSource::Reaction) results.push_back(t);
+  }
+  ASSERT_EQ(results.size(), static_cast<size_t>(2));
+  ASSERT_EQ(results.at(0).agent, a->GetId());
+  ASSERT_FALSE(results.at(0).fresh);  // It carried electrified a moment before
+  ASSERT_EQ(results.at(1).agent, b->GetId());
+  ASSERT_TRUE(results.at(1).fresh);
+  ASSERT_TRUE(Has(env, a, "electrified"));
+  ASSERT_TRUE(Has(env, b, "electrified"));
 }
 
 TEST(TestAReactionDealsItsDamage) {
@@ -423,7 +452,7 @@ TEST(TestSkillAndZoneLandingsReact) {
   env.Step(With(env, 0, Use(MovementAction::Right)));
   ASSERT_TRUE(Has(env, target, "shocked"));
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_EQ(r.trigger, target->GetId());
   ASSERT_EQ(r.source, caster->GetId());
   ASSERT_EQ(r.cause, std::string("spark"));
@@ -487,7 +516,7 @@ TEST(TestADownedAgentNeverReacts) {
 
   env.Step(With(env, 0, Use(MovementAction::Right)));  // The spark hits the gob in the lake
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_TRUE(r.spread);
   ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
   ASSERT_EQ(r.affected.at(0).agent, gob->GetId());
@@ -521,7 +550,7 @@ TEST(TestASpreadCoversTheConnectedRegionOnly) {
   env.Step(With(env, 0, Use(MovementAction::Right)));
 
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_EQ(r.trigger, gob->GetId());
   ASSERT_TRUE(r.spread);
   ASSERT_EQ(r.affected.size(), static_cast<size_t>(2));
@@ -589,7 +618,7 @@ TEST(TestZoneBecomesTakesTheTablesFieldsAndBurnsOut) {
   env.Step(With(env, 0, Use(MovementAction::Right)));
 
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_EQ(r.rule, 1);
   ASSERT_EQ(r.trigger, cook->GetId());
   ASSERT_TRUE(r.spread);
@@ -605,6 +634,7 @@ TEST(TestZoneBecomesTakesTheTablesFieldsAndBurnsOut) {
   ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastDefeats().at(0).agent, gob->GetId());
   ASSERT_TRUE(env.GetLastDefeats().at(0).kind == TagSource::Reaction);
+  ASSERT_EQ(env.GetLastDefeats().at(0).reaction, 0);
   ASSERT_EQ(env.GetLastDefeats().at(0).cause, std::string("fireball"));
   ASSERT_FALSE(Has(env, cook, "oil"));
   ASSERT_TRUE(Has(env, cook, "burning"));
@@ -668,6 +698,41 @@ TEST(TestAReactionChangingItsOwnCellStillTakesTheOldZonesDamage) {
   ASSERT_EQ(a->GetHealth(), 9);
 }
 
+// A trap of the rules (kept: the level names another result): a result that
+// is one of its triggers (wet + electrified -> electrified), spreading with
+// zone_becomes = the other one (wet). Everyone in the lake keeps the result,
+// so each step every agent's wet landing re-fires it, in agent-index order:
+// N agents, N firings, each over the whole region (N damage each), and each
+// one re-sets the lake (its lifetime starts again).
+TEST(TestAResultThatIsATriggerReFiresOncePerAgentInTheZone) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions(CombosRules()), "reactions");
+  Require(env.DefineZone("wet", Zone().Lasts(5).def), "wet");
+  GiveBolt(env, 0, "spark", "electrified");
+  Place(env, 0, {2, 1});  // Ashore
+  const std::vector<Agent*> swimmers = {AddEnemy(env, {2, 4}, 10), AddEnemy(env, {2, 5}, 10),
+                                        AddEnemy(env, {3, 5}, 10)};
+  const std::vector<Position> lake = {{2, 4}, {2, 5}, {2, 6}, {3, 5}, {3, 6}};
+  SetZones(env, lake, "wet");
+  env.Step(With(env, 0, Use(MovementAction::Right)));  // One firing, from the spark
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  for (const Agent* s : swimmers) ASSERT_EQ(s->GetHealth(), 9);
+
+  for (int step = 1; step <= 2; ++step) {  // Nobody casts any more
+    env.Step(Stays(env));
+    const auto& fired = env.GetLastReactions();
+    ASSERT_EQ(fired.size(), swimmers.size());
+    for (size_t i = 0; i < fired.size(); ++i) {
+      ASSERT_EQ(fired.at(i).trigger, swimmers.at(i)->GetId());
+      ASSERT_TRUE(fired.at(i).kind == TagSource::Zone);
+      ASSERT_EQ(fired.at(i).affected.size(), swimmers.size());
+    }
+    for (const Agent* s : swimmers) ASSERT_EQ(s->GetHealth(), 9 - 3 * step);
+    for (Position p : lake) ASSERT_EQ(env.GetCellTag(p).steps, 5);  // Re-set, never runs out
+  }
+}
+
 // =============================================================================
 // Weaknesses, asked of the map
 // =============================================================================
@@ -702,18 +767,19 @@ TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
     } else {
       ASSERT_FALSE(imp->IsAlive());
       ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-      const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+      const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
       ASSERT_EQ(r.trigger, imp->GetId());
       ASSERT_TRUE(r.spread);
       ASSERT_TRUE(r.affected.empty());  // Not the defeated imp
       ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
-      const BaseEnv::Defeat& d = env.GetLastDefeats().at(0);
+      const BaseEnv::DefeatReport& d = env.GetLastDefeats().at(0);
       ASSERT_EQ(d.agent, imp->GetId());
       ASSERT_EQ(d.zone, Id(env, "wet"));
       ASSERT_EQ(d.tag, Id(env, "electrified"));
       ASSERT_EQ(d.source, caster->GetId());
       ASSERT_EQ(d.cause, std::string("spark"));
       ASSERT_TRUE(d.kind == TagSource::Skill);
+      ASSERT_EQ(d.reaction, -1);  // Not a result
       ASSERT_TRUE(Has(env, imp, "wet"));  // It keeps what it carried
       ASSERT_EQ(imp->GetHealth(), 0);
       ASSERT_TRUE(Has(env, imp, "electrified"));
@@ -856,7 +922,7 @@ TEST(TestAZoneLandingDefeatStillSpreadsItsReaction) {
   ASSERT_TRUE(landed.at(2).kind == TagSource::Reaction);
 
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_EQ(r.trigger, gob->GetId());
   ASSERT_TRUE(r.kind == TagSource::Zone);
   ASSERT_TRUE(r.spread);
@@ -890,7 +956,7 @@ TEST(TestAResultSpreadingThroughTheLakeDefeatsTheImp) {
   env.Step(With(env, 0, Use(MovementAction::Right)));
 
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_EQ(r.trigger, gob->GetId());
   ASSERT_TRUE(r.spread);
   ASSERT_EQ(r.affected.size(), static_cast<size_t>(3));
@@ -903,13 +969,14 @@ TEST(TestAResultSpreadingThroughTheLakeDefeatsTheImp) {
   ASSERT_EQ(gob->GetHealth(), 4);
   ASSERT_EQ(swimmer->GetHealth(), 9);
   ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
-  const BaseEnv::Defeat& d = env.GetLastDefeats().at(0);
+  const BaseEnv::DefeatReport& d = env.GetLastDefeats().at(0);
   ASSERT_EQ(d.agent, imp->GetId());
   ASSERT_EQ(d.zone, Id(env, "wet"));
   ASSERT_EQ(d.tag, Id(env, "electrified"));
   ASSERT_EQ(d.source, caster->GetId());
   ASSERT_EQ(d.cause, std::string("spark"));
   ASSERT_TRUE(d.kind == TagSource::Reaction);
+  ASSERT_EQ(d.reaction, 0);  // The result of the first reaction
   for (Position p : lake) ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "wet"));  // Becomes wet
 }
 
@@ -938,7 +1005,7 @@ TEST(TestAGobDefeatedOnTheOilStillSetsItAblaze) {
   ASSERT_TRUE(Has(env, gob, "oil"));  // Nothing more: its originals stay
 
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_EQ(r.rule, 1);
   ASSERT_EQ(r.trigger, gob->GetId());
   ASSERT_EQ(r.source, caster->GetId());
