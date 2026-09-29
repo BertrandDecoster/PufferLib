@@ -194,7 +194,8 @@ static void GiveGust(SynchroEnv& env, int companion) {
 
 // An effect of `damage` (negative: a heal) on one cell for `filter`,
 // telegraphed one step: spawned between steps, it lands during the next
-// step's effect tick. Call under a ScopedEffectRegistry.
+// step (planned with its intents, its hits after its motion phase). Call
+// under a ScopedEffectRegistry.
 static void SpawnNextStep(BaseEnv& env, const char* name, Position cell, int damage,
                           TargetFilter filter = TargetFilter::All,
                           ObjectId source = kInvalidObjectId) {
@@ -2421,8 +2422,8 @@ class HazardEnv : public SynchroEnv {
 };
 
 // A hazard without a wind-up spawned after a step for the next turn waits (a
-// warning: in its telegraph, no step left) and applies on the next turn, to
-// whoever stands on its cell after that turn's motion
+// warning: a telegraph of 1 step, as a telegraph-1 hazard) and applies on the
+// next turn, to whoever stands on its cell after that turn's motion
 TEST(TestATelegraphZeroHazardSpawnedAfterTheStepAppliesNextTurn) {
   for (bool dodge : {false, true}) {
     ScopedEffectRegistry scoped_registry;
@@ -2436,7 +2437,7 @@ TEST(TestATelegraphZeroHazardSpawnedAfterTheStepAppliesNextTurn) {
     ASSERT_EQ(c->GetHealth(), 10);  // Not at once
     ASSERT_EQ(env.GetActiveEffects().size(), static_cast<size_t>(1));
     ASSERT_TRUE(env.GetActiveEffects()[0].in_telegraph);
-    ASSERT_EQ(env.GetActiveEffects()[0].ticks_remaining, 0);
+    ASSERT_EQ(env.GetActiveEffects()[0].ticks_remaining, 1);
     env.Step(With(env, 0, dodge ? Walk(MovementAction::Right) : kStay));
     ASSERT_EQ(c->GetHealth(), dodge ? 10 : 9);
     ASSERT_EQ(env.GetActiveEffects().size(), static_cast<size_t>(1));  // Active now

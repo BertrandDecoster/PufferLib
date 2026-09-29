@@ -483,7 +483,8 @@ TEST(TestDodgeEnvHazardKillsCompanion) {
 
 // A hazard without a wind-up spawned after a step (PostStep) applies on the
 // next turn, to whoever stands on its cells after that turn's motion (a
-// warning meanwhile: in its telegraph, 0 steps left): the two hazards are
+// warning meanwhile: a telegraph of 1 step, so it strikes on the same turn
+// as a telegraph-1 hazard would): the two hazards are
 // redefined without a wind-up, 1 damage over the whole grid, one per step.
 TEST(TestATelegraphZeroHazardSpawnedAfterTheStepAppliesNextTurn) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
@@ -504,7 +505,7 @@ TEST(TestATelegraphZeroHazardSpawnedAfterTheStepAppliesNextTurn) {
   ASSERT_EQ(player->GetHealth(), 3);
   ASSERT_EQ(env.GetActiveEffects().size(), 1u);
   ASSERT_TRUE(env.GetActiveEffects()[0].in_telegraph);
-  ASSERT_EQ(env.GetActiveEffects()[0].ticks_remaining, 0);
+  ASSERT_EQ(env.GetActiveEffects()[0].ticks_remaining, 1);
   env.Step(stay);  // It applies; another spawns
   ASSERT_EQ(player->GetHealth(), 2);
   env.Step(stay);

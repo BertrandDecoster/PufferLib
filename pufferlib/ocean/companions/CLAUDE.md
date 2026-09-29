@@ -969,10 +969,11 @@ Location: `companions/src/core/fsm/`
   motion phase: the plans never read a post-strike world). Between steps (the host, the
   C API, a post-step hook) `Immediate` (the default) applies a no-wind-up effect at once,
   a host primitive (its push moves at once without a zone landing; `kill` downs at
-  once); `NextTurn` keeps it pending (in its telegraph, 0 steps left) for the next turn.
+  once); `NextTurn` keeps it pending (a telegraph of 1 step) for the next turn.
   DodgeEnv spawns its hazards after the step with `NextTurn`: a no-wind-up hazard now
-  applies on the next turn, dodgeable, instead of at once (its builtin hazards have a
-  wind-up and keep their timing)
+  applies on the next turn, dodgeable, instead of at once, so telegraph-0 and
+  telegraph-1 hazards strike on the same turn (its builtin hazards have a wind-up and
+  keep their timing)
 
 ### Environments & TaskLens
 

@@ -21,9 +21,11 @@ enum class EffectTiming {
   // As it spawns: applied at once, its push moving at once, one agent after
   // the other, without landing a zone (a host primitive, e.g. "kill")
   Immediate,
-  // With the next turn's effects: it waits (in its telegraph, 0 steps left:
-  // a warning) and activates when the next Step plans its effects (PlanTurn),
-  // applied in that turn's phases (DodgeEnv's hazards, spawned after a step)
+  // With the next turn's effects: it waits in its telegraph (1 step left, a
+  // warning, as a telegraph-1 effect spawned between two steps: both strike
+  // on the next turn) and activates when the next Step plans its effects
+  // (PlanTurn), applied in that turn's phases (DodgeEnv's hazards, spawned
+  // after a step)
   NextTurn,
 };
 
@@ -87,8 +89,9 @@ class EffectSystem {
   // Spawn a new effect at a target location. With a telegraph it starts in
   // it (telegraph_ticks steps). Without one, by `timing`: Immediate applies
   // it at once (ApplyAtOnce: damage / heal, push, status on every agent it
-  // reaches, one after the other; not capped), NextTurn leaves it in its
-  // telegraph with 0 steps left, to activate at the next PlanTurn.
+  // reaches, one after the other; not capped), NextTurn puts it in a
+  // telegraph of 1 step, to activate at the next PlanTurn (during a step,
+  // before PlanTurn: this turn's).
   void SpawnEffect(const std::string& effect_name, EffectTarget target,
                    Direction direction = Direction::Up,
                    ObjectId source_id = kInvalidObjectId,
@@ -101,9 +104,9 @@ class EffectSystem {
   //   - an effect still in its telegraph whose source agent is dead as the
   //     turn begins is removed first: a dead attacker's pending attacks never
   //     land;
-  //   - its timer counts down; a telegraph that ends (0 steps left, a
-  //     NextTurn spawn's included) activates: its active phase begins and it
-  //     applies this turn;
+  //   - its timer counts down; a telegraph that ends (a NextTurn spawn's
+  //     included) activates: its active phase begins and it applies this
+  //     turn;
   //   - a continuous effect (apply_every_tick) applies on each later turn of
   //     its active phase (once per turn: active_ticks applications in all);
   //   - an active phase that ends restarts a loop (a wind-up again, or
@@ -155,7 +158,6 @@ class EffectSystem {
   // Add a pre-constructed effect (for snapshot restoration)
   void AddEffect(ActiveEffect effect) { active_effects_.push_back(std::move(effect)); }
 
- public:
   // At most this many effect applications touch one agent in a turn (the
   // cap of the old sequential cascades, kept): BaseEnv counts them in effect
   // order, the planned pushes first (on whoever stands on their cells before

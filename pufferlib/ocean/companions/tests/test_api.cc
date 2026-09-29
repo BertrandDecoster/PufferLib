@@ -2025,8 +2025,8 @@ TEST(TestADownedCompanionShowsItsEquippedSkill) {
 }
 
 // A revive gets its ally up at the end of the turn: two strikes wound up
-// before the step land in its effect tick on an ally still down (nothing
-// touches it), so it gets up; the step reports its down (from between the
+// before the step land in it (planned with its intents) on an ally still down
+// (nothing touches it), so it gets up; the step reports its down (from between the
 // steps) before the AgentRevived (events are grouped by kind). It can be
 // downed again from the next step on: two more strikes take its 2 HP.
 TEST(TestARevivedAllyIsDownedAgainOnlyFromTheNextStepThroughTheApi) {

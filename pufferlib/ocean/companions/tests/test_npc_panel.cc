@@ -312,9 +312,9 @@ TEST(TestNPCPanelAggroScenarioMissAndHit) {
   step(MovementAction::Stay);
   ASSERT_EQ(SoloPanelState(r, env), "Recovery");
 
-  // Step 6: effect telegraph expires at end-of-step Tick() — damage applies
-  // to whoever is at (2,5); player is at (1,5), so no damage. FSM stays in
-  // Recovery (counter < recovery_ticks=2).
+  // Step 6: effect telegraph expires (planned with the step's intents) —
+  // damage applies to whoever is at (2,5) after the step's motion; player is
+  // at (1,5), so no damage. FSM stays in Recovery (counter < recovery_ticks=2).
   step(MovementAction::Stay);
   ASSERT_EQ(SoloPanelState(r, env), "Recovery");
   ASSERT_EQ(player->GetHealth(), initial_health);  // MISSED
@@ -429,8 +429,9 @@ TEST(TestZombieAttackDamagesPlayerOnHitNotOnDodge) {
   ASSERT_EQ(player->GetHealth(), initial_health);
 
   // Step 5 & 6: zombie cycles through Recovery; effect's telegraph expires
-  // at end-of-step Tick() and damage resolves against whoever is at (2,5)
-  // — the player is at (1,5), so nothing lands.
+  // (planned with the step's intents) and damage resolves against whoever is
+  // at (2,5) after the step's motion — the player is at (1,5), so nothing
+  // lands.
   step(MovementAction::Stay);
   step(MovementAction::Stay);
   ASSERT_EQ(player->GetHealth(), initial_health);  // DODGED

@@ -76,10 +76,11 @@ void EffectSystem::SpawnEffect(const std::string& effect_name,
     effect.in_telegraph = true;
     effect.ticks_remaining = config->telegraph_ticks;
   } else if (timing == EffectTiming::NextTurn) {
-    // No wind-up, for the next turn: a telegraph that ends at the next
-    // PlanTurn (0 steps left), which activates it
+    // No wind-up, for the next turn: a telegraph of 1 step, which the next
+    // PlanTurn ends (1 -> 0) and so activates, as it would a telegraph-1
+    // effect spawned between two steps
     effect.in_telegraph = true;
-    effect.ticks_remaining = 0;
+    effect.ticks_remaining = 1;
   } else {
     // Skip to active phase and apply immediately (a spawn-time application:
     // not capped)

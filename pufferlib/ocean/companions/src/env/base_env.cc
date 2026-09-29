@@ -1198,6 +1198,19 @@ void BaseEnv::ExecuteLayer(MotionKind layer) {
     turn_.moved.push_back(m.actor);
   }
   if (layer != MotionKind::Forced) return;
+  // The effects' pushes, as the forced layer executed them (their sum with
+  // the other forced moves on that agent)
+  if (LOG_ENABLED(Effects)) {
+    const std::vector<EffectSystem::Application>& planned = effect_system_->GetPlanned();
+    for (const EffectPush& p : turn_.effect_pushes) {
+      const MotionIntent* m = FindMotion(p.agent->GetId());
+      if (!m || !m->moved) continue;
+      const Position to = m->actor->GetPosition();
+      LOG_EFFECT("'" << planned[p.application].config->name << "' pushed Agent "
+                     << p.agent->GetId() << " (" << m->from.row << "," << m->from.col
+                     << ") -> (" << to.row << "," << to.col << ")");
+    }
+  }
   // Whom each use's forced moves moved (their sum did)
   for (size_t p = 0; p < turn_.plan_count; ++p) {
     SkillPlan& plan = turn_.plans[p];
@@ -1251,7 +1264,10 @@ void BaseEnv::ApplyEffectHits() {
         // Whom it pushed (counted then), else whoever it reaches now
         bool pushed = false;
         for (const EffectPush& p : turn_.effect_pushes) {
-          pushed = pushed || (p.application == i && p.agent == agent);
+          if (p.application == i && p.agent == agent) {
+            pushed = true;
+            break;
+          }
         }
         if (!pushed && (!effect_system_->Reaches(planned[i], *agent) || !TouchByEffect(*agent))) {
           continue;
