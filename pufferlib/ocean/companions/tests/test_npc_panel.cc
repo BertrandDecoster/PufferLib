@@ -629,18 +629,19 @@ TEST(TestDodgeWindPushesOnEachActiveTick) {
   ASSERT_EQ(a->GetPosition().row, 2);  // A unchanged
 }
 
-TEST(TestFourWindSquareBouncesPlayerBackToStart) {
+TEST(TestFourWindSquarePushesOneLegPerTurn) {
   // Four winds arranged in a 2-cell square at centres (3,3), (3,5), (5,5),
-  // (5,3). Spawn order + centre directions chain the push in a cycle:
-  //   A at (3,3) pushes east  -> player lands at (3,5) = B centre
-  //   B at (3,5) pushes south -> player lands at (5,5) = C centre
-  //   C at (5,5) pushes west  -> player lands at (5,3) = D centre
-  //   D at (5,3) pushes north -> player lands at (3,3) = A centre (origin)
+  // (5,3), their centre directions chaining a cycle:
+  //   A at (3,3) pushes east  -> (3,5) = B centre
+  //   B at (3,5) pushes south -> (5,5) = C centre
+  //   C at (5,5) pushes west  -> (5,3) = D centre
+  //   D at (5,3) pushes north -> (3,3) = A centre (origin)
   //
-  // push_distance = 2 so each leg of the square is two cells. The effect
-  // system's insertion-order resolution processes A,B,C,D within a single
-  // Tick() and each sees the player's post-previous-push position. With a
-  // depth cap of >= 4, all four legs fire and the player bounces back to A.
+  // push_distance = 2 so each leg of the square is two cells. The winds are
+  // planned with the turn's intents, their cells fixed as the turn begins,
+  // and their pushes are forced moves of the one motion phase: they never
+  // chain within a turn (each reaches whoever stands on its cells before the
+  // forced moves). A continuous wind blows 2 turns: one leg per turn.
   DodgeEnv env(9, 1, /*hazard_interval=*/1000, /*horizon=*/100, 42);
   auto& mgr = env.GetMutableObjectManager();
   auto* p = dynamic_cast<Player*>(mgr.GetAllCompanions()[0]);
@@ -654,27 +655,29 @@ TEST(TestFourWindSquareBouncesPlayerBackToStart) {
   env.SpawnEffect("dodge_wind", EffectTarget::AtCell({5, 3}), Direction::Up);
 
   // All four effects are in telegraph with ticks_remaining=1. One Step
-  // transitions them all to active simultaneously, and the insertion-order
-  // chain should bounce the player back to (3,3).
+  // activates them all: only A reaches the player (on its centre).
   std::vector<Action> a = {EncodeAction(MovementAction::Stay)};
   env.Step(a);
-
   ASSERT_EQ(p->GetPosition().row, 3);
-  ASSERT_EQ(p->GetPosition().col, 3);
+  ASSERT_EQ(p->GetPosition().col, 5);
+
+  // Their second (last) active turn: B, whose centre it now stands on
+  env.Step(a);
+  ASSERT_EQ(p->GetPosition().row, 5);
+  ASSERT_EQ(p->GetPosition().col, 5);
+
+  // Blown out
+  env.Step(a);
+  ASSERT_EQ(p->GetPosition().row, 5);
+  ASSERT_EQ(p->GetPosition().col, 5);
+  ASSERT_TRUE(env.GetActiveEffects().empty());
 }
 
 TEST(TestCascadeDepthCapPreventsFifthPush) {
-  // Chain 6 winds along a straight line, each pushing south by 2 cells. With
-  // a depth cap of 4 per agent per tick, only the first 4 should push; the
-  // 5th and 6th fire (state-wise) but find the player beyond their cap and
-  // leave them alone.
-  //
-  //   wind 0 at (1,3) push south -> (3,3)
-  //   wind 1 at (3,3) push south -> (5,3)
-  //   wind 2 at (5,3) push south -> (7,3)
-  //   wind 3 at (7,3) push south -> (9,3)
-  //   wind 4 at (9,3) push south -> would go to (11,3)  <-- capped
-  //   wind 5 at (11,3) push south -> would go to (13,3) <-- capped
+  // 6 winds on one centre, the player on it, each pushing south by 2 cells.
+  // With a cap of 4 effect applications per agent per turn, only the first 4
+  // (in effect order) push, summed: 8 cells; the 5th and 6th fire
+  // (state-wise) but find the player beyond their cap and leave it alone.
   //
   // Grid is 15x15 (plenty of room), so we can verify the cap is what stops
   // us rather than the wall.
@@ -683,8 +686,8 @@ TEST(TestCascadeDepthCapPreventsFifthPush) {
   auto* p = dynamic_cast<Player*>(mgr.GetAllCompanions()[0]);
   mgr.UpdatePosition(p->GetId(), {1, 3});
 
-  for (int r = 1; r <= 11; r += 2) {
-    env.SpawnEffect("dodge_wind", EffectTarget::AtCell({r, 3}), Direction::Down);
+  for (int i = 0; i < 6; ++i) {
+    env.SpawnEffect("dodge_wind", EffectTarget::AtCell({1, 3}), Direction::Down);
   }
 
   std::vector<Action> a = {EncodeAction(MovementAction::Stay)};

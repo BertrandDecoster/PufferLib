@@ -789,7 +789,11 @@ TEST(TestFactionSystem) {
 class TestableEnv : public SynchroEnv {
  public:
   using SynchroEnv::SynchroEnv;
-  void TestTickEffects() { GetEffectSystem().Tick(); }
+  // One step where every agent (the FSM ones decide for themselves) stays:
+  // the effects are planned with its intents and applied in its phases
+  void StepStaying() {
+    Step(std::vector<Action>(static_cast<size_t>(NumAgents()), EncodeAction(MovementAction::Stay)));
+  }
 };
 
 // =============================================================================
@@ -843,12 +847,12 @@ TEST(TestAttackSequenceOneTick) {
 
 TEST(TestDodgeAndReturnGetsDamaged) {
   // Test: Move away during windup, return before attack lands -> get damaged
-  // Effect has 1-tick telegraph, so damage is applied when TickEffects() transitions
-  // from telegraph to active phase.
+  // Effect has 1-tick telegraph, so damage is applied on the next step, when its
+  // telegraph ends (on whoever stands on its cell after that step's motion).
   TestableEnv env(5, 5, 1, 1, 42);
   env.Reset(42);
 
-  // Effect with 1-tick telegraph: damage applied during TickEffects() when
+  // Effect with 1-tick telegraph: damage applied on the next step, when its
   // telegraph phase ends and active phase begins
   EffectConfig effect_cfg;
   effect_cfg.name = "delayed_attack";
@@ -908,9 +912,9 @@ TEST(TestDodgeAndReturnGetsDamaged) {
   // Move companion BACK to original position before effect's telegraph ends
   mgr.UpdatePosition(companion->GetId(), original_pos);
 
-  // Tick effects: decrements telegraph counter (1 -> 0), transitions to active,
+  // A step: decrements telegraph counter (1 -> 0), transitions to active,
   // and applies damage. Companion is now at original_pos!
-  env.TestTickEffects();
+  env.StepStaying();
 
   // Companion should have taken damage since they returned to attack zone
   ASSERT_EQ(companion->GetHealth(), initial_health - 1);

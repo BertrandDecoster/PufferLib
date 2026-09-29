@@ -232,7 +232,10 @@ void DodgeEnv::SpawnHazard() {
 
   Direction dir = static_cast<Direction>(portable_uniform_int(rng_, 0, 3));
 
-  SpawnEffect(effect_name, EffectTarget::AtCell(spawn_pos), dir);
+  // After the step (PostStep): a hazard without a wind-up applies on the
+  // next turn, to whoever stands on its cells after that turn's motion
+  SpawnEffect(effect_name, EffectTarget::AtCell(spawn_pos), dir, kInvalidObjectId,
+              EffectTiming::NextTurn);
 }
 
 void DodgeEnv::PreStep() {

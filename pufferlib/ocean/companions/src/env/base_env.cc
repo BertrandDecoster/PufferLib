@@ -174,18 +174,22 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // at its end (ApplyTurnOutcomes)
   BeginTurn();
 
-  // Pre-step hook
+  // Pre-step hook (the FSMs decide here, from the world as the turn begins;
+  // their strikes spawned now are planned into this turn)
   PreStep();
 
-  // The intents phase: the agents' intentions, every skill use planned from
-  // the world as the turn begins
+  // The intents phase: the turn's effect applications (EffectSystem::PlanTurn:
+  // timers, telegraphs ending, continuous effects, loops), the agents'
+  // intentions, every skill use planned, all from the world as the turn begins
+  effect_system_->PlanTurn();
   GatherIntentions(actions);
 
   // Capture original intentions before the motion phase modifies them
   CaptureOriginalIntentions();
 
   // The motion phase, in layers: teleports, dashes, walks, then the forced
-  // moves (pushes, pulls) on whoever stands on their cells
+  // moves (the skills' and the effects' pushes, pulls) on whoever stands on
+  // their cells
   MotionPhase();
 
   // Snapshot the executed actions (post-motion, pre-clear) so the C API can
@@ -206,9 +210,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // (CommitPendingZones, below).
   TagPhase(false);
 
-  // Tick active effects (advance timers, apply damage/push)
-  // Effect pushes move agents without zone tags: they get them next step if they stay.
-  effect_system_->Tick();
+  // The effects' hits (damage and heals into the ledger, statuses acting
+  // from the next turn) on whoever stands on their cells now
+  ApplyEffectHits();
 
   // The zones the step's reactions set: the map changes here, once (they
   // first land next step)
@@ -940,6 +944,8 @@ void BaseEnv::GatherLayer(MotionKind layer) {
           m->dc += f.dc;
         }
       }
+      // ...and every effect's pushes (the turn's applications), summed with them
+      GatherEffectPushes();
       std::sort(turn_.motions.begin(),
                 turn_.motions.begin() + static_cast<std::ptrdiff_t>(turn_.motion_count),
                 [](const MotionIntent& a, const MotionIntent& b) { return a.rank < b.rank; });
@@ -1200,6 +1206,61 @@ void BaseEnv::ExecuteLayer(MotionKind layer) {
       if (m && m->moved) plan.moved.push_back(f.actor);
     }
   }
+}
+
+bool BaseEnv::TouchByEffect(const Agent& agent) {
+  for (std::pair<const Agent*, int>& t : turn_.effect_touches) {
+    if (t.first != &agent) continue;
+    if (t.second >= EffectSystem::kCascadeDepthLimit) return false;
+    ++t.second;
+    return true;
+  }
+  turn_.effect_touches.emplace_back(&agent, 1);
+  return true;
+}
+
+void BaseEnv::GatherEffectPushes() {
+  const std::vector<EffectSystem::Application>& planned = effect_system_->GetPlanned();
+  if (planned.empty()) return;
+  const std::vector<Agent*> agents = object_manager_->GetAllAgents();
+  // In effect order, on whoever it reaches now (after the layers before):
+  // each push counts against the cascade cap
+  for (size_t i = 0; i < planned.size(); ++i) {
+    const EffectSystem::Application& a = planned[i];
+    if (!a.config || a.config->push_distance == 0) continue;
+    for (Agent* agent : agents) {
+      if (!effect_system_->Reaches(a, *agent)) continue;
+      int dr = 0, dc = 0;
+      effect_system_->PushOffset(a, agent->GetPosition(), dr, dc);
+      if ((dr == 0 && dc == 0) || !TouchByEffect(*agent)) continue;
+      MotionIntent* m = FindMotion(agent->GetId());
+      if (!m) m = &AddMotion(*agent, agent, agent->GetAgentIndex(), MotionKind::Forced);
+      m->dr += dr;
+      m->dc += dc;
+      turn_.effect_pushes.push_back({i, agent});
+    }
+  }
+}
+
+void BaseEnv::ApplyEffectHits() {
+  const std::vector<EffectSystem::Application>& planned = effect_system_->GetPlanned();
+  if (!planned.empty()) {
+    const std::vector<Agent*> agents = object_manager_->GetAllAgents();
+    for (size_t i = 0; i < planned.size(); ++i) {
+      for (Agent* agent : agents) {
+        // Whom it pushed (counted then), else whoever it reaches now
+        bool pushed = false;
+        for (const EffectPush& p : turn_.effect_pushes) {
+          pushed = pushed || (p.application == i && p.agent == agent);
+        }
+        if (!pushed && (!effect_system_->Reaches(planned[i], *agent) || !TouchByEffect(*agent))) {
+          continue;
+        }
+        effect_system_->ApplyHits(planned[i], *agent);
+      }
+    }
+  }
+  effect_system_->ClearPlanned();
 }
 
 std::vector<Position> BaseEnv::FindEmptyCells(
@@ -2043,6 +2104,7 @@ void BaseEnv::AbortStep() {
   // revives, agent-local (no report, no allocation)
   ApplyTurnLedger(false);
   turn_.Clear();
+  effect_system_->ClearPlanned();
   in_step_ = false;
   for (Agent* agent : object_manager_->GetAllAgents()) agent->AbortStep();
 }
@@ -2662,8 +2724,11 @@ void BaseEnv::CollectAffected(const std::vector<Position>& cells, const SkillCon
 // =============================================================================
 
 void BaseEnv::SpawnEffect(const std::string& effect_name, EffectTarget target,
-                          Direction direction, ObjectId source_id) {
-  effect_system_->SpawnEffect(effect_name, target, direction, source_id);
+                          Direction direction, ObjectId source_id, EffectTiming timing) {
+  // During a step (an FSM's strike in PreStep) an effect is planned into the
+  // turn: never applied at once
+  effect_system_->SpawnEffect(effect_name, target, direction, source_id,
+                              in_step_ ? EffectTiming::NextTurn : timing);
 }
 
 const std::vector<ActiveEffect>& BaseEnv::GetActiveEffects() const {

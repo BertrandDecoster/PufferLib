@@ -123,8 +123,7 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
 ### The motion phase
 Every motion of the turn (`BaseEnv::MotionPhase`; the header documents the algorithm;
 tests: `tests/test_turn.cc`): teleports, dashes, walks and forced moves (the skills' pushes
-and pulls; an effect's push still goes through the effect system until effects are
-planned). It resolves in **layers**, each seeing the FINAL result of the layers before it,
+and pulls, the effects' pushes: `GatherEffectPushes`, see Effects). It resolves in **layers**, each seeing the FINAL result of the layers before it,
 while the actors whose motion is in a later layer still stand where they were:
 1. **Teleports** (the casters', as planned: 3, else 2, else 1; only the landing matters)
 2. **Dashes** (as planned: an agent on the line as the turn begins stops the plan, and an
@@ -175,11 +174,14 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 
 **Step order** (`BaseEnv::Step`):
 1. Clear the per-step reports, `BeginStep` on every agent
-2. `PreStep` (enemy FSM) → `GatherIntentions`, the intents phase: every skill use is
-   PLANNED here from the world as the turn begins (`AddSkillPlan`: its effective skill,
-   the context rules read once, its cells and targets, its cooldown spent; see "Multiple
-   casters") → the motion phase (`MotionPhase`, in layers: teleports, dashes, walks,
-   then pushes / pulls on whoever stands on their cells; see "The motion phase")
+2. `PreStep` (enemy FSM: its strikes spawned now are planned into this turn) →
+   `EffectSystem::PlanTurn` (the turn's effect applications: timers, telegraphs ending,
+   continuous effects, loops; see Effects) → `GatherIntentions`, the intents phase: every
+   skill use is PLANNED here from the world as the turn begins (`AddSkillPlan`: its
+   effective skill, the context rules read once, its cells and targets, its cooldown
+   spent; see "Multiple casters") → the motion phase (`MotionPhase`, in layers:
+   teleports, dashes, walks, then the skills' and the effects' pushes / pulls on whoever
+   stands on their cells; see "The motion phase")
 3. `TagPhase`, the tag phase: EVERY tag of the turn lands together, in sub-phases,
    each over ALL the landings (`turn_.landings`): a. every landing put (immunity, the
    tag and its status): the zones (every affectable agent on a zone cell: alive, not
@@ -192,7 +194,8 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
    root, a tag status) act from the NEXT turn (the intents are read before). From here
    to the end of the step the zone map is READ-ONLY: a reaction's `zone_becomes` waits
    in a pending buffer
-4. Effects tick, `CommitPendingZones` (the step's reaction zones; two rules writing one
+4. `ApplyEffectHits` (the effects' damage and heals into the ledger, their statuses
+   acting from the next turn, see Effects), `CommitPendingZones` (the step's reaction zones; two rules writing one
    cell: the rule first in level order wins it), `ApplyTurnOutcomes` (the turn's
    health, see below), `EndStep` on every agent (tags,
    statuses, cooldowns tick), `TickZones` (zone lifetimes tick, expired zones become
@@ -355,8 +358,8 @@ casts. A caster rooted this turn still resolves its skill (the root blocks from 
 step). The indices order the reports (uses in caster index order; a reaction's credit
 between two casters' landings: the lower index). What still depends on the indices, as
 an outcome: the motion phase's ties (two motions of one layer onto one cell: the lower
-index; its cycle tie-break) and effects (their statuses and pushes still resolve in
-the effect tick, one by one). Skill landings react in the tag phase with every landing of
+index; its cycle tie-break). Effects no longer do: they are planned with the intents
+and applied in the phases (see Effects). Skill landings react in the tag phase with every landing of
 the turn: an agent carrying wet hit by electrified and chilled reacts by the same rule
 whoever casts first (see Reactions).
 
@@ -926,8 +929,8 @@ Location: `companions/src/core/fsm/`
 **A dead attacker's pending attacks are cancelled**:
 - A dead (or stunned) agent's FSM does not run, so a wind-up in `TelegraphState`
   never reaches `AttackState`, which is what spawns the strike effect
-- `EffectSystem::Tick` removes an effect still in its telegraph phase whose source
-  agent exists and is dead, before it can activate; the end of a turn
+- `EffectSystem::PlanTurn` removes an effect still in its telegraph phase whose source
+  agent exists and is dead as the turn begins, before it can activate; the end of a turn
   (`EffectSystem::CancelDeadSources`) removes those of the agents that died in it. An effect already active when its
   source dies runs its course, but a looping one stops at its next restart, with or
   without a wind-up (`telegraph_ticks = 0` loops too).
@@ -940,8 +943,36 @@ Location: `companions/src/core/fsm/`
   dropped), so gaps from removed objects or hand-authored ids never misattribute an
   effect or a tag
 - Deaths come at the end of the turn: an attacker a companion kills during step t
-  still lands a strike activating in step t; its strikes still winding up at the end
-  of step t never land
+  still lands a strike activating in step t (its application was planned with the
+  turn's intents); its strikes still winding up at the end of step t never land
+
+**Effects** (`env/effect_system.{h,cc}`, `BaseEnv::GatherEffectPushes` /
+`ApplyEffectHits`; tests: `tests/test_turn.cc`, `tests/test_effects.cc`):
+- Planned with the turn's intents (`EffectSystem::PlanTurn`, right after `PreStep`):
+  every effect advances one step (telegraph countdown, a telegraph ending activates it,
+  a continuous `apply_every_tick` effect applies each later active turn, loops restart);
+  what applies this turn is an `Application` (config, source, centre, direction), its
+  cells fixed as the turn begins (an actor target: its cell then). An effect applies at
+  most once per turn
+- Applied in the phases: its push is a forced move of the motion phase's last layer, on
+  every agent it reaches after the walks (radial: away from its centre), summed with the
+  skills' forced moves on that agent, by the path rule (stops before a wall, a hole or a
+  cell held at the end of the layer), and it lands the final cell's zone like any
+  motion; its hits (damage and heals into the turn's ledger, its status acting from the
+  next turn) land after the tag phase on whoever stands on its cells then, plus whom it
+  pushed: walking out dodges, walking in gets hit. Effects land no tags
+- The cascade cap (`kCascadeDepthLimit` = 4) stays: at most 4 applications touch one
+  agent per turn, counted in effect order, the pushes first, then the other hits; pushes
+  no longer chain within a turn (areas are fixed as the turn begins)
+- `SpawnEffect(..., EffectTiming)`: during a step (an FSM's strike in `PreStep`) a spawn
+  is planned into that turn (without a wind-up it applies this very turn, after the
+  motion phase: the plans never read a post-strike world). Between steps (the host, the
+  C API, a post-step hook) `Immediate` (the default) applies a no-wind-up effect at once,
+  a host primitive (its push moves at once without a zone landing; `kill` downs at
+  once); `NextTurn` keeps it pending (in its telegraph, 0 steps left) for the next turn.
+  DodgeEnv spawns its hazards after the step with `NextTurn`: a no-wind-up hazard now
+  applies on the next turn, dodgeable, instead of at once (its builtin hazards have a
+  wind-up and keep their timing)
 
 ### Environments & TaskLens
 

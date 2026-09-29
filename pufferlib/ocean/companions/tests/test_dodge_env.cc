@@ -481,6 +481,36 @@ TEST(TestDodgeEnvHazardKillsCompanion) {
   ASSERT_FALSE(env.IsSuccess());  // Death is not success
 }
 
+// A hazard without a wind-up spawned after a step (PostStep) applies on the
+// next turn, to whoever stands on its cells after that turn's motion (a
+// warning meanwhile: in its telegraph, 0 steps left): the two hazards are
+// redefined without a wind-up, 1 damage over the whole grid, one per step.
+TEST(TestATelegraphZeroHazardSpawnedAfterTheStepAppliesNextTurn) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
+  for (const char* name : {"dodge_fire", "dodge_wind"}) {
+    EffectConfig hazard;
+    hazard.name = name;
+    hazard.telegraph_ticks = 0;
+    hazard.active_ticks = 1;
+    hazard.area.assign(13 * 13, 1);  // Covers a 7x7 grid from any centre
+    hazard.filter = TargetFilter::Companion;
+    hazard.damage = 1;
+    EffectConfigRegistry::Instance().RegisterConfig(hazard);  // DodgeEnv keeps them
+  }
+  DodgeEnv env(7, 1, /*hazard_interval=*/1, /*horizon=*/50, 42);
+  Agent* player = env.GetMutableObjectManager().GetAllAgents()[0];
+  const std::vector<Action> stay = {EncodeAction(MovementAction::Stay)};
+  env.Step(stay);  // Spawns one after the step
+  ASSERT_EQ(player->GetHealth(), 3);
+  ASSERT_EQ(env.GetActiveEffects().size(), 1u);
+  ASSERT_TRUE(env.GetActiveEffects()[0].in_telegraph);
+  ASSERT_EQ(env.GetActiveEffects()[0].ticks_remaining, 0);
+  env.Step(stay);  // It applies; another spawns
+  ASSERT_EQ(player->GetHealth(), 2);
+  env.Step(stay);
+  ASSERT_EQ(player->GetHealth(), 1);
+}
+
 TEST(TestDodgeEnvSurvivalIntegration) {
   // Integration test: Survive to horizon without hazards
   DodgeEnv env(7, 1, 1000, 10, 12345);  // Hazard interval 1000 = no hazards

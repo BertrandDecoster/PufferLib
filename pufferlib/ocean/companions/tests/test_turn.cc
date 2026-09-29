@@ -4,7 +4,9 @@
 // end; nothing changes HP, alive or down during a Step. Every skill use is
 // planned from the world as the turn began (simultaneous casters). Every
 // motion of the turn (walks, dashes, teleports, pushes, pulls) is one phase,
-// and the zones land once, on the final cells.
+// and the zones land once, on the final cells. Every tag of the turn lands
+// together. The effects (the enemies' strikes, hazards) are planned with the
+// intents and applied in the phases.
 
 #include <algorithm>
 #include <iostream>
@@ -16,6 +18,8 @@
 #include <vector>
 
 #include "../src/core/effect_config.h"
+#include "../src/core/fsm/enemies.h"
+#include "../src/core/fsm/fsm_state.h"
 #include "../src/core/object.h"
 #include "../src/core/reaction.h"
 #include "../src/core/skill_config.h"
@@ -699,7 +703,9 @@ TEST(TestAHostKillBetweenStepsDownsAtOnce) {
 // A step that throws
 // =============================================================================
 
-// A SynchroEnv whose PreStep hits companion 0 during the step, then throws
+// A SynchroEnv whose PreStep, during the step, sparks companion 0 (wet: the
+// reaction deals 1 into the turn's ledger at once, a host landing) and spawns
+// a "hit" on it (planned into the turn), then throws
 class ThrowingEnv : public SynchroEnv {
  public:
   using SynchroEnv::SynchroEnv;
@@ -709,15 +715,20 @@ class ThrowingEnv : public SynchroEnv {
   void PreStep() override {
     SynchroEnv::PreStep();
     if (!armed) return;
+    Require(ApplyTagTo(AgentAt(*this, 0)->GetId(), "spark", kPermanentTag), "spark");
     SpawnEffect("hit", EffectTarget::AtCell(AgentAt(*this, 0)->GetPosition()));
     throw std::runtime_error("PreStep failed");
   }
 };
 
+// The ledger is applied (once); the hit, planned for a turn that never
+// planned its effects, stays pending and lands on the next step
 TEST(TestAThrowingStepAppliesTheLedger) {
   ThrowingEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 3});
+  Require(env.SetReactions({Rule("wet", "spark", "steam", 1)}), "reactions");
+  Require(env.ApplyTagTo(a->GetId(), "wet", kPermanentTag), "wet");
   env.armed = true;
   bool threw = false;
   try {
@@ -727,10 +738,13 @@ TEST(TestAThrowingStepAppliesTheLedger) {
   }
   ASSERT_TRUE(threw);
   ASSERT_EQ(a->GetHealth(), 9);  // What the step did stays
+  ASSERT_EQ(env.GetActiveEffects().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetActiveEffects()[0].in_telegraph);  // Not applied: pending
   env.armed = false;
   env.SaveSnapshot();  // Between two steps
   env.Step(Stays(env));
-  ASSERT_EQ(a->GetHealth(), 9);  // Applied once
+  ASSERT_EQ(a->GetHealth(), 8);  // The ledger applied once; the hit now
+  ASSERT_EQ(TurnOf(env, a).damage, 1);
 }
 
 // =============================================================================
@@ -2256,6 +2270,342 @@ TEST(TestAWeaknessIsChosenByTheAgentsOwnOrder) {
     ASSERT_EQ(env.GetLastDefeats().at(0).source, c2->GetId());
     ASSERT_FALSE(x->IsAlive());
     traces[swapped] = RoleTrace(env, {{c1->GetId(), "1"}, {c2->GetId(), "2"}, {x->GetId(), "X"}});
+  }
+  RequireSameTraces(traces);
+}
+
+// =============================================================================
+// Effects planned into the turn's phases
+// =============================================================================
+
+// A one-cell effect for the companions: `telegraph` steps of wind-up, then
+// one active step dealing `damage`
+static EffectConfig Effect(const char* name, int telegraph, int damage = 0) {
+  EffectConfig cfg;
+  cfg.name = name;
+  cfg.telegraph_ticks = telegraph;
+  cfg.active_ticks = 1;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Companion;
+  cfg.damage = damage;
+  return cfg;
+}
+static void Register(const EffectConfig& cfg) {
+  EffectConfigRegistry::Instance().RegisterConfig(cfg);
+}
+
+// The FSM goblins' RNG (FSMContext::rng points at it): outlives every env
+static pcg32 goblin_rng(42);
+
+// An FSM goblin on `p` striking with `effect` (its wind-up 1 step, its
+// strike 1, its recovery 10: one strike per test). Beside a companion as the
+// first step begins, it winds up during that step (locking the companion's
+// cell), and its strike spawns in the second step's PreStep.
+static AgentFSM* AddStriker(SynchroEnv& env, Position p, const char* effect, int health = 5) {
+  Goblin* g = CreateGoblin(env.GetMutableObjectManager(), p, {p}, goblin_rng);
+  g->SetMaxHealth(health);
+  FSMContext& ctx = g->GetFSMContext();
+  ctx.has_attack = true;
+  ctx.telegraph_ticks = 1;
+  ctx.attack_ticks = 1;
+  ctx.recovery_ticks = 10;
+  ctx.attack_effect_name = effect;
+  return g;
+}
+
+// Step 1: the goblin winds up (nothing spawned yet)
+static void WindUp(SynchroEnv& env, const AgentFSM* goblin) {
+  env.Step(Stays(env));
+  ASSERT_EQ(goblin->GetCurrentState()->GetName(), std::string("Telegraph"));
+  ASSERT_TRUE(env.GetActiveEffects().empty());
+}
+
+// A goblin's strike without a wind-up of its own (telegraph 0) spawns in the
+// turn's PreStep and is planned with the turn's intents: it hits whoever
+// stands on its cell after the motion phase, so walking out that very turn
+// dodges it (the control: staying, hit)
+TEST(TestAStrikeIsDodgedByWalkingOutOnItsTurn) {
+  for (bool dodge : {false, true}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Agent* c = Place(env, 0, {3, 4});
+    Register(Effect("jab", 0, 1));
+    AgentFSM* gob = AddStriker(env, {3, 3}, "jab");
+    WindUp(env, gob);
+    env.Step(With(env, 0, dodge ? Walk(MovementAction::Right) : kStay));  // It strikes (3,4)
+    ASSERT_EQ(gob->GetCurrentState()->GetName(), std::string("Attack"));
+    ASSERT_EQ(c->GetHealth(), dodge ? 10 : 9);
+    ASSERT_TRUE(c->GetPosition() == (dodge ? Position{3, 5} : Position{3, 4}));
+  }
+}
+
+// Its cell is fixed as it spawns (the target's cell it locked): whoever walks
+// onto it that turn is hit, the one it aimed at walked out
+TEST(TestAStrikeHitsWhoWalksIn) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* aimed = Place(env, 0, {3, 4});
+  Agent* other = Place(env, 1, {4, 4});
+  Register(Effect("jab", 0, 1));
+  AgentFSM* gob = AddStriker(env, {3, 3}, "jab");
+  WindUp(env, gob);
+  std::vector<Action> actions = Stays(env);
+  actions[0] = Walk(MovementAction::Right);  // Out of (3,4)
+  actions[1] = Walk(MovementAction::Up);     // Into it
+  env.Step(actions);
+  ASSERT_TRUE(aimed->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(other->GetPosition() == (Position{3, 4}));
+  ASSERT_EQ(aimed->GetHealth(), 10);
+  ASSERT_EQ(other->GetHealth(), 9);
+}
+
+// An effect's push is a forced move of the motion phase: the zone of its
+// final cell lands (once, in the tag phase), as for any motion
+TEST(TestAnEffectPushLandsTheZoneOfItsFinalCell) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* c = Place(env, 0, {3, 3});
+  EffectConfig shove = Effect("shove", 1);
+  shove.push_dy = 1;  // South
+  shove.push_distance = 2;
+  Register(shove);
+  Require(env.SetCellTag({5, 3}, "wet"), "wet");
+  env.SpawnEffect("shove", EffectTarget::AtCell({3, 3}));
+  env.Step(Stays(env));
+  ASSERT_TRUE(c->GetPosition() == (Position{5, 3}));
+  ASSERT_TRUE(ZonesLanded(env, c) == std::vector<std::string>{"wet"});
+  ASSERT_TRUE(Has(env, c, "wet"));
+}
+
+// An effect's push and a skill's push on one gob add up: the gust shoves it 1
+// right, the gale (centred on the gob's cell as the turn began) 2 right: 3
+TEST(TestAnEffectPushAndASkillPushAddUp) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* gust = Place(env, 0, {4, 2});
+  GivePusher(env, 0, "gust1", 1);
+  Agent* gob = AddEnemy(env, {4, 3});
+  EffectConfig gale = Effect("gale", 1);
+  gale.filter = TargetFilter::All;
+  gale.push_dx = 1;  // East
+  gale.push_distance = 2;
+  Register(gale);
+  env.SpawnEffect("gale", EffectTarget::AtCell({4, 3}));
+  env.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(gob->GetPosition() == (Position{4, 6}));
+  ASSERT_EQ(EffectsOn(env, gust, gob), static_cast<int>(kMotionFx));
+  ASSERT_TRUE(gust->GetPosition() == (Position{4, 2}));
+  ASSERT_TRUE(env.GetLastOddMotions().empty());
+}
+
+// A SynchroEnv spawning `hazard` on `cell` after its next step (PostStep, as
+// DodgeEnv spawns its hazards), for the next turn
+class HazardEnv : public SynchroEnv {
+ public:
+  using SynchroEnv::SynchroEnv;
+  std::string hazard;
+  Position cell;
+
+ protected:
+  void PostStep() override {
+    SynchroEnv::PostStep();
+    if (hazard.empty()) return;
+    SpawnEffect(hazard, EffectTarget::AtCell(cell), Direction::Up, kInvalidObjectId,
+                EffectTiming::NextTurn);
+    hazard.clear();
+  }
+};
+
+// A hazard without a wind-up spawned after a step for the next turn waits (a
+// warning: in its telegraph, no step left) and applies on the next turn, to
+// whoever stands on its cell after that turn's motion
+TEST(TestATelegraphZeroHazardSpawnedAfterTheStepAppliesNextTurn) {
+  for (bool dodge : {false, true}) {
+    ScopedEffectRegistry scoped_registry;
+    HazardEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Agent* c = Place(env, 0, {3, 3});
+    Register(Effect("flare", 0, 1));
+    env.hazard = "flare";
+    env.cell = {3, 3};
+    env.Step(Stays(env));
+    ASSERT_EQ(c->GetHealth(), 10);  // Not at once
+    ASSERT_EQ(env.GetActiveEffects().size(), static_cast<size_t>(1));
+    ASSERT_TRUE(env.GetActiveEffects()[0].in_telegraph);
+    ASSERT_EQ(env.GetActiveEffects()[0].ticks_remaining, 0);
+    env.Step(With(env, 0, dodge ? Walk(MovementAction::Right) : kStay));
+    ASSERT_EQ(c->GetHealth(), dodge ? 10 : 9);
+    ASSERT_EQ(env.GetActiveEffects().size(), static_cast<size_t>(1));  // Active now
+    ASSERT_FALSE(env.GetActiveEffects()[0].in_telegraph);
+    env.Step(Stays(env));
+    ASSERT_TRUE(env.GetActiveEffects().empty());
+    ASSERT_EQ(c->GetHealth(), dodge ? 10 : 9);
+  }
+}
+
+// Between two steps an effect the host spawns (Immediate, the default) stays
+// a host primitive: applied at once, its push moving at once without landing
+// a zone (the next step lands it, the agent standing there)
+TEST(TestAHostSpawnedEffectStillAppliesAtOnce) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* c = Place(env, 0, {3, 3});
+  EffectConfig shove = Effect("shove0", 0);
+  shove.push_dy = 1;  // South
+  shove.push_distance = 2;
+  Register(shove);
+  Require(env.SetCellTag({5, 3}, "wet"), "wet");
+  env.SpawnEffect("hit", EffectTarget::AtCell({3, 3}));
+  ASSERT_EQ(c->GetHealth(), 9);
+  env.SpawnEffect("shove0", EffectTarget::AtCell({3, 3}));
+  ASSERT_TRUE(c->GetPosition() == (Position{5, 3}));
+  ASSERT_FALSE(Has(env, c, "wet"));
+  ASSERT_TRUE(env.GetLastTagsApplied().empty());
+  env.Step(Stays(env));
+  ASSERT_TRUE(Has(env, c, "wet"));
+  ASSERT_EQ(c->GetHealth(), 9);
+  ASSERT_TRUE(c->GetPosition() == (Position{5, 3}));
+}
+
+// A status an effect lands acts from the next turn: stunned by a strike
+// without a wind-up, the companion still strikes back that turn; the next
+// turn it cannot walk
+TEST(TestAStunFromAnEffectActsFromTheNextTurn) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* c = Place(env, 0, {3, 4});
+  EffectConfig daze = Effect("daze", 0);
+  daze.status_applied = "stunned";
+  daze.status_duration = 1;
+  Register(daze);
+  AgentFSM* gob = AddStriker(env, {3, 3}, "daze");
+  WindUp(env, gob);
+  env.Step(With(env, 0, Use(MovementAction::Left)));  // Strikes back as it is stunned
+  ASSERT_EQ(gob->GetHealth(), 4);
+  ASSERT_TRUE(c->IsStunned());
+  env.Step(With(env, 0, Walk(MovementAction::Right)));
+  ASSERT_TRUE(c->GetPosition() == (Position{3, 4}));  // Stunned this turn
+  ASSERT_FALSE(c->IsStunned());
+  env.Step(With(env, 0, Walk(MovementAction::Right)));
+  ASSERT_TRUE(c->GetPosition() == (Position{3, 5}));
+}
+
+// A continuous effect (apply_every_tick) applies once per turn, from the turn
+// it activates: a strike without a wind-up, 3 active steps, 1 damage each
+TEST(TestContinuousEffectsApplyOncePerTurn) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* c = Place(env, 0, {3, 4});
+  EffectConfig drain = Effect("drain", 0, 1);
+  drain.active_ticks = 3;
+  drain.apply_every_tick = true;
+  Register(drain);
+  AgentFSM* gob = AddStriker(env, {3, 3}, "drain");
+  WindUp(env, gob);
+  for (int turn = 0; turn < 4; ++turn) {
+    env.Step(Stays(env));
+    int damage = 0;
+    for (const auto& t : env.GetLastTurnHealth()) {
+      if (t.agent == c->GetId()) damage = t.damage;
+    }
+    ASSERT_EQ(damage, turn < 3 ? 1 : 0);
+  }
+  ASSERT_EQ(c->GetHealth(), 7);
+  ASSERT_TRUE(env.GetActiveEffects().empty());
+}
+
+// At most kCascadeDepthLimit effects touch one agent in a turn (in effect
+// order): five nudges (1 damage, 1 cell right each) on the gob's cell as the
+// turn begins, summed: the first four, 4 damage and 4 cells
+TEST(TestTheCascadeCapStillHolds) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {7, 7});
+  Agent* gob = AddEnemy(env, {4, 2}, 10);
+  EffectConfig nudge = Effect("nudge", 1, 1);
+  nudge.filter = TargetFilter::Enemy;
+  nudge.push_dx = 1;  // East
+  nudge.push_distance = 1;
+  Register(nudge);
+  for (int i = 0; i < EffectSystem::kCascadeDepthLimit + 1; ++i) {
+    env.SpawnEffect("nudge", EffectTarget::AtCell({4, 2}));
+  }
+  env.Step(Stays(env));
+  ASSERT_TRUE(gob->GetPosition() == (Position{4, 2 + EffectSystem::kCascadeDepthLimit}));
+  ASSERT_EQ(TurnOf(env, gob).damage, EffectSystem::kCascadeDepthLimit);
+}
+
+// An FSM goblin killed the turn its strike lands still strikes (it dies at
+// the end of the turn); nothing of it lands after
+TEST(TestAnEnemyKilledThisTurnStillStrikes) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* c = Place(env, 0, {3, 4});
+  AgentFSM* gob = AddStriker(env, {3, 3}, "goblin_attack", 1);  // A builtin (wind-up 1)
+  WindUp(env, gob);
+  env.Step(With(env, 0, Use(MovementAction::Left)));
+  ASSERT_FALSE(gob->IsAlive());
+  ASSERT_EQ(c->GetHealth(), 9);
+  ASSERT_TRUE(TurnOf(env, gob).outcome == TurnOutcome::Died);
+  for (int i = 0; i < 3; ++i) env.Step(Stays(env));
+  ASSERT_EQ(c->GetHealth(), 9);
+  ASSERT_TRUE(env.GetActiveEffects().empty());
+}
+
+// A strike without a wind-up spawned in PreStep is part of the turn's
+// effects: its push (2 right) is a forced move of the motion phase, so the
+// companion's attack is planned from where it began the turn (it hits the
+// goblin on (3,3)), and only then is it pushed
+TEST(TestATelegraphZeroFsmStrikeDoesNotMovePlansBeforeTheyAreMade) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* c = Place(env, 0, {3, 4});
+  EffectConfig slam = Effect("slam", 0);
+  slam.push_dx = 1;  // East
+  slam.push_distance = 2;
+  Register(slam);
+  AgentFSM* gob = AddStriker(env, {3, 3}, "slam");
+  WindUp(env, gob);
+  env.Step(With(env, 0, Use(MovementAction::Left)));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].target == (Position{3, 3}));
+  ASSERT_EQ(gob->GetHealth(), 4);
+  ASSERT_TRUE(c->GetPosition() == (Position{3, 6}));
+}
+
+// One effect pushing two companions in a row 1 cell right: both move (the
+// front one leaves its cell in the same layer), whatever their indices. Its
+// damage hits both.
+TEST(TestSwappingIndicesChangesNoEffectOutcome) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* back = Place(env, swapped ? 1 : 0, {4, 3});
+    Agent* front = Place(env, swapped ? 0 : 1, {4, 4});
+    EffectConfig gale = Effect("row_gale", 1, 1);
+    gale.area = {1, 1, 1, 1, 1, 1, 1, 1, 1};  // 3x3 around (4,4)
+    gale.push_dx = 1;                        // East
+    gale.push_distance = 1;
+    Register(gale);
+    env.SpawnEffect("row_gale", EffectTarget::AtCell({4, 4}));
+    env.Step(Stays(env));
+    ASSERT_TRUE(back->GetPosition() == (Position{4, 4}));
+    ASSERT_TRUE(front->GetPosition() == (Position{4, 5}));
+    ASSERT_EQ(back->GetHealth(), 9);
+    ASSERT_EQ(front->GetHealth(), 9);
+    traces[swapped] = RoleTrace(env, {{back->GetId(), "B"}, {front->GetId(), "F"}});
   }
   RequireSameTraces(traces);
 }

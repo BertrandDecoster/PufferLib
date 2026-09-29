@@ -28,6 +28,7 @@ EffectSystem& EffectSystem::operator=(const EffectSystem& other) {
     grid_ = other.grid_;
     health_sink_ = other.health_sink_;
     active_effects_ = other.active_effects_;
+    planned_.clear();  // Scratch: never copied
   }
   return *this;
 }
@@ -39,7 +40,7 @@ void EffectSystem::UpdatePointers(ObjectManager* object_manager, Grid* grid) {
 
 void EffectSystem::SpawnEffect(const std::string& effect_name,
                                 EffectTarget target, Direction direction,
-                                ObjectId source_id) {
+                                ObjectId source_id, EffectTiming timing) {
   const EffectConfig* config =
       EffectConfigRegistry::Instance().GetConfig(effect_name);
   if (!config) {
@@ -52,6 +53,7 @@ void EffectSystem::SpawnEffect(const std::string& effect_name,
   effect.target = target;
   effect.direction = direction;
   effect.source_id = source_id;
+  effect.loops_remaining = config->loop;
 
   // Log effect creation
   if (LOG_ENABLED(Effects)) {
@@ -69,130 +71,107 @@ void EffectSystem::SpawnEffect(const std::string& effect_name,
                            << source_str);
   }
 
-  // Start in telegraph phase if there are telegraph ticks
   if (config->telegraph_ticks > 0) {
+    // Start in telegraph phase
     effect.in_telegraph = true;
     effect.ticks_remaining = config->telegraph_ticks;
+  } else if (timing == EffectTiming::NextTurn) {
+    // No wind-up, for the next turn: a telegraph that ends at the next
+    // PlanTurn (0 steps left), which activates it
+    effect.in_telegraph = true;
+    effect.ticks_remaining = 0;
   } else {
-    // Skip to active phase and apply immediately
+    // Skip to active phase and apply immediately (a spawn-time application:
+    // not capped)
     effect.in_telegraph = false;
     effect.ticks_remaining = config->active_ticks;
-    effect.loops_remaining = config->loop;
-    // Apply the effect on spawn since there's no telegraph. One-shot
-    // spawn-time application doesn't participate in cascade counting.
     active_effects_.push_back(effect);
-    ApplyEffectModifiers(active_effects_.back(), /*apply_count=*/nullptr);
+    ApplyAtOnce(active_effects_.back());
     return;
   }
-
-  // Set up loop counter
-  effect.loops_remaining = config->loop;
 
   active_effects_.push_back(effect);
 }
 
-void EffectSystem::Tick() {
-  // Process effects and collect finished ones for removal.
-  // apply_count tracks the cascade depth per agent across all effects
-  // resolving within this single Tick(). When an agent has already been
-  // touched kCascadeDepthLimit times, later effects this tick skip them.
-  std::vector<size_t> to_remove;
-  std::unordered_map<ObjectId, int> apply_count;
-
+void EffectSystem::PlanTurn() {
+  // Each effect advances one step, in order; what applies this turn is
+  // planned (a copy: the effect may be removed below). Finished effects are
+  // compacted in place (no allocation).
+  planned_.clear();
+  size_t kept = 0;
   for (size_t i = 0; i < active_effects_.size(); ++i) {
     ActiveEffect& effect = active_effects_[i];
+    bool remove = false;
 
-    // A dead attacker's pending (telegraphed) attack never lands. Active
-    // phases run their course; a loop stops at its next restart (below).
     if (effect.in_telegraph && IsSourceDead(effect)) {
+      // A dead attacker's pending (telegraphed) attack never lands. Active
+      // phases run their course; a loop stops at its next restart (below).
       LOG_EFFECT("'" << (effect.config ? effect.config->name : std::string("?"))
                      << "': Cancelled (source " << effect.source_id << " is dead)");
-      to_remove.push_back(i);
-      continue;
-    }
+      remove = true;
+    } else {
+      if (effect.ticks_remaining > 0) {
+        effect.ticks_remaining--;
+      }
 
-    if (effect.ticks_remaining > 0) {
-      effect.ticks_remaining--;
-    }
+      // Continuous effects (apply_every_tick) apply on every turn they
+      // spend in the active phase, not just the transition: after the
+      // decrement, still active and not at the end-of-phase branch below.
+      // The transition turn applies too (a telegraph ending, below), so the
+      // number of applications equals `active_ticks`, one per turn.
+      if (effect.ticks_remaining > 0 && !effect.in_telegraph &&
+          effect.config && effect.config->apply_every_tick) {
+        planned_.push_back(Plan(effect));
+      }
 
-    // Continuous effects (apply_every_tick) fire their modifiers on every
-    // tick they spend in the active phase, not just the transition. We do
-    // this after the decrement: if we're still in active and haven't hit
-    // the end-of-phase branch below, apply again. The transition tick also
-    // applies (via the ticks_remaining == 0 branch), so the total number of
-    // applications equals `active_ticks` for continuous effects.
-    if (effect.ticks_remaining > 0 && !effect.in_telegraph &&
-        effect.config && effect.config->apply_every_tick) {
-      ApplyEffectModifiers(effect, &apply_count);
-    }
+      // Check for phase transitions
+      if (effect.ticks_remaining == 0) {
+        if (effect.in_telegraph) {
+          // Transition from telegraph to active phase: it applies this turn
+          effect.in_telegraph = false;
+          effect.ticks_remaining = effect.config->active_ticks;
 
-    // Check for phase transitions
-    if (effect.ticks_remaining == 0) {
-      if (effect.in_telegraph) {
-        // Transition from telegraph to active phase
-        effect.in_telegraph = false;
-        effect.ticks_remaining = effect.config->active_ticks;
-
-        // Log phase transition
-        if (LOG_ENABLED(Effects)) {
-          Position pos = effect.target.cell;
-          if (effect.target.type == EffectTarget::Type::Actor) {
-            const Actor* actor =
-                object_manager_->GetActor(effect.target.actor_id);
-            if (actor) pos = actor->GetPosition();
+          if (LOG_ENABLED(Effects)) {
+            const Position pos = Plan(effect).centre;
+            LOG_EFFECT("'" << effect.config->name << "' at (" << pos.row << ","
+                           << pos.col << "): Telegraph -> Active");
           }
-          LOG_EFFECT("'" << effect.config->name << "' at (" << pos.row << ","
-                         << pos.col << "): Telegraph -> Active");
-        }
-
-        // Apply effect modifiers when entering active phase
-        ApplyEffectModifiers(effect, &apply_count);
-      } else if ((effect.loops_remaining > 0 || effect.config->loop == -1) &&
-                 IsSourceDead(effect)) {
-        // A dead source's loop stops at its restart, wind-up or not (a
-        // loop without telegraph would otherwise go straight on hitting).
-        LOG_EFFECT("'" << effect.config->name << "': Loop cancelled (source "
-                       << effect.source_id << " is dead)");
-        to_remove.push_back(i);
-      } else {
-        // Active phase complete - check for looping
-        if (effect.loops_remaining > 0) {
-          // Decrement loop counter and restart
-          effect.loops_remaining--;
-
-          LOG_EFFECT("'" << effect.config->name << "': Loop restart ("
-                         << effect.loops_remaining << " remaining)");
-
+          planned_.push_back(Plan(effect));
+        } else if ((effect.loops_remaining > 0 || effect.config->loop == -1) &&
+                   IsSourceDead(effect)) {
+          // A dead source's loop stops at its restart, wind-up or not (a
+          // loop without telegraph would otherwise go straight on hitting).
+          LOG_EFFECT("'" << effect.config->name << "': Loop cancelled (source "
+                         << effect.source_id << " is dead)");
+          remove = true;
+        } else if (effect.loops_remaining > 0 || effect.config->loop == -1) {
+          // Active phase complete: a loop restarts (a count, or forever)
+          if (effect.loops_remaining > 0) {
+            effect.loops_remaining--;
+            LOG_EFFECT("'" << effect.config->name << "': Loop restart ("
+                           << effect.loops_remaining << " remaining)");
+          }
           if (effect.config->telegraph_ticks > 0) {
             effect.in_telegraph = true;
             effect.ticks_remaining = effect.config->telegraph_ticks;
           } else {
             effect.ticks_remaining = effect.config->active_ticks;
-            ApplyEffectModifiers(effect, &apply_count);
-          }
-        } else if (effect.config->loop == -1) {
-          // Infinite loop - restart
-          if (effect.config->telegraph_ticks > 0) {
-            effect.in_telegraph = true;
-            effect.ticks_remaining = effect.config->telegraph_ticks;
-          } else {
-            effect.ticks_remaining = effect.config->active_ticks;
-            ApplyEffectModifiers(effect, &apply_count);
+            planned_.push_back(Plan(effect));
           }
         } else {
-          // Effect is finished
+          // Effect is finished (its application this turn, if any, stays planned)
           LOG_EFFECT("'" << effect.config->name << "': Completed");
-          to_remove.push_back(i);
+          remove = true;
         }
       }
     }
-  }
 
-  // Remove finished effects (iterate backwards to maintain indices)
-  for (auto it = to_remove.rbegin(); it != to_remove.rend(); ++it) {
-    active_effects_.erase(active_effects_.begin() +
-                          static_cast<std::ptrdiff_t>(*it));
+    if (remove) continue;
+    if (kept != i) active_effects_[kept] = std::move(effect);
+    ++kept;
   }
+  active_effects_.erase(active_effects_.begin() + static_cast<std::ptrdiff_t>(kept),
+                        active_effects_.end());
 }
 
 void EffectSystem::CancelDeadSources() {
@@ -214,193 +193,163 @@ bool EffectSystem::IsSourceDead(const ActiveEffect& effect) const {
   return source && !source->IsAlive();
 }
 
-void EffectSystem::ApplyEffectModifiers(
-    const ActiveEffect& effect,
-    std::unordered_map<ObjectId, int>* apply_count) {
-  if (!effect.config) return;
-
-  const EffectConfig& cfg = *effect.config;
-  Position center = effect.target.cell;
-
-  // For actor-targeted effects, resolve center position
+EffectSystem::Application EffectSystem::Plan(const ActiveEffect& effect) const {
+  Application a;
+  a.config = effect.config;
+  a.source = effect.source_id;
+  a.direction = effect.direction;
+  a.centre = effect.target.cell;
+  // An actor-targeted effect centres on its living target's cell
   if (effect.target.type == EffectTarget::Type::Actor) {
-    const Actor* target_actor =
-        object_manager_->GetActor(effect.target.actor_id);
-    if (target_actor && target_actor->IsAlive()) {
-      center = target_actor->GetPosition();
-    }
+    const Actor* target_actor = object_manager_->GetActor(effect.target.actor_id);
+    if (target_actor && target_actor->IsAlive()) a.centre = target_actor->GetPosition();
   }
+  return a;
+}
 
-  (void)cfg.GetAreaSize();  // Area size already used by IsPositionAffected
+bool EffectSystem::Reaches(const Application& a, const Agent& agent) const {
+  if (!a.config || !agent.IsAffectable()) return false;
+  // Never its source
+  if (a.source != kInvalidObjectId && agent.GetId() == a.source) return false;
+  switch (a.config->filter) {
+    case TargetFilter::All:
+      break;
+    case TargetFilter::Companion:
+      if (agent.GetFaction() != Faction::COMPANION) return false;
+      break;
+    case TargetFilter::Enemy:
+      if (agent.GetFaction() != Faction::ENEMY) return false;
+      break;
+    case TargetFilter::Neutral:
+      if (agent.GetFaction() != Faction::NEUTRAL) return false;
+      break;
+  }
+  const Position p = agent.GetPosition();
+  return a.config->IsPositionAffected(p.row - a.centre.row, p.col - a.centre.col, a.direction);
+}
 
-  // Default push direction from the effect's facing. `radial_push` effects
-  // override this per-agent below (each cardinal cell of the area shoves
-  // outward; the center uses the facing-derived direction).
-  int default_push_dx = 0;
-  int default_push_dy = 0;
-  cfg.GetRotatedPush(effect.direction, default_push_dx, default_push_dy);
+void EffectSystem::PushDirection(const Application& a, int rel_row, int rel_col, int& dx,
+                                 int& dy) {
+  // - Non-radial: the effect's facing-derived vector (GetRotatedPush).
+  // - Radial + off the centre: the sign of the offset to the centre (pushes
+  //   outward).
+  // - Radial + centre: the effect's Direction straight to a cardinal push, so
+  //   a Direction::Up spawn shoves the occupant north. GetRotatedPush is
+  //   bypassed here: its base-vector convention is oriented for
+  //   "wind-comes-from-N = push-south" semantics, which is not what "random
+  //   direction at the centre" means here.
+  const EffectConfig& cfg = *a.config;
+  if (!cfg.radial_push) {
+    cfg.GetRotatedPush(a.direction, dx, dy);
+    return;
+  }
+  if (rel_row == 0 && rel_col == 0) {
+    dx = dy = 0;
+    switch (a.direction) {
+      case Direction::Up:    dy = -1; break;
+      case Direction::Down:  dy = 1;  break;
+      case Direction::Left:  dx = -1; break;
+      case Direction::Right: dx = 1;  break;
+    }
+    return;
+  }
+  dy = (rel_row > 0) ? 1 : (rel_row < 0 ? -1 : 0);
+  dx = (rel_col > 0) ? 1 : (rel_col < 0 ? -1 : 0);
+}
 
-  // Find all agents affected
+void EffectSystem::PushOffset(const Application& a, Position cell, int& dr, int& dc) const {
+  dr = dc = 0;
+  if (!a.config || a.config->push_distance == 0) return;
+  int dx = 0, dy = 0;
+  PushDirection(a, cell.row - a.centre.row, cell.col - a.centre.col, dx, dy);
+  // A negative distance pulls: the reverse
+  dr = dy * a.config->push_distance;
+  dc = dx * a.config->push_distance;
+}
+
+bool EffectSystem::HitHealth(const Application& a, Agent& agent) {
+  const int damage = a.config->damage;
+  if (damage > 0) {
+    if (health_sink_) return health_sink_->Hurt(agent, damage);
+    agent.TakeDamage(damage);
+  } else if (damage < 0) {
+    if (health_sink_) return health_sink_->Heal(agent, -damage);
+    agent.Heal(-damage);
+  }
+  return false;
+}
+
+bool EffectSystem::HitStatus(const Application& a, Agent& agent) {
+  const EffectConfig& cfg = *a.config;
+  if (cfg.status_applied.empty() || cfg.status_duration <= 0) return false;
+  const StatusType status = StatusTypeFromString(cfg.status_applied);
+  if (status == StatusType::None) return false;
+  agent.ApplyStatus(status, cfg.status_duration);
+  return true;
+}
+
+void EffectSystem::ApplyHits(const Application& a, Agent& agent) {
+  if (!a.config) return;
+  const int old_health = agent.GetHealth();
+  const bool deferred = HitHealth(a, agent);
+  const bool statused = HitStatus(a, agent);
+  LogHits(a, agent, old_health, deferred, a.config->damage != 0, agent.GetPosition(), statused);
+}
+
+void EffectSystem::ApplyAtOnce(const ActiveEffect& effect) {
+  if (!effect.config) return;
+  const Application a = Plan(effect);
+  const EffectConfig& cfg = *a.config;
   for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (!agent->IsAffectable()) continue;
+    if (!Reaches(a, *agent)) continue;
+    const Position old_pos = agent->GetPosition();
+    int dx = 0, dy = 0;
+    PushDirection(a, old_pos.row - a.centre.row, old_pos.col - a.centre.col, dx, dy);
+    const int old_health = agent->GetHealth();
+    // Damage, push (negative distance = pull toward the source), status
+    const bool deferred = HitHealth(a, *agent);
+    if (cfg.push_distance != 0) ApplyPush(agent, dx, dy, cfg.push_distance);
+    const bool statused = HitStatus(a, *agent);
+    LogHits(a, *agent, old_health, deferred, cfg.damage != 0, old_pos, statused);
+  }
+}
 
-    // Skip source agent if present
-    if (effect.source_id != kInvalidObjectId &&
-        agent->GetId() == effect.source_id) {
-      continue;
+void EffectSystem::LogHits(const Application& a, const Agent& agent, int old_health,
+                           bool deferred, bool damaged, Position old_pos, bool statused) const {
+  const bool pushed = agent.GetPosition() != old_pos;
+  if (!LOG_ENABLED(Effects) || !(damaged || pushed || statused)) return;
+  const EffectConfig& cfg = *a.config;
+  std::ostringstream log_msg;
+  log_msg << "Applied '" << cfg.name << "' to Agent " << agent.GetId();
+  if (damaged) {
+    // The effect's own amount: during a Step into the turn's ledger (applied
+    // at the end of the turn), between two steps at once
+    const int new_health = agent.GetHealth();
+    log_msg << ": " << (cfg.damage > 0 ? "-" : "+") << std::abs(cfg.damage) << " HP";
+    if (deferred) {
+      log_msg << " (into this turn's total, applied at its end)";
+    } else {
+      log_msg << " (" << (new_health - old_health >= 0 ? "+" : "")
+              << new_health - old_health << ": " << new_health << "/"
+              << agent.GetMaxHealth() << " remaining)";
     }
-
-    Position agent_pos = agent->GetPosition();
-
-    // Calculate relative position from center
-    int rel_row = agent_pos.row - center.row;
-    int rel_col = agent_pos.col - center.col;
-
-    // Check if position is affected by the area pattern
-    if (!cfg.IsPositionAffected(rel_row, rel_col, effect.direction)) {
-      continue;
-    }
-
-    // Resolve the push vector for THIS agent.
-    // - Non-radial: the effect's facing-derived vector (GetRotatedPush).
-    // - Radial + cardinal: sign of the offset to the centre (pushes outward).
-    // - Radial + centre: map the effect's Direction straight to a cardinal
-    //   push so a Direction::Up spawn actually shoves the occupant north.
-    //   We bypass GetRotatedPush here because its base-vector convention is
-    //   oriented for "wind-comes-from-N = push-south" semantics, which is
-    //   not what "random direction at the centre" means here.
-    int push_dx = default_push_dx;
-    int push_dy = default_push_dy;
-    if (cfg.radial_push) {
-      if (rel_row == 0 && rel_col == 0) {
-        switch (effect.direction) {
-          case Direction::Up:    push_dx = 0;  push_dy = -1; break;
-          case Direction::Down:  push_dx = 0;  push_dy = 1;  break;
-          case Direction::Left:  push_dx = -1; push_dy = 0;  break;
-          case Direction::Right: push_dx = 1;  push_dy = 0;  break;
-        }
-      } else {
-        push_dy = (rel_row > 0) ? 1 : (rel_row < 0 ? -1 : 0);
-        push_dx = (rel_col > 0) ? 1 : (rel_col < 0 ? -1 : 0);
-      }
-    }
-
-    // Check faction filter
-    bool should_affect = false;
-    switch (cfg.filter) {
-      case TargetFilter::All:
-        should_affect = true;
-        break;
-      case TargetFilter::Companion:
-        should_affect = (agent->GetFaction() == Faction::COMPANION);
-        break;
-      case TargetFilter::Enemy:
-        should_affect = (agent->GetFaction() == Faction::ENEMY);
-        break;
-      case TargetFilter::Neutral:
-        should_affect = (agent->GetFaction() == Faction::NEUTRAL);
-        break;
-    }
-
-    if (!should_affect) continue;
-
-    // Cascade depth cap: each agent can be touched by at most
-    // kCascadeDepthLimit effects in a single Tick(). After the cap, later
-    // effects this tick see the agent but no-op on them (no damage, no
-    // push, no status). Non-tick contexts (spawn-time instant effects)
-    // pass nullptr and bypass the cap.
-    if (apply_count != nullptr) {
-      int already = 0;
-      auto it = apply_count->find(agent->GetId());
-      if (it != apply_count->end()) already = it->second;
-      if (already >= kCascadeDepthLimit) continue;
-      (*apply_count)[agent->GetId()] = already + 1;
-    }
-
-    // Track what we apply for logging
-    bool applied_damage = false;
-    bool deferred = false;  // Into the turn's ledger (during a Step)
-    bool applied_push = false;
-    bool applied_status = false;
-    int old_health = agent->GetHealth();
-    Position old_pos = agent->GetPosition();
-
-    // Apply damage (through the sink: during a Step, the turn's ledger)
-    if (cfg.damage != 0) {
-      if (cfg.damage > 0) {
-        if (health_sink_) {
-          deferred = health_sink_->Hurt(*agent, cfg.damage);
-        } else {
-          agent->TakeDamage(cfg.damage);
-        }
-      } else {
-        if (health_sink_) {
-          deferred = health_sink_->Heal(*agent, -cfg.damage);
-        } else {
-          agent->Heal(-cfg.damage);
-        }
-      }
-      applied_damage = true;
-    }
-
-    // Apply push/pull (negative distance = pull toward source)
-    if (cfg.push_distance != 0) {
-      ApplyPush(agent, push_dx, push_dy, cfg.push_distance);
-      if (agent->GetPosition() != old_pos) {
-        applied_push = true;
-      }
-    }
-
-    // Apply status effect
-    if (!cfg.status_applied.empty() && cfg.status_duration > 0) {
-      StatusType status = StatusTypeFromString(cfg.status_applied);
-      if (status != StatusType::None) {
-        agent->ApplyStatus(status, cfg.status_duration);
-        applied_status = true;
-      }
-    }
-
-    // Log per-actor effect application (only non-default values)
-    if (LOG_ENABLED(Effects) &&
-        (applied_damage || applied_push || applied_status)) {
-      std::ostringstream log_msg;
-      log_msg << "Applied '" << cfg.name << "' to Agent " << agent->GetId();
-
-      if (applied_damage) {
-        // The effect's own amount: during a Step into the turn's ledger
-        // (applied at the end of the turn), between two steps at once
-        const int new_health = agent->GetHealth();
-        log_msg << ": " << (cfg.damage > 0 ? "-" : "+") << std::abs(cfg.damage) << " HP";
-        if (deferred) {
-          log_msg << " (into this turn's total, applied at its end)";
-        } else {
-          log_msg << " (" << (new_health - old_health >= 0 ? "+" : "")
-                  << new_health - old_health << ": " << new_health << "/"
-                  << agent->GetMaxHealth() << " remaining)";
-        }
-        if (!agent->IsAlive()) {
-          log_msg << " [KILLED]";
-        } else if (agent->IsDowned()) {
-          log_msg << " [DOWNED]";
-        }
-      }
-
-      if (applied_push) {
-        Position new_pos = agent->GetPosition();
-        if (applied_damage) log_msg << ",";
-        log_msg << " Pushed (" << old_pos.row << "," << old_pos.col << ") -> ("
-                << new_pos.row << "," << new_pos.col << ")";
-      }
-
-      if (applied_status) {
-        if (applied_damage || applied_push) log_msg << ",";
-        log_msg << " Status " << cfg.status_applied << " for "
-                << cfg.status_duration << " ticks";
-      }
-
-      LOG_EFFECT(log_msg.str());
+    if (!agent.IsAlive()) {
+      log_msg << " [KILLED]";
+    } else if (agent.IsDowned()) {
+      log_msg << " [DOWNED]";
     }
   }
+  if (pushed) {
+    const Position new_pos = agent.GetPosition();
+    if (damaged) log_msg << ",";
+    log_msg << " Pushed (" << old_pos.row << "," << old_pos.col << ") -> (" << new_pos.row
+            << "," << new_pos.col << ")";
+  }
+  if (statused) {
+    if (damaged || pushed) log_msg << ",";
+    log_msg << " Status " << cfg.status_applied << " for " << cfg.status_duration << " ticks";
+  }
+  LOG_EFFECT(log_msg.str());
 }
 
 void EffectSystem::ApplyPush(Agent* agent, int dx, int dy, int distance) {

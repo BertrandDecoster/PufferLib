@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../core/annotations.h"
@@ -278,11 +279,25 @@ class BaseEnv {
   EffectSystem& GetEffectSystem() { return *effect_system_; }
   const EffectSystem& GetEffectSystem() const { return *effect_system_; }
 
-  // Spawn a new effect at a target location (public for testing)
-  // Delegates to EffectSystem::SpawnEffect
+  // Spawn a new effect at a target location (EffectSystem::SpawnEffect).
+  // The effects of a turn are planned with its intents (EffectSystem::
+  // PlanTurn, right after PreStep): their cells fixed as the turn begins
+  // (an actor target: its cell then), their pushes forced moves of the
+  // motion phase (GatherEffectPushes), their hits (damage and heals into the
+  // turn's ledger, statuses acting from the next turn) on whoever stands on
+  // their cells after it, plus whom they pushed (ApplyEffectHits): walking
+  // out dodges, walking in gets hit. During a step (an FSM's strike in
+  // PreStep) a spawn is planned into that turn whatever `timing` says (one
+  // without a wind-up applies this very turn, after the motion phase).
+  // Between two steps (the host, the C API, a post-step hook) `timing`
+  // decides for an effect without a wind-up: Immediate (the default) applies
+  // it at once, a host primitive (its push moves at once without landing a
+  // zone, a "kill" downs at once); NextTurn keeps it for the next turn
+  // (DodgeEnv's hazards).
   void SpawnEffect(const std::string& effect_name, EffectTarget target,
                    Direction direction = Direction::Up,
-                   ObjectId source_id = kInvalidObjectId);
+                   ObjectId source_id = kInvalidObjectId,
+                   EffectTiming timing = EffectTiming::Immediate);
 
   // ==========================================================================
   // Skills and tags (data-driven; names are opaque to the env)
@@ -597,7 +612,7 @@ class BaseEnv {
   // Nothing changes HP, alive or down DURING a Step: every hit and heal of
   // the turn (zones, reactions, skills, effects, the enemies' strikes
   // included), every weakness defeat and every revive goes into the agent's
-  // ledger, applied ONCE at the end of the turn (after the effects tick and
+  // ledger, applied ONCE at the end of the turn (after the effects' hits and
   // the pending zones commit, before the timers tick):
   //   - the turn's damage total, times Marked's x1.5 rounded down once, only
   //     if the agent was Marked as the turn BEGAN (a Marked landed during the
@@ -731,8 +746,8 @@ class BaseEnv {
   // source kInvalidObjectId) once per Step on every affectable agent standing
   // on it after the motion phase (its final cell, moved or not; with the
   // skills' hits, in the tag phase; the cells a dash or a push crosses land
-  // nothing; an
-  // effect's push, still outside the motion phase, lands nothing until the
+  // nothing; an effect's push is a motion like any other; only an effect the
+  // host applies at once between two steps moves without landing, until the
   // next step). Each landing is reported; its `fresh` is that
   // of TagApplication (the agent did not carry the tag just before this
   // landing), so it does not tell arrivals apart: an agent standing on a
@@ -887,8 +902,8 @@ class BaseEnv {
   void CaptureOriginalIntentions();  // Save intentions before the motion phase
 
   // The motion phase: every motion of the turn (the skills' pushes and
-  // pulls included; an effect's push still goes through the effect system),
-  // then the zones land on the final cells (TagPhase). It resolves in
+  // pulls, and the effects' pushes, included), then the zones land on the
+  // final cells (TagPhase). It resolves in
   // LAYERS, each seeing the final result of the layers before it (it moves
   // its actors, ExecuteLayer), while the actors whose motion is in a later
   // layer still stand where they were:
@@ -904,10 +919,12 @@ class BaseEnv {
   //      pulls, found again (FindForcedMoves) on whoever stands on its cells
   //      after layers 1-3 (a walker stepping into a ring is pushed, a dasher
   //      landing on it too; a pull takes the first ring thing by its
-  //      priority from there); an actor's forced moves add up as vectors
+  //      priority from there); then every effect application's push on
+  //      every agent it reaches then (GatherEffectPushes: its cells fixed as
+  //      the turn began); an actor's forced moves add up as vectors
   //      (opposed ones cancel), a sum off the axes travels the line toward
   //      its end (ForcedMovePath) and every such sum is recorded
-  //      (GetLastOddMotions).
+  //      (GetLastOddMotions: a radial effect's diagonal push included).
   // A body down as the turn begins, and a thing no push / pull moves, never
   // moves: it blocks every motion.
   // Within a layer the motions are SIMULTANEOUS (SolveLayer for 1, 2, 4):
@@ -948,7 +965,8 @@ class BaseEnv {
   // zones of the agents the motion phase moved only (PreviewSkillOutcome:
   // those who stand still get no zone there; TEMPORARY, T6: the preview runs
   // a whole turn: a caster standing in a fire gets no landing in its
-  // preview). FSM attacks go through the effect system.
+  // preview). Effects land no tags: their hits come after this phase
+  // (ApplyEffectHits).
   void TagPhase(bool moved_only);
 
   // Skills (see GetSkillBook)
@@ -1197,7 +1215,9 @@ class BaseEnv {
   // its pending zone changes committed (dropped, without allocating, when the
   // map was cleared during the step: it runs while the throw unwinds), and
   // its turn's ledger and planned revives applied (agent-local, without the
-  // reports: GetLastTurnHealth and GetLastRevives stay as they were).
+  // reports: GetLastTurnHealth and GetLastRevives stay as they were). The
+  // effects' applications planned but not applied yet are dropped (the
+  // effects advanced; one spawned before PlanTurn waits for the next step).
   void AbortStep();
 
   // The turn's health (see GetLastTurnHealth). During a step (in_step_) a
@@ -1372,6 +1392,12 @@ class BaseEnv {
     size_t landing = 0;
     int rule = -1;
   };
+  // One agent an effect application of the turn pushed (its index in
+  // EffectSystem::GetPlanned())
+  struct EffectPush {
+    size_t application = 0;
+    const Agent* agent = nullptr;
+  };
   struct Turn {
     // Per agent, in agent-index order as the turn began (BeginTurn); an agent
     // created during the turn is appended when first touched (not Marked)
@@ -1397,6 +1423,11 @@ class BaseEnv {
     std::vector<TurnLanding> landings;
     std::vector<TurnFiring> firings;
     std::vector<TagId> taken;
+    // The effects' (see ApplyEffectHits): the agents each application pushed
+    // (the forced layer), and how many applications touched each agent (the
+    // cascade cap, EffectSystem::kCascadeDepthLimit)
+    std::vector<EffectPush> effect_pushes;
+    std::vector<std::pair<const Agent*, int>> effect_touches;
     void Clear() {  // Keeps the capacity
       ledger.clear();
       plan_count = 0;
@@ -1407,6 +1438,8 @@ class BaseEnv {
       landings.clear();
       firings.clear();
       taken.clear();
+      effect_pushes.clear();
+      effect_touches.clear();
     }
   };
   Turn turn_;
@@ -1424,6 +1457,22 @@ class BaseEnv {
   void SolveWalkLayer();
   void SolveLayer();
   void ExecuteLayer(MotionKind layer);
+  // The effects' part of the turn (EffectSystem::PlanTurn planned their
+  // applications with the intents, their cells fixed as the turn began):
+  //   - GatherEffectPushes, in the forced layer (GatherLayer): each
+  //     application's push on every agent it reaches after the layers before
+  //     (a walk out of it dodges it, one into it is pushed), a forced move
+  //     summed with the skills' on that agent (MotionPhase);
+  //   - ApplyEffectHits, after the tag phase: each application's hits
+  //     (EffectSystem::ApplyHits: damage and heal into the ledger, its
+  //     status, acting from the next turn) on whom it pushed and on whoever
+  //     else it reaches after the motion phase; then no application is left.
+  // Both in effect order; an agent touched by kCascadeDepthLimit
+  // applications already (the pushes counted first) gets nothing more.
+  void GatherEffectPushes();
+  void ApplyEffectHits();
+  // One more effect application on `agent` this turn, false past the cap
+  bool TouchByEffect(const Agent& agent);
   // During a step: a weakness already defeated it this turn
   bool IsDefeatedThisTurn(const Agent& agent) const;
   // `caster`'s revive of `ally` (down as the turn began) with `health`: kept

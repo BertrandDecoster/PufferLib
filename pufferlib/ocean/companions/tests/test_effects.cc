@@ -368,20 +368,21 @@ TEST(TestEffectPush) {
   env.SpawnEffect("wind_push", EffectTarget::AtCell(start_pos));
   ASSERT_EQ(env.GetActiveEffects().size(), 1u);
 
-  // With telegraph=0, effect starts in active phase
+  // With telegraph=0, effect starts in active phase: spawned by the host
+  // between two steps (Immediate), it applies at once
   const auto& effect = env.GetActiveEffects()[0];
   ASSERT_FALSE(effect.in_telegraph);  // Should be in active phase
   ASSERT_EQ(effect.ticks_remaining, 1);
 
-  // Step to apply effect
-  env.Step({EncodeAction(MovementAction::Stay)});
+  // Player pushed south by 2 at once (push dy=1 means row increases)
+  ASSERT_EQ(player->GetPosition().row, 5);  // 3 + 2 = 5
+  ASSERT_EQ(player->GetPosition().col, 3);
 
-  // Player should be pushed south by 2
-  Position new_pos = player->GetPosition();
-  // Note: effect is applied when ticks_remaining goes to 0
-  // Push dy=1 means row increases
-  ASSERT_EQ(new_pos.row, 5);  // 3 + 2 = 5
-  ASSERT_EQ(new_pos.col, 3);
+  // The step ends its active phase: nothing more
+  env.Step({EncodeAction(MovementAction::Stay)});
+  ASSERT_EQ(player->GetPosition().row, 5);
+  ASSERT_EQ(player->GetPosition().col, 3);
+  ASSERT_TRUE(env.GetActiveEffects().empty());
 }
 
 TEST(TestEffectPushBlockedByWall) {
@@ -391,7 +392,7 @@ TEST(TestEffectPushBlockedByWall) {
 
   EffectConfig cfg;
   cfg.name = "wind_push_wall";
-  cfg.telegraph_ticks = 0;
+  cfg.telegraph_ticks = 1;  // Lands during the step: a forced move of its motion phase
   cfg.active_ticks = 1;
   cfg.push_dx = 0;
   cfg.push_dy = 1;  // Push south
@@ -414,8 +415,9 @@ TEST(TestEffectPushBlockedByWall) {
   Position start_pos = {2, 3};
   env.GetMutableObjectManager().UpdatePosition(player->GetId(), start_pos);
 
-  // Spawn effect
+  // Spawn effect: it winds up, then pushes in the step
   env.SpawnEffect("wind_push_wall", EffectTarget::AtCell(start_pos));
+  ASSERT_TRUE(player->GetPosition() == start_pos);
   env.Step({EncodeAction(MovementAction::Stay)});
 
   // Player should be pushed but stopped by wall
@@ -655,6 +657,11 @@ TEST(TestDamageScenario_FilterMismatch) {
 // SCENARIO-BASED PUSH EFFECT TESTS
 // =============================================================================
 
+// The push scenarios wind up one step (telegraph 1): the push is then planned
+// with the step's intents and resolved as a forced move of its motion phase
+// (the path rule: it stops before the first wall, hole or agent holding its
+// cell at the end of the layer; see BaseEnv::MotionPhase).
+
 // Scenario: Push in all 4 directions
 // - Verify direction rotation works correctly
 TEST(TestPushScenario_AllDirections) {
@@ -664,7 +671,7 @@ TEST(TestPushScenario_AllDirections) {
   // Push north (dy=-1 in CSV, which is up = negative row)
   EffectConfig cfg;
   cfg.name = "sc_push_north";
-  cfg.telegraph_ticks = 0;
+  cfg.telegraph_ticks = 1;
   cfg.active_ticks = 1;
   cfg.push_dx = 0;
   cfg.push_dy = -1;  // North
@@ -732,7 +739,7 @@ TEST(TestPushScenario_BlockedByWall) {
 
   EffectConfig cfg;
   cfg.name = "sc_push_wall2";
-  cfg.telegraph_ticks = 0;
+  cfg.telegraph_ticks = 1;
   cfg.active_ticks = 1;
   cfg.push_dx = 1;  // East
   cfg.push_dy = 0;
@@ -768,7 +775,7 @@ TEST(TestPushScenario_BlockedByBoundary) {
 
   EffectConfig cfg;
   cfg.name = "sc_push_boundary";
-  cfg.telegraph_ticks = 0;
+  cfg.telegraph_ticks = 1;
   cfg.active_ticks = 1;
   cfg.push_dx = 0;
   cfg.push_dy = -1;  // North (up, decreasing row)
@@ -800,7 +807,7 @@ TEST(TestPushScenario_ZeroDistance) {
 
   EffectConfig cfg;
   cfg.name = "sc_push_zero";
-  cfg.telegraph_ticks = 0;
+  cfg.telegraph_ticks = 1;
   cfg.active_ticks = 1;
   cfg.push_dx = 1;
   cfg.push_dy = 0;
@@ -823,6 +830,56 @@ TEST(TestPushScenario_ZeroDistance) {
   // No movement
   ASSERT_EQ(player->GetPosition().row, 3);
   ASSERT_EQ(player->GetPosition().col, 3);
+}
+
+// Scenario: a push east 3 from (3,3), telegraphed one step, on a floor arena;
+// `setup` places what lies on its path (the player is agent 0, a second
+// companion agent 1 parked on (6,6)). Returns where the player ends after the
+// step, agent 1 doing `other`.
+static Position PushEastThree(void (*setup)(SynchroEnv&), Action other) {
+  ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
+  EffectConfig cfg;
+  cfg.name = "sc_push_east3";
+  cfg.telegraph_ticks = 1;
+  cfg.active_ticks = 1;
+  cfg.push_dx = 1;  // East
+  cfg.push_distance = 3;
+  cfg.area = {1};
+  cfg.filter = TargetFilter::Companion;
+  EffectConfigRegistry::Instance().RegisterConfig(cfg);
+
+  SynchroEnv env(8, 8, 2, 1, 0, 42);
+  env.Reset();
+  Grid& grid = env.GetMutableGrid();
+  for (int r = 1; r < 7; ++r) {
+    for (int c = 1; c < 7; ++c) grid.SetCell({r, c}, CellKind::Floor);
+  }
+  ObjectManager& om = env.GetMutableObjectManager();
+  om.UpdatePosition(om.GetAllAgents()[0]->GetId(), {3, 3});
+  om.UpdatePosition(om.GetAllAgents()[1]->GetId(), {6, 6});
+  setup(env);
+  env.SpawnEffect("sc_push_east3", EffectTarget::AtCell({3, 3}), Direction::Up);
+  env.Step({EncodeAction(MovementAction::Stay), other});
+  return om.GetAllAgents()[0]->GetPosition();
+}
+
+// Forced moves treat a hole as a blocker: stop before it
+TEST(TestPushScenario_StopsBeforeAHole) {
+  const Position end = PushEastThree(
+      [](SynchroEnv& env) { env.GetMutableGrid().SetCell({3, 5}, CellKind::Hazard); },
+      EncodeAction(MovementAction::Stay));
+  ASSERT_TRUE(end == (Position{3, 4}));
+}
+
+// An agent holding a cell of its path at the end of the layer stops it
+// before that cell; one that walked off it (an earlier layer) does not
+TEST(TestPushScenario_StopsAtTheFirstAgentThatHoldsItsCell) {
+  auto park = [](SynchroEnv& env) {
+    ObjectManager& om = env.GetMutableObjectManager();
+    om.UpdatePosition(om.GetAllAgents()[1]->GetId(), {3, 5});
+  };
+  ASSERT_TRUE(PushEastThree(park, EncodeAction(MovementAction::Stay)) == (Position{3, 4}));
+  ASSERT_TRUE(PushEastThree(park, EncodeAction(MovementAction::Down)) == (Position{3, 6}));
 }
 
 // =============================================================================
