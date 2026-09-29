@@ -2077,12 +2077,11 @@ TEST(TestASkillLandingsWeaknessReadsTheMapAsTheStepBegan) {
   ASSERT_EQ(env.GetCellTag({3, 5}).tag, Id(env, "fire"));  // After the step
 }
 
-// The end of the step commits the zone changes in the order the reactions
-// fired: two reactions writing the same lake, the later one wins (the one
-// credited to the later landing in report order: here the trigger with the
-// higher agent index, both brought by the lake). The zone it leaves covers
-// exactly its next steps. An order dependence that stays (an outcome).
-TEST(TestTheLaterReactionsZoneWinsAtTheEndOfTheStep) {
+// The end of the step commits the zone changes: two rules writing the same
+// lake, the rule first in level order wins it (charged, rule 0), whichever
+// trigger has the lower agent index (the firings' order: the reports only).
+// The zone it leaves covers exactly its next steps.
+TEST(TestTheFirstRulesZoneWinsAtTheEndOfTheStep) {
   for (bool swapped : {false, true}) {
     SynchroEnv env(10, 10, 2, 1, 0, 42);
     MakeArena(env);
@@ -2100,8 +2099,8 @@ TEST(TestTheLaterReactionsZoneWinsAtTheEndOfTheStep) {
     env.Step(Stays(env));
     ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(2));
     for (const auto& r : env.GetLastReactions()) ASSERT_EQ(r.cells.size(), lake.size());
-    const char* winner = swapped ? "charged" : "steam";  // The later trigger's
-    const int steps = swapped ? 2 : 3;
+    const char* winner = "charged";  // Rule 0's, in both orders
+    const int steps = 2;
     for (Position p : lake) {
       ASSERT_EQ(env.GetCellTag(p).tag, Id(env, winner));
       ASSERT_EQ(env.GetCellTag(p).steps, steps);

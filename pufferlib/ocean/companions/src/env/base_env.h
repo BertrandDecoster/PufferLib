@@ -552,8 +552,9 @@ class BaseEnv {
     // row-major order (empty without a spread or a zone_becomes; a
     // zone_becomes equal to the region's zone still lists them: the tag
     // stays, its lifetime starts again), so a host knows the zone changed
-    // without diffing the grid. During a step they change at its end (a
-    // later reaction writing the same cell wins); between steps, at once.
+    // without diffing the grid. During a step they change at its end (two
+    // rules writing one cell: the rule first in level order wins it, so a
+    // firing's cell may end as another's zone); between steps, at once.
     std::vector<Position> cells;
   };
   // `rule` indexes the current reactions: a SetReactions between the step and
@@ -651,8 +652,9 @@ class BaseEnv {
   //      for one of its (P, S): defeated (reported). In a step, ONE check per
   //      agent: its first (P, S), in its own order, with P the zone under
   //      its final cell and S any tag that landed on it this turn (zones,
-  //      skills), crediting the first landing of S in report order; results
-  //      get their own single check. During a step it is 0
+  //      skills), crediting the first landing of S in report order that is
+  //      not a zone's, else the first zone one (report only); results get
+  //      their own single check. During a step it is 0
   //      at the end of the turn (see GetLastTurnHealth) and stays in play
   //      until then (the next steps still reach it; defeated once per turn);
   //      between two steps Agent::Defeat at once, and it gets nothing more;
@@ -661,9 +663,11 @@ class BaseEnv {
   //      (a defeated agent keeps its tags, so it still triggers one). In a
   //      step, per agent, on its tags once every landing of the turn is put:
   //      the rules in level order, one firing when the agent carries both
-  //      halves, neither taken by an earlier firing on it (the originals it
-  //      did not keep), and a landing of this turn not yet used brought one
-  //      of them; a firing uses every landing of its halves. So at most one
+  //      halves, neither taken by an earlier firing it triggered (the
+  //      originals it did not keep; another agent's spread removing its tag
+  //      does not stop its own firing: gathered, then applied), and a
+  //      landing of this turn not yet used brought one of them; a firing
+  //      uses every landing of its halves. So at most one
   //      firing per (agent, rule) per turn, whichever landings brought the
   //      halves (either may be carried from earlier turns), and a landing
   //      triggers at most one reaction: a wet agent hit by electrified and
@@ -691,10 +695,10 @@ class BaseEnv {
   // AddLanding; ResolveTurnLandings: 3 once per agent, 4 gathered then
   // applied per agent: every result, then one weakness check, then each
   // firing's damage; 5 for all), so neither the agents' nor the casters'
-  // order changes an outcome, only the order of the reports.
-  // One exception, an outcome: two firings writing different zone_becomes
-  // to the same cells, the later one (firing order: credited landing in
-  // report order) wins at the end of the step. Report-only effects of the
+  // order changes an outcome, only the order of the reports. Two firings
+  // writing different zone_becomes to one cell: the rule first in level
+  // order wins it at the end of the step (firings of one rule write the
+  // same zone), whatever the firings' order. Report-only effects of the
   // order: a reaction's credit between two casters (the lower index), a
   // result's DefeatReport::reaction names the first firing whose result
   // defeated, only the first of identical landings on an agent is `fresh`.
@@ -1174,14 +1178,15 @@ class BaseEnv {
   //      outcome cancels or changes another's;
   //   d. the zone damage of each zone landing still affectable.
   // The map they read is the map as the step began (a firing's
-  // zone_becomes waits in pending_zones_), so the order of the agents does
-  // not change an outcome, but for the zones (see SetReactions: two firings
-  // writing the same cells, the later one wins).
+  // zone_becomes waits in pending_zones_; two rules writing one cell: the
+  // first in level order wins it), so the order of the agents does not
+  // change an outcome.
   void ResolveTurnLandings();
   // End of Step, before the agents' timers: the zone changes the step's
-  // reactions recorded (pending_zones_), in the order they were recorded (a
-  // later write to the same cell wins), their timers as set during the step
-  // (n + 1, so after TickZones they cover their n next steps).
+  // reactions recorded (pending_zones_), their timers as set during the step
+  // (n + 1, so after TickZones they cover their n next steps). Two rules
+  // writing one cell: the rule first in level order wins it, whatever the
+  // firings' order (the writes are sorted in place by rule, allocation-free).
   void CommitPendingZones();
   // End of Step, after the agents' timers: every timed zone loses a step, and
   // an expired one becomes its successor (or nothing). Ends the step (in_step_).
@@ -1251,11 +1256,14 @@ class BaseEnv {
   bool in_step_ = false;
   // A step reads one zone map: the zones a reaction's zone_becomes sets
   // during a step (cell index into cell_tags_, the zone as ResolveZone made
-  // it) wait here until its end (CommitPendingZones), in the order they were
-  // recorded. Empty between two steps. Reused: no allocation once grown.
+  // it, the rule, the order recorded) wait here until its end
+  // (CommitPendingZones). Empty between two steps. Reused: no allocation
+  // once grown.
   struct PendingZone {
     size_t cell = 0;
     CellTag zone;
+    int rule = -1;      // The reaction rule that set it (its precedence)
+    size_t order = 0;   // When it was recorded
   };
   std::vector<PendingZone> pending_zones_;
   // Pre-reserved reward buffer, reused each Step to avoid allocation on the

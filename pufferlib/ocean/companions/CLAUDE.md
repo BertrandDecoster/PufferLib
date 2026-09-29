@@ -192,8 +192,8 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
    root, a tag status) act from the NEXT turn (the intents are read before). From here
    to the end of the step the zone map is READ-ONLY: a reaction's `zone_becomes` waits
    in a pending buffer
-4. Effects tick, `CommitPendingZones` (the step's reaction zones, in the order they were
-   recorded: a later write to the same cell wins), `ApplyTurnOutcomes` (the turn's
+4. Effects tick, `CommitPendingZones` (the step's reaction zones; two rules writing one
+   cell: the rule first in level order wins it), `ApplyTurnOutcomes` (the turn's
    health, see below), `EndStep` on every agent (tags,
    statuses, cooldowns tick), `TickZones` (zone lifetimes tick, expired zones become
    their successor), the downs since the last report (`GetLastDowns`, after `EndStep`),
@@ -230,9 +230,10 @@ on each agent's final cell), weaknesses (P), spread regions. A reaction's
 `zone_becomes` during a step is recorded, and the map changes at its end, before the
 timers (stored n + 1, so it covers its n next steps): a zone a reaction creates first
 lands NEXT step. So neither the agents' nor the casters' order changes an outcome of
-the tag phase, only the order of the reports, with one exception: two firings writing
-different `zone_becomes` to the same cells, the later one (firing order: credited
-landing in report order) wins. Report-only effects of the order: a reaction's credit
+the tag phase, only the order of the reports. Two firings writing different
+`zone_becomes` to one cell: the rule first in level order wins it (as the first
+matching rule wins an agent; firings of one rule write the same zone), whatever the
+firings' order. Report-only effects of the order: a reaction's credit
 between two casters (the lower index), a result's `DefeatReport::reaction` names the
 first firing whose result defeated, only the first of identical landings on an
 agent is `fresh`. And it cannot cascade within a step: a spread fires
@@ -354,9 +355,8 @@ casts. A caster rooted this turn still resolves its skill (the root blocks from 
 step). The indices order the reports (uses in caster index order; a reaction's credit
 between two casters' landings: the lower index). What still depends on the indices, as
 an outcome: the motion phase's ties (two motions of one layer onto one cell: the lower
-index; its cycle tie-break), two reactions writing different `zone_becomes` to one cell
-(the later firing wins), and effects (their statuses and pushes still resolve in the
-effect tick, one by one). Skill landings react in the tag phase with every landing of
+index; its cycle tie-break) and effects (their statuses and pushes still resolve in
+the effect tick, one by one). Skill landings react in the tag phase with every landing of
 the turn: an agent carrying wet hit by electrified and chilled reacts by the same rule
 whoever casts first (see Reactions).
 
@@ -563,13 +563,16 @@ a status.
      ONE check per agent per turn, its first `(P, S)` in its own order with P the zone
      under its FINAL cell (the map as the step began) and S ANY tag that landed on it this
      turn (a zone's, a skill's: pushed into the lake and electrified in one turn, weak to
-     (wet, electrified): defeated), crediting the first landing of S in report order; a
+     (wet, electrified): defeated), crediting the first landing of S in report order
+     that is not a zone's, else the first zone one (as a reaction's credit); a
      reaction's results get their own single check
   4. reaction (never for a reaction's result: no chains): the FIRST rule, in level
      order, with the tag as `a` and `b` carried, or the reverse (unordered). One reaction
      per landing. In a step, every landing of the turn is put first, then per agent the
      rules are tried in level order on its tags: a rule fires when the agent carries both
-     halves, neither taken by an earlier firing on that agent (its originals not kept),
+     halves, neither taken by an earlier firing that agent TRIGGERED (its originals not
+     kept; another agent's spread removing its tag does not stop its own firing: every
+     firing is found, then applied),
      and at least one landing of either half this turn is unused; a firing uses every
      landing of its halves. So at most one firing per (agent, rule) per turn, whichever
      landings brought the two halves (either may be carried from earlier turns; both
@@ -653,7 +656,8 @@ a status.
   `zone_becomes`, row-major (empty without a spread or a `zone_becomes`; a
   `zone_becomes` equal to the region's zone still lists them, its lifetime restarting),
   so a host sees "the oil caught fire" without diffing; during a step they change at
-  its end (two reactions writing one cell: the later one wins), between steps at once.
+  its end (two rules writing one cell: the rule first in level order wins it, so a
+  firing's cell may end as another rule's zone), between steps at once.
   C API: 1.5 (see Per-step reports)
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)

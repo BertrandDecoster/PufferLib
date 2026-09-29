@@ -2138,6 +2138,128 @@ TEST(TestOneFiringPerAgentPerRulePerTurn) {
   ASSERT_FALSE(Has(env, gob, "electrified"));
 }
 
+// Two rules writing one oil region in one turn: F's fireball on gob X
+// (oil + burning -> fire, rule 0) and C's frost bolt on gob Y (oil + chilled
+// -> ice, rule 1). The rule first in level order wins the cells, in both
+// caster orders (the firings' order is the reports' only).
+TEST(TestTheFirstRuleWinsACellTwoRulesWrite) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    const int f = swapped ? 1 : 0, c = 1 - f;
+    ReactionRule fire = Rule("oil", "burning", "ablaze", 0, true);
+    fire.zone_becomes = "fire";
+    ReactionRule ice = Rule("oil", "chilled", "frozen", 0, true);
+    ice.zone_becomes = "ice";
+    Require(env.SetReactions({fire, ice}), "reactions");
+    GiveBolt(env, f, "fireball", "burning");
+    GiveBolt(env, c, "frost", "chilled");
+    Agent* fb = Place(env, f, {2, 1});  // Right: (2,2), (2,3), gob X
+    Agent* fr = Place(env, c, {5, 5});  // Up: (4,5), (3,5), gob Y
+    Agent* x = AddEnemy(env, {2, 4});
+    Agent* y = AddEnemy(env, {3, 5});
+    const std::vector<Position> oil = {{2, 4}, {2, 5}, {3, 5}};
+    for (Position p : oil) Require(env.SetCellTag(p, "oil"), "oil");
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(f)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(c)] = Use(MovementAction::Up);
+    env.Step(actions);
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(2));
+    for (Position p : oil) ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "fire"));
+    traces[swapped] = RoleTrace(env, {{fb->GetId(), "F"}, {fr->GetId(), "C"}, {x->GetId(), "X"},
+                                      {y->GetId(), "Y"}});
+    for (Position p : oil) traces[swapped] += TagName(env, env.GetCellTag(p).tag) + "\n";
+  }
+  RequireSameTraces(traces);
+}
+
+// "Taken by an earlier firing" is per trigger: A's spreading shock (wet +
+// electrified, over the lake) takes B's wet, but B's own firing (wet +
+// chilled, brought by its frost) still fires: every firing is found, then
+// applied. The same in both caster orders.
+TEST(TestAnotherAgentsSpreadDoesNotStopAFiring) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    const int s = swapped ? 1 : 0, f = 1 - s;
+    Require(env.SetReactions({Rule("wet", "electrified", "shocked", 0, true),
+                              Rule("wet", "chilled", "stunned")}),
+            "reactions");
+    GiveBolt(env, s, "spark", "electrified");
+    GiveBolt(env, f, "frost", "chilled");
+    Agent* spark = Place(env, s, {4, 1});  // Right: A
+    Agent* frost = Place(env, f, {1, 5});  // Down: B
+    Agent* a = AddEnemy(env, {4, 4});
+    Agent* b = AddEnemy(env, {4, 5});
+    for (Position p : {Position{4, 4}, Position{4, 5}}) Require(env.SetCellTag(p, "wet"), "lake");
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(s)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(f)] = Use(MovementAction::Down);
+    env.Step(actions);
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(2));
+    ASSERT_TRUE(Has(env, a, "shocked"));
+    ASSERT_TRUE(Has(env, b, "shocked"));  // A's spread
+    ASSERT_TRUE(Has(env, b, "stunned"));  // B's own
+    ASSERT_FALSE(Has(env, b, "wet"));
+    traces[swapped] = RoleTrace(env, {{spark->GetId(), "S"}, {frost->GetId(), "F"},
+                                      {a->GetId(), "A"}, {b->GetId(), "B"}});
+  }
+  RequireSameTraces(traces);
+}
+
+// A weakness defeat is credited like a reaction: the first landing of S that
+// is not a zone's. The imp in the lake, weak to (wet, wet), gets the lake's
+// wet (reported first) and the douse's: the douse defeats it.
+TEST(TestAWeaknessDefeatCreditsTheSkillOverTheZone) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  GiveBolt(env, 0, "douse", "wet");
+  Agent* douse = Place(env, 0, {4, 1});  // Right: the imp
+  Agent* imp = AddEnemy(env, {4, 4});
+  Require(env.SetCellTag({4, 4}, "wet"), "lake");
+  Require(env.SetWeaknesses(imp->GetId(), {{"wet", "wet"}}), "weak_to");
+  env.Step(With(env, 0, Use(MovementAction::Right)));
+  ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+  const BaseEnv::DefeatReport& d = env.GetLastDefeats().at(0);
+  ASSERT_EQ(d.agent, imp->GetId());
+  ASSERT_TRUE(d.kind == BaseEnv::TagSource::Skill);
+  ASSERT_EQ(d.source, douse->GetId());
+  ASSERT_EQ(d.cause, std::string("douse"));
+  ASSERT_FALSE(imp->IsAlive());
+}
+
+// One weakness check per agent, by the agent's own weakness order among the
+// tags that landed this turn: X on mud, weak to (mud, s2) then (mud, s1), gets
+// s1 and s2 from two casters: defeated by s2 in both caster orders (landing
+// by landing, the first caster's tag would decide)
+TEST(TestAWeaknessIsChosenByTheAgentsOwnOrder) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    const int one = swapped ? 1 : 0, two = 1 - one;
+    GiveBolt(env, one, "first", "s1");
+    GiveBolt(env, two, "second", "s2");
+    Agent* c1 = Place(env, one, {4, 1});  // Right: X
+    Agent* c2 = Place(env, two, {1, 4});  // Down: X
+    Agent* x = AddEnemy(env, {4, 4});
+    Require(env.SetCellTag({4, 4}, "mud"), "mud");
+    Require(env.SetWeaknesses(x->GetId(), {{"mud", "s2"}, {"mud", "s1"}}), "weak_to");
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(one)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(two)] = Use(MovementAction::Down);
+    env.Step(actions);
+    ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+    ASSERT_EQ(env.GetLastDefeats().at(0).tag, Id(env, "s2"));
+    ASSERT_EQ(env.GetLastDefeats().at(0).source, c2->GetId());
+    ASSERT_FALSE(x->IsAlive());
+    traces[swapped] = RoleTrace(env, {{c1->GetId(), "1"}, {c2->GetId(), "2"}, {x->GetId(), "X"}});
+  }
+  RequireSameTraces(traces);
+}
+
 // =============================================================================
 // Main
 // =============================================================================

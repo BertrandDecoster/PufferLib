@@ -1586,7 +1586,7 @@ void BaseEnv::ApplyZoneBecomes(size_t index) {
   for (const Position& p : fired.cells) {
     const size_t i = static_cast<size_t>(p.row * cols_ + p.col);
     if (in_step_) {
-      pending_zones_.push_back({i, becomes});
+      pending_zones_.push_back({i, becomes, fired.rule, pending_zones_.size()});
     } else {
       cell_tags_[i] = becomes;
     }
@@ -1884,7 +1884,9 @@ void BaseEnv::ResolveTurnLandings() {
   // b. ONE weakness check per agent: its first (P, S), in its own order, with
   //    P the zone under its final cell (the map as the step began) and S any
   //    tag that landed on it this turn, crediting the first landing of S in
-  //    report order. Agents in the order of their first landing.
+  //    report order that is not a zone's, else the first zone one (as a
+  //    reaction's credit: report only). Agents in the order of their first
+  //    landing.
   for (size_t i = 0; i < landings.size(); ++i) {
     Agent& agent = *landings[i].agent;
     if (!first_of_agent(i) || !agent.IsAffectable() || agent.GetWeakTo().empty() ||
@@ -1895,8 +1897,16 @@ void BaseEnv::ResolveTurnLandings() {
     if (here == kInvalidTag) continue;
     for (const Agent::WeakTo& w : agent.GetWeakTo()) {
       if (w.zone != here) continue;
-      const size_t by = find(i, &agent, w.tag, w.tag, false);
+      size_t by = find(i, &agent, w.tag, w.tag, false);
       if (by == kNone) continue;
+      for (size_t j = by; j < landings.size(); ++j) {  // A non-zone landing of S, if any
+        const TurnLanding& l = landings[j];
+        if (l.agent == &agent && tag_of(l) == w.tag &&
+            last_tags_applied_[l.report].kind != TagSource::Zone) {
+          by = j;
+          break;
+        }
+      }
       const TagApplication& s = last_tags_applied_[landings[by].report];
       DefeatBy(agent, w, s.source, s.cause, s.kind, -1);
       break;
@@ -1906,9 +1916,10 @@ void BaseEnv::ResolveTurnLandings() {
   // c. The reactions, gathered then applied. c1: every firing, on the state
   //    after a and b (a defeated agent keeps its tags, so it still triggers).
   //    Per agent, the rules in level order: one fires when the agent carries
-  //    both halves, neither taken by a rule that fired before it (its
-  //    originals not kept), and a landing of this turn not yet used brought
-  //    one of them. It uses every landing of its halves (a landing triggers
+  //    both halves, neither taken by a rule that fired before it on a firing
+  //    this agent triggered (its originals not kept; another agent's spread
+  //    taking its tag does not stop its own firing: gathered, then applied),
+  //    and a landing of this turn not yet used brought one of them. It uses every landing of its halves (a landing triggers
   //    at most one reaction, as a host landing does). So at most one firing
   //    per (agent, rule) per turn, whichever landings brought the halves
   //    (either may have been carried from earlier turns). Its credit (its
@@ -1945,8 +1956,8 @@ void BaseEnv::ResolveTurnLandings() {
     }
   }
   //    Fired in the order of their credited landings (report order), then of
-  //    the rules: only the order of the reports (and of two zone_becomes on
-  //    one cell: the later wins)
+  //    the rules: only the order of the reports (two zone_becomes on one
+  //    cell: the rule first in level order wins, CommitPendingZones)
   std::sort(firings.begin(), firings.end(), [](const TurnFiring& x, const TurnFiring& y) {
     return x.landing != y.landing ? x.landing < y.landing : x.rule < y.rule;
   });
@@ -1993,7 +2004,16 @@ void BaseEnv::CommitPendingZones() {
   if (cell_tags_.empty()) {  // Cleared during the step (a hook): a fresh map
     cell_tags_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), CellTag{});
   }
-  // In the order recorded: a later write to the same cell wins
+  // Two rules writing one cell: the rule first in level order wins it (as
+  // the first matching rule wins an agent), whatever order the firings came
+  // in. So the writes go by rule, the last rule first (the first rule lands
+  // last); one rule's writes all carry the same zone, kept in the order
+  // recorded. In place: std::sort allocates nothing (AbortStep runs this
+  // while a throw unwinds).
+  std::sort(pending_zones_.begin(), pending_zones_.end(),
+            [](const PendingZone& x, const PendingZone& y) {
+              return x.rule != y.rule ? x.rule > y.rule : x.order < y.order;
+            });
   for (const PendingZone& z : pending_zones_) cell_tags_[z.cell] = z.zone;
   pending_zones_.clear();
 }
