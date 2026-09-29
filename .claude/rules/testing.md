@@ -23,6 +23,11 @@ ctest
 ./companions_dodge_test
 ./companions_map_generator_test
 ./companions_d4_transform_test
+./companions_zones_test            # zones: lifetime, successor, damage, zone table
+./companions_reactions_test        # reactions, weaknesses, immunities, tag statuses
+./companions_api_reactions_test    # C API 1.5: reports, level data, outcome previews
+# (the full list, by area: the companions CLAUDE.md, "Tests"; on Windows
+# they land in build/bin/Release/ and ctest needs -C Release)
 
 # Parity test (generates reference data and validates Python wrapper)
 ./pufferlib/ocean/companions/tests/python/run_parity_test.sh

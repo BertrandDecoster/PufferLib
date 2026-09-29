@@ -138,8 +138,9 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 2. `PreStep` (enemy FSM) → `GatherIntentions` (fixes each skill use's effective skill:
    the context rules are read here, once, before anyone moves) → `ResolveCollisions` →
    `ExecuteValidatedMovements`
-3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed; the tag,
-   then the zone's damage if it is still affectable, see Zones)
+3. `ApplyZoneTags` (every affectable agent on a zone cell: alive, not downed; one
+   landing each: immunity, the tag and its status, weakness, reaction, then the zone's
+   damage if it is still affectable, see Zones and Reactions)
 4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
    order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
 5. Effects tick, `EndStep` on every agent (tags, statuses, cooldowns tick), `TickZones`

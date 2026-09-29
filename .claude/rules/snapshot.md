@@ -79,9 +79,10 @@ companions_load_snapshot(env, buffer.data(), buffer.size());
 **Notes:**
 - Returns `false`/`0` on error, check `companions_get_error()`
 - Contains: grid, agents, effects, tick, RNG state (~2-5 KB)
-- Binary format: magic `0x534E4150` ("SNAP"), version 6 (1..6 load; 4 added skills,
-  tags and zones, 5 downs, 6 context skills and the revive fields: see the companions
-  `CLAUDE.md`, "Levels")
+- Binary format: magic `0x534E4150` ("SNAP"), version 7 (1..7 load; 4 added skills,
+  tags and zones, 5 downs, 6 context skills and the revive fields, 7 the zone table,
+  each zone's fields, reactions, tag statuses, weaknesses and immunities: see the
+  companions `CLAUDE.md`, "Levels")
 
 ## JSON API
 
@@ -116,6 +117,11 @@ bool companions_load_snapshot_json_file(Companions_Env* env, const char* filepat
 - Enums serialize as strings (e.g., `"Floor"`, `"COMPANION"`, `"Patrol"`)
 - Pretty-printed with 2-space indent
 - Full round-trip fidelity with binary format
+- Version 7 (2..7 load); level data at the root: `skills`, `cell_tags`, `zones`,
+  `reactions`, `tag_statuses`, `max_downs`, `context_skills`; per agent `weak_to` /
+  `immune` (see the companions `CLAUDE.md`, "Levels")
+- Strict: unknown keys are rejected (root, agents, rule entries), and every int
+  (the RNG states included) must be a JSON integer in range, never converted
 
 ## FSM State Persistence
 
