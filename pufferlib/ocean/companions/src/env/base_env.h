@@ -868,7 +868,9 @@ class BaseEnv {
   // applies. Kept in the turn's scratch (turn_.plans), reused step to step.
   struct SkillPlan {
     ObjectId caster = kInvalidObjectId;
-    int agent_index = -1;  // The caster's (the action vector's index)
+    // The caster's agent index (its action's): unread for now, kept as the
+    // rank the one motion phase (T3) orders clashes by
+    int agent_index = -1;
     int slot = 0;
     int rule = -1;         // Index in context_skills_ of the rule that gave it; -1: equipped
     // A copy: a Define during the step (it invalidates the book's pointers)
@@ -883,7 +885,9 @@ class BaseEnv {
     // else stays.
     std::vector<Position> caster_candidates;
     std::vector<Position> area;  // AreaCells(centre): the centre, then the ring
-    std::vector<Position> path;  // A dash's crossed cells (hit by a tag_path dash)
+    // A tag_path dash's crossed cells up to its planned landing (all hit,
+    // even when the caster falls back short of some)
+    std::vector<Position> path;
     // PreviewSkill's answer: whom it would affect and how, in its order
     std::vector<AffectedAgent> predicted;
     std::vector<Position> found_on;  // Parallel to predicted: the cell each was found on
@@ -908,18 +912,31 @@ class BaseEnv {
   // A use of the turn, as the intents phase fixes it (GatherIntentions,
   // PreviewSkillOutcome): PlanSkillUse into turn_.plans, then the slot's
   // cooldown, spent now (the use happened, whatever it then reaches), only
-  // for an equipped skill. False when there is nothing to plan.
-  bool AddSkillPlan(Companion& comp, int agent_index, int slot, int rule, Direction aim);
+  // for an equipped skill; a step that throws before the use applies keeps
+  // it spent (AbortStep keeps what the step did). False when there is
+  // nothing to plan.
+  bool AddSkillPlan(Companion& comp, int slot, int rule, Direction aim);
   // After the walking and the zone phase, the turn's plans in two passes
   // (TEMPORARY: the one motion phase replaces pass 1):
   //   1. every plan's caster motion (CasterMotion), then every plan's forced
-  //      moves (AreaMotion), each in caster order. The only order the
-  //      outcome still depends on: two motions clashing over a cell, two
-  //      forced moves on one actor;
+  //      moves (AreaMotion), each in caster order;
   //   2. every plan's hits (UseSkill), in caster order.
+  // The plans read the turn-start world, but an outcome still depends on the
+  // casters' agent indices through (TEMPORARY):
+  //   - pass 1 (T3): two motions onto one cell (the lower index first; a
+  //     dash / teleport before any forced move), a motion onto a cell a
+  //     later motion vacates (still held: blocked), two forced moves on one
+  //     actor (one after the other), and the zone landings of those motions
+  //     (immediate, in caster order);
+  //   - pass 2 (T4): a skill's landing fires its reaction at once (LandTag),
+  //     in caster order: an agent carrying wet, hit by electrified (index 0)
+  //     and chilled (index 1), reacts by the rule the first landing
+  //     completes.
   void ResolveSkills();
   // Pass 1: the caster's dash / teleport, to the first of its candidates it
-  // can land on now (CanLand), else it stays. It lands the cell's zone.
+  // can land on now (CanLand), else it stays. It lands the cell's zone. A
+  // fallback keeps the plan's centre, area and whole path (a tag_path dash
+  // still hits every planned path cell, past where it actually landed too).
   void CasterMotion(SkillPlan& plan);
   // Pass 1: the forced moves, each moving its actor by its offset from where
   // it stands now (the landing rule, ResolveDashWith), landing the zone of

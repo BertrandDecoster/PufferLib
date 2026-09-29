@@ -305,13 +305,21 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
 **Multiple casters** are simultaneous: every use is planned from the world as the turn
 BEGINS (`GatherIntentions`), so a caster aims from the cell it began the turn on even if
 another use pulls it this turn, and its cooldown is spent when the use is planned (the
-use happened, whatever it then reaches). A caster down as the turn begins cannot cast;
-one going down this turn still casts. A caster rooted this turn still resolves its skill
-(the root blocks from the next step). An agent's index changes no outcome but the report
-order (uses in caster index order) and, while pass 1 is TEMPORARY, the motion clashes:
-two motions onto one cell (the lower caster index first; a dash / teleport before any
-push / pull), two forced moves on one actor (one after the other). A dash / teleport
-losing its landing falls back along its line and keeps its planned area and centre.
+use happened, whatever it then reaches; a step that throws before the use applies keeps
+it spent). A caster down as the turn begins cannot cast; one going down this turn still
+casts. A caster rooted this turn still resolves its skill (the root blocks from the next
+step). The indices order the reports (uses in caster index order), and still change
+outcomes in two TEMPORARY ways:
+- pass 1 (until the one motion phase): two motions onto one cell (the lower caster index
+  first; a dash / teleport before any push / pull), a motion onto a cell a later motion
+  vacates (still held: blocked), two forced moves on one actor (one after the other), and
+  the zone landings of those motions (immediate, in caster order);
+- pass 2 (until the one tag phase): a skill's landing fires its reaction at once
+  (`LandTag`), in caster order: an agent carrying wet hit by electrified (index 0) and
+  chilled (index 1) reacts by the rule the first landing completes.
+
+A dash / teleport losing its landing falls back along its line and keeps its planned
+area, centre and whole path (a `tag_path` dash still hits every planned path cell).
 
 **Revive** (a skill with `revive_percent` > 0; the builtin `revive`):
 - `Companion::Revive(health)`: the downed companion gets up where it lies, with

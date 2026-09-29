@@ -644,9 +644,10 @@ TEST(TestAContextSkillIgnoresTheSlotCooldown) {
   ASSERT_EQ(CountSkill1(env.LegalActions(0)), static_cast<size_t>(0));
 }
 
-// The effective skill is fixed when intentions are read: a later caster whose
-// downed neighbour an earlier caster revived in the same pass still uses the
-// revive (it affects nothing), not its equipped skill.
+// The effective skill is fixed when the use is planned (the intentions): both
+// neighbours of the downed ally plan a revive, not their equipped fireball;
+// the ally gets up once, credited to the lower index (the other use keeps it
+// without the Revive effect).
 TEST(TestTheContextIsReadWithTheIntentions) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);

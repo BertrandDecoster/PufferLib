@@ -441,7 +441,7 @@ TEST(TestAWeaknessDefeatIsZeroWhateverTheHeals) {
 // lake this turn, it is electrified where it stands after the motion (the
 // storm's cell), defeated there, and its own reaction still fires and
 // reaches it (result and damage); the push that moved it hits it too
-TEST(TestADefeatedAgentStillGetsResultsAndPushesThisTurn) {
+TEST(TestAnAgentPushedOntoItsWeaknessIsDefeatedAndStillGetsItsResult) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   Require(env.SetReactions({Rule("wet", "electrified", "shocked", 1, true)}), "reactions");
@@ -476,6 +476,32 @@ TEST(TestADefeatedAgentStillGetsResultsAndPushesThisTurn) {
   ASSERT_FALSE(imp->IsAlive());
   ASSERT_TRUE(TurnOf(env, imp).outcome == TurnOutcome::Defeated);
   ASSERT_EQ(TurnOf(env, imp).damage, 1);
+}
+
+// Defeated first, pushed after: the zone phase defeats the imp (its lake
+// lands on it: weak to wet there); still in play, the gust's push then
+// moves it off the lake and tags it; it dies at the end of the turn
+TEST(TestADefeatedAgentIsStillPushedThisTurn) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  GiveGust(env, 1);
+  Agent* gust = Place(env, 1, {3, 5});  // Gusts: the imp on its left ring cell, pushed to (3,3)
+  Agent* imp = AddEnemy(env, {3, 4}, 5);
+  Require(env.SetCellTag({3, 4}, "wet"), "lake");
+  Require(env.SetWeaknesses(imp->GetId(), {{"wet", "wet"}}), "weak_to");
+  env.Step(With(env, 1, Use(MovementAction::Stay)));
+  ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastDefeats().at(0).kind == BaseEnv::TagSource::Zone);
+  ASSERT_TRUE(imp->GetPosition() == (Position{3, 3}));  // Pushed after its defeat
+  ASSERT_TRUE(Has(env, imp, "gusted"));
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
+  // The caster on its own centre (spared its tags), then the imp
+  ASSERT_TRUE(env.GetLastSkillUses().at(0).affected ==
+              (std::vector<BaseEnv::AffectedAgent>{
+                  {gust->GetId(), 0},
+                  {imp->GetId(), BaseEnv::kSkillEffectTags | BaseEnv::kSkillEffectMotion}}));
+  ASSERT_FALSE(imp->IsAlive());  // At the end
+  ASSERT_TRUE(TurnOf(env, imp).outcome == TurnOutcome::Defeated);
 }
 
 // =============================================================================

@@ -997,16 +997,18 @@ COMPANIONS_API bool companions_preview_skill(const Companions_Env* env, Companio
                                              int32_t slot, Companions_Direction aim,
                                              Companions_SkillPreview* out);
 
-// The last step's skill uses (since 1.4), in resolution order (the order of
-// its SkillUsed events), with whom each affected: what the step did, as the
-// preview says it before the step. Kept until the next step; a reset or a
-// snapshot load empties it.
+// The last step's skill uses (since 1.4), in caster agent-index order (the
+// order of its SkillUsed events), with whom each affected: what the step did
+// (the preview before the step says what its plan predicts). Kept until the
+// next step; a reset or a snapshot load empties it.
 typedef struct {
   Companions_ObjectId caster;
   char skill[Companions_SKILL_NAME_LEN];
   int32_t slot;                  // 0-based
   Companions_Position centre;    // The SkillUsed event's position
-  // The agents it affected, in the order it processed them, with what it
+  // The agents it affected (those its plan predicted still on its cells or
+  // moved by its own push / pull, in the preview's order, then those who
+  // walked or were moved onto its cells, in cell order), with what it
   // did to each: as Companions_SkillPreview's affected, affected_effects,
   // affected_count and affected_total
   Companions_ObjectId affected[Companions_MAX_AGENTS];

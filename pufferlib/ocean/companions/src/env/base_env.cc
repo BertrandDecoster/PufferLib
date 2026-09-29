@@ -763,7 +763,7 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
         const ContextSkillRule* rule = nullptr;
         if (CanUseSkill(*comp, slot, rule)) {
           if (auto dir = MovementToDirection(decoded.movement)) comp->SetDirection(*dir);
-          AddSkillPlan(*comp, static_cast<int>(i), slot, RuleIndex(rule), comp->GetDirection());
+          AddSkillPlan(*comp, slot, RuleIndex(rule), comp->GetDirection());
           agent->SetIntention({MovementAction::Stay, decoded.interact});
           continue;
         }
@@ -1903,10 +1903,10 @@ void BaseEnv::AreaCells(Position centre, SkillArea area, std::vector<Position>& 
 // caster aims from the cell it began the turn on, whoever moves it this
 // turn, and a caster rooted this turn still resolves its use (usability was
 // decided with the intentions; the root blocks from the next step).
-// Pass 1 is TEMPORARY (the one motion phase replaces it) and the only order
-// an outcome still depends on: two motions onto one cell (the lower caster
-// index first; a dash / teleport before any forced move), two forced moves on
-// one actor (added one after the other, from where the first left it).
+// An outcome still depends on the casters' indices (TEMPORARY, see the
+// header): pass 1's motion clashes and the zone landings of its motions
+// (the one motion phase replaces it), and pass 2's reactions, fired at once
+// by each landing in caster order (the one tag phase replaces that).
 void BaseEnv::ResolveSkills() {
   const size_t count = turn_.plan_count;
   // Pass 1: the motions, every caster's own first, then the pushes / pulls
@@ -1933,12 +1933,11 @@ bool BaseEnv::PlanSkillUse(const Companion& caster, int slot, int rule, Directio
   return true;
 }
 
-bool BaseEnv::AddSkillPlan(Companion& comp, int agent_index, int slot, int rule, Direction aim) {
+bool BaseEnv::AddSkillPlan(Companion& comp, int slot, int rule, Direction aim) {
   std::vector<SkillPlan>& plans = turn_.plans;
   if (turn_.plan_count == plans.size()) plans.emplace_back();
   SkillPlan& plan = plans[turn_.plan_count];
   if (!PlanSkillUse(comp, slot, rule, aim, plan)) return false;
-  plan.agent_index = agent_index;
   ++turn_.plan_count;
   // Spent as it is planned: the use happened, whatever it then reaches.
   // Cooldowns belong to the equipped skill: a context skill does not spend it.
@@ -2120,7 +2119,7 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
   outcome.usable = !comp->IsStunned() && world->CanUseSkill(*comp, slot, rule);
   if (outcome.usable) {
     comp->SetDirection(aim);  // GatherIntentions: the movement aims
-    world->AddSkillPlan(*comp, comp->GetAgentIndex(), slot, world->RuleIndex(rule), aim);
+    world->AddSkillPlan(*comp, slot, world->RuleIndex(rule), aim);
     world->ResolveSkills();
   }
   // The zones the use sets at the end of the step (its reactions' cells),
