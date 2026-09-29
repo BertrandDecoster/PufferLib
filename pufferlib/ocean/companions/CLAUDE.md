@@ -167,8 +167,13 @@ agent is `fresh`, and a later firing reports 0 damage on an agent an earlier fir
 damage downed. And it cannot cascade within a step: a spread fires
 once per trigger (N triggers in one region = N firings, each reaching everyone), and
 waits a step before its zone lands. Between two steps (a host's `ApplyTagTo`) there is
-no phase: a landing resolves at once and its `zone_becomes` applies at once. A step
-that throws commits what it recorded (`AbortStep`)
+no phase: a landing resolves at once and its `zone_becomes` applies at once. A host
+call from a hook DURING a step: `SetCellTag` writes at once (in `PreStep`, before the
+zone phase, it is part of the map the step reads), while an `ApplyTagTo` sees
+`in_step_` set, so its reaction's `zone_becomes` waits for the end of the step like any
+other. A step that throws commits what it recorded (`AbortStep`; a map cleared during
+the step drops them instead: the abort runs while the throw unwinds and must not
+allocate)
 
 **Step timers** (`Agent::BeginStep` / `EndStep`; zones: `BaseEnv::TickZones`): tag and
 status durations, cooldowns and zone lifetimes all count steps and all tick at the END of
@@ -415,8 +420,9 @@ tests: `tests/test_zones.cc`):
   `SkillUse` reports no Tags / Damage on it), but the rest of the use still runs: the
   others it affects are tagged, hurt, rooted, pushed
 - Lifetime: `steps` is a step timer (see Step timers): set between two steps, the zone
-  lands during the n next steps; set during a step (a rule of the env), it also covers
-  the rest of that step (kept as n + 1, `BaseEnv::in_step_`) and reads n after it (a
+  lands during the n next steps; set by a host call during a step (e.g. a `PreStep`
+  hook), it also covers the rest of that step (kept as n + 1, `BaseEnv::in_step_`) and
+  reads n after it (a
   reaction's `zone_becomes` is kept as n + 1 too but written at the end of the step, so
   it lands during exactly its n next steps). `-1` =
   never expires. Zones tick in `TickZones`, right after the agents' `EndStep`; an
@@ -550,7 +556,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - Report order in a step: the zone phase first (every zone landing in agent-index
   order; its landing defeats; its reactions in trigger agent-index order; their result
   landings in the same firing order, each firing's in its affected order; then the
-  result defeats), then the skill phase in resolution order (a skill motion's zone
+  result defeats, in first-hit order: firing, then affected order), then the skill phase in resolution order (a skill motion's zone
   landing inside its use). The C API reads the same vectors (its
   `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then

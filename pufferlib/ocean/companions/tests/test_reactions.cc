@@ -759,7 +759,14 @@ static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::s
     lines.push_back(out.str());
   }
   for (const auto& d : env.GetLastDefeats()) {
-    lines.push_back("defeat " + role(d.agent) + " " + Name(env, d.zone) + " " + Name(env, d.tag));
+    lines.push_back("defeat " + role(d.agent) + " " + Name(env, d.zone) + " " + Name(env, d.tag) +
+                    " " + std::to_string(static_cast<int>(d.kind)) + " " + role(d.source) + " " +
+                    d.cause);
+  }
+  for (ObjectId id : env.GetLastDowns()) lines.push_back("down " + role(id));
+  for (const auto& r : env.GetLastRevives()) {
+    lines.push_back("revive " + role(r.reviver) + " " + role(r.revived) + " " +
+                    std::to_string(r.health));
   }
   for (const Agent* a : env.GetObjectManager().GetAllAgents()) {
     std::ostringstream out;
@@ -769,7 +776,13 @@ static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::s
     for (const AgentTag& t : a->GetTags()) tags.push_back(Name(env, t.id) + "/" + std::to_string(t.duration));
     std::sort(tags.begin(), tags.end());
     for (const std::string& t : tags) out << " " << t;
-    for (const auto& s : a->GetStatuses()) out << " s" << static_cast<int>(s.type) << "/" << s.duration;
+    std::vector<std::string> statuses;
+    for (const auto& st : a->GetStatuses()) {
+      statuses.push_back("s" + std::to_string(static_cast<int>(st.type)) + "/" +
+                         std::to_string(st.duration));
+    }
+    std::sort(statuses.begin(), statuses.end());
+    for (const std::string& st : statuses) out << " " << st;
     lines.push_back(out.str());
   }
   std::sort(lines.begin(), lines.end());
@@ -1604,6 +1617,29 @@ TEST(TestAnOutcomePreviewIsWhatTheStepDoes) {
   ASSERT_EQ(world.GetLastDowns().size(), static_cast<size_t>(1));
   ASSERT_EQ(world.GetLastDowns().at(0), k.cook);
   ASSERT_EQ(world.GetCellTag({3, 5}).tag, world.GetTagTable().Find("burning"));
+}
+
+// The preview's world shows the zones the use sets at the end of the step:
+// committed after the use (the clone's map), their timers as the step stores
+// them before its tick (burning: 3 steps, kept as 4), while the env keeps its
+// oil.
+TEST(TestAnOutcomePreviewCommitsTheZonesItsUseSets) {
+  Kitchen k = MakeKitchen();
+  SynchroEnv& env = *k.env;
+  const BaseEnv::SkillOutcome outcome = env.PreviewSkillOutcome(k.caster, 0, Direction::Right);
+  ASSERT_TRUE(outcome.usable);
+  const BaseEnv& world = *outcome.world;
+  ASSERT_EQ(world.GetLastReactions().size(), static_cast<size_t>(1));
+  const auto& cells = world.GetLastReactions().at(0).cells;
+  ASSERT_EQ(cells.size(), static_cast<size_t>(4));
+  for (Position p : cells) {
+    const BaseEnv::CellTag z = world.GetCellTag(p);
+    ASSERT_EQ(z.tag, world.GetTagTable().Find("burning"));
+    ASSERT_EQ(z.steps, 4);  // n + 1: set during the step, not ticked
+    ASSERT_EQ(z.damage, 1);
+    ASSERT_EQ(z.then, world.GetTagTable().Find("ash"));
+    ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "oil"));  // The env is untouched
+  }
 }
 
 // A preview changes nothing: the env's state (its snapshot), its reports,

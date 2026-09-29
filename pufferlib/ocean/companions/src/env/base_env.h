@@ -449,7 +449,9 @@ class BaseEnv {
   // Report order in a step: the zone phase first (its zone landings, every
   // one, in agent-index order; its landing defeats; its reactions in trigger
   // agent-index order, their result landings in that firing order, then the
-  // results' defeats), then the skill phase's, in resolution order.
+  // results' defeats, in first-hit order: the firing, then its affected
+  // order), then the skill phase's, in resolution order. The C API's
+  // report_index fields follow these orders.
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
   // Companions that went down since the last report, one entry per down:
@@ -589,8 +591,10 @@ class BaseEnv {
   // the landing's TagApplication::damage. A step reads one map (see
   // SetReactions): a zone a reaction sets during it first lands next step.
   // A zone lives `steps` steps (a step timer, like tags: set between two
-  // steps it lands during the n next steps; set during a step it also covers
-  // the rest of that step, kept as n + 1 and read n after it), or forever
+  // steps it lands during the n next steps; set by a host call during a step
+  // (e.g. a PreStep hook) it also covers the rest of that step, kept as n + 1
+  // and read n after it; a reaction's zone_becomes, kept as n + 1 too, is
+  // written at the end of the step: its n next steps), or forever
   // (kPermanentTag). Zone timers tick at the end of Step, right after the
   // agents' (Agent::EndStep); an expired zone becomes its successor `then`
   // (a zone by name: the table's fields; it lands from the next step and
@@ -833,6 +837,10 @@ class BaseEnv {
   // map, which a step never changes before its end (see pending_zones_).
   void ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind, int reaction);
+  // Defeats `agent` (Agent::Defeat) by `weakness`, reported (DefeatReport,
+  // the landing of S: source / cause / kind / reaction)
+  void DefeatBy(Agent& agent, const Agent::WeakTo& weakness, ObjectId source,
+                const std::string& cause, TagSource kind, int reaction);
   // Step 4 at once: FindReaction, then FireReaction.
   void ResolveReaction(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind);
@@ -907,7 +915,8 @@ class BaseEnv {
   // A Step that threw: between two steps again (in_step_ and the agents'
   // Agent::AbortStep), its timers not ticked, so a later SaveSnapshot or
   // timer set is not taken for one inside a step. It keeps what the step did,
-  // its pending zone changes committed.
+  // its pending zone changes committed (dropped, without allocating, when the
+  // map was cleared during the step: it runs while the throw unwinds).
   void AbortStep();
   // `def` for `tag` on a cell: its steps as a step timer (n + 1 in a step),
   // its successor interned. Validated by the caller.
@@ -988,6 +997,7 @@ class BaseEnv {
     TagId result = kInvalidTag;
     bool keep_a = false;
     bool keep_b = false;
+    TagId becomes = kInvalidTag;  // zone_becomes, or kInvalidTag (its fields: the table's, when set)
   };
   std::vector<ReactionRule> reactions_;
   std::vector<ResolvedReaction> resolved_reactions_;  // Parallel to reactions_

@@ -1131,17 +1131,22 @@ void BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const st
   if (here == kInvalidTag) return;
   for (const Agent::WeakTo& w : weak_to) {
     if (w.tag != tag || w.zone != here) continue;
-    agent.Defeat();
-    DefeatReport d(kind);
-    d.agent = agent.GetId();
-    d.zone = w.zone;
-    d.tag = w.tag;
-    d.source = source;
-    d.cause = cause;
-    d.reaction = reaction;
-    last_defeats_.push_back(std::move(d));
+    DefeatBy(agent, w, source, cause, kind, reaction);
     return;
   }
+}
+
+void BaseEnv::DefeatBy(Agent& agent, const Agent::WeakTo& weakness, ObjectId source,
+                       const std::string& cause, TagSource kind, int reaction) {
+  agent.Defeat();
+  DefeatReport d(kind);
+  d.agent = agent.GetId();
+  d.zone = weakness.zone;
+  d.tag = weakness.tag;
+  d.source = source;
+  d.cause = cause;
+  d.reaction = reaction;
+  last_defeats_.push_back(std::move(d));
 }
 
 std::vector<char> BaseEnv::ZoneRegion(Position start) const {
@@ -1263,8 +1268,11 @@ void BaseEnv::ApplyZoneBecomes(size_t index) {
   // is kept as n + 1. During a step the map is read-only: the change waits for
   // the end of the step (CommitPendingZones) and first lands next step.
   // Between two steps (a host landing) there is no phase: it applies at once.
-  const std::string& name = reactions_[static_cast<size_t>(fired.rule)].zone_becomes;
-  const CellTag becomes = ResolveZone(tags_.Intern(name), GetZoneDef(name));
+  // Its fields are the zone table's NOW (read by name: DefineZone may change
+  // them between steps); its tag was interned by SetReactions
+  const size_t rule = static_cast<size_t>(fired.rule);
+  const CellTag becomes = ResolveZone(resolved_reactions_[rule].becomes,
+                                      GetZoneDef(reactions_[rule].zone_becomes));
   for (const Position& p : fired.cells) {
     const size_t i = static_cast<size_t>(p.row * cols_ + p.col);
     if (in_step_) {
@@ -1322,16 +1330,9 @@ void BaseEnv::ApplyReactionHits() {
         }
       }
       if (!by) continue;
-      x->Defeat();
       const ReactionReport& fired = last_reactions_[by->firing];
-      DefeatReport d(TagSource::Reaction);
-      d.agent = x->GetId();
-      d.zone = w.zone;
-      d.tag = w.tag;
-      d.source = fired.source;
-      d.cause = fired.cause;
-      d.reaction = static_cast<int>(by->firing);
-      last_defeats_.push_back(std::move(d));
+      DefeatBy(*x, w, fired.source, fired.cause, TagSource::Reaction,
+               static_cast<int>(by->firing));
       for (const ReactionHit& h : reaction_hits_) {  // Every result S on x defeated it
         ReactionOutcome& o = last_reactions_[h.firing].affected[h.outcome];
         if (h.agent == x && o.result_landed && resolved_reactions_[rule_of(h)].result == w.tag) {
@@ -1372,7 +1373,7 @@ bool BaseEnv::SetReactions(std::vector<ReactionRule> rules, std::string* error) 
       if (k == rule.a) r.keep_a = true;
       if (k == rule.b) r.keep_b = true;
     }
-    if (!rule.zone_becomes.empty()) tags_.Intern(rule.zone_becomes);
+    if (!rule.zone_becomes.empty()) r.becomes = tags_.Intern(rule.zone_becomes);
     resolved.push_back(r);
   }
   reactions_ = std::move(rules);
@@ -1515,14 +1516,14 @@ const std::string kZoneCause = "zone";  // A zone landing's cause
 }  // namespace
 
 void BaseEnv::ApplyZoneTag(Agent& agent) {
-  zone_landings_.clear();
+  assert(zone_landings_.empty() && "a zone phase inside a zone phase");
   CollectZoneLanding(agent);
   ResolveZoneLandings();
 }
 
 void BaseEnv::ApplyZoneTags() {
   if (cell_tags_.empty()) return;
-  zone_landings_.clear();
+  assert(zone_landings_.empty() && "a zone phase inside a zone phase");
   // a. Every affectable agent on a zone gets its tag (agent-index order: the
   //    order of the reports, never of an outcome)
   for (Agent* agent : object_manager_->GetAllAgents()) CollectZoneLanding(*agent);
@@ -1583,7 +1584,11 @@ void BaseEnv::ResolveZoneLandings() {
       l.agent->TakeDamage(l.zone.damage);
     }
   }
+  // No Agent* outlives the phase (a LoadSnapshot re-creates the agents)
   zone_landings_.clear();
+  reaction_hits_.clear();
+  reaction_affected_.clear();
+  hit_agents_.clear();
 }
 
 void BaseEnv::CommitPendingZones() {
@@ -1604,7 +1609,19 @@ void BaseEnv::RepointFsmRng(const pcg32* from, pcg32* to) {
 }
 
 void BaseEnv::AbortStep() {
-  CommitPendingZones();  // What the step did before the throw stays
+  // What the step did before the throw stays, its pending zones included,
+  // without allocating (this runs while a throw unwinds, ~StepScope): a map
+  // cleared during the step has no cells to write them to, so they are dropped
+  if (cell_tags_.empty()) {
+    pending_zones_.clear();
+  } else {
+    CommitPendingZones();
+  }
+  // A phase the throw interrupted: its scratch points at agents that may go
+  zone_landings_.clear();
+  reaction_hits_.clear();
+  reaction_affected_.clear();
+  hit_agents_.clear();
   in_step_ = false;
   for (Agent* agent : object_manager_->GetAllAgents()) agent->AbortStep();
 }
