@@ -153,6 +153,10 @@ constexpr int kNumInteractActions = 1 + kEnabledSkillSlots;
 inline int SkillSlotOf(InteractAction action) {
   return static_cast<int>(action) - 1;
 }
+// The interact action using skill slot `slot` (SkillSlotOf's inverse)
+inline InteractAction SkillInteractOf(int slot) {
+  return static_cast<InteractAction>(slot + 1);
+}
 
 // =============================================================================
 // Action encoding/decoding

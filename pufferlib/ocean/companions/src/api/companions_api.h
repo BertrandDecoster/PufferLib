@@ -293,8 +293,9 @@
 //   effect_id / effect_name = the tag S (id and name), health_source_id /
 //   tag_kind / tag_reaction = the landing of S's source, kind and reaction.
 //   A companion goes down (its AgentDowned too), another agent dies: for it,
-//   the only event of its death, so it is one of the state-change events
-//   (after AgentRevived, before SkillUsed). The zone P:
+//   the only death-specific event (its HealthChanged says Defeated), so it
+//   is one of the state-change events (after AgentRevived, before
+//   SkillUsed). The zone P:
 //   companions_get_defeat (report_index).
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
 //   reported once per false->true transition of done, on the step where it
@@ -901,10 +902,10 @@ COMPANIONS_API bool companions_set_cell(Companions_Env* env, int32_t row,
 // turn its telegraph ends: planned into that turn with its intents, its
 // push a forced move of the motion phase, its hits (into the turn's ledger)
 // on whoever stands on its cells after the motion (walking out dodges).
-// Effects the env spawns DURING a step (an enemy's strike, a DodgeEnv
-// hazard) wait for the next turn when they have no wind-up: they show as
-// in_telegraph with ticks_remaining 1 until then (a strike its FSM spawns
-// as the turn begins is planned into that very turn).
+// The env's own no-wind-up spawns for the next turn (a DodgeEnv hazard
+// spawned after its step, an effect spawned while a step runs) show as
+// in_telegraph with ticks_remaining 1 until then (a strike an enemy's FSM
+// spawns as the turn begins is planned into that very turn).
 // source_id: agent immune to the effect (-1 for none).
 // Returns false on error (unknown effect, out of bounds).
 COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,

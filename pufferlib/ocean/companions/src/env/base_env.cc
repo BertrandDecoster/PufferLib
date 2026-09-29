@@ -189,7 +189,7 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
 
   // The turn's phases from its motion to its end (motion, tags, the effects'
   // hits, the pending zones, the turn's health and outcomes)
-  ResolveTurn(true);
+  ResolveTurn();
 
   // Every timer (tags, statuses, cooldowns, then the zones') ticks here, at
   // the end of the step
@@ -254,7 +254,7 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   return result;
 }
 
-void BaseEnv::ResolveTurn(bool fsm) {
+void BaseEnv::ResolveTurn() {
   // The motion phase, in layers: teleports, dashes, walks, then the forced
   // moves (the skills' and the effects' pushes, pulls) on whoever stands on
   // their cells
@@ -269,7 +269,7 @@ void BaseEnv::ResolveTurn(bool fsm) {
   }
 
   // Update FSM after movements (so FSM sees actual positions)
-  if (fsm) UpdateAgentFSM();
+  UpdateAgentFSM();
 
   // The tag phase: every tag of the turn lands together (the zones on
   // everyone's final cell, then every skill use's hits), then the weaknesses
@@ -2488,15 +2488,19 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
     comp->SetDirection(aim);  // GatherIntentions: the movement aims
     world->AddSkillPlan(*comp, slot, world->RuleIndex(rule), aim);
     // Then the turn, as the step runs it, with that use alone: everyone else
-    // stays (no walks, no other use), no FSM decides (no PreStep, no FSM
-    // update) and no effect activates (no PlanTurn: an effect winding up
-    // stays so). The motion phase (that use's motions), the tag phase (the
-    // zones on EVERY agent affectable as the turn began, on its final cell;
-    // the use's hits), the pending zones committed, the turn's end (health,
-    // downs, deaths, defeats, revives); the timers not ticked, no PostStep,
-    // no rewards or verdict.
+    // stays (no walks, no other use: their intentions cleared; the caster's
+    // is the step's, Stay with its skill), no FSM decides (no PreStep) and no
+    // effect activates (no PlanTurn: an effect winding up stays so). The
+    // original intentions captured as the step captures them, then the
+    // motion phase (that use's motions), the tag phase (the zones on EVERY
+    // agent affectable as the turn began, on its final cell; the use's
+    // hits), the pending zones committed, the turn's end (health, downs,
+    // deaths, defeats, revives); the timers not ticked, no PostStep, no
+    // rewards or verdict.
     for (Agent* agent : world->object_manager_->GetAllAgents()) agent->ClearIntention();
-    world->ResolveTurn(false);
+    comp->SetIntention({MovementAction::Stay, SkillInteractOf(slot)});
+    world->CaptureOriginalIntentions();
+    world->ResolveTurn();
   }
   for (Companion* c : world->object_manager_->GetAllCompanions()) {
     for (int n = c->TakeUnreportedDowns(); n > 0; --n) world->last_downs_.push_back(c->GetId());

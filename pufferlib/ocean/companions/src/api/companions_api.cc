@@ -655,8 +655,8 @@ static void AddSkillAndTagEvents(Companions_Env* wrapper) {
 // One AgentDefeated per defeat (subject = the agent, at its cell; effect_id /
 // effect_name = the tag S; health_source_id / tag_kind / tag_reaction = its
 // landing's; report_index), among the state changes: for an agent that is
-// not a companion it is the only event of its death, so the cap must not
-// drop it before the skills and tags.
+// not a companion it is the only death-specific event (its HealthChanged
+// says Defeated), so the cap must not drop it before the skills and tags.
 static void AddDefeatEvents(Companions_Env* wrapper) {
   auto* env = wrapper->env.get();
   const auto& defeats = env->GetLastDefeats();

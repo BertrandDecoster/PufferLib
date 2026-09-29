@@ -989,11 +989,12 @@ class BaseEnv {
 
   // The turn from its motion to its end, after its intents: MotionPhase, the
   // executed actions captured (intentions cleared), the FSMs' post-motion
-  // update (`fsm`), TagPhase, ApplyEffectHits, CommitPendingZones,
-  // ApplyTurnOutcomes. Step runs it with `fsm`; PreviewSkillOutcome without
-  // (its clone planned one use and no effect: see there). The timers are not
-  // ticked here (Step: EndStep, TickZones).
-  void ResolveTurn(bool fsm);
+  // hook (UpdateAgentFSM, empty today), TagPhase, ApplyEffectHits,
+  // CommitPendingZones, ApplyTurnOutcomes. Step runs it, and so does
+  // PreviewSkillOutcome on its clone: the preview differs by its intents
+  // only (no PreStep, no PlanTurn, one use planned; see there). The timers
+  // are not ticked here (Step: EndStep, TickZones).
+  void ResolveTurn();
 
   // Skills (see GetSkillBook)
   // Empties the per-step reports (skill uses, tags applied, reactions,

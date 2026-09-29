@@ -232,8 +232,9 @@ the step starts is latched (`LatchEndReason`), the per-step reports are cleared,
    per new down (downs read from the state), the success latched, the interruption (see
    "Interruptions"), the verdict latched
 
-`ResolveTurn(fsm)` is phases 2-6 up to `ApplyTurnOutcomes`: `Step` runs it, and so does
-`PreviewSkillOutcome` on its clone (without the FSMs; see Previews).
+`ResolveTurn()` is phases 2-6 up to `ApplyTurnOutcomes`: `Step` runs it, and so does
+`PreviewSkillOutcome` on its clone, whose turn differs by its intents only (no `PreStep`,
+no `PlanTurn`, one use planned; see Previews).
 
 **The turn's health** (`BaseEnv::GetLastTurnHealth`, `turn_`; tests: `tests/test_turn.cc`):
 nothing changes HP, alive or down DURING a step. Every hit and heal (zones, reactions,
@@ -1021,8 +1022,11 @@ Location: `companions/src/core/fsm/`
   C API, a post-step hook) `Immediate` (the default) applies a no-wind-up effect at once,
   a host primitive (its push moves at once without a zone landing; `kill` downs at
   once); `NextTurn` keeps it pending (a telegraph of 1 step: it shows `in_telegraph`
-  with `ticks_remaining` 1) for the next turn. A spawn during a step after `PlanTurn` (a
-  hook) is NextTurn too.
+  with `ticks_remaining` 1) for the next turn. A spawn while a step runs (`in_step_`:
+  from `BeginStep` to the end-of-step tick, `TickZones`) is always NextTurn: in `PreStep`,
+  before `PlanTurn`, it is planned into that very turn; later in the step (a hook), into
+  the next turn. A `PostStep` hook runs after the tick: its spawns are between steps
+  (Immediate by default).
   DodgeEnv spawns its hazards after the step with `NextTurn`: a no-wind-up hazard now
   applies on the next turn, dodgeable, instead of at once, so telegraph-0 and
   telegraph-1 hazards strike on the same turn (its builtin hazards have a wind-up and

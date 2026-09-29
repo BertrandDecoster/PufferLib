@@ -2907,6 +2907,20 @@ TEST(TestAnOutcomePreviewIsTheTurnWhereEveryoneElseStays) {
   if (got != expected) {
     throw std::runtime_error("the preview differs:\n" + got + "--- the step ---\n" + expected);
   }
+  // The intentions, captured as the step captures them
+  const auto world_agents = world.GetObjectManager().GetAllAgents();
+  const auto env_agents = env.GetObjectManager().GetAllAgents();
+  for (size_t i = 0; i < env_agents.size(); ++i) {
+    ASSERT_TRUE(world_agents[i]->GetOriginalIntention().movement ==
+                env_agents[i]->GetOriginalIntention().movement);
+    ASSERT_TRUE(world_agents[i]->GetOriginalIntention().interact ==
+                env_agents[i]->GetOriginalIntention().interact);
+    ASSERT_TRUE(world_agents[i]->GetExecutedAction().movement ==
+                env_agents[i]->GetExecutedAction().movement);
+    ASSERT_TRUE(world_agents[i]->GetExecutedAction().interact ==
+                env_agents[i]->GetExecutedAction().interact);
+  }
+  ASSERT_TRUE(world_agents[0]->GetExecutedAction().interact == InteractAction::Skill1);
   // What this test is about happened
   ASSERT_TRUE(ZonesLanded(world, world.GetObjectManager().GetAllAgents()[0]) ==
               std::vector<std::string>{"fire"});
