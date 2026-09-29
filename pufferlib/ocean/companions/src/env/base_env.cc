@@ -113,7 +113,6 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     in_step_ = other.in_step_;
     pending_zones_ = other.pending_zones_;
     // Scratch: it would point at the other env's agents
-    zone_landings_.clear();
     reaction_hits_.clear();
     reaction_affected_.clear();
     hit_agents_.clear();
@@ -200,13 +199,12 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Update FSM after movements (so FSM sees actual positions)
   UpdateAgentFSM();
 
-  // Zones land once, on everyone's final cell, before the skills' hits. From
-  // here to the end of the step the zone map is read-only: a reaction's
-  // zone_becomes waits in pending_zones_ (CommitPendingZones, below).
-  ApplyZoneTags();
-
-  // Resolve interactions (the skills' hits)
-  ResolveInteractions();
+  // The tag phase: every tag of the turn lands together (the zones on
+  // everyone's final cell, then every skill use's hits), then the weaknesses
+  // and the reactions resolve together. From here to the end of the step the
+  // zone map is read-only: a reaction's zone_becomes waits in pending_zones_
+  // (CommitPendingZones, below).
+  TagPhase(false);
 
   // Tick active effects (advance timers, apply damage/push)
   // Effect pushes move agents without zone tags: they get them next step if they stay.
@@ -738,7 +736,7 @@ void BaseEnv::GatherIntentions(const std::vector<Action>& actions) {
   auto agents = object_manager_->GetAllAgents();
   // The intents phase: every skill use is planned here, from the world as
   // the turn begins (nobody has moved yet), in agent-index order
-  // (turn_.plans, applied by ResolveSkills)
+  // (turn_.plans, their hits applied by the tag phase: TagPhase)
   turn_.plan_count = 0;
   for (size_t i = 0; i < agents.size() && i < actions.size(); ++i) {
     Agent* agent = agents[i];
@@ -1237,12 +1235,6 @@ std::vector<Position> BaseEnv::FindEmptyCells(
   }
 
   return std::vector<Position>(empty.begin(), empty.begin() + count);
-}
-
-void BaseEnv::ResolveInteractions() {
-  // FSM attack damage is handled via the Effect system (AttackState::OnEnter
-  // spawns the effect); companions act through their skills.
-  ResolveSkills();
 }
 
 // =============================================================================
@@ -1825,60 +1817,150 @@ namespace {
 const std::string kZoneCause = "zone";  // A zone landing's cause
 }  // namespace
 
-void BaseEnv::ApplyMovedZoneTags() {
-  if (cell_tags_.empty()) return;
-  assert(zone_landings_.empty() && "a zone phase inside a zone phase");
-  const std::vector<Actor*>& moved = turn_.moved;
-  for (Agent* agent : object_manager_->GetAllAgents()) {  // Agent-index order
-    if (std::find(moved.begin(), moved.end(), agent) != moved.end()) CollectZoneLanding(*agent);
+void BaseEnv::TagPhase(bool moved_only) {
+  assert(turn_.landings.empty() && "a tag phase inside a tag phase");
+  // a. Every landing of the turn, put at once (immunity, the tag, its
+  //    status; agent-local): the zones first, each affectable agent's final
+  //    cell (agent-index order)...
+  if (!cell_tags_.empty()) {
+    const std::vector<Actor*>& moved = turn_.moved;
+    for (Agent* agent : object_manager_->GetAllAgents()) {
+      if (moved_only && std::find(moved.begin(), moved.end(), agent) == moved.end()) continue;
+      CollectZoneLanding(*agent);
+    }
   }
-  ResolveZoneLandings();
+  // ...then every use's hits (caster order: UseSkill puts its tags as
+  // landings, and applies its own damage, revives and roots). Only the order
+  // of the reports.
+  for (size_t i = 0; i < turn_.plan_count; ++i) UseSkill(turn_.plans[i]);
+  // b-d. The weaknesses, the reactions, the zones' damage
+  ResolveTurnLandings();
 }
 
-void BaseEnv::ApplyZoneTags() {
-  if (cell_tags_.empty()) return;
-  assert(zone_landings_.empty() && "a zone phase inside a zone phase");
-  // a. Every affectable agent on a zone gets its tag (agent-index order: the
-  //    order of the reports, never of an outcome)
-  for (Agent* agent : object_manager_->GetAllAgents()) CollectZoneLanding(*agent);
-  ResolveZoneLandings();
+bool BaseEnv::AddLanding(Agent& agent, TagId tag, int duration, ObjectId source,
+                         const std::string& cause, TagSource kind, int zone_damage) {
+  const size_t report = last_tags_applied_.size();  // Its report entry
+  if (!PutTag(agent, tag, duration, source, cause, kind, -1)) return false;
+  TurnLanding landing;
+  landing.agent = &agent;
+  landing.report = report;
+  landing.zone_damage = zone_damage;
+  turn_.landings.push_back(landing);
+  return true;
 }
 
 void BaseEnv::CollectZoneLanding(Agent& agent) {
   if (!agent.IsAffectable()) return;
-  // A copy: the zone that lands (its damage is dealt in sub-phase d)
   const CellTag zone = GetCellTag(agent.GetPosition());
   if (zone.tag == kInvalidTag) return;
-  const size_t report = last_tags_applied_.size();  // Its report entry
-  if (!PutTag(agent, zone.tag, zone.duration, kInvalidObjectId, kZoneCause, TagSource::Zone, -1)) {
-    return;  // Immune: no landing, no damage
-  }
-  ZoneLanding landing;
-  landing.agent = &agent;
-  landing.zone = zone;
-  landing.report = report;
-  zone_landings_.push_back(landing);
+  // Immune: no landing, no damage
+  AddLanding(agent, zone.tag, zone.duration, kInvalidObjectId, kZoneCause, TagSource::Zone,
+             zone.damage);
 }
 
-void BaseEnv::ResolveZoneLandings() {
-  // b. The weaknesses (P read on the map as the step began)
-  for (const ZoneLanding& l : zone_landings_) {
-    if (l.agent->IsAffectable()) {
-      ResolveWeakness(*l.agent, l.zone.tag, kInvalidObjectId, kZoneCause, TagSource::Zone, -1);
+void BaseEnv::ResolveTurnLandings() {
+  std::vector<TurnLanding>& landings = turn_.landings;
+  constexpr size_t kNone = static_cast<size_t>(-1);
+  auto tag_of = [this](const TurnLanding& l) { return last_tags_applied_[l.report].tag; };
+  // Whether landing i is its agent's first (each agent is judged once, there)
+  auto first_of_agent = [&landings](size_t i) {
+    for (size_t j = 0; j < i; ++j) {
+      if (landings[j].agent == landings[i].agent) return false;
+    }
+    return true;
+  };
+  // The first landing on `agent` from `from` on (report order) of tag t1 or
+  // t2 (only an unspent one for `unspent`), or kNone
+  auto find = [&](size_t from, const Agent* agent, TagId t1, TagId t2, bool unspent) {
+    for (size_t j = from; j < landings.size(); ++j) {
+      const TurnLanding& l = landings[j];
+      if (l.agent != agent || (unspent && l.spent)) continue;
+      const TagId t = tag_of(l);
+      if (t == t1 || t == t2) return j;
+    }
+    return kNone;
+  };
+
+  // b. ONE weakness check per agent: its first (P, S), in its own order, with
+  //    P the zone under its final cell (the map as the step began) and S any
+  //    tag that landed on it this turn, crediting the first landing of S in
+  //    report order. Agents in the order of their first landing.
+  for (size_t i = 0; i < landings.size(); ++i) {
+    Agent& agent = *landings[i].agent;
+    if (!first_of_agent(i) || !agent.IsAffectable() || agent.GetWeakTo().empty() ||
+        IsDefeatedThisTurn(agent)) {
+      continue;
+    }
+    const TagId here = GetCellTag(agent.GetPosition()).tag;
+    if (here == kInvalidTag) continue;
+    for (const Agent::WeakTo& w : agent.GetWeakTo()) {
+      if (w.zone != here) continue;
+      const size_t by = find(i, &agent, w.tag, w.tag, false);
+      if (by == kNone) continue;
+      const TagApplication& s = last_tags_applied_[landings[by].report];
+      DefeatBy(agent, w, s.source, s.cause, s.kind, -1);
+      break;
     }
   }
-  // c. The reactions, gathered then applied. c1: every trigger (after a and
-  //    b: a defeated agent keeps its tags, so it still triggers a spread).
-  for (ZoneLanding& l : zone_landings_) l.rule = FindReaction(*l.agent, l.zone.tag);
+
+  // c. The reactions, gathered then applied. c1: every firing, on the state
+  //    after a and b (a defeated agent keeps its tags, so it still triggers).
+  //    Per agent, the rules in level order: one fires when the agent carries
+  //    both halves, neither taken by a rule that fired before it (its
+  //    originals not kept), and a landing of this turn not yet used brought
+  //    one of them. It uses every landing of its halves (a landing triggers
+  //    at most one reaction, as a host landing does). So at most one firing
+  //    per (agent, rule) per turn, whichever landings brought the halves
+  //    (either may have been carried from earlier turns). Its credit (its
+  //    source, cause and kind): the first of its unused landings in report
+  //    order that is not a zone's (the zone is the stage, the skill the
+  //    actor: a spark on a gob in the lake is the spark's), else the first
+  //    zone landing. Only the reports read it: no outcome depends on it.
+  std::vector<TurnFiring>& firings = turn_.firings;
+  std::vector<TagId>& taken = turn_.taken;
+  firings.clear();
+  for (size_t i = 0; i < landings.size() && !resolved_reactions_.empty(); ++i) {
+    if (!first_of_agent(i)) continue;
+    Agent& agent = *landings[i].agent;
+    taken.clear();
+    auto is_taken = [&taken](TagId t) {
+      return std::find(taken.begin(), taken.end(), t) != taken.end();
+    };
+    for (size_t rule = 0; rule < resolved_reactions_.size(); ++rule) {
+      const ResolvedReaction& r = resolved_reactions_[rule];
+      if (!agent.HasTag(r.a) || !agent.HasTag(r.b) || is_taken(r.a) || is_taken(r.b)) continue;
+      const size_t first = find(i, &agent, r.a, r.b, true);
+      if (first == kNone) continue;
+      size_t by = kNone;  // Its credit
+      for (size_t j = first; j < landings.size(); ++j) {
+        TurnLanding& l = landings[j];
+        if (l.agent != &agent || (tag_of(l) != r.a && tag_of(l) != r.b)) continue;
+        if (by == kNone && !l.spent && last_tags_applied_[l.report].kind != TagSource::Zone) by = j;
+        l.spent = true;
+      }
+      if (by == kNone) by = first;  // Only zones brought its halves
+      if (!r.keep_a) taken.push_back(r.a);
+      if (!r.keep_b) taken.push_back(r.b);
+      firings.push_back({by, static_cast<int>(rule)});
+    }
+  }
+  //    Fired in the order of their credited landings (report order), then of
+  //    the rules: only the order of the reports (and of two zone_becomes on
+  //    one cell: the later wins)
+  std::sort(firings.begin(), firings.end(), [](const TurnFiring& x, const TurnFiring& y) {
+    return x.landing != y.landing ? x.landing < y.landing : x.rule < y.rule;
+  });
   //    c2: every firing, its affected agents and report, nothing applied
   reaction_hits_.clear();
   const size_t first_firing = last_reactions_.size();
-  for (const ZoneLanding& l : zone_landings_) {
-    if (l.rule < 0) continue;
-    const int index = StartReaction(*l.agent, l.zone.tag, l.rule, kInvalidObjectId, kZoneCause,
-                                    TagSource::Zone, reaction_affected_);
+  for (const TurnFiring& f : firings) {
+    const TurnLanding& l = landings[f.landing];
+    // Its credited landing (last_tags_applied_ does not grow before c3)
+    const TagApplication& by = last_tags_applied_[l.report];
+    const int index = StartReaction(*l.agent, by.tag, f.rule, by.source, by.cause, by.kind,
+                                    reaction_affected_);
     if (index < 0) continue;
-    const TagId result = resolved_reactions_[static_cast<size_t>(l.rule)].result;
+    const TagId result = resolved_reactions_[static_cast<size_t>(f.rule)].result;
     for (Agent* a : reaction_affected_) {
       ReactionHit hit;
       hit.agent = a;
@@ -1890,16 +1972,17 @@ void BaseEnv::ResolveZoneLandings() {
   //    c3: the outcomes, per agent; then the zones, in firing order (pending)
   if (!reaction_hits_.empty()) ApplyReactionHits();
   for (size_t i = first_firing; i < last_reactions_.size(); ++i) ApplyZoneBecomes(i);
-  // d. The zone's own damage, last, into the turn's ledger (a defeated agent
+  // d. The zones' own damage, last, into the turn's ledger (a defeated agent
   //    included: it stays in play until the end of the turn)
-  for (const ZoneLanding& l : zone_landings_) {
-    if (l.zone.damage > 0 && l.agent->IsAffectable()) {
-      last_tags_applied_[l.report].damage = l.zone.damage;
-      HurtInStep(*l.agent, l.zone.damage);
+  for (const TurnLanding& l : landings) {
+    if (l.zone_damage > 0 && l.agent->IsAffectable()) {
+      last_tags_applied_[l.report].damage = l.zone_damage;
+      HurtInStep(*l.agent, l.zone_damage);
     }
   }
   // No Agent* outlives the phase (a LoadSnapshot re-creates the agents)
-  zone_landings_.clear();
+  landings.clear();
+  firings.clear();
   reaction_hits_.clear();
   reaction_affected_.clear();
   hit_agents_.clear();
@@ -1932,7 +2015,7 @@ void BaseEnv::AbortStep() {
     CommitPendingZones();
   }
   // A phase the throw interrupted: its scratch points at agents that may go
-  zone_landings_.clear();
+  // (turn_.landings: turn_.Clear below)
   reaction_hits_.clear();
   reaction_affected_.clear();
   hit_agents_.clear();
@@ -2128,13 +2211,10 @@ void BaseEnv::AreaCells(Position centre, SkillArea area, std::vector<Position>& 
 // turn, and a caster rooted this turn still resolves its use (usability was
 // decided with the intentions; the root blocks from the next step). Its
 // motions (its own dash / teleport, its pushes / pulls) went through the
-// motion phase with every other motion. An outcome still depends on the
-// casters' indices through one thing (TEMPORARY, see the header): the
-// reactions a landing fires at once, in caster order (the one tag phase
-// replaces that).
-void BaseEnv::ResolveSkills() {
-  for (size_t i = 0; i < turn_.plan_count; ++i) UseSkill(turn_.plans[i]);
-}
+// motion phase with every other motion; its hits land in the tag phase
+// (TagPhase: UseSkill), its tags among every landing of the turn, whose
+// weaknesses and reactions resolve together: the casters' indices order the
+// reports only.
 
 bool BaseEnv::PlanSkillUse(const Companion& caster, int slot, int rule, Direction aim,
                            SkillPlan& plan) const {
@@ -2215,18 +2295,21 @@ void BaseEnv::UseSkill(SkillPlan& plan) {
   }
   auto self_spared = [&](size_t i, bool self_flag) { return agents[i] == caster && !self_flag; };
 
-  // 2. Tags (area and path). Nobody becomes unaffectable during a step
-  // (downs and deaths wait for the end of the turn: a caster its landing zone
-  // takes to 0 still gets its own use); an agent that is not (a host call in
-  // a hook) gets nothing, and the use reports nothing on it.
+  // 2. Tags (area and path), put as landings of the tag phase (immunity, the
+  // tag, its status; TagPhase then resolves every landing's weaknesses and
+  // reactions together). Nobody becomes unaffectable during a step (downs
+  // and deaths wait for the end of the turn: a caster its landing zone takes
+  // to 0 still gets its own use); an agent that is not (a host call in a
+  // hook) gets nothing, and the use reports nothing on it.
   for (size_t i = 0; i < agents.size(); ++i) {
     if (skill.tags.empty() || self_spared(i, skill.self_tags) || !agents[i]->IsAffectable()) {
       continue;
     }
     bool landed = false;  // An agent immune to all of them gets none
     for (const SkillTagSpec& t : skill.tags) {
-      landed |= LandTag(*agents[i], t.tag, t.duration, caster->GetId(), skill.name,
-                        TagSource::Skill);
+      if (t.duration == 0) continue;  // Lands nothing, so interns nothing
+      landed |= AddLanding(*agents[i], tags_.Intern(t.tag), t.duration, caster->GetId(),
+                           skill.name, TagSource::Skill, 0);
     }
     if (landed) plan.did[i].effects |= kSkillEffectTags;
   }
@@ -2304,11 +2387,10 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
     comp->SetDirection(aim);  // GatherIntentions: the movement aims
     world->AddSkillPlan(*comp, slot, world->RuleIndex(rule), aim);
     // The motion phase with that use's motions only (everyone else stays),
-    // the zones of those it moved, then its hits
+    // then the tag phase: the zones of those it moved, and its hits
     for (Agent* agent : world->object_manager_->GetAllAgents()) agent->ClearIntention();
     world->MotionPhase();
-    world->ApplyMovedZoneTags();
-    world->ResolveSkills();
+    world->TagPhase(true);
   }
   // The zones the use sets at the end of the step (its reactions' cells),
   // committed as the step's end would, then the turn's end (health, downs,

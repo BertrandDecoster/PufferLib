@@ -215,7 +215,7 @@ static BaseEnv::TurnHealth TurnOf(const BaseEnv& env, const Agent* agent) {
 
 // The oil + burning setup of the damage tests: `a` on hot oil (1 damage per
 // landing) carrying burning, the rule oil + burning -> ash dealing 1. In the
-// zone phase the oil lands (1) and the reaction fires (1).
+// tag phase the oil lands (1) and the reaction fires (1).
 static void BurningOnHotOil(SynchroEnv& env, Agent* a) {
   Require(env.SetReactions({Rule("oil", "burning", "ash", 1)}), "reactions");
   Require(env.DefineZone("oil", Hurting(1)), "oil");
@@ -483,7 +483,7 @@ TEST(TestAnAgentPushedOntoItsWeaknessIsDefeatedAndStillGetsItsResult) {
 }
 
 // Pushed, then defeated, then still hit: the gust pushes the imp onto the
-// lake (the motion phase), the zone phase lands the lake on its final cell
+// lake (the motion phase), the tag phase lands the lake on its final cell
 // (weak to wet there: defeated); still in play, the gust's hits then tag it
 // (and report the push that moved it); it dies at the end of the turn. (The
 // zone it began the turn on, dry, lands nothing.)
@@ -743,8 +743,12 @@ static std::string TagName(const BaseEnv& env, TagId tag) {
 
 // The last step's reports and the world it left, by ROLE (ids and agent
 // indices dropped), the lines sorted: two worlds that differ only in their
-// agents' order must give the same text.
-static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles) {
+// agents' order must give the same text. Without `credits`, what a reaction
+// credits (its triggering tag, its results' source and cause: the first
+// matching skill landing in report order, a report-only effect of the
+// indices) is left out.
+static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles,
+                             bool credits = true) {
   auto role = [&roles](ObjectId id) {
     auto it = roles.find(id);
     return it == roles.end() ? std::string("-") : it->second;
@@ -764,14 +768,16 @@ static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::s
   }
   for (const auto& t : env.GetLastTagsApplied()) {
     std::ostringstream out;
+    const bool credit = credits || t.kind != BaseEnv::TagSource::Reaction;
     out << "tag " << role(t.agent) << " " << TagName(env, t.tag) << " " << t.duration << " "
-        << role(t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
-        << static_cast<int>(t.kind) << " " << (t.reaction >= 0);
+        << (credit ? role(t.source) + " " + t.cause : std::string("credit")) << " " << t.fresh
+        << " " << t.damage << " " << static_cast<int>(t.kind) << " " << (t.reaction >= 0);
     lines.push_back(out.str());
   }
   for (const auto& r : env.GetLastReactions()) {
     lines.push_back("reaction " + std::to_string(r.rule) + " " + role(r.trigger) + " " +
-                    TagName(env, r.tag) + " " + std::to_string(r.affected.size()));
+                    (credits ? TagName(env, r.tag) : std::string("credit")) + " " +
+                    std::to_string(r.affected.size()));
   }
   for (const auto& d : env.GetLastDefeats()) lines.push_back("defeat " + role(d.agent));
   for (ObjectId id : env.GetLastDowns()) lines.push_back("down " + role(id));
@@ -1790,6 +1796,346 @@ TEST(TestSwappingIndicesChangesNoMotionOutcome) {
   if (traces[0] != traces[1]) {
     throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
   }
+}
+
+// =============================================================================
+// One tag phase: every tag of the turn lands together, reactions resolve
+// together
+// =============================================================================
+
+// Throws unless the two traces are the same
+static void RequireSameTraces(const std::string traces[2]) {
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
+  }
+}
+
+// A ground skill landing `tag` on the cell `range` ahead (no motion), put in
+// the companion's slot 0 as `name`
+static void GiveStorm(SynchroEnv& env, int companion, const char* name, const char* tag,
+                      int range) {
+  SkillConfig s;
+  s.name = name;
+  s.targeting = SkillTargeting::Ground;
+  s.range = range;
+  s.tags = {{tag, kPermanentTag}};
+  env.GetMutableSkillBook().Define(s);
+  Require(env.SetCompanionSkill(AgentAt(env, companion)->GetId(), 0, name), name);
+}
+
+// A's douse (wet) and B's spark (electrified) land on the gob in one turn:
+// every tag lands, then the reactions resolve, so the combo fires once, in
+// both index orders. Its credit is the first matching skill landing in
+// report order (the lower caster index's: report-only), the outcome the same.
+TEST(TestBothHalvesOfAComboLandingTheSameTurnReactOnce) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    const int d = swapped ? 1 : 0, s = 1 - d;
+    Require(env.SetReactions({Rule("wet", "electrified", "shocked", 1)}), "reactions");
+    GiveBolt(env, d, "douse", "wet");
+    GiveBolt(env, s, "spark", "electrified");
+    Agent* douse = Place(env, d, {4, 1});  // Right: (4,2), (4,3), the gob
+    Agent* spark = Place(env, s, {1, 4});  // Down: (2,4), (3,4), the gob
+    Agent* gob = AddEnemy(env, {4, 4});
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(d)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(s)] = Use(MovementAction::Down);
+    env.Step(actions);
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+    const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
+    ASSERT_EQ(r.trigger, gob->GetId());
+    const Agent* first = AgentAt(env, 0);  // The first skill landing in report order
+    ASSERT_EQ(r.source, first->GetId());
+    ASSERT_EQ(r.tag, Id(env, first == douse ? "wet" : "electrified"));
+    ASSERT_TRUE(r.kind == BaseEnv::TagSource::Skill);
+    ASSERT_TRUE(Has(env, gob, "shocked"));
+    ASSERT_FALSE(Has(env, gob, "wet"));
+    ASSERT_FALSE(Has(env, gob, "electrified"));
+    ASSERT_EQ(gob->GetHealth(), 4);
+    const auto& landed = env.GetLastTagsApplied();
+    ASSERT_EQ(landed.size(), static_cast<size_t>(3));  // Both halves, then the result
+    ASSERT_TRUE(landed.at(2).kind == BaseEnv::TagSource::Reaction);
+    traces[swapped] =
+        RoleTrace(env, {{douse->GetId(), "D"}, {spark->GetId(), "S"}, {gob->GetId(), "G"}},
+                  false);
+  }
+  RequireSameTraces(traces);
+}
+
+// The gob carries wet; a spark (electrified) and a frost bolt (chilled) land
+// on it in one turn. Both would pair with its wet: the first matching rule in
+// level order fires (wet + electrified), and takes the wet the second needed.
+// Casters used to resolve one by one: the rule depended on who came first.
+TEST(TestTheOrderOfTwoCastersChangesNoReaction) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    const int s = swapped ? 1 : 0, f = 1 - s;
+    Require(env.SetReactions({Rule("wet", "electrified", "shocked", 1),
+                              Rule("wet", "chilled", "stunned", 1)}),
+            "reactions");
+    GiveBolt(env, s, "spark", "electrified");
+    GiveBolt(env, f, "frost", "chilled");
+    Agent* spark = Place(env, s, {4, 1});  // Right: the gob
+    Agent* frost = Place(env, f, {1, 4});  // Down: the gob
+    Agent* gob = AddEnemy(env, {4, 4});
+    Require(env.ApplyTagTo(gob->GetId(), "wet", kPermanentTag), "wet");
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(s)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(f)] = Use(MovementAction::Down);
+    env.Step(actions);
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+    ASSERT_EQ(env.GetLastReactions().at(0).rule, 0);
+    ASSERT_EQ(env.GetLastReactions().at(0).source, spark->GetId());
+    ASSERT_TRUE(Has(env, gob, "shocked"));
+    ASSERT_FALSE(Has(env, gob, "stunned"));
+    ASSERT_TRUE(Has(env, gob, "chilled"));  // Landed, nothing left to pair with
+    ASSERT_FALSE(Has(env, gob, "wet"));
+    ASSERT_FALSE(Has(env, gob, "electrified"));
+    ASSERT_EQ(gob->GetHealth(), 4);
+    traces[swapped] =
+        RoleTrace(env, {{spark->GetId(), "S"}, {frost->GetId(), "F"}, {gob->GetId(), "G"}});
+  }
+  RequireSameTraces(traces);
+}
+
+// The gob stands in a lake that was just set (it carries no wet yet): the
+// lake lands wet and a spark lands electrified in the same turn, and they
+// react (spreading over the lake: the imp in it too, once). The credit is
+// the first matching landing that is not a zone's (the zone is the stage,
+// the skill the actor), though the lake's comes first in report order.
+TEST(TestAZoneAndASkillLandingTogetherReact) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("wet", "electrified", "shocked", 1, true)}), "reactions");
+  GiveBolt(env, 0, "spark", "electrified");
+  Agent* spark = Place(env, 0, {4, 1});  // Right: the gob
+  Agent* gob = AddEnemy(env, {4, 4});
+  Agent* imp = AddEnemy(env, {4, 5});
+  for (Position p : {Position{4, 4}, Position{4, 5}}) Require(env.SetCellTag(p, "wet"), "lake");
+  env.Step(With(env, 0, Use(MovementAction::Right)));
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
+  ASSERT_EQ(r.trigger, gob->GetId());
+  ASSERT_EQ(r.tag, Id(env, "electrified"));
+  ASSERT_TRUE(r.kind == BaseEnv::TagSource::Skill);
+  ASSERT_EQ(r.source, spark->GetId());
+  ASSERT_EQ(r.cause, std::string("spark"));
+  ASSERT_TRUE(r.spread);
+  ASSERT_EQ(r.affected.size(), static_cast<size_t>(2));
+  for (Agent* a : {gob, imp}) {
+    ASSERT_TRUE(Has(env, a, "shocked"));
+    ASSERT_FALSE(Has(env, a, "wet"));
+    ASSERT_EQ(a->GetHealth(), 4);
+  }
+  const auto& landed = env.GetLastTagsApplied();  // Zones, the spark, the results
+  ASSERT_EQ(landed.size(), static_cast<size_t>(5));
+  ASSERT_TRUE(landed.at(0).kind == BaseEnv::TagSource::Zone);
+  ASSERT_TRUE(landed.at(1).kind == BaseEnv::TagSource::Zone);
+  ASSERT_TRUE(landed.at(2).kind == BaseEnv::TagSource::Skill);
+  ASSERT_TRUE(landed.at(3).kind == BaseEnv::TagSource::Reaction);
+  ASSERT_TRUE(landed.at(4).kind == BaseEnv::TagSource::Reaction);
+}
+
+// A weakness reads the zone under the agent's FINAL cell (the map as the turn
+// began): the imp, weak to (wet, electrified), is pushed from dry land into
+// the lake as a storm electrifies the lake cell: defeated (the storm's
+// landing credited)
+TEST(TestAWeaknessReadsTheZoneUnderTheFinalCell) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  GiveStorm(env, 0, "storm", "electrified", 2);
+  GiveGust(env, 1);
+  Agent* storm = Place(env, 0, {3, 1});  // Storms (3,3)
+  Place(env, 1, {3, 5});                 // Gusts: the imp on its left ring cell, to (3,3)
+  Agent* imp = AddEnemy(env, {3, 4}, 5);
+  Require(env.SetCellTag({3, 3}, "wet"), "lake");
+  Require(env.SetWeaknesses(imp->GetId(), {{"wet", "electrified"}}), "weak_to");
+  std::vector<Action> actions = Stays(env);
+  actions[0] = Use(MovementAction::Right);
+  actions[1] = Use(MovementAction::Stay);
+  env.Step(actions);
+  ASSERT_TRUE(imp->GetPosition() == (Position{3, 3}));
+  ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+  const BaseEnv::DefeatReport& d = env.GetLastDefeats().at(0);
+  ASSERT_EQ(d.agent, imp->GetId());
+  ASSERT_EQ(d.zone, Id(env, "wet"));
+  ASSERT_EQ(d.tag, Id(env, "electrified"));
+  ASSERT_TRUE(d.kind == BaseEnv::TagSource::Skill);
+  ASSERT_EQ(d.source, storm->GetId());
+  ASSERT_TRUE(Has(env, imp, "wet"));  // The lake landed on its final cell
+  ASSERT_FALSE(imp->IsAlive());
+}
+
+// Two fireballs on the oiled gob in one turn: one firing per (agent, rule)
+// per turn, so the oil is ignited once (each on the oil takes 1, not 2)
+TEST(TestTwoCastersIgniteTheOilOnce) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ReactionRule ignite = Rule("oil", "burning", "ablaze", 1, true);
+  ignite.keep = {"oil"};
+  ignite.zone_becomes = "fire";
+  Require(env.SetReactions({ignite}), "reactions");
+  GiveBolt(env, 0, "fireball", "burning");
+  GiveBolt(env, 1, "fireball", "burning");
+  Place(env, 0, {2, 1});  // Right: (2,2), (2,3), the gob
+  Place(env, 1, {5, 4});  // Up: (4,4), (3,4), the gob
+  Agent* gob = AddEnemy(env, {2, 4});
+  Agent* cook = AddEnemy(env, {2, 6});
+  const std::vector<Position> oil = {{2, 4}, {2, 5}, {2, 6}};
+  for (Position p : oil) Require(env.SetCellTag(p, "oil"), "oil");
+  std::vector<Action> actions = Stays(env);
+  actions[0] = Use(MovementAction::Right);
+  actions[1] = Use(MovementAction::Up);
+  env.Step(actions);
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
+  ASSERT_EQ(r.trigger, gob->GetId());
+  ASSERT_EQ(r.affected.size(), static_cast<size_t>(2));
+  ASSERT_EQ(r.cells.size(), oil.size());
+  ASSERT_EQ(gob->GetHealth(), 4);
+  ASSERT_EQ(cook->GetHealth(), 4);
+  for (Position p : oil) ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "fire"));
+}
+
+// The reports of the tag phase: every zone landing (agent-index order), then
+// every skill landing (caster index order, each use's hits in its order),
+// then the results. The spark's landing on the wet gob no longer fires before
+// the douse lands on the imp.
+TEST(TestTheTagPhaseReportsZonesThenSkillsByCasterIndex) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("wet", "electrified", "shocked")}), "reactions");
+  GiveBolt(env, 0, "spark", "electrified");
+  GiveBolt(env, 1, "douse", "wet");
+  Agent* spark = Place(env, 0, {4, 1});  // Right: the gob
+  Agent* douse = Place(env, 1, {1, 4});  // Down: the imp first
+  Agent* gob = AddEnemy(env, {4, 4});
+  Agent* imp = AddEnemy(env, {3, 4});
+  Require(env.ApplyTagTo(gob->GetId(), "wet", kPermanentTag), "wet");
+  for (Position p : {Position{4, 1}, Position{1, 4}}) Require(env.SetCellTag(p, "mud"), "mud");
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Down), kStay, kStay});
+  const auto& landed = env.GetLastTagsApplied();
+  ASSERT_EQ(landed.size(), static_cast<size_t>(5));
+  const std::vector<std::pair<ObjectId, BaseEnv::TagSource>> expected = {
+      {spark->GetId(), BaseEnv::TagSource::Zone},
+      {douse->GetId(), BaseEnv::TagSource::Zone},
+      {gob->GetId(), BaseEnv::TagSource::Skill},
+      {imp->GetId(), BaseEnv::TagSource::Skill},
+      {gob->GetId(), BaseEnv::TagSource::Reaction}};
+  for (size_t i = 0; i < expected.size(); ++i) {
+    ASSERT_EQ(landed.at(i).agent, expected[i].first);
+    ASSERT_TRUE(landed.at(i).kind == expected[i].second);
+  }
+  ASSERT_EQ(landed.at(2).source, spark->GetId());
+  ASSERT_EQ(landed.at(3).source, douse->GetId());
+  ASSERT_EQ(landed.at(4).reaction, 0);
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastReactions().at(0).source, spark->GetId());
+}
+
+// Two firings on one agent in one turn (a + b, c + d: independent pairs, each
+// brought by a caster): their results land together, then ONE weakness check
+// over them: X, weak to (mud, rc) then (mud, ra), is defeated by rc (its
+// first weakness), whatever the casters' order. Only the rc firing reports it
+// defeated.
+TEST(TestSkillReactionResultsGoThroughOneWeaknessCheck) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    const int b = swapped ? 1 : 0, d = 1 - b;
+    Require(env.SetReactions({Rule("pa", "pb", "ra"), Rule("pc", "pd", "rc")}), "reactions");
+    GiveBolt(env, b, "bee", "pb");
+    GiveBolt(env, d, "dee", "pd");
+    Agent* bee = Place(env, b, {4, 1});  // Right: X
+    Agent* dee = Place(env, d, {1, 4});  // Down: X
+    Agent* x = AddEnemy(env, {4, 4});
+    Require(env.SetCellTag({4, 4}, "mud"), "mud");
+    for (const char* t : {"pa", "pc"}) Require(env.ApplyTagTo(x->GetId(), t, kPermanentTag), t);
+    Require(env.SetWeaknesses(x->GetId(), {{"mud", "rc"}, {"mud", "ra"}}), "weak_to");
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(b)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(d)] = Use(MovementAction::Down);
+    env.Step(actions);
+    const auto& fired = env.GetLastReactions();
+    ASSERT_EQ(fired.size(), static_cast<size_t>(2));
+    ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+    const BaseEnv::DefeatReport& defeat = env.GetLastDefeats().at(0);
+    ASSERT_EQ(defeat.agent, x->GetId());
+    ASSERT_EQ(defeat.tag, Id(env, "rc"));
+    ASSERT_TRUE(defeat.kind == BaseEnv::TagSource::Reaction);
+    ASSERT_EQ(fired.at(static_cast<size_t>(defeat.reaction)).rule, 1);
+    for (const auto& r : fired) {
+      ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
+      ASSERT_TRUE(r.affected.at(0).result_landed);
+      ASSERT_EQ(r.affected.at(0).defeated, r.rule == 1);
+    }
+    ASSERT_TRUE(Has(env, x, "ra"));
+    ASSERT_TRUE(Has(env, x, "rc"));
+    ASSERT_FALSE(x->IsAlive());
+    traces[swapped] =
+        RoleTrace(env, {{bee->GetId(), "B"}, {dee->GetId(), "D"}, {x->GetId(), "X"}});
+  }
+  RequireSameTraces(traces);
+}
+
+// A status landed this turn acts from the next turn: the snared gob (Rooted,
+// 1 step) and the caster, stunned this turn by its ally's frost bolt
+// (chilled: Stunned, 1 step), still acts this turn (its use was planned as
+// the turn began); next turn the gob cannot walk and the caster stays; the
+// turn after, both walk.
+TEST(TestASkillsRootActsFromTheNextTurn) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig snare;
+  snare.name = "snare";
+  snare.targeting = SkillTargeting::Ground;
+  snare.range = 2;
+  snare.root_steps = 1;
+  env.GetMutableSkillBook().Define(snare);
+  Agent* caster = Place(env, 0, {3, 1});  // Snares (3,3)
+  Require(env.SetCompanionSkill(caster->GetId(), 0, "snare"), "snare");
+  GiveBolt(env, 1, "frost", "chilled");
+  Place(env, 1, {6, 1});  // Up: (5,1), (4,1), the caster
+  Require(env.SetTagStatuses({{"chilled", StatusType::Stunned, 1}}), "tag statuses");
+  Agent* gob = AddEnemy(env, {3, 3});
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Up), kStay});
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));  // The caster's too
+  ASSERT_TRUE(gob->IsRooted());
+  ASSERT_TRUE(caster->IsStunned());
+  env.Step({Walk(MovementAction::Down), kStay, Walk(MovementAction::Right)});
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 1}));
+  ASSERT_TRUE(gob->GetPosition() == (Position{3, 3}));
+  env.Step({Walk(MovementAction::Down), kStay, Walk(MovementAction::Right)});
+  ASSERT_TRUE(caster->GetPosition() == (Position{4, 1}));
+  ASSERT_TRUE(gob->GetPosition() == (Position{3, 4}));
+}
+
+// Two sparks on the wet gob, the rule keeping the wet: one firing per (agent,
+// rule) per turn, whichever landings brought the halves (1 damage, not 2)
+TEST(TestOneFiringPerAgentPerRulePerTurn) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ReactionRule shock = Rule("wet", "electrified", "shocked", 1);
+  shock.keep = {"wet"};
+  Require(env.SetReactions({shock}), "reactions");
+  GiveBolt(env, 0, "spark", "electrified");
+  GiveBolt(env, 1, "spark", "electrified");
+  Place(env, 0, {4, 1});  // Right: the gob
+  Place(env, 1, {1, 4});  // Down: the gob
+  Agent* gob = AddEnemy(env, {4, 4});
+  Require(env.ApplyTagTo(gob->GetId(), "wet", kPermanentTag), "wet");
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Down), kStay});
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  ASSERT_EQ(TurnOf(env, gob).damage, 1);
+  ASSERT_EQ(gob->GetHealth(), 4);
+  ASSERT_TRUE(Has(env, gob, "shocked"));
+  ASSERT_TRUE(Has(env, gob, "wet"));
+  ASSERT_FALSE(Has(env, gob, "electrified"));
 }
 
 // =============================================================================

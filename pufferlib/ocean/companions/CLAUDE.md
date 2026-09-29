@@ -170,7 +170,7 @@ The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque
 host's business. But the env simulates every mechanic: targeting, motion, tags, roots,
 cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 `core/context_skill.{h,cc}`, `env/skill_motion.{h,cc}`, `env/base_env.cc` (`PlanSkillUse`,
-`ResolveSkillTargets`, `MotionPhase`, `ResolveSkills`, `UseSkill`,
+`ResolveSkillTargets`, `MotionPhase`, `TagPhase`, `UseSkill`,
 `PreviewSkill`, `EffectiveSkill`, `Affects`).
 
 **Step order** (`BaseEnv::Step`):
@@ -180,16 +180,19 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
    the context rules read once, its cells and targets, its cooldown spent; see "Multiple
    casters") → the motion phase (`MotionPhase`, in layers: teleports, dashes, walks,
    then pushes / pulls on whoever stands on their cells; see "The motion phase")
-3. `ApplyZoneTags`, the zone phase (every affectable agent on a zone cell: alive, not
-   downed; one landing each, on its FINAL cell), in sub-phases, each over ALL the landings: a. immunity,
-   the tag and its status; b. weaknesses; c. reactions, gathered then applied (every
-   trigger found, every firing's affected agents computed, then the outcomes applied
-   per agent); d. the zone's damage on those still affectable (see Zones and
-   Reactions). From here to the end of the step the zone map is READ-ONLY: a
-   reaction's `zone_becomes` waits in a pending buffer
-4. `ResolveInteractions` → `ResolveSkills`: every use's hits (`UseSkill`), in caster
-   order (see "Resolution of one skill")
-5. Effects tick, `CommitPendingZones` (the step's reaction zones, in the order they were
+3. `TagPhase`, the tag phase: EVERY tag of the turn lands together, in sub-phases,
+   each over ALL the landings (`turn_.landings`): a. every landing put (immunity, the
+   tag and its status): the zones (every affectable agent on a zone cell: alive, not
+   downed; one landing each, on its FINAL cell), then every use's hits (`UseSkill`, in
+   caster order: its tags as landings, and its own damage, revives and roots, see
+   "Resolution of one skill"); then `ResolveTurnLandings`: b. ONE weakness check per
+   agent; c. reactions, gathered then applied (every firing found, every firing's
+   affected agents computed, then the outcomes applied per agent); d. the zones' damage
+   on those still affectable (see Zones and Reactions). Statuses landed here (a skill's
+   root, a tag status) act from the NEXT turn (the intents are read before). From here
+   to the end of the step the zone map is READ-ONLY: a reaction's `zone_becomes` waits
+   in a pending buffer
+4. Effects tick, `CommitPendingZones` (the step's reaction zones, in the order they were
    recorded: a later write to the same cell wins), `ApplyTurnOutcomes` (the turn's
    health, see below), `EndStep` on every agent (tags,
    statuses, cooldowns tick), `TickZones` (zone lifetimes tick, expired zones become
@@ -222,21 +225,22 @@ it spawns). A step that throws applies its ledger and planned revives (`AbortSte
 agent-local, no report). `PreviewSkillOutcome` applies them on its clone.
 
 **A step reads one zone map** (`BaseEnv::pending_zones_`): the map as the step began
-(after `PreStep`) is the map every read of the step sees: zone landings (the zone phase
-and a skill motion's landing), weaknesses (P), spread regions. A reaction's
+(after `PreStep`) is the map every read of the step sees: zone landings (the tag phase,
+on each agent's final cell), weaknesses (P), spread regions. A reaction's
 `zone_becomes` during a step is recorded, and the map changes at its end, before the
 timers (stored n + 1, so it covers its n next steps): a zone a reaction creates first
-lands NEXT step. So the order of the agents does not change an outcome of the zone
-phase, only the order of the reports, with one exception: two firings writing different
-`zone_becomes` to the same cells, the later one (firing order: trigger agent index)
-wins. Report-only effects of the order: a result's `DefeatReport::reaction` names the
-first firing whose result defeated, only the first of identical result landings on an
+lands NEXT step. So neither the agents' nor the casters' order changes an outcome of
+the tag phase, only the order of the reports, with one exception: two firings writing
+different `zone_becomes` to the same cells, the later one (firing order: credited
+landing in report order) wins. Report-only effects of the order: a reaction's credit
+between two casters (the lower index), a result's `DefeatReport::reaction` names the
+first firing whose result defeated, only the first of identical landings on an
 agent is `fresh`. And it cannot cascade within a step: a spread fires
-once per trigger (N triggers in one region = N firings, each reaching everyone), and
+once per trigger agent (N triggers in one region = N firings, each reaching everyone), and
 waits a step before its zone lands. Between two steps (a host's `ApplyTagTo`) there is
 no phase: a landing resolves at once and its `zone_becomes` applies at once. A host
 call from a hook DURING a step: `SetCellTag` writes at once (in `PreStep`, before the
-zone phase, it is part of the map the step reads), while an `ApplyTagTo` sees
+tag phase, it is part of the map the step reads), while an `ApplyTagTo` sees
 `in_step_` set, so its reaction's `zone_becomes` waits for the end of the step like any
 other. A step that throws commits what it recorded (`AbortStep`; a map cleared during
 the step drops them instead: the abort runs while the throw unwinds and must not
@@ -326,7 +330,7 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
   `motion_distance`, the one thing a pull takes into the centre, as offsets), the
   revives (allies down as the turn began)) → the motion phase: the caster's dash /
   teleport and the forced moves, with every other motion of the turn (see "The motion
-  phase") → the zone phase → `UseSkill`: the hits land on the planned cells, on whoever
+  phase") → the tag phase → `UseSkill`: the hits land on the planned cells, on whoever
   stands there after the motion phase, plus whom its own push / pull moved (walking out
   dodges, walking in gets
   hit; a projectile's line is traced once, as the turn begins: its stop cell is fixed, an
@@ -347,13 +351,14 @@ another use pulls it this turn, and its cooldown is spent when the use is planne
 use happened, whatever it then reaches; a step that throws before the use applies keeps
 it spent). A caster down as the turn begins cannot cast; one going down this turn still
 casts. A caster rooted this turn still resolves its skill (the root blocks from the next
-step). The indices order the reports (uses in caster index order); the motion phase
-depends on them only through its ties (two motions of one layer onto one cell: the
-lower index), and
-they still change outcomes in one TEMPORARY way (until the one tag phase): a skill's
-landing fires its reaction at once (`LandTag`), in caster order: an agent carrying wet
-hit by electrified (index 0) and chilled (index 1) reacts by the rule the first landing
-completes.
+step). The indices order the reports (uses in caster index order; a reaction's credit
+between two casters' landings: the lower index). What still depends on the indices, as
+an outcome: the motion phase's ties (two motions of one layer onto one cell: the lower
+index; its cycle tie-break), two reactions writing different `zone_becomes` to one cell
+(the later firing wins), and effects (their statuses and pushes still resolve in the
+effect tick, one by one). Skill landings react in the tag phase with every landing of
+the turn: an agent carrying wet hit by electrified and chilled reacts by the same rule
+whoever casts first (see Reactions).
 
 A dash / teleport losing its landing falls back along its line and keeps its planned
 area, centre and whole path (a `tag_path` dash still hits every planned path cell).
@@ -414,8 +419,8 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   onto its cells, in cell order (nobody moved: the preview's agents and effects)
 - `PreviewSkillOutcome(caster id, slot, aim)`: what the use would DO, reports included:
   resolved on a `Clone()` (nothing in the env changes or is interned) by the step's own
-  code for a use (`AddSkillPlan`, the motion phase with only its motions, then
-  `ResolveSkills`), as the next step would resolve it were it the step's only change:
+  code for a use (`AddSkillPlan`, the motion phase with only its motions, then the tag
+  phase: `TagPhase`), as the next step would resolve it were it the step's only change:
   nobody else moves, zones land only on those its motions moved (their final cell;
   TEMPORARY until the preview runs a whole turn: a caster standing in a fire gets no
   landing in its preview), no
@@ -478,7 +483,8 @@ tests: `tests/test_zones.cc`):
   timer level data or the host sets is capped, `IsValidTimer`, so the n + 1 of a timer
   set during a step never overflows), a negative damage
 - Landed (cause `"zone"`, source -1) once per turn on every affectable agent standing
-  there after the motion phase: its FINAL cell, moved or not (before the skills' hits;
+  there after the motion phase: its FINAL cell, moved or not (in the tag phase, with the
+  skills' hits, reported before them;
   the cell it began on and the cells a dash or a push crosses land nothing). Effect
   pushes (still outside the motion phase) do not apply zones
 - **One landing, in order** (see Reactions): immunity (nothing lands, no damage), the
@@ -488,12 +494,13 @@ tests: `tests/test_zones.cc`):
   and keeps the tag). Reported as the landing's `damage` (the zone's raw share, before
   Marked; 0 for a harmless zone).
   The downed and the dead get no landing at all
-- **The zone phase** (`ApplyZoneTags` → `CollectZoneLanding` per agent, then
-  `ResolveZoneLandings`) runs those steps as sub-phases, each over every landing (agent
-  order only orders the reports): a. every agent's landing (immunity, tag, status);
-  b. the weaknesses; c. the reactions, gathered then applied: c1 every landing's
-  trigger (the first rule pairing the landed tag with one the agent carries, on the
-  state after a and b); every trigger fires, a weakness-defeated one included (it
+- **The tag phase** (`TagPhase` → `CollectZoneLanding` per agent and `UseSkill` per
+  use, then `ResolveTurnLandings`) runs those steps as sub-phases, each over every
+  landing of the turn, the zones' and the skills' together (agent and caster order
+  only order the reports): a. every landing (immunity, tag, status); b. ONE weakness
+  check per agent (see Reactions); c. the reactions, gathered then applied: c1 every
+  firing (per agent, the rules in level order on the state after a and b, see
+  Reactions); a weakness-defeated agent triggers too (it
   stays in play until the end of the turn); c2 every firing's affected
   agents (the phase-start region's affectable agents, or the trigger alone) and its
   report, nothing applied (`StartReaction`); c3 the outcomes, agent-local
@@ -502,14 +509,15 @@ tests: `tests/test_zones.cc`):
   then ONE weakness check over the results that landed (its first `(P, S)` with P under
   it and S among them: defeated, every firing whose result is S reports `defeated`),
   then each firing's damage into the turn's ledger, each firing reporting its raw
-  share; then the zones, in firing order. No firing's outcome cancels
+  share; then the zones, in firing order (credited landing in report order). No firing's outcome cancels
   another's (a firing that would down B does not stop B's own reaction), so the
   agents' final state does not depend on the order (the zones and the reports: see
   "A step reads one zone map"); d. each zone's damage. The outcome preview runs the
-  same phases over the landings of those its motions moved (`ApplyMovedZoneTags`)
+  same phase over the zone landings of those its motions moved and its use's hits
+  (`TagPhase(true)`)
 - **A step reads one map** (see Step order): a zone a reaction creates during a step
   (`zone_becomes`) is written at the end of the step and first lands next step, tag and
-  damage; everything in the step (the zone phase, weaknesses, spread regions) reads the
+  damage; everything in the step (the tag phase, weaknesses, spread regions) reads the
   zone as the step began
 - A caster its landing zone takes to 0 still gets its own use (tags, damage: reported)
   and the others it affects are tagged, hurt, rooted, pushed; it goes down at the end of
@@ -551,10 +559,30 @@ a status.
      stays in play until the end of the turn (reaction outcomes, zone damage, pushes).
      P is asked of the map, never of
      the tags it carries: a wet imp on dry land is not defeated by a spark; an oiled gob
-     walking into fire is not defeated by (oil, burning) (fire is not oil)
+     walking into fire is not defeated by (oil, burning) (fire is not oil). In a step:
+     ONE check per agent per turn, its first `(P, S)` in its own order with P the zone
+     under its FINAL cell (the map as the step began) and S ANY tag that landed on it this
+     turn (a zone's, a skill's: pushed into the lake and electrified in one turn, weak to
+     (wet, electrified): defeated), crediting the first landing of S in report order; a
+     reaction's results get their own single check
   4. reaction (never for a reaction's result: no chains): the FIRST rule, in level
      order, with the tag as `a` and `b` carried, or the reverse (unordered). One reaction
-     per landing. Who is affected: when the rule `spread`s and the agent stands on a cell
+     per landing. In a step, every landing of the turn is put first, then per agent the
+     rules are tried in level order on its tags: a rule fires when the agent carries both
+     halves, neither taken by an earlier firing on that agent (its originals not kept),
+     and at least one landing of either half this turn is unused; a firing uses every
+     landing of its halves. So at most one firing per (agent, rule) per turn, whichever
+     landings brought the two halves (either may be carried from earlier turns; both
+     halves landing the same turn, from two casters or a zone and a skill, fire once).
+     Example: a wet agent hit by electrified and chilled in one turn (rules
+     `wet + electrified -> shocked`, then `wet + chilled -> stunned`) fires the first
+     rule only, which takes the wet the second needed, whoever casts first. Its credit
+     (the report's `tag`, `source`, `cause`, `kind`, and its results'): the first unused
+     landing of its halves in report order that is NOT a zone's, else the first zone
+     one: the zone is the stage, the skill the actor (a spark on a gob standing in the
+     lake is the spark's, though the lake re-lands wet first; between two casters, the
+     lower index). Only the reports read it: no outcome depends on it.
+     Who is affected: when the rule `spread`s and the agent stands on a cell
      whose zone provides `a` or `b`, every affectable agent on that zone's connected
      region (4-neighbour flood fill over the cells carrying that zone tag, from the
      agent's cell), in agent-index order, the trigger included; otherwise the agent
@@ -571,12 +599,12 @@ a status.
      step (recorded after every outcome; `ReactionReport::cells` lists the cells); a
      host landing between steps changes it at once
   5. (a zone's landing) the zone's damage, see Zones
-- Whatever a skill's or the host's landing sets off happens at once, inside it (a
-  reaction during a skill's tags, before its damage; inside `ApplyTagTo`), but for the
-  zone change (end of step). The zone phase resolves its landings together, in
-  sub-phases, its reactions gathered then applied (see Zones): there, a result's
-  weakness is checked once all of an agent's results landed, then each firing's
-  damage applies
+- Whatever the host's landing sets off happens at once, inside `ApplyTagTo` (from a
+  hook during a step too: its damage into the turn's ledger, its zone change pending
+  until the end of the step). A step's landings (zones' and skills') resolve together in
+  the tag phase, in sub-phases, their reactions gathered then applied (see Zones):
+  there, a result's weakness is checked once all of an agent's results landed, then
+  each firing's damage applies
 - Consequences of these rules worth knowing when writing a level: a zone re-lands its
   tag every step, so an agent carrying a reaction's result that is also one of its
   originals (`wet + electrified -> electrified`) reacts again with every landing of the
@@ -589,8 +617,9 @@ a status.
   the rule as it is. A spread from an agent standing on a zone providing the TRIGGER
   tag (an oiled agent walking into the `burning` zone) spreads over that zone's region,
   and `zone_becomes` then re-sets it at the end of the step (its lifetime starts
-  again). Two casters igniting the same oil in one step both fire (the oil is still
-  oil for the second). A tag status re-lands
+  again). Two casters igniting the same oiled gob in one step fire once (one firing per
+  (agent, rule)); two gobs on one oil ignited in one step fire once each, each over the
+  whole region (N triggers in one region = N firings). A tag status re-lands
   with every landing of its tag, so a zone whose tag carries Rooted or Stunned holds an
   agent indefinitely (a rooted agent can't walk out)
 - **Level data** (`SetReactions(rules, error)` / `GetReactions()`,
@@ -653,11 +682,13 @@ phase"):
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
-- Report order in a step: the zone phase first (every zone landing in agent-index
-  order; its landing defeats; its reactions in trigger agent-index order; their result
-  landings in the same firing order, each firing's in its affected order; then the
-  result defeats, in first-hit order: firing, then affected order), then the skill phase:
-  each use's hits and skill use, in caster order. The C API reads the same vectors (its
+- Report order in a step, the tag phase's (for reading only: no outcome depends on it):
+  every zone landing in agent-index order, then every skill landing in caster index
+  order (each use's hits in its order); the landing defeats (in the order of each
+  agent's first landing); the reactions in the order of their credited landings; their
+  result landings in the same firing order, each firing's in its affected order; then
+  the result defeats, in first-hit order: firing, then affected order. Skill uses in
+  caster order. The C API reads the same vectors (its
   `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
   AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a down from between the

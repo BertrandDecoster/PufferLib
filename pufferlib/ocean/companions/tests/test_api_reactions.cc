@@ -551,7 +551,9 @@ TEST(TestReportsMatchTheCppEnvStepByStep) {
 // The events of the fireball's step: TagApplied carries its landing's kind
 // and reaction (a zone's, a skill's, a result's), ReactionFired and
 // AgentDefeated report the reactions and defeats, and every one of them
-// points at its entry in the report queries.
+// points at its entry in the report queries. The tag phase's order: every
+// zone landing, then the skill's, then the results; the reaction is the
+// fireball's (the gob's oil landed first, but the zone is the stage).
 TEST(TestTheEventsSayWhatLandedAndWhatFired) {
   Companions_Env* env = LoadKitchen(KitchenJson());
   Companions_StepResult first = ApiStep(env);
@@ -582,6 +584,7 @@ TEST(TestTheEventsSayWhatLandedAndWhatFired) {
   Companions_StepResult r = ApiStep(env, kCaster);
   ASSERT_EQ(r.events_dropped, 0);
   int landings = 0, skill = 0, zone = 0, result = 0, fired = 0, defeated = 0, used = 0;
+  int phase = 0;  // 0 zones, 1 skills, 2 results: never back
   for (int32_t i = 0; i < r.event_count; ++i) {
     const Companions_Event& e = r.events[i];
     switch (e.type) {
@@ -606,6 +609,11 @@ TEST(TestTheEventsSayWhatLandedAndWhatFired) {
         ASSERT_EQ(e.status_duration, t.duration);
         ASSERT_EQ(e.tag_fresh, t.fresh);
         ASSERT_TRUE(t.kind != Companions_TagSource_Host);  // The step dropped the host's
+        const int landing_phase = e.tag_kind == Companions_TagSource_Zone    ? 0
+                                  : e.tag_kind == Companions_TagSource_Skill ? 1
+                                                                             : 2;
+        ASSERT_TRUE(landing_phase >= phase);
+        phase = landing_phase;
         if (e.tag_kind == Companions_TagSource_Skill) {
           ++skill;
           ASSERT_EQ(e.health_source_id, IdAt(env, kCaster));
@@ -632,6 +640,8 @@ TEST(TestTheEventsSayWhatLandedAndWhatFired) {
         ASSERT_EQ(e.tag_kind, info.kind);
         ASSERT_EQ(e.health_source_id, info.source);
         ASSERT_EQ(e.tag_reaction, -1);
+        ASSERT_EQ(info.kind, Companions_TagSource_Skill);
+        ASSERT_EQ(info.source, IdAt(env, kCaster));
         break;
       }
       case Companions_Event_AgentDefeated: {

@@ -399,11 +399,11 @@ class BaseEnv {
   // What `caster` using its slot `slot` aimed `aim` would DO now, reports
   // included: the use is resolved on a clone of the env (Clone(); nothing in
   // this env changes, nothing is interned here), by the step's own code for a
-  // use (AddSkillPlan, the motion phase with that use's motions only,
-  // ResolveSkills), as the next step would resolve it were it the step's
-  // only change: nobody else moves, the zones land only on those its motions
-  // moved (their final cell: ApplyMovedZoneTags), no enemy acting, no
-  // end-of-step timers. The clone is mid-step
+  // use (AddSkillPlan, the motion phase with that use's motions only, the
+  // tag phase: TagPhase), as the next step would resolve it were it the
+  // step's only change: nobody else moves, the zones land only on those its
+  // motions moved (their final cell), no enemy acting, no end-of-step
+  // timers. The clone is mid-step
   // around the use (in_step_, Agent::BeginStep), so what the use sets (a
   // zone_becomes zone, a tag status, a root) is stored as the step stores it;
   // the zones its reactions set (their reports' cells) are committed after
@@ -503,14 +503,15 @@ class BaseEnv {
   // What the last Step did (cleared at the start of every Step, and by
   // LoadSnapshot, hence by every Reset).
   // Every skill use is planned from the world as the turn began (casters are
-  // simultaneous: ResolveSkills), and reported in caster agent-index order.
-  // Report order in a step: the zone phase first (its zone landings, every
-  // one, on each agent's final cell after the motion phase, in agent-index
-  // order; its landing defeats; its reactions in trigger agent-index order,
-  // their result landings in that firing order, then the results' defeats,
-  // in first-hit order: the firing, then its affected order), then the skill
-  // phase's: each use's hits, in caster order. The C API's report_index
-  // fields follow these orders.
+  // simultaneous), and reported in caster agent-index order.
+  // Report order in a step, the tag phase's (TagPhase; for reading only: no
+  // outcome depends on it): every zone landing (on each agent's final cell
+  // after the motion phase, in agent-index order), then every skill landing
+  // (caster index order, each use's hits in its order); the landing defeats
+  // (in the order of each agent's first landing); the reactions in the order
+  // of their credited landings, their result landings in that firing order,
+  // then the results' defeats, in first-hit order (the firing, then its
+  // affected order). The C API's report_index fields follow these orders.
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
   // Companions that went down since the last report, one entry per down:
@@ -537,7 +538,9 @@ class BaseEnv {
     ObjectId trigger = kInvalidObjectId;  // The agent the triggering tag landed on
     TagId tag = kInvalidTag;              // The triggering tag (the rule's a or b)
     // The triggering landing's source, cause and kind (never Reaction: results
-    // do not trigger reactions)
+    // do not trigger reactions). In a step, the landing it is credited to: the
+    // first non-zone landing of its halves in report order, else the first
+    // zone one (see SetReactions; report only)
     ObjectId source = kInvalidObjectId;
     std::string cause;
     TagSource kind;
@@ -639,18 +642,37 @@ class BaseEnv {
   // Reactions, weaknesses, immunities, tag statuses (core/reaction.h)
   // ==========================================================================
   // Every tag landing (a skill's, a zone's, a reaction's result, the host's)
-  // resolves in this order (LandTag):
+  // resolves in this order (at once for the host's: LandTag; in the tag
+  // phase for a step's, each step over every landing of the turn, below):
   //   1. immunity: an agent immune to the tag gets nothing (no report, and no
   //      zone damage for a zone's landing);
   //   2. the tag lands (reported), with the status tag_statuses binds to it;
   //   3. weakness: S landing while the agent stands on a zone providing P,
-  //      for one of its (P, S): defeated (reported). During a step it is 0
+  //      for one of its (P, S): defeated (reported). In a step, ONE check per
+  //      agent: its first (P, S), in its own order, with P the zone under
+  //      its final cell and S any tag that landed on it this turn (zones,
+  //      skills), crediting the first landing of S in report order; results
+  //      get their own single check. During a step it is 0
   //      at the end of the turn (see GetLastTurnHealth) and stays in play
   //      until then (the next steps still reach it; defeated once per turn);
   //      between two steps Agent::Defeat at once, and it gets nothing more;
   //   4. reaction (not for a result: results never trigger one): the first
   //      rule, in level order, pairing the tag with one the agent carries
-  //      (a defeated agent keeps its tags, so it still triggers one). Its
+  //      (a defeated agent keeps its tags, so it still triggers one). In a
+  //      step, per agent, on its tags once every landing of the turn is put:
+  //      the rules in level order, one firing when the agent carries both
+  //      halves, neither taken by an earlier firing on it (the originals it
+  //      did not keep), and a landing of this turn not yet used brought one
+  //      of them; a firing uses every landing of its halves. So at most one
+  //      firing per (agent, rule) per turn, whichever landings brought the
+  //      halves (either may be carried from earlier turns), and a landing
+  //      triggers at most one reaction: a wet agent hit by electrified and
+  //      chilled in one turn fires wet + electrified (first in level order),
+  //      which takes the wet, whatever the casters' order. Its credit (the
+  //      report's tag, source, cause, kind; its results'): the first unused
+  //      landing of its halves in report order that is not a zone's, else
+  //      the first zone one (the zone is the stage, the skill the actor: a
+  //      spark on a gob in the lake is the spark's; report only). Its
   //      affected agents (the region's affectable ones when it spreads, in
   //      agent-index order, else the agent alone) each lose the originals not
   //      kept, get the result (a permanent tag, through steps 1-3) and the
@@ -663,21 +685,23 @@ class BaseEnv {
   // zone_becomes during a step waits (pending_zones_) and the map changes at
   // the end of the step (CommitPendingZones, before the timers tick), so a
   // zone a reaction creates first lands NEXT step; weaknesses (P), spread
-  // regions and the zone phase all read the unchanged map.
-  // The zone phase (ApplyZoneTags) runs the steps above as sub-phases, each
-  // over every zone landing (ResolveZoneLandings: 1-2 for all, 3 for all,
-  // 4 gathered then applied per agent: every result, then one weakness check,
-  // then each firing's damage; 5 for all), so the order of the agents does
-  // not change an outcome, only the order of the reports.
+  // regions and the tag phase all read the unchanged map.
+  // The tag phase (TagPhase) runs the steps above as sub-phases, each over
+  // every landing of the turn, zones' and skills' together (1-2 for all:
+  // AddLanding; ResolveTurnLandings: 3 once per agent, 4 gathered then
+  // applied per agent: every result, then one weakness check, then each
+  // firing's damage; 5 for all), so neither the agents' nor the casters'
+  // order changes an outcome, only the order of the reports.
   // One exception, an outcome: two firings writing different zone_becomes
-  // to the same cells, the later one (firing order: trigger agent index)
-  // wins at the end of the step. Report-only effects of the order: a
+  // to the same cells, the later one (firing order: credited landing in
+  // report order) wins at the end of the step. Report-only effects of the
+  // order: a reaction's credit between two casters (the lower index), a
   // result's DefeatReport::reaction names the first firing whose result
-  // defeated, only the first of identical result landings on an agent is
-  // `fresh`.
-  // The skill phase resolves each landing at once, casters in agent-index
-  // order. Between two steps (the host's ApplyTagTo) there is no phase: a
-  // landing resolves at once and its zone_becomes applies at once.
+  // defeated, only the first of identical landings on an agent is `fresh`.
+  // Between two steps (the host's ApplyTagTo; also from a hook during a
+  // step) there is no phase: a landing resolves at once (LandTag), its
+  // damage into the ledger during a step, and its zone_becomes applies at
+  // once between two steps (pending during one).
   // Level data (reactions, tag statuses): like the zone table, copied with the
   // env, kept across a generated Reset, saved in snapshots (v7) and replaced
   // by LoadSnapshot with the snapshot's (none in older ones). Per-agent data
@@ -701,8 +725,9 @@ class BaseEnv {
 
   // Zones: a cell may carry one tag, landed (with `duration`, cause "zone",
   // source kInvalidObjectId) once per Step on every affectable agent standing
-  // on it after the motion phase (its final cell, moved or not; before the
-  // skills' hits; the cells a dash or a push crosses land nothing; an
+  // on it after the motion phase (its final cell, moved or not; with the
+  // skills' hits, in the tag phase; the cells a dash or a push crosses land
+  // nothing; an
   // effect's push, still outside the motion phase, lands nothing until the
   // next step). Each landing is reported; its `fresh` is that
   // of TagApplication (the agent did not carry the tag just before this
@@ -859,7 +884,7 @@ class BaseEnv {
 
   // The motion phase: every motion of the turn (the skills' pushes and
   // pulls included; an effect's push still goes through the effect system),
-  // then the zones land on the final cells (ApplyZoneTags). It resolves in
+  // then the zones land on the final cells (TagPhase). It resolves in
   // LAYERS, each seeing the final result of the layers before it (it moves
   // its actors, ExecuteLayer), while the actors whose motion is in a later
   // layer still stand where they were:
@@ -908,15 +933,19 @@ class BaseEnv {
   // The executed action (the C API's): the walk a walker made, Stay if it did
   // not walk (a walker then pushed: its walk, its final cell past it).
   void MotionPhase();
-  // The zones of the agents the motion phase moved only (PreviewSkillOutcome:
-  // those who stand still get no zone there). TEMPORARY (T6: the preview runs
-  // a whole turn): a caster standing in a fire gets no landing in its preview
-  void ApplyMovedZoneTags();
 
-  // Interaction resolution, after the motion and the zone phases: the
-  // companions' planned skill uses (ResolveSkills; FSM attacks go through the
-  // effect system)
-  void ResolveInteractions();
+  // The tag phase, after the motion phase: every tag of the turn lands
+  // together, then the weaknesses and the reactions resolve together (see
+  // SetReactions). a. Every landing, put at once (AddLanding: immunity, the
+  // tag, its status), in report order: the zones, each affectable agent's
+  // final cell (CollectZoneLanding, agent-index order), then every use's
+  // hits (UseSkill, caster order: its tags, and its own damage, revives and
+  // roots, all agent-local); b-d. ResolveTurnLandings. `moved_only`: the
+  // zones of the agents the motion phase moved only (PreviewSkillOutcome:
+  // those who stand still get no zone there; TEMPORARY, T6: the preview runs
+  // a whole turn: a caster standing in a fire gets no landing in its
+  // preview). FSM attacks go through the effect system.
+  void TagPhase(bool moved_only);
 
   // Skills (see GetSkillBook)
   // Empties the per-step reports (skill uses, tags applied, reactions,
@@ -936,7 +965,7 @@ class BaseEnv {
   bool ContextHolds(ContextCondition condition, const Companion& comp) const;
   // One skill use, planned from the world as the turn begins (the intents
   // phase: GatherIntentions), its motions resolved by the motion phase, its
-  // hits applied after the zone phase (ResolveSkills).
+  // hits applied in the tag phase (TagPhase: UseSkill).
   // Every cell is fixed by the plan; who stands on them is read when it
   // applies. Kept in the turn's scratch (turn_.plans), reused step to step.
   struct SkillPlan {
@@ -991,22 +1020,18 @@ class BaseEnv {
   // it spent (AbortStep keeps what the step did). False when there is
   // nothing to plan.
   bool AddSkillPlan(Companion& comp, int slot, int rule, Direction aim);
-  // After the motion phase (the plans' dashes, teleports and forced moves
-  // included, see MotionPhase) and the zone phase: every plan's hits
-  // (UseSkill), in caster order. A dash / teleport that lost its landing
-  // keeps the plan's centre, area and whole path (a tag_path dash still hits
-  // every planned path cell, past where it actually landed too).
-  // The plans read the turn-start world; an outcome still depends on the
-  // casters' agent indices through one thing (TEMPORARY, T4): a skill's
-  // landing fires its reaction at once (LandTag), in caster order: an agent
-  // carrying wet, hit by electrified (index 0) and chilled (index 1), reacts
-  // by the rule the first landing completes.
-  void ResolveSkills();
-  // The plan's hits, on the plan's cells as they stand after the motion
+  // In the tag phase (TagPhase, caster order), after the motion phase (the
+  // plans' dashes, teleports and forced moves included, see MotionPhase):
+  // the plan's hits, on the plan's cells as they stand after the motion
   // phase, plus whom its own forced moves moved (see SkillUse::affected):
-  // tags, then damage, then revive (its planned revives), then root (area
-  // only), each as the caster's self_* flags allow; Motion = moved by its
-  // forced moves. Then the SkillUse report.
+  // tags (put as landings of the tag phase: AddLanding; their weaknesses and
+  // reactions resolve with every landing of the turn), then damage (the
+  // turn's ledger), then revive (its planned revives), then root (area only;
+  // Rooted acts from the next turn), each as the caster's self_* flags
+  // allow; Motion = moved by its forced moves. Then the SkillUse report. A
+  // dash / teleport that lost its landing keeps the plan's centre, area and
+  // whole path (a tag_path dash still hits every planned path cell, past
+  // where it actually landed too).
   void UseSkill(SkillPlan& plan);
   // Where a skill use lands and whom it affects, the one implementation of
   // targeting (PlanSkillUse and PreviewSkill both use it). Pure: fills
@@ -1062,8 +1087,8 @@ class BaseEnv {
                        std::vector<AffectedAgent>& affected,
                        std::vector<Position>& found_on) const;
   // One tag landing on an agent: steps 1-4 of the landing order (see
-  // SetReactions), all at once (a skill's, a result's, the host's; a zone's
-  // goes through the phases of ResolveZoneLandings instead): false when
+  // SetReactions), all at once (a result's, the host's; a zone's and a
+  // skill's go through the tag phase instead, TagPhase): false when
   // nothing landed (an agent not affectable, or immune to the tag), else true
   // (even if a weakness defeated it). `reaction` is the index in
   // last_reactions_ of the reaction whose result this is (kind Reaction),
@@ -1076,9 +1101,10 @@ class BaseEnv {
   // when nothing landed, as LandTag.
   bool PutTag(Agent& agent, TagId tag, int duration, ObjectId source, const std::string& cause,
               TagSource kind, int reaction);
-  // Step 3: `tag` just landed on `agent`; defeats it on a matching weakness
-  // (reported, with `reaction`: the landing's, see LandTag). P is read on the
-  // map, which a step never changes before its end (see pending_zones_).
+  // Step 3 at once (LandTag): `tag` just landed on `agent`; defeats it on a
+  // matching weakness (reported, with `reaction`: the landing's, see
+  // LandTag). P is read on the map, which a step never changes before its
+  // end (see pending_zones_).
   void ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind, int reaction);
   // Defeats `agent` by `weakness`, reported (DefeatReport, the landing of S:
@@ -1094,7 +1120,7 @@ class BaseEnv {
   // The first rule, in level order, pairing `tag` (just landed on `agent`)
   // with a tag it carries (the reverse too), or -1
   int FindReaction(const Agent& agent, TagId tag) const;
-  // Fires rule `rule` at once (a skill's or the host's landing), triggered
+  // Fires rule `rule` at once (the host's landing), triggered
   // by `tag` landing on `agent`: StartReaction, the outcome on each affected
   // agent in turn, then ApplyZoneBecomes.
   void FireReaction(Agent& agent, TagId tag, int rule, ObjectId source,
@@ -1127,28 +1153,31 @@ class BaseEnv {
   // carrying that zone's tag, reachable from `start` through such cells, as a
   // row-major mask of rows_ * cols_ (empty when `start` has no zone)
   std::vector<char> ZoneRegion(Position start) const;
-  // The zone phase (after the motion phase, before skills): every affectable
-  // agent on a zone, together (CollectZoneLanding, then ResolveZoneLandings),
-  // once per turn, on its final cell (moved or not; cells a dash or a push
-  // crosses land nothing)
-  void ApplyZoneTags();
-  // Sub-phase a of a zone landing: immunity, the zone's tag and its status
-  // (PutTag), recorded in zone_landings_ (nothing for an unaffectable agent,
-  // an agent on no zone, an immune agent)
+  // Sub-phase a of the tag phase: one landing put (PutTag: immunity, the tag
+  // and its status, reported) and recorded in turn_.landings with its report
+  // entry and its zone damage (a zone's; dealt in d). False when nothing
+  // landed (not affectable, immune: no landing, no damage).
+  bool AddLanding(Agent& agent, TagId tag, int duration, ObjectId source,
+                  const std::string& cause, TagSource kind, int zone_damage);
+  // A zone's landing (AddLanding) on an affectable agent's cell (its final
+  // cell: after the motion phase; nothing for an agent on no zone)
   void CollectZoneLanding(Agent& agent);
-  // Sub-phases b-d over every landing of zone_landings_, each phase over all
-  // of them (agent-index order only orders the reports): b. the weaknesses
-  // (defeats); c. the reactions, gathered then applied: c1 the triggers are
-  // ALL found (the state after a and b, FindReaction); c2 every firing is
-  // started (StartReaction: its affected agents and report, nothing applied);
-  // c3 the outcomes apply per agent (ApplyReactionHits), then the
-  // zone_becomes in firing order (pending); so no firing's outcome cancels
-  // or changes another's; d. the zone damage of each landing still
-  // affectable. The map they read is the map as the step began (a firing's
+  // Sub-phases b-d of the tag phase, each over every landing of
+  // turn_.landings (their order only orders the reports):
+  //   b. ONE weakness check per agent (see SetReactions);
+  //   c. the reactions, gathered then applied: c1 every firing found (the
+  //      state after a and b; per agent, the rules in level order, at most
+  //      one firing per (agent, rule), see SetReactions); c2 every firing
+  //      started (StartReaction: its affected agents and report, nothing
+  //      applied); c3 the outcomes applied per agent (ApplyReactionHits),
+  //      then the zone_becomes in firing order (pending); so no firing's
+  //      outcome cancels or changes another's;
+  //   d. the zone damage of each zone landing still affectable.
+  // The map they read is the map as the step began (a firing's
   // zone_becomes waits in pending_zones_), so the order of the agents does
   // not change an outcome, but for the zones (see SetReactions: two firings
   // writing the same cells, the later one wins).
-  void ResolveZoneLandings();
+  void ResolveTurnLandings();
   // End of Step, before the agents' timers: the zone changes the step's
   // reactions recorded (pending_zones_), in the order they were recorded (a
   // later write to the same cell wins), their timers as set during the step
@@ -1264,16 +1293,6 @@ class BaseEnv {
   std::vector<OddMotion> last_odd_motions_;
   long long odd_motion_count_ = 0;
 
-  // Scratch of one zone phase (ResolveZoneLandings): each zone landing, with
-  // the zone that landed (a copy), its report entry and the reaction it
-  // triggers. Never copied (it points at this env's agents); reused.
-  struct ZoneLanding {
-    Agent* agent = nullptr;
-    CellTag zone;
-    size_t report = 0;  // Its entry in last_tags_applied_
-    int rule = -1;      // The reaction it triggers (FindReaction), or -1
-  };
-  std::vector<ZoneLanding> zone_landings_;
   // Scratch of sub-phase c (never copied, reused): one entry per (firing,
   // affected agent), in firing order then the firing's affected order
   struct ReactionHit {
@@ -1330,6 +1349,21 @@ class BaseEnv {
     size_t next = 0;
     bool moved = false;  // ExecuteLayer: it changed cell
   };
+  // One landing of the tag phase (a zone's or a skill's): its tag, source,
+  // cause and kind are its report entry's
+  struct TurnLanding {
+    Agent* agent = nullptr;
+    size_t report = 0;    // Its entry in last_tags_applied_
+    int zone_damage = 0;  // A zone's landing: the zone's damage (dealt in d); else 0
+    bool spent = false;   // c1: a firing used it (a landing triggers one reaction at most)
+  };
+  // One reaction c1 found: its rule, credited to landing `landing` (an index
+  // into Turn::landings: the first non-zone landing of its halves in report
+  // order, else the first zone one)
+  struct TurnFiring {
+    size_t landing = 0;
+    int rule = -1;
+  };
   struct Turn {
     // Per agent, in agent-index order as the turn began (BeginTurn); an agent
     // created during the turn is appended when first touched (not Marked)
@@ -1349,6 +1383,12 @@ class BaseEnv {
     std::vector<MotionIntent> motions;
     size_t motion_count = 0;
     std::vector<Actor*> moved;
+    // The tag phase's (TagPhase): every landing of the turn, in report order;
+    // the firings c1 found; the tags the rules that fired took from the agent
+    // judged (their originals not kept)
+    std::vector<TurnLanding> landings;
+    std::vector<TurnFiring> firings;
+    std::vector<TagId> taken;
     void Clear() {  // Keeps the capacity
       ledger.clear();
       plan_count = 0;
@@ -1356,6 +1396,9 @@ class BaseEnv {
       hit_on_area.clear();
       motion_count = 0;
       moved.clear();
+      landings.clear();
+      firings.clear();
+      taken.clear();
     }
   };
   Turn turn_;

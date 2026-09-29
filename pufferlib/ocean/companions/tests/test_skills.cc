@@ -1588,23 +1588,38 @@ TEST(TestZoneTagsFollowSkillMotions) {
   }
 }
 
-TEST(TestZonesApplyBeforeSkills) {
-  // A target ending in water and hit the same step: "wet" lands first. (It
-  // walks onto the ring's left cell (3,3), then the fireball pushes it on,
-  // onto the wet cell (3,2): the zone of its final cell.)
+TEST(TestAllTagsOfTheTurnLandTogether) {
+  // A target ending in water and hit the same step: every tag of the turn
+  // lands (the zone's "wet" reported first, then the fireball's "burning"),
+  // then the reactions resolve (wet + burning -> steamed, credited to the
+  // fireball: the zone is the stage, the skill the actor). (It walks onto the
+  // ring's left cell (3,3), then the fireball pushes it on, onto the wet cell
+  // (3,2): the zone of its final cell.)
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
+  ReactionRule steam;
+  steam.a = "wet";
+  steam.b = "burning";
+  steam.result = "steamed";
+  ASSERT_TRUE(env.SetReactions({steam}));
   env.SetCellTag({3, 2}, "wet", kPermanentTag);
   Agent* caster = Place(env, 0, {3, 1});  // fireball target (3,4)
   Agent* walker = Place(env, 1, {3, 4});  // walks left onto the ring, pushed onto the wet cell
   env.SetCompanionSkill(caster->GetId(), 0, "fireball");
   env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Left)});
+  ASSERT_TRUE(walker->GetPosition() == (Position{3, 2}));
   const auto& landed = env.GetLastTagsApplied();
-  ASSERT_TRUE(landed.size() >= 2);
+  ASSERT_EQ(landed.size(), static_cast<size_t>(3));
   ASSERT_EQ(landed[0].cause, std::string("zone"));
   ASSERT_EQ(landed[0].agent, walker->GetId());
   ASSERT_EQ(landed[1].cause, std::string("fireball"));
   ASSERT_EQ(landed[1].agent, walker->GetId());
+  ASSERT_TRUE(landed[2].kind == BaseEnv::TagSource::Reaction);
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastReactions()[0].cause, std::string("fireball"));
+  ASSERT_TRUE(Has(env, walker, "steamed"));
+  ASSERT_FALSE(Has(env, walker, "wet"));
+  ASSERT_FALSE(Has(env, walker, "burning"));
 }
 
 TEST(TestClearCellTag) {

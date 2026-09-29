@@ -789,7 +789,6 @@ TEST(TestFactionSystem) {
 class TestableEnv : public SynchroEnv {
  public:
   using SynchroEnv::SynchroEnv;
-  void TestResolveInteractions() { ResolveInteractions(); }
   void TestTickEffects() { GetEffectSystem().Tick(); }
 };
 

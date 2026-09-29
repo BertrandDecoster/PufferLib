@@ -456,7 +456,8 @@ TEST(TestTheFirstMatchingRuleFires) {
 }
 
 // Skills, zones and the host all land tags that react; each landing says
-// what landed it (TagApplication::kind)
+// what landed it (TagApplication::kind). A skill's landing reacts in the tag
+// phase, after every landing of the turn: its result is reported after them.
 TEST(TestSkillAndZoneLandingsReact) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -798,7 +799,7 @@ static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::s
 // A trap of the rules (kept: the level names another result): a result that
 // is one of its triggers (wet + electrified -> electrified), spreading with
 // zone_becomes = the other one (wet). Everyone in the lake keeps the result,
-// so each step every agent's wet landing is a trigger (the zone phase gathers
+// so each step every agent's wet landing is a trigger (the tag phase gathers
 // every firing, then applies them per agent): N agents, N firings (once per
 // trigger), each over the whole region (N damage each), and each one re-sets
 // the lake at the end of the step (its lifetime starts again). Unchanged
@@ -1036,7 +1037,7 @@ TEST(TestTheZoneDamageAddsToALethalReactionInTheTurn) {
 // until the end of the turn: the reaction it starts spreads over both (the
 // result and 1 damage each), each takes the oil's own 2 in sub-phase d (the
 // gob's raw share, reported; it ends at 0 anyway), and the oil becomes ash at
-// the end of the step. The reports keep the zone phase's order: both zone
+// the end of the step. The reports keep the tag phase's order: both zone
 // landings, then the results.
 TEST(TestAZoneLandingDefeatStillSpreadsItsReaction) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
@@ -1809,7 +1810,7 @@ TEST(TestTheZonePhaseDoesNotDependOnTheAgentsOrder) {
   }
 }
 
-// The zone phase fixes its triggers before any outcome: two electrified
+// The tag phase fixes its triggers before any outcome: two electrified
 // agents in the lake (wet + electrified -> shocked, keeping wet, spreading,
 // 1 damage) both trigger, even though the first firing takes the other's
 // electrified away. Two firings, each over both (2 damage each), whatever
@@ -1841,7 +1842,7 @@ TEST(TestTheZonePhaseFixesItsTriggersBeforeAnyOutcome) {
       ASSERT_TRUE(Has(env, x, "wet"));
       ASSERT_FALSE(Has(env, x, "electrified"));
     }
-    // The zone phase's reports: every zone landing first, then the firings
+    // The tag phase's reports: every zone landing first, then the firings
     // (each with its result landings)
     const auto& landed = env.GetLastTagsApplied();
     ASSERT_EQ(landed.size(), static_cast<size_t>(6));
@@ -1858,7 +1859,7 @@ TEST(TestTheZonePhaseFixesItsTriggersBeforeAnyOutcome) {
   }
 }
 
-// Two firings of 1 damage in the zone phase on a Marked agent: the turn's
+// Two firings of 1 damage in the tag phase on a Marked agent: the turn's
 // total (2) is Marked once: 3, in both orders (each firing reports its raw 1).
 TEST(TestAMarkedAgentTakesTheTurnsTotalOfTheFirings) {
   std::string traces[2];
@@ -1889,7 +1890,7 @@ TEST(TestAMarkedAgentTakesTheTurnsTotalOfTheFirings) {
   }
 }
 
-// The zone phase computes every firing before applying any: A's firing (a
+// The tag phase computes every firing before applying any: A's firing (a
 // spreading jolt, 3 damage) takes B to 0, but B's own reaction (alone, 1
 // damage) still fires, whatever the agents' order. Both firings' damage goes
 // into B's turn (reported: 3 and 1, in both orders); B ends down in both, its
@@ -1981,10 +1982,13 @@ TEST(TestAZonePhaseWeaknessDefeatDoesNotDependOnTheOrder) {
 }
 
 // A fireball igniting the oil: the zone stays oil for the rest of the step
-// (a second caster's fireball on the same oil fires again; a dash landing on
-// it gets oil, once, in the zone phase after the motion phase, on its final
-// cell), and becomes fire at the end of the step, landing from the next one.
-// The rule keeps the oil, so the gob, still oiled, reacts again.
+// (a dash landing on it gets oil, once, in the tag phase after the motion
+// phase, on its final cell), and becomes fire at the end of the step,
+// landing from the next one. A second caster's fireball on the same gob in
+// the same turn does not fire again: every tag of the turn lands together,
+// then one firing per (agent, rule), credited to the first skill landing
+// (the lower caster index; the oil's own landing under the gob comes first
+// in report order, but the zone is the stage, the skill the actor).
 TEST(TestASkillIgnitingTheOilLeavesItOilUntilTheEndOfTheStep) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);
@@ -2008,15 +2012,14 @@ TEST(TestASkillIgnitingTheOilLeavesItOilUntilTheEndOfTheStep) {
 
   ASSERT_TRUE(dasher->GetPosition() == (Position{2, 6}));
   const auto& fired = env.GetLastReactions();
-  ASSERT_EQ(fired.size(), static_cast<size_t>(2));  // Both fireballs: once per trigger
-  for (const auto& r : fired) {
-    ASSERT_EQ(r.trigger, gob->GetId());
-    ASSERT_TRUE(r.kind == TagSource::Skill);
-    ASSERT_TRUE(r.spread);
-    ASSERT_EQ(r.cells.size(), oil.size());  // What becomes fire at the end of the step
-  }
-  ASSERT_EQ(fired.at(1).source, env.GetObjectManager().GetAllAgents().at(1)->GetId());
-  // The dash's final cell landed the oil, once, in the zone phase (before
+  ASSERT_EQ(fired.size(), static_cast<size_t>(1));  // Both fireballs: one firing
+  const BaseEnv::ReactionReport& r = fired.at(0);
+  ASSERT_EQ(r.trigger, gob->GetId());
+  ASSERT_TRUE(r.kind == TagSource::Skill);
+  ASSERT_EQ(r.source, env.GetObjectManager().GetAllAgents().at(0)->GetId());
+  ASSERT_TRUE(r.spread);
+  ASSERT_EQ(r.cells.size(), oil.size());  // What becomes fire at the end of the step
+  // The dash's final cell landed the oil, once, in the tag phase (before
   // any skill's landing): the zone as the step began
   int dash_oil_landings = 0;
   bool skill_landed = false;
@@ -2045,11 +2048,11 @@ TEST(TestASkillIgnitingTheOilLeavesItOilUntilTheEndOfTheStep) {
   ASSERT_TRUE(Has(env, dasher, "fire"));
 }
 
-// A weakness in the skill phase reads the map as the step began: the imp,
-// weak to (oil, zap), stands on the oil a first caster just set ablaze; the
-// second caster's zap still finds oil under it (fire only at the end of the
-// step): defeated.
-TEST(TestASkillPhaseWeaknessReadsTheMapAsTheStepBegan) {
+// A weakness reads the map as the step began: the imp, weak to (oil, zap),
+// stands on the oil a first caster sets ablaze this turn; the second
+// caster's zap still finds oil under it (fire only at the end of the step):
+// defeated.
+TEST(TestASkillLandingsWeaknessReadsTheMapAsTheStepBegan) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   Require(env.SetReactions({Rule("oil", "burning", "burning").Spreads("fire").r}), "reactions");
@@ -2075,9 +2078,10 @@ TEST(TestASkillPhaseWeaknessReadsTheMapAsTheStepBegan) {
 }
 
 // The end of the step commits the zone changes in the order the reactions
-// fired: two reactions writing the same lake, the later one wins (the
-// trigger with the higher agent index, in the zone phase). The zone it
-// leaves covers exactly its next steps.
+// fired: two reactions writing the same lake, the later one wins (the one
+// credited to the later landing in report order: here the trigger with the
+// higher agent index, both brought by the lake). The zone it leaves covers
+// exactly its next steps. An order dependence that stays (an outcome).
 TEST(TestTheLaterReactionsZoneWinsAtTheEndOfTheStep) {
   for (bool swapped : {false, true}) {
     SynchroEnv env(10, 10, 2, 1, 0, 42);
