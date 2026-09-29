@@ -154,8 +154,11 @@ while the actors whose motion is in a later layer still stand where they were:
   (backpedal once) or on a path (backpedal past it); b. only then, head-on: two dashes /
   forced moves each going through or onto the other's start both backpedal once (as
   walks never swap: two agents pushed 1 into each other stay, two opposing lines meet in
-  the middle, each packed behind its front; a perpendicular crossing passes, a teleport
-  swap is free); c. only then, motions claiming one destination: all but its ONE winner
+  the middle, each packed behind its front), and two of them moving along one line never
+  swap their order on it, whatever their lengths (their destinations inverted against
+  their starts: opposed, both backpedal once, unequal pushes meet without crossing; the
+  same way, the rear one backpedals once and packs behind the front); a perpendicular
+  crossing passes, a teleport swap is free; c. only then, motions claiming one destination: all but its ONE winner
   backpedal once; the winner is the lowest rank among the claimants that overtake no
   other claimant (its path crosses no other claimant's start: a line pushed into a wall
   compresses, its rear behind its front), else the lowest rank of all (rank: agent

@@ -1134,16 +1134,40 @@ void BaseEnv::SolveLayer() {
     }
     // b. Head-on: two path motions each going through or onto the other's
     // start cross head-on; neither may pass the other (as walks never swap):
-    // both backpedal once (judged only once no stayer is found)
+    // both backpedal once (judged only once no stayer is found). Likewise two
+    // path motions along one line never swap their order on it: an
+    // inversion of their destinations against their starts (one destination
+    // for both is c's): opposed, both backpedal once; the same way, the one
+    // that would overtake (the rear) backpedals once
     if (!any) {
+      // The axis a motion moves along (0: a row, 1: a column; -1: none, an
+      // odd sum)
+      auto axis = [&](size_t i) {
+        const Position f = ms[i].from, e = ms[i].end;
+        if (f.row == e.row && f.col != e.col) return 0;
+        if (f.col == e.col && f.row != e.row) return 1;
+        return -1;
+      };
       for (size_t i = 0; i < n; ++i) {
         if (!moving(i) || !ms[i].path) continue;
+        const int ai = axis(i);
         for (size_t j = 0; j < n && !ms[i].next; ++j) {
-          if (j != i && moving(j) && ms[j].path && reaches(i, j) && reaches(j, i)) {
+          if (j == i || !moving(j) || !ms[j].path) continue;
+          if (reaches(i, j) && reaches(j, i)) {  // Head-on
             ms[i].next = ms[i].choice + 1;
-            any = true;
+            continue;
           }
+          if (ai < 0 || axis(j) != ai) continue;
+          const Position fi = ms[i].from, fj = ms[j].from, ei = ms[i].end, ej = ms[j].end;
+          if (ai == 0 ? fi.row != fj.row : fi.col != fj.col) continue;  // Parallel lines
+          const int si = ai == 0 ? fi.col : fi.row, sj = ai == 0 ? fj.col : fj.row;
+          const int di = ai == 0 ? ei.col : ei.row, dj = ai == 0 ? ej.col : ej.row;
+          if ((si - sj) * (di - dj) >= 0) continue;  // Order kept (or one destination)
+          const int way_i = di > si ? 1 : -1, way_j = dj > sj ? 1 : -1;
+          // Opposed: both; the same way: the rear one (behind at the start)
+          if (way_i != way_j || (si - sj) * way_i < 0) ms[i].next = ms[i].choice + 1;
         }
+        any = any || ms[i].next;
       }
     }
     // c. Something also moving there: of the motions claiming one

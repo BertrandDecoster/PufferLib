@@ -2787,6 +2787,79 @@ TEST(TestTwoOpposingLinesMeetInTheMiddle) {
   }
 }
 
+// Two motions along one line never swap their order on it, whatever their
+// lengths. Opposed and unequal: a gob pushed 2 up from (5,5) (a gust2 below)
+// and one pushed 1 down from (3,5) (a gust above) would cross; both backpedal
+// and they meet without crossing: (4,5) and (3,5). Every index order.
+TEST(TestOpposedUnequalMotionsMeetWithoutCrossing) {
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {6, 5});  // Its up ring cell (5,5): pushed 2 up
+    GivePusher(env, 0, "gust2", 2);
+    Place(env, 1, {2, 5});  // Its down ring cell (3,5): pushed 1 down
+    GivePusher(env, 1, "gust1", 1);
+    Agent* first = AddEnemy(env, swapped ? Position{3, 5} : Position{5, 5});
+    Agent* second = AddEnemy(env, swapped ? Position{5, 5} : Position{3, 5});
+    Agent* up = swapped ? second : first;
+    Agent* down = swapped ? first : second;
+    env.Step({Use(MovementAction::Stay), Use(MovementAction::Stay), kStay, kStay});
+    ASSERT_TRUE(up->GetPosition() == (Position{4, 5}));
+    ASSERT_TRUE(down->GetPosition() == (Position{3, 5}));
+  }
+}
+
+// The same across a row: pushed 3 right from (4,2) (a gust3) against pushed
+// 1 left from (4,4) (a gale west): they would cross; both backpedal; the
+// right one then lands on the start of the left one, which stays: it
+// backpedals again. They meet: (4,3) and (4,4). Every index order.
+TEST(TestAMotionOfThreeAndAnOpposedOneMeet) {
+  for (bool swapped : {false, true}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 1});  // Its right ring cell (4,2): pushed 3 right
+    GivePusher(env, 0, "gust3", 3);
+    Agent* first = AddEnemy(env, swapped ? Position{4, 4} : Position{4, 2});
+    Agent* second = AddEnemy(env, swapped ? Position{4, 2} : Position{4, 4});
+    Agent* right = swapped ? second : first;
+    Agent* left = swapped ? first : second;
+    EffectConfig west = LineGale("west_gale", 1);
+    west.filter = TargetFilter::Enemy;
+    west.push_dx = -1;
+    Register(west);
+    env.SpawnEffect("west_gale", EffectTarget::AtCell({4, 5}));  // (4,4) only
+    env.Step({Use(MovementAction::Stay), kStay, kStay});
+    ASSERT_TRUE(right->GetPosition() == (Position{4, 3}));
+    ASSERT_TRUE(left->GetPosition() == (Position{4, 4}));
+  }
+}
+
+// The same way and unequal: the rear gob (4,2) pushed 3 right (a gust3), the
+// front one (4,3) 1 right (a gale east): the rear would leapfrog the front
+// (to (4,5), past (4,4)); it backpedals, and packs behind the front, onto
+// the start the front leaves: (4,3) and (4,4). Every index order.
+TEST(TestTheRearOfALinePacksBehindItsFront) {
+  for (bool swapped : {false, true}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 1});  // Its right ring cell (4,2): pushed 3 right
+    GivePusher(env, 0, "gust3", 3);
+    Agent* first = AddEnemy(env, swapped ? Position{4, 3} : Position{4, 2});
+    Agent* second = AddEnemy(env, swapped ? Position{4, 2} : Position{4, 3});
+    Agent* rear = swapped ? second : first;
+    Agent* front = swapped ? first : second;
+    EffectConfig east = LineGale("east_gale", 1);
+    east.filter = TargetFilter::Enemy;
+    Register(east);
+    env.SpawnEffect("east_gale", EffectTarget::AtCell({4, 4}));  // (4,3) only
+    env.Step({Use(MovementAction::Stay), kStay, kStay});
+    ASSERT_TRUE(rear->GetPosition() == (Position{4, 3}));
+    ASSERT_TRUE(front->GetPosition() == (Position{4, 4}));
+  }
+}
+
 // =============================================================================
 // Main
 // =============================================================================

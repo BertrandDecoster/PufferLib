@@ -947,8 +947,14 @@ class BaseEnv {
   //      going through or onto the other's start cross head-on; neither may
   //      pass the other (as walks never swap): both backpedal once (so two
   //      agents pushed 1 into each other stay, and two opposing lines meet
-  //      in the middle, each packed behind its front). A perpendicular
-  //      crossing passes; teleports have no path (a teleport swap is free);
+  //      in the middle, each packed behind its front). Likewise two of them
+  //      moving along one line never swap their order on it, whatever their
+  //      lengths: an inversion of their destinations against their starts
+  //      (one destination for both is c's): opposed, both backpedal once
+  //      (unequal pushes meet without crossing); the same way, the rear one
+  //      (the overtaker) backpedals once (it packs behind the front). A
+  //      perpendicular crossing passes; teleports have no path (a teleport
+  //      swap is free);
   //   c. only when a and b found nothing: something also moving there: of
   //      the motions claiming one destination, all but its ONE winner
   //      backpedal once. The winner: the lowest rank among the claimants
