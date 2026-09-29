@@ -73,7 +73,9 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       tag_status_ids_(other.tag_status_ids_),
       last_reactions_(other.last_reactions_),
       last_defeats_(other.last_defeats_),
-      last_turn_health_(other.last_turn_health_) {
+      last_turn_health_(other.last_turn_health_),
+      last_odd_motions_(other.last_odd_motions_),
+      odd_motion_count_(other.odd_motion_count_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
   effect_system_->SetHealthSink(&effect_health_);
@@ -125,6 +127,8 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     last_reactions_ = other.last_reactions_;
     last_defeats_ = other.last_defeats_;
     last_turn_health_ = other.last_turn_health_;
+    last_odd_motions_ = other.last_odd_motions_;
+    odd_motion_count_ = other.odd_motion_count_;
   }
   return *this;
 }
@@ -174,27 +178,35 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Pre-step hook
   PreStep();
 
-  // Gather intentions from actions
+  // The intents phase: the agents' intentions, every skill use planned from
+  // the world as the turn begins
   GatherIntentions(actions);
 
-  // Capture original intentions before collision resolution modifies them
+  // Capture original intentions before the motion phase modifies them
   CaptureOriginalIntentions();
 
-  // Resolve collisions (iterative fixed-point)
-  ResolveCollisions();
+  // The one motion phase: every walk, dash, teleport, push and pull at once
+  GatherMotionIntents();
+  ResolveMotion();
+  ExecuteMotion();
 
-  // Execute validated movements
-  ExecuteValidatedMovements();
+  // Snapshot the executed actions (post-motion, pre-clear) so the C API can
+  // read them after Step returns (GetIntention() alone would be {Stay, None}
+  // after ClearIntention), then clear the intentions
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    agent->CaptureExecutedAction();
+    agent->ClearIntention();
+  }
 
   // Update FSM after movements (so FSM sees actual positions)
   UpdateAgentFSM();
 
-  // Zones land on whoever stands on them, before casts and skills. From here
-  // to the end of the step the zone map is read-only: a reaction's
+  // Zones land once, on everyone's final cell, before the skills' hits. From
+  // here to the end of the step the zone map is read-only: a reaction's
   // zone_becomes waits in pending_zones_ (CommitPendingZones, below).
   ApplyZoneTags();
 
-  // Resolve interactions (attacks, effects)
+  // Resolve interactions (the skills' hits)
   ResolveInteractions();
 
   // Tick active effects (advance timers, apply damage/push)
@@ -794,182 +806,301 @@ void BaseEnv::CaptureOriginalIntentions() {
 }
 
 // =============================================================================
-// Collision Resolution - Fixed-Point Iteration Algorithm
-//
-// Resolves simultaneous movement conflicts using iterative refinement:
-// 1. Gather intended moves from all agents
-// 2. Repeat until no changes:
-//    a) Invalidate moves into walls/out-of-bounds
-//    b) Detect and cancel swap conflicts (A→B, B→A)
-//    c) Detect and cancel same-cell conflicts (A→X, B→X)
-//    d) Validate chase moves (A→B only if B is moving away)
-// 3. Execute remaining valid moves
-//
-// Guaranteed to terminate: each iteration removes at least one conflict.
+// The one motion phase (see ResolveMotion in the header)
 // =============================================================================
-void BaseEnv::ResolveCollisions() {
-  // Safety limit: each iteration should remove at least one conflict,
-  // so we need at most NumAgents * 4 iterations (4 directions per agent)
-  bool changed = true;
-  int max_iterations = NumAgents() * 4;
-  int iteration = 0;
 
-  // Hoist maps out of the loop — .clear() preserves bucket arrays, so we
-  // only pay for one allocation cycle per ResolveCollisions call, not per
-  // fixed-point iteration. Audit F7.
-  std::unordered_map<ObjectId, Position> target_pos;
-  std::unordered_map<Position, ObjectId, PositionHash> current_occupant;
-  std::unordered_map<Position, std::vector<Agent*>, PositionHash> claims;
+BaseEnv::MotionIntent& BaseEnv::AddMotion(Actor& actor, Agent* agent, int rank) {
+  std::vector<MotionIntent>& motions = turn_.motions;
+  if (turn_.motion_count == motions.size()) motions.emplace_back();
+  MotionIntent& m = motions[turn_.motion_count++];
+  m.actor = &actor;
+  m.agent = agent;
+  m.rank = rank;
+  m.from = actor.GetPosition();
+  m.kind = MotionKind::None;
+  m.tier = 0;
+  m.cells.clear();  // Keeps the capacity
+  m.stops.clear();
+  m.path = false;
+  m.choice = 0;
+  m.plan = -1;
+  m.forced = false;
+  m.dr = m.dc = 0;
+  m.next = 0;
+  m.clash_lost = false;
+  m.moved = false;
+  return m;
+}
 
-  while (changed && iteration++ < max_iterations) {
-    changed = false;
+BaseEnv::MotionIntent* BaseEnv::FindMotion(ObjectId id) {
+  for (size_t i = 0; i < turn_.motion_count; ++i) {
+    if (turn_.motions[i].actor->GetId() == id) return &turn_.motions[i];
+  }
+  return nullptr;
+}
 
-    auto agents = object_manager_->GetAllAgents();
-
-    // Build current state
-    target_pos.clear();
-    current_occupant.clear();
-    for (const Agent* agent : agents) {
-      if (!agent->IsAlive()) continue;
-      target_pos[agent->GetId()] = PredictPosition(agent);
-      current_occupant[agent->GetPosition()] = agent->GetId();
+void BaseEnv::GatherMotionIntents() {
+  turn_.motion_count = 0;
+  // Every living agent (a corpse neither moves nor blocks), by agent index
+  const auto agents = object_manager_->GetAllAgents();
+  int things = 0;  // A thing's rank: after every agent
+  for (Agent* a : agents) {
+    things = std::max(things, a->GetAgentIndex() + 1);
+    if (a->IsAlive()) AddMotion(*a, a, a->GetAgentIndex());
+  }
+  // The plans' motions: the caster's own dash / teleport, and the forced
+  // moves, summed per actor (a thing a skill moves gets its intent here)
+  for (size_t p = 0; p < turn_.plan_count; ++p) {
+    const SkillPlan& plan = turn_.plans[p];
+    if (!plan.caster_candidates.empty()) {
+      MotionIntent* m = FindMotion(plan.caster);
+      if (m && m->agent && m->agent->IsAffectable()) m->plan = static_cast<int>(p);
     }
-
-    // Check 1: Grid walkability / bounds. Check 2: Swap detection (A→B,B→A).
-    for (Agent* agent : agents) {
-      if (!agent->IsAlive()) continue;
-      if (agent->GetIntention().movement == MovementAction::Stay) continue;
-
-      Position target = target_pos[agent->GetId()];
-
-      if (!grid_->IsInBounds(target) || !grid_->IsWalkable(target)) {
-        agent->SetIntention({MovementAction::Stay});
-        changed = true;
-        continue;
+    for (const SkillPlan::Forced& f : plan.forced) {
+      MotionIntent* m = FindMotion(f.actor);
+      if (!m) {
+        Actor* thing = object_manager_->GetActor(f.actor);
+        // Every living agent has its intent already
+        if (!thing || !thing->IsAlive() || dynamic_cast<Agent*>(thing)) continue;
+        m = &AddMotion(*thing, nullptr, things + thing->GetId());
       }
+      if (m->agent && !m->agent->IsAffectable()) continue;  // A body down is never moved
+      m->forced = true;
+      m->dr += f.dr;
+      m->dc += f.dc;
+    }
+  }
+  // The things came in plan order: by rank (the agents already are, first)
+  std::sort(turn_.motions.begin(),
+            turn_.motions.begin() + static_cast<std::ptrdiff_t>(turn_.motion_count),
+            [](const MotionIntent& a, const MotionIntent& b) { return a.rank < b.rank; });
+  for (size_t i = 0; i < turn_.motion_count; ++i) ChooseMotion(turn_.motions[i]);
+}
 
-      auto occ_it = current_occupant.find(target);
-      if (occ_it != current_occupant.end()) {
-        ObjectId other_id = occ_it->second;
-        if (other_id != agent->GetId()) {
-          Position other_target = target_pos[other_id];
-          if (other_target == agent->GetPosition()) {
-            // Swap detected! Both become noop
-            agent->SetIntention({MovementAction::Stay});
-            Agent* other = dynamic_cast<Agent*>(object_manager_->GetActor(other_id));
-            if (other) {
-              other->SetIntention({MovementAction::Stay});
-            }
-            changed = true;
-            continue;
-          }
-        }
+bool BaseEnv::TryMotion(MotionIntent& m, MotionKind kind) {
+  m.cells.clear();
+  m.stops.clear();
+  m.path = false;
+  const SkillPlan* plan = m.plan >= 0 ? &turn_.plans[static_cast<size_t>(m.plan)] : nullptr;
+  switch (kind) {
+    case MotionKind::Teleport:
+      if (!plan || plan->skill.motion != SkillMotion::Teleport) return false;
+      m.cells = plan->caster_candidates;
+      for (size_t i = 0; i < m.cells.size(); ++i) m.stops.push_back(static_cast<int>(i));
+      break;
+    case MotionKind::Dash: {
+      if (!plan || plan->skill.motion != SkillMotion::Dash) return false;
+      assert(plan->origin == m.from && "a plan is made from where the turn begins");
+      // Its line, every step up to its planned landing (holes included); it
+      // may end on each walkable one, the furthest first
+      const Position to = plan->landing;
+      const int dr = (to.row > m.from.row) - (to.row < m.from.row);
+      const int dc = (to.col > m.from.col) - (to.col < m.from.col);
+      const int steps = std::abs(to.row - m.from.row) + std::abs(to.col - m.from.col);
+      for (int i = 1; i <= steps; ++i) m.cells.push_back({m.from.row + dr * i, m.from.col + dc * i});
+      for (int i = steps - 1; i >= 0; --i) {
+        if (grid_->IsWalkable(m.cells[static_cast<size_t>(i)])) m.stops.push_back(i);
       }
+      m.path = true;
+      break;
     }
-
-    // Check 3: Multiple agents claiming same target cell.
-    // Rebuild target_pos after the Check-1/2 mutations.
-    target_pos.clear();
-    for (const Agent* agent : agents) {
-      if (!agent->IsAlive()) continue;
-      target_pos[agent->GetId()] = PredictPosition(agent);
+    case MotionKind::Walk: {
+      if (!m.agent) return false;
+      const MovementAction move = m.agent->GetIntention().movement;
+      if (move == MovementAction::Stay) return false;
+      const Position to = ApplyMovement(m.from, move);
+      if (!grid_->IsInBounds(to) || !grid_->IsWalkable(to)) return false;  // No motion at all
+      m.cells.push_back(to);
+      m.stops.push_back(0);
+      break;
     }
+    case MotionKind::Forced:
+      if (!m.forced || (m.dr == 0 && m.dc == 0)) return false;  // Opposed moves cancel
+      ForcedMovePath(*grid_, m.from, m.dr, m.dc, m.cells);
+      for (int i = static_cast<int>(m.cells.size()) - 1; i >= 0; --i) m.stops.push_back(i);
+      m.path = true;
+      break;
+    case MotionKind::None:
+      return false;
+  }
+  return !m.stops.empty();
+}
 
-    claims.clear();
-    for (Agent* agent : agents) {
-      if (!agent->IsAlive()) continue;
-      claims[target_pos[agent->GetId()]].push_back(agent);
-    }
-
-    for (auto& [pos, claiming_agents] : claims) {
-      if (claiming_agents.size() > 1) {
-        for (Agent* agent : claiming_agents) {
-          if (agent->GetIntention().movement != MovementAction::Stay) {
-            agent->SetIntention({MovementAction::Stay});
-            changed = true;
-          }
-        }
-      }
-    }
-
-    // Check 4: Chase validity - ensure cell will actually be vacated.
-    target_pos.clear();
-    for (const Agent* agent : agents) {
-      if (!agent->IsAlive()) continue;
-      target_pos[agent->GetId()] = PredictPosition(agent);
-    }
-
-    for (Agent* agent : agents) {
-      if (!agent->IsAlive()) continue;
-      if (agent->GetIntention().movement == MovementAction::Stay) continue;
-
-      Position target = target_pos[agent->GetId()];
-      auto occ_it = current_occupant.find(target);
-      if (occ_it != current_occupant.end() && occ_it->second != agent->GetId()) {
-        ObjectId occupant_id = occ_it->second;
-        Agent* occupant = dynamic_cast<Agent*>(object_manager_->GetActor(occupant_id));
-        if (occupant) {
-          if (occupant->GetIntention().movement == MovementAction::Stay) {
-            agent->SetIntention({MovementAction::Stay});
-            changed = true;
-          }
-        }
+void BaseEnv::ChooseMotion(MotionIntent& m) {
+  // The lists belong to the agent moved
+  static constexpr MotionKind kCompanionList[] = {MotionKind::Teleport, MotionKind::Dash,
+                                                  MotionKind::Walk, MotionKind::Forced};
+  static constexpr MotionKind kOtherList[] = {MotionKind::Teleport, MotionKind::Dash,
+                                              MotionKind::Forced, MotionKind::Walk};
+  const bool companion = m.agent && dynamic_cast<const Companion*>(m.agent);
+  const MotionKind* list = companion ? kCompanionList : kOtherList;
+  m.kind = MotionKind::None;
+  // A body down as the turn begins takes none: a static blocker
+  if (!m.agent || m.agent->IsAffectable()) {
+    for (int tier = 0; tier < 4; ++tier) {
+      if (TryMotion(m, list[tier])) {
+        m.kind = list[tier];
+        m.tier = tier;
+        break;
       }
     }
   }
-  assert(iteration <= max_iterations && "Collision resolution exceeded max iterations");
+  if (m.kind == MotionKind::None) {
+    m.cells.clear();
+    m.stops.clear();
+    m.path = false;
+  }
+  // An agent that does not walk stays, as its intention says (the C API
+  // reads it: a walk into a wall, a walk another motion of its list beat)
+  if (m.agent && m.kind != MotionKind::Walk &&
+      m.agent->GetIntention().movement != MovementAction::Stay) {
+    m.agent->SetIntention({MovementAction::Stay});
+  }
+  // A sum off the axes (diagonal or uneven), for post-analysis
+  if (m.kind == MotionKind::Forced && m.dr != 0 && m.dc != 0) {
+    last_odd_motions_.push_back({m.actor->GetId(), m.dr, m.dc});
+    ++odd_motion_count_;
+  }
 }
 
-Position BaseEnv::PredictPosition(const Agent* agent) const {
-  if (!agent || !agent->IsAlive()) return {-1, -1};
-  return ApplyMovement(agent->GetPosition(), agent->GetIntention().movement);
-}
-
-bool BaseEnv::ValidateMovement(const Agent* agent, Position target) const {
-  if (!agent) return false;
-  if (!grid_->IsInBounds(target)) return false;
-  if (!grid_->IsWalkable(target)) return false;
-  return true;
-}
-
-void BaseEnv::ExecuteValidatedMovements() {
-  // Collect all movements first (to handle simultaneous moves correctly)
-  struct Movement {
-    ObjectId id;
-    Position from;
-    Position to;
+void BaseEnv::ResolveMotion() {
+  std::vector<MotionIntent>& ms = turn_.motions;
+  const size_t n = turn_.motion_count;
+  auto moving = [](const MotionIntent& m) { return m.choice < m.stops.size(); };
+  auto end = [](const MotionIntent& m) {
+    return m.choice < m.stops.size() ? m.cells[static_cast<size_t>(m.stops[m.choice])] : m.from;
   };
-  std::vector<Movement> movements;
-
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    if (!agent->IsAlive()) continue;
-    if (agent->GetIntention().movement == MovementAction::Stay) continue;
-
-    Position from = agent->GetPosition();
-    Position to = PredictPosition(agent);
-
-    if (from != to) {
-      movements.push_back({agent->GetId(), from, to});
-      // Its own motion this turn (a forced move leaves a companion there)
-      if (in_step_) LedgerOf(*agent).moved_itself = true;
+  // `c` is someone's (not ms[self]'s) as the turn ends: a motion ends there
+  // (a stayer on its own cell included), or it holds a living actor no
+  // motion starts from (every living agent has an intent: a thing)
+  auto held = [&](Position c, size_t self) {
+    bool starts_here = false;
+    for (size_t j = 0; j < n; ++j) {
+      if (j != self && end(ms[j]) == c) return true;
+      starts_here = starts_here || ms[j].from == c;
     }
+    if (starts_here) return false;  // It leaves
+    const Actor* a = object_manager_->GetActorAt(c);
+    return a && a->IsAlive();
+  };
+  // `c` is held by one that stays there: a stayer, or a thing
+  auto stayed_on = [&](Position c, size_t self) {
+    bool starts_here = false;
+    for (size_t j = 0; j < n; ++j) {
+      if (ms[j].from != c) continue;
+      if (j != self && !moving(ms[j])) return true;
+      starts_here = true;
+    }
+    if (starts_here) return false;
+    const Actor* a = object_manager_->GetActorAt(c);
+    return a && a->IsAlive();
+  };
+  auto before = [&](size_t a, size_t b) {  // a's claim beats b's
+    return ms[a].tier != ms[b].tier ? ms[a].tier < ms[b].tier : ms[a].rank < ms[b].rank;
+  };
+  auto is_walk = [&](size_t i) { return ms[i].kind == MotionKind::Walk; };
+  const size_t kClear = static_cast<size_t>(-1);
+  // b. The path: the first of its cells another holds at the end (kClear: none)
+  auto blocker = [&](size_t i) {
+    const MotionIntent& m = ms[i];
+    if (!m.path || !moving(m)) return kClear;
+    const size_t stop = static_cast<size_t>(m.stops[m.choice]);
+    for (size_t k = 0; k < stop; ++k) {
+      if (held(m.cells[k], i)) return k;
+    }
+    return kClear;
+  };
+#ifndef NDEBUG
+  size_t bound = 0;  // Every round but the last advances a choice
+  for (size_t i = 0; i < n; ++i) bound += ms[i].stops.size();
+#endif
+  for (size_t round = 0;; ++round) {
+    assert(round <= bound && "the motion phase must end");
+    (void)round;
+    bool firm = false;  // A verdict of a or c
+    // a. The end cell: held by one that stays there; a walk swapping with a walk
+    for (size_t i = 0; i < n; ++i) {
+      MotionIntent& m = ms[i];
+      m.next = 0;
+      if (!moving(m)) continue;
+      const Position to = end(m);
+      bool rejected = stayed_on(to, i);
+      for (size_t j = 0; !rejected && is_walk(i) && j < n; ++j) {
+        rejected = j != i && is_walk(j) && moving(ms[j]) && ms[j].from == to && end(ms[j]) == m.from;
+      }
+      if (rejected) {
+        m.next = m.choice + 1;
+        firm = true;
+      }
+    }
+    auto contends = [&](size_t i) { return moving(ms[i]) && ms[i].next == 0 && blocker(i) == kClear; };
+    // c. Clashes on one end cell, among the contenders (the losers are
+    // judged first, then marked: a verdict of c never changes who contends)
+    for (size_t i = 0; i < n; ++i) {
+      ms[i].clash_lost = false;
+      if (!contends(i)) continue;
+      const Position to = end(ms[i]);
+      int walks = 0;
+      for (size_t j = 0; j < n; ++j) {
+        if (is_walk(j) && contends(j) && end(ms[j]) == to) ++walks;
+      }
+      bool loses = is_walk(i) && walks >= 2;  // Walk vs walk: both stay
+      for (size_t j = 0; !loses && j < n; ++j) {
+        if (j == i || !contends(j) || end(ms[j]) != to) continue;
+        if (is_walk(j) && walks >= 2) continue;  // Out of the running
+        loses = before(j, i);
+      }
+      ms[i].clash_lost = loses;
+    }
+    for (size_t i = 0; i < n; ++i) {
+      if (!ms[i].clash_lost) continue;
+      ms[i].next = ms[i].choice + 1;
+      firm = true;
+    }
+    // d. Nothing firm: the blocked stop before their first blocker
+    if (!firm) {
+      for (size_t i = 0; i < n; ++i) {
+        MotionIntent& m = ms[i];
+        const size_t b = blocker(i);
+        if (b == kClear) continue;
+        size_t next = m.choice + 1;
+        while (next < m.stops.size() && static_cast<size_t>(m.stops[next]) >= b) ++next;
+        m.next = next;
+      }
+    }
+    // The verdicts, together
+    bool any = false;
+    for (size_t i = 0; i < n; ++i) {
+      MotionIntent& m = ms[i];
+      if (m.next == 0) continue;
+      any = true;
+      m.choice = m.next;
+      m.next = 0;
+      // A walk that lost stays (its one candidate)
+      if (m.kind == MotionKind::Walk) m.agent->SetIntention({MovementAction::Stay});
+    }
+    if (!any) break;
   }
+}
 
-  // Execute all movements
-  for (const Movement& mv : movements) {
-    object_manager_->UpdatePosition(mv.id, mv.to);
+void BaseEnv::ExecuteMotion() {
+  // Everyone at once (the actor grid takes the moves in any order: a living
+  // actor arriving on a cell another leaves takes it, see ObjectManager)
+  for (size_t i = 0; i < turn_.motion_count; ++i) {
+    MotionIntent& m = turn_.motions[i];
+    const Position to =
+        m.choice < m.stops.size() ? m.cells[static_cast<size_t>(m.stops[m.choice])] : m.from;
+    m.moved = to != m.from;
+    if (m.moved) object_manager_->UpdatePosition(m.actor->GetId(), to);
   }
-
-  // Snapshot executed action (post-collision, pre-clear) so the C API can
-  // read it after Step returns. GetIntention() alone would be {Stay, None}
-  // immediately after the ClearIntention loop below.
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    agent->CaptureExecutedAction();
-  }
-
-  // Clear intentions
-  for (Agent* agent : object_manager_->GetAllAgents()) {
-    agent->ClearIntention();
+  // Whom each use's forced moves moved: those whose motion was their sum
+  for (size_t p = 0; p < turn_.plan_count; ++p) {
+    SkillPlan& plan = turn_.plans[p];
+    plan.moved.clear();
+    for (const SkillPlan::Forced& f : plan.forced) {
+      const MotionIntent* m = FindMotion(f.actor);
+      if (m && m->kind == MotionKind::Forced && m->moved) plan.moved.push_back(f.actor);
+    }
   }
 }
 
@@ -1038,6 +1169,7 @@ void BaseEnv::ClearStepReports() {
   last_downs_.clear();
   last_revives_.clear();
   last_turn_health_.clear();
+  last_odd_motions_.clear();
 }
 
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
@@ -1539,13 +1671,6 @@ std::vector<std::string> BaseEnv::GetImmunities(ObjectId id) const {
   return out;
 }
 
-void BaseEnv::MoveActor(Actor& actor, Position to) {
-  if (to == actor.GetPosition()) return;
-  object_manager_->UpdatePosition(actor.GetId(), to);
-  auto* agent = dynamic_cast<Agent*>(&actor);
-  if (agent && agent->IsAffectable()) ApplyZoneTag(*agent);
-}
-
 bool BaseEnv::DefineZone(const std::string& tag, const ZoneDef& zone) {
   if (tag.empty() || !IsValidNameLength(tag) || !IsValidZoneDef(zone)) return false;
   zone_defs_[tag] = zone;
@@ -1600,9 +1725,13 @@ namespace {
 const std::string kZoneCause = "zone";  // A zone landing's cause
 }  // namespace
 
-void BaseEnv::ApplyZoneTag(Agent& agent) {
+void BaseEnv::ApplyMovedZoneTags() {
+  if (cell_tags_.empty()) return;
   assert(zone_landings_.empty() && "a zone phase inside a zone phase");
-  CollectZoneLanding(agent);
+  for (size_t i = 0; i < turn_.motion_count; ++i) {
+    const MotionIntent& m = turn_.motions[i];
+    if (m.moved && m.agent) CollectZoneLanding(*m.agent);
+  }
   ResolveZoneLandings();
 }
 
@@ -1770,11 +1899,6 @@ const BaseEnv::LedgerEntry* BaseEnv::FindLedger(const Agent& agent) const {
   return nullptr;
 }
 
-bool BaseEnv::MovedItselfThisTurn(const Agent& agent) const {
-  const LedgerEntry* e = FindLedger(agent);
-  return e && e->moved_itself;
-}
-
 bool BaseEnv::IsDefeatedThisTurn(const Agent& agent) const {
   if (!in_step_) return false;
   const LedgerEntry* e = FindLedger(agent);
@@ -1902,18 +2026,14 @@ void BaseEnv::AreaCells(Position centre, SkillArea area, std::vector<Position>& 
 // (GatherIntentions: AddSkillPlan) from the world as the turn began, so a
 // caster aims from the cell it began the turn on, whoever moves it this
 // turn, and a caster rooted this turn still resolves its use (usability was
-// decided with the intentions; the root blocks from the next step).
-// An outcome still depends on the casters' indices (TEMPORARY, see the
-// header): pass 1's motion clashes and the zone landings of its motions
-// (the one motion phase replaces it), and pass 2's reactions, fired at once
-// by each landing in caster order (the one tag phase replaces that).
+// decided with the intentions; the root blocks from the next step). Its
+// motions (its own dash / teleport, its pushes / pulls) went through the
+// motion phase with every other motion. An outcome still depends on the
+// casters' indices through one thing (TEMPORARY, see the header): the
+// reactions a landing fires at once, in caster order (the one tag phase
+// replaces that).
 void BaseEnv::ResolveSkills() {
-  const size_t count = turn_.plan_count;
-  // Pass 1: the motions, every caster's own first, then the pushes / pulls
-  for (size_t i = 0; i < count; ++i) CasterMotion(turn_.plans[i]);
-  for (size_t i = 0; i < count; ++i) AreaMotion(turn_.plans[i]);
-  // Pass 2: the hits, on the plans' cells as everyone now stands
-  for (size_t i = 0; i < count; ++i) UseSkill(turn_.plans[i]);
+  for (size_t i = 0; i < turn_.plan_count; ++i) UseSkill(turn_.plans[i]);
 }
 
 bool BaseEnv::PlanSkillUse(const Companion& caster, int slot, int rule, Direction aim,
@@ -1923,7 +2043,6 @@ bool BaseEnv::PlanSkillUse(const Companion& caster, int slot, int rule, Directio
   const SkillConfig* found = skills_.Find(name);
   if (!found) return false;
   plan.caster = caster.GetId();
-  plan.agent_index = caster.GetAgentIndex();
   plan.slot = slot;
   plan.rule = rule;
   plan.skill = *found;  // Deliberate copy (see SkillPlan::skill)
@@ -1943,47 +2062,6 @@ bool BaseEnv::AddSkillPlan(Companion& comp, int slot, int rule, Direction aim) {
   // Cooldowns belong to the equipped skill: a context skill does not spend it.
   if (rule < 0) comp.SetCooldown(slot, plan.skill.cooldown);
   return true;
-}
-
-void BaseEnv::CasterMotion(SkillPlan& plan) {
-  if (plan.caster_candidates.empty()) return;
-  auto* caster = dynamic_cast<Agent*>(object_manager_->GetActor(plan.caster));
-  if (!caster || !caster->IsAffectable()) return;
-  // Its landing, else the next candidate nobody holds now (an earlier
-  // caster's landing, a walker's cell), else it stays
-  for (const Position& p : plan.caster_candidates) {
-    if (!CanLand(*grid_, *object_manager_, p, plan.caster)) continue;
-    if (p != caster->GetPosition()) {
-      MoveActor(*caster, p);  // Lands its zone
-      if (in_step_) LedgerOf(*caster).moved_itself = true;
-    }
-    return;
-  }
-}
-
-void BaseEnv::AreaMotion(SkillPlan& plan) {
-  for (const SkillPlan::Forced& f : plan.forced) {
-    Actor* thing = object_manager_->GetActor(f.actor);
-    if (!thing || !thing->IsAlive()) continue;
-    if (const auto* agent = dynamic_cast<const Agent*>(thing)) {
-      if (!agent->IsAffectable()) continue;
-      // A companion's own motion (a walk, its dash / teleport) wins over a
-      // forced move: it stays where it went
-      if (dynamic_cast<const Companion*>(agent) && MovedItselfThisTurn(*agent)) continue;
-    }
-    // From where it stands now (TEMPORARY: the one motion phase sums the
-    // forced moves), by the landing rule
-    const Position from = thing->GetPosition();
-    const int distance = std::max(std::abs(f.dr), std::abs(f.dc));
-    const int dr = (f.dr > 0) - (f.dr < 0);
-    const int dc = (f.dc > 0) - (f.dc < 0);
-    const Position to = ResolveDashWith(*grid_, from, dr, dc, distance, [&](Position q) {
-      return CanLand(*grid_, *object_manager_, q, f.actor);
-    });
-    if (to == from) continue;  // Stopped right away: moved nothing
-    MoveActor(*thing, to);     // Lands its zone
-    plan.moved.push_back(f.actor);
-  }
 }
 
 void BaseEnv::UseSkill(SkillPlan& plan) {
@@ -2008,7 +2086,7 @@ void BaseEnv::UseSkill(SkillPlan& plan) {
   };
 
   // 1. Whom it hits: its planned cells, on whoever stands there now (after
-  // the walking and every use's motion), plus whom its own push / pull moved.
+  // the motion phase), plus whom its own push / pull moved.
   // First those it planned on (the preview's order): walking out of its
   // cells dodges it...
   for (const AffectedAgent& p : plan.predicted) {
@@ -2080,8 +2158,8 @@ void BaseEnv::UseSkill(SkillPlan& plan) {
   }
 
   // 5. Root, on the area only (Rooted for the next root_steps steps, a step
-  // timer, see Agent::BeginStep). 6. Motion: whom its forced moves really
-  // moved (pass 1).
+  // timer, see Agent::BeginStep). 6. Motion: whom its forced moves moved (the
+  // motion phase).
   for (size_t i = 0; i < agents.size(); ++i) {
     if (skill.root_steps > 0 && on_area[i] && !self_spared(i, skill.self_root) &&
         agents[i]->IsAffectable()) {
@@ -2120,6 +2198,13 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
   if (outcome.usable) {
     comp->SetDirection(aim);  // GatherIntentions: the movement aims
     world->AddSkillPlan(*comp, slot, world->RuleIndex(rule), aim);
+    // The motion phase with that use's motions only (everyone else stays),
+    // the zones of those it moved, then its hits
+    for (Agent* agent : world->object_manager_->GetAllAgents()) agent->ClearIntention();
+    world->GatherMotionIntents();
+    world->ResolveMotion();
+    world->ExecuteMotion();
+    world->ApplyMovedZoneTags();
     world->ResolveSkills();
   }
   // The zones the use sets at the end of the step (its reactions' cells),
@@ -2182,14 +2267,18 @@ const Actor* BaseEnv::MotionThingAt(Position p, const SkillConfig& skill, const 
 
 Position BaseEnv::PushLanding(const SkillConfig& skill, Position p, Position centre,
                               ObjectId mover, const Agent& caster, Position landing) const {
-  // CanLand, the caster on its landing cell
-  auto can_land = [&](Position q) {
-    if (!grid_->IsInBounds(q) || !grid_->IsWalkable(q)) return false;
+  // A forced move's path rule (one push: on an axis), the caster on its
+  // landing cell: the last cell before the first wall, hole or living actor
+  const int dr = p.row - centre.row, dc = p.col - centre.col;
+  Position last = p;
+  for (int i = 1; i <= skill.motion_distance; ++i) {
+    const Position q{p.row + dr * i, p.col + dc * i};
+    if (!grid_->IsInBounds(q) || !grid_->IsWalkable(q)) break;
     const Actor* a = ActorAfterMotion(q, caster, landing);
-    return !(a && a->IsAlive() && a->GetId() != mover);
-  };
-  return ResolveDashWith(*grid_, p, p.row - centre.row, p.col - centre.col,
-                         skill.motion_distance, can_land);
+    if (a && a->IsAlive() && a->GetId() != mover) break;
+    last = q;
+  }
+  return last;
 }
 
 std::optional<Position> BaseEnv::PullFrom(const SkillConfig& skill,
@@ -2239,13 +2328,7 @@ void BaseEnv::ResolveSkillTargets(const Companion& caster, const SkillConfig& sk
   // Its fallbacks, should another motion take the landing first: the
   // landing, then each closer walkable cell of its line (a dash's line is
   // pathable up to its landing; a teleport's may cross walls)
-  if (plan.landing != from) {
-    const int steps = std::abs(plan.landing.row - from.row) + std::abs(plan.landing.col - from.col);
-    for (int i = steps; i >= 1; --i) {
-      const Position p{from.row + dr * i, from.col + dc * i};
-      if (grid_->IsInBounds(p) && grid_->IsWalkable(p)) plan.caster_candidates.push_back(p);
-    }
-  }
+  CasterCandidates(*grid_, from, plan.landing, plan.caster_candidates);
   plan.centre = from;
   switch (skill.targeting) {
     case SkillTargeting::Self:

@@ -120,12 +120,44 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
  - The legacy generic companion cast (an on/off flag that cast an effect for an EMPTY
    slot 0) is gone, with its C API setter / getter and EffectSpawned events (C API 1.2.0)
 
-### Collision Resolution
-Fixed-point iteration algorithm in `base_env.cc:ResolveCollisions()`:
-1. Invalidate moves into walls/out-of-bounds
-2. Cancel swap conflicts (A→B, B→A)
-3. Cancel same-cell conflicts (A→X, B→X)
-4. Validate chase moves (only if target is vacating)
+### The motion phase
+One phase for every motion of the turn (`base_env.cc`: `GatherMotionIntents`,
+`ResolveMotion`, `ExecuteMotion`; the header documents the algorithm; tests:
+`tests/test_turn.cc`): walks, dashes, teleports and forced moves (the skills' pushes and
+pulls; an effect's push still goes through the effect system until effects are planned).
+- **One motion per actor**, the first of its agent's list it has a statically valid one of
+  (a cell to end on: walls and the grid read, not the actors): a companion: teleport >
+  dash > walk > forced move; anything else: teleport > dash > forced move > walk. So a
+  companion's walk beats a push on it, a push on an enemy beats its walk (it does not
+  walk), a walk into a wall is no motion (the push applies). A motion that loses a clash
+  falls back along its own candidates or stays: never to another kind (a companion whose
+  walk is blocked stays, unpushed). An agent that does not walk has its intention Stay.
+- **Forced moves on one actor add up** as vectors (opposed ones cancel). A sum off the
+  axes travels the rounded line toward its end (`ForcedMovePath`) and is recorded:
+  `GetLastOddMotions()` (actor, dr, dc; a step report) and `GetOddMotionCount()` (the
+  env's life: copied with it, kept by `Reset` / `LoadSnapshot`)
+- **Paths**: a push / pull stops at the first blocker on its path, on the cell before it:
+  a wall, a hole, a cell held at the END of the turn (never hopping over one). A dash
+  likewise, but it jumps holes (never ending on one); planned as the turn begins, its
+  landing already stops before the first living actor on its line. A teleport only
+  needs its landing (3, else 2, else 1, as planned)
+- **Clashes on one end cell**: the lower tier wins (a motion's tier: the place of its kind
+  in ITS agent's list), a tie to the lower rank (agent index; things, living non-agent
+  actors, after every agent by ObjectId). Walk vs walk keeps its rules, whatever the
+  tiers: two walks onto one cell both stay, a swap cancels, a walk into a cell succeeds
+  only if its occupant leaves (chains and rings of 3+ move). A cell whose occupant really
+  leaves is free; blocked if the leaver ends up staying. A body down as the turn begins
+  and a thing no skill moves are static blockers (a walk into a thing is blocked)
+- Rounds, each judging every motion against the same choices (the verdicts apply
+  together: no order dependence but the ties): rejections of the end cell (held by one
+  that stays, a walk swap, a lost clash among those whose path is clear) first; only when
+  there are none, the blocked paths stop before their first blocker. Choices only
+  advance, so it ends (at most the sum of the candidates rounds). Paths and clashes can
+  have no stable answer (a dash whose path a lower-tier push ends on): the monotone
+  rounds decide
+- The C API's movement events are unchanged: AgentMoved for any change of cell
+  (`move_action` = the executed walk, Stay for a dash / teleport / forced move),
+  AgentBlocked for an original walk that did not move
 
 ### Skills, tags, zones
 The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque data
@@ -134,7 +166,7 @@ The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque
 host's business. But the env simulates every mechanic: targeting, motion, tags, roots,
 cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 `core/context_skill.{h,cc}`, `env/skill_motion.{h,cc}`, `env/base_env.cc` (`PlanSkillUse`,
-`ResolveSkillTargets`, `ResolveSkills`, `CasterMotion`, `AreaMotion`, `UseSkill`,
+`ResolveSkillTargets`, `GatherMotionIntents` / `ResolveMotion`, `ResolveSkills`, `UseSkill`,
 `PreviewSkill`, `EffectiveSkill`, `Affects`).
 
 **Step order** (`BaseEnv::Step`):
@@ -142,18 +174,18 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 2. `PreStep` (enemy FSM) → `GatherIntentions`, the intents phase: every skill use is
    PLANNED here from the world as the turn begins (`AddSkillPlan`: its effective skill,
    the context rules read once, its cells and targets, its cooldown spent; see "Multiple
-   casters") → `ResolveCollisions` → `ExecuteValidatedMovements`
+   casters") → the motion phase (`GatherMotionIntents` → `ResolveMotion` →
+   `ExecuteMotion`: every walk, dash, teleport, push and pull at once, see "The motion
+   phase")
 3. `ApplyZoneTags`, the zone phase (every affectable agent on a zone cell: alive, not
-   downed; one landing each), in sub-phases, each over ALL the landings: a. immunity,
+   downed; one landing each, on its FINAL cell), in sub-phases, each over ALL the landings: a. immunity,
    the tag and its status; b. weaknesses; c. reactions, gathered then applied (every
    trigger found, every firing's affected agents computed, then the outcomes applied
    per agent); d. the zone's damage on those still affectable (see Zones and
    Reactions). From here to the end of the step the zone map is READ-ONLY: a
    reaction's `zone_becomes` waits in a pending buffer
-4. `ResolveInteractions` → `ResolveSkills`, the plans in two passes (TEMPORARY: the one
-   motion phase replaces pass 1): 1. every caster's dash / teleport (`CasterMotion`),
-   then every push / pull (`AreaMotion`), in caster order; 2. every use's hits
-   (`UseSkill`), in caster order (see "Resolution of one skill")
+4. `ResolveInteractions` → `ResolveSkills`: every use's hits (`UseSkill`), in caster
+   order (see "Resolution of one skill")
 5. Effects tick, `CommitPendingZones` (the step's reaction zones, in the order they were
    recorded: a later write to the same cell wins), `ApplyTurnOutcomes` (the turn's
    health, see below), `EndStep` on every agent (tags,
@@ -222,11 +254,14 @@ steps is always the number of steps to come it covers.
 - Ground target: the cell `range` away by the line rule (may be a hole)
 - Projectile: the first agent the skill affects within `range` (a downed one is passed
   over; by an `affects_downed` skill, a standing one), else the last cell reached
-- Dash: up to `distance` by the line rule, lands on the furthest valid cell (else stays)
+- Dash: up to `distance`; a wall or the first living actor stops it, holes are jumped;
+  lands on the furthest walkable cell before that (else stays)
 - Teleport: exactly `distance`, else `distance - 1`, ... 1 (ignores what lies between,
   walls included), else stays
-- Push: each ring thing `distance` away from the centre, as a dash. Pull: exactly one
-  cell, only into a free, walkable centre
+- Push: each ring thing `distance` away from the centre; a wall, a hole or a living
+  actor stops it on the cell before (the motion phase: a cell held at the end of the
+  turn; pushes on one thing add up). Pull: exactly one cell, only into a free, walkable
+  centre
 
 **Builtins** (`SkillBook`, `skill_config.cc`). Tags are permanent (-1).
 
@@ -285,11 +320,11 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
   predicted affected agents (area in cell order, then the path) and what it will do to
   each, the forced moves (each ring thing a push moves away from the centre by
   `motion_distance`, the one thing a pull takes into the centre, as offsets), the
-  revives (allies down as the turn began)) → pass 1: the caster's motion (the first
-  candidate it can land on now, else it stays), then the forced moves (each from where
-  its actor stands now; a companion that moved itself this turn keeps its own motion) →
-  pass 2 (`UseSkill`): the hits land on the planned cells, on whoever stands there after
-  every motion, plus whom its own push / pull moved (walking out dodges, walking in gets
+  revives (allies down as the turn began)) → the motion phase: the caster's dash /
+  teleport and the forced moves, with every other motion of the turn (see "The motion
+  phase") → the zone phase → `UseSkill`: the hits land on the planned cells, on whoever
+  stands there after the motion phase, plus whom its own push / pull moved (walking out
+  dodges, walking in gets
   hit; a projectile's line is traced once, as the turn begins: its stop cell is fixed, an
   agent walking into the line before it is not hit) → tags → damage → revive → root
   (area only). The damage goes into the turn's ledger: an agent it takes to 0 is still
@@ -308,15 +343,12 @@ another use pulls it this turn, and its cooldown is spent when the use is planne
 use happened, whatever it then reaches; a step that throws before the use applies keeps
 it spent). A caster down as the turn begins cannot cast; one going down this turn still
 casts. A caster rooted this turn still resolves its skill (the root blocks from the next
-step). The indices order the reports (uses in caster index order), and still change
-outcomes in two TEMPORARY ways:
-- pass 1 (until the one motion phase): two motions onto one cell (the lower caster index
-  first; a dash / teleport before any push / pull), a motion onto a cell a later motion
-  vacates (still held: blocked), two forced moves on one actor (one after the other), and
-  the zone landings of those motions (immediate, in caster order);
-- pass 2 (until the one tag phase): a skill's landing fires its reaction at once
-  (`LandTag`), in caster order: an agent carrying wet hit by electrified (index 0) and
-  chilled (index 1) reacts by the rule the first landing completes.
+step). The indices order the reports (uses in caster index order); the motion phase
+depends on them only through its ties (the same tier on one cell: the lower index), and
+they still change outcomes in one TEMPORARY way (until the one tag phase): a skill's
+landing fires its reaction at once (`LandTag`), in caster order: an agent carrying wet
+hit by electrified (index 0) and chilled (index 1) reacts by the rule the first landing
+completes.
 
 A dash / teleport losing its landing falls back along its line and keeps its planned
 area, centre and whole path (a `tag_path` dash still hits every planned path cell).
@@ -369,7 +401,7 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   `caster_landing`, `affected`. It is the use's plan (`PlanSkillUse`), as the step would
   make it now, so preview and plan cannot drift; computed whatever `usable` says. What
   the step DOES may still differ: the hits land on the planned cells on whoever stands
-  there after everyone moved (enemies too) and every use's motion, and a dash / teleport
+  there after the motion phase (everyone, enemies too), and a dash / teleport
   whose landing another motion took falls back; a use whose movement is Stay keeps the
   caster's facing. It says whom the skill affects, not where a push / pull then moves them
 - `SkillUse::affected`: what the use DID, those it predicted still on its cells (or moved
@@ -377,9 +409,10 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   onto its cells, in cell order (nobody moved: the preview's agents and effects)
 - `PreviewSkillOutcome(caster id, slot, aim)`: what the use would DO, reports included:
   resolved on a `Clone()` (nothing in the env changes or is interned) by the step's own
-  code for a use (`AddSkillPlan` then `ResolveSkills`), as the next step would
-  resolve it were it the step's only change: no movement, no zone landing on those
-  standing on zones, no enemy acting, no end-of-step timers. The clone is mid-step
+  code for a use (`AddSkillPlan`, the motion phase with only its motions, then
+  `ResolveSkills`), as the next step would resolve it were it the step's only change:
+  nobody else moves, zones land only on those its motions moved (their final cell), no
+  enemy acting, no end-of-step timers. The clone is mid-step
   around the use (`in_step_`, `Agent::BeginStep`), so what the use sets (a
   `zone_becomes` zone, a status) is stored as the step stores it (the zones its
   reactions set, their reports' `cells`, are committed after the use as the end of the
@@ -437,9 +470,10 @@ tests: `tests/test_zones.cc`):
   duration or steps of 0, below -1 or above `kMaxTimerSteps` (1,000,000: every step
   timer level data or the host sets is capped, `IsValidTimer`, so the n + 1 of a timer
   set during a step never overflows), a negative damage
-- Landed (cause `"zone"`, source -1) on every affectable agent standing there after regular
-  movement (before casts and skills), and on any agent a skill motion lands there
-  (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
+- Landed (cause `"zone"`, source -1) once per turn on every affectable agent standing
+  there after the motion phase: its FINAL cell, moved or not (before the skills' hits;
+  the cell it began on and the cells a dash or a push crosses land nothing). Effect
+  pushes (still outside the motion phase) do not apply zones
 - **One landing, in order** (see Reactions): immunity (nothing lands, no damage), the
   tag and its tag status (`PutTag`), weakness (a defeated agent stays in play until the
   end of the turn), reaction, then the zone's own `damage`, into the turn's ledger
@@ -464,13 +498,12 @@ tests: `tests/test_zones.cc`):
   share; then the zones, in firing order. No firing's outcome cancels
   another's (a firing that would down B does not stop B's own reaction), so the
   agents' final state does not depend on the order (the zones and the reports: see
-  "A step reads one zone map"); d. each zone's damage. A skill
-  motion's landing (`MoveActor` → `ApplyZoneTag`) is the same phases over that one
-  landing
+  "A step reads one zone map"); d. each zone's damage. The outcome preview runs the
+  same phases over the landings of those its motions moved (`ApplyMovedZoneTags`)
 - **A step reads one map** (see Step order): a zone a reaction creates during a step
   (`zone_becomes`) is written at the end of the step and first lands next step, tag and
-  damage; everything in the step (the zone phase, a skill motion landing on the cell,
-  weaknesses, spread regions) reads the zone as the step began
+  damage; everything in the step (the zone phase, weaknesses, spread regions) reads the
+  zone as the step began
 - A caster its landing zone takes to 0 still gets its own use (tags, damage: reported)
   and the others it affects are tagged, hurt, rooted, pushed; it goes down at the end of
   the turn
@@ -598,7 +631,9 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - Statuses are step timers (see Step timers): `root_steps = n` roots for the n next steps
 - Going down clears a companion's statuses, and a downed one accepts none (see Downs)
 
-**Per-step reports** (cleared at the start of every `Step` and by `LoadSnapshot`, hence every `Reset`):
+**Per-step reports** (cleared at the start of every `Step` and by `LoadSnapshot`, hence every `Reset`;
+also `GetLastOddMotions()`, the forced-move sums off the axes, C++ only, see "The motion
+phase"):
 
 | BaseEnv | Content | C API event |
 |---------|---------|-------------|
@@ -615,8 +650,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   order; its landing defeats; its reactions in trigger agent-index order; their result
   landings in the same firing order, each firing's in its affected order; then the
   result defeats, in first-hit order: firing, then affected order), then the skill phase:
-  the zone landings of its motions (pass 1: dashes / teleports, then pushes / pulls, in
-  caster order), then each use's hits and skill use, in caster order. The C API reads the same vectors (its
+  each use's hits and skill use, in caster order. The C API reads the same vectors (its
   `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
   AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a down from between the
@@ -775,9 +809,11 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
 - **Inert and untouched.** `Agent::IsAffectable()` = alive and not downed: the check
   for everything that hits, heals, tags, statuses, pushes / pulls or targets an agent
   (`TakeDamage`, `Heal`, `ApplyTag` / `LandTag` / `ApplyTagTo` (false, interns nothing),
-  `ApplyStatus`, zones, `Affects`, `AreaMotion`, effects and effect pushes, projectiles
+  `ApplyStatus`, zones, `Affects`, forced moves, effects and effect pushes, projectiles
   pass over it). The one exception: an `affects_downed` skill reaches the downed only
-  (and can only revive them). The downed does not act (`GatherIntentions`: Stay;
+  (and can only revive them). A body down as the turn begins is a static blocker of the
+  motion phase: never moved, it blocks every walk, push, dash path and landing onto it.
+  The downed does not act (`GatherIntentions`: Stay;
   `CanUseSkill` false; `LegalActions`: Stay only; no context skill).
   Enemies ignore it (`FindClosestCompanion`) and drop it as a target (`AggroState`, a
   wind-up locks no downed target). It still blocks its cell (collisions, landing)

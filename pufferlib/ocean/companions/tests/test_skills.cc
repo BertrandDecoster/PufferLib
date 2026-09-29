@@ -427,14 +427,22 @@ TEST(TestDashNeverLandsInHole) {
   ASSERT_TRUE(Dash(env, a) == (Position{3, 3}));
 }
 
-TEST(TestDashCrossesAgentsButNeverLandsOnOne) {
+// A dash stops at the first living actor on its line (the path rule), on the
+// cell before it; a dead one does not stop it
+TEST(TestDashStopsAtTheFirstActor) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   Agent* a = Place(env, 0, {3, 1});
-  Place(env, 1, {3, 3});
-  ASSERT_TRUE(Dash(env, a) == (Position{3, 5}));  // through
+  Agent* b = Place(env, 1, {3, 3});
+  std::vector<Position> crossed;
+  ASSERT_TRUE(Dash(env, a, &crossed) == (Position{3, 2}));  // Not through
+  ASSERT_TRUE(crossed.empty());
   Place(env, 1, {3, 5});
-  ASSERT_TRUE(Dash(env, a) == (Position{3, 4}));  // short of it
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 4}));  // Short of it
+  env.GetMutableGrid().SetCell({3, 4}, CellKind::Hazard);
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 3}));  // Never on a hole before it
+  b->SetAlive(false);
+  ASSERT_TRUE(Dash(env, a) == (Position{3, 5}));  // A corpse is no blocker
 }
 
 TEST(TestTeleportClear) {
@@ -517,16 +525,21 @@ TEST(TestTeleportThroughStep) {
   ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 4);
 }
 
+// The path and the cross around the planned landing (3,5) are electrified.
+// An ally walking onto the path this turn is hit there; it holds that cell
+// at the end of the turn, so the dash stops before it, on (3,2) (a dash no
+// longer crosses anyone), and keeps its planned cells.
 TEST(TestLightningStepElectrifiesPathAndLandingCross) {
   SynchroEnv env(10, 10, 4, 1, 0, 42);
   MakeArena(env);
   Agent* caster = Place(env, 0, {3, 1});
-  Agent* crossed = Place(env, 1, {3, 3});   // dashed through
+  Agent* crossed = Place(env, 1, {2, 3});   // walks down onto the path (3,3)
   Agent* beside = Place(env, 2, {2, 5});    // above the landing cell (3,5)
   Agent* away = Place(env, 3, {5, 5});      // 2 below the landing cell: untouched
   env.SetCompanionSkill(caster->GetId(), 0, "lightningStep");
-  env.Step({Use(MovementAction::Right), kStay, kStay, kStay});
-  ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
+  env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Down), kStay, kStay});
+  ASSERT_TRUE(crossed->GetPosition() == (Position{3, 3}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 2}));
   ASSERT_TRUE(Has(env, crossed, "electrified"));
   ASSERT_TRUE(Has(env, beside, "electrified"));
   ASSERT_FALSE(Has(env, away, "electrified"));
@@ -945,6 +958,17 @@ TEST(TestFireballPushesTheRingOut) {
   for (Agent* a : {center, up, right, down}) ASSERT_TRUE(Has(env, a, "burning"));
 }
 
+// A fireball whose push goes `distance` cells, as "blast"
+static void DefineBlast(SynchroEnv& env, int distance) {
+  SkillConfig blast = *env.GetSkillBook().Find("fireball");
+  blast.name = "blast";
+  blast.motion_distance = distance;
+  env.GetMutableSkillBook().Define(blast);
+}
+
+// A push treats a hole as a blocker: it stops before it, never on it, and
+// never hops over it (a push 2 with a hole right behind the ring cell: the
+// pushed one stays)
 TEST(TestFireballPushNeverLandsInHole) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -954,8 +978,21 @@ TEST(TestFireballPushNeverLandsInHole) {
   env.SetCompanionSkill(caster->GetId(), 0, "fireball");
   env.Step({Use(MovementAction::Right), kStay});
   ASSERT_TRUE(up->GetPosition() == (Position{2, 4}));
+
+  SynchroEnv far(10, 10, 2, 1, 0, 42);
+  MakeArena(far);
+  DefineBlast(far, 2);
+  far.GetMutableGrid().SetCell({3, 6}, CellKind::Hazard);
+  Agent* blaster = Place(far, 0, {3, 1});  // Centre (3,4)
+  Agent* right = Place(far, 1, {3, 5});    // Pushed right 2: (3,6) is a hole, (3,7) floor
+  far.SetCompanionSkill(blaster->GetId(), 0, "blast");
+  far.Step({Use(MovementAction::Right), kStay});
+  ASSERT_TRUE(right->GetPosition() == (Position{3, 5}));
 }
 
+// A push stops at the first actor on its path (one that stays): on the cell
+// before it, never past it (a push 2 with an ally right behind the ring
+// cell: the pushed one stays)
 TEST(TestFireballPushBlockedByAnotherActor) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);
@@ -966,6 +1003,17 @@ TEST(TestFireballPushBlockedByAnotherActor) {
   env.Step({Use(MovementAction::Right), kStay, kStay});
   ASSERT_TRUE(up->GetPosition() == (Position{2, 4}));
   ASSERT_TRUE(blocker->GetPosition() == (Position{1, 4}));
+
+  SynchroEnv far(10, 10, 3, 1, 0, 42);
+  MakeArena(far);
+  DefineBlast(far, 2);
+  Agent* blaster = Place(far, 0, {3, 1});   // Centre (3,4)
+  Agent* right = Place(far, 1, {3, 5});     // Pushed right 2
+  Agent* behind = Place(far, 2, {3, 6});    // Outside the cross, (3,7) free behind it
+  far.SetCompanionSkill(blaster->GetId(), 0, "blast");
+  far.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_TRUE(right->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(behind->GetPosition() == (Position{3, 6}));
 }
 
 TEST(TestVortexPullsTheOneAboveFirst) {
@@ -1076,15 +1124,19 @@ TEST(TestRootedCannotLightningStep) {
   ASSERT_TRUE(env.GetLastSkillUses().empty());
 }
 
+// A rooted companion cannot walk, so a push on it is its motion of the turn
+// (a companion's walk would beat it): pushed, even as it tries to walk
 TEST(TestRootedCanStillBePushed) {
-  SynchroEnv env(10, 10, 2, 1, 0, 42);
-  MakeArena(env);
-  Agent* caster = Place(env, 0, {3, 1});
-  Agent* up = Place(env, 1, {2, 4});
-  up->ApplyStatus(StatusType::Rooted, 2);
-  env.SetCompanionSkill(caster->GetId(), 0, "fireball");
-  env.Step({Use(MovementAction::Right), kStay});
-  ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));
+  for (MovementAction tries : {MovementAction::Stay, MovementAction::Left}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {3, 1});
+    Agent* up = Place(env, 1, {2, 4});
+    up->ApplyStatus(StatusType::Rooted, 2);
+    env.SetCompanionSkill(caster->GetId(), 0, "fireball");
+    env.Step({Use(MovementAction::Right), EncodeAction(tries)});
+    ASSERT_TRUE(up->GetPosition() == (Position{1, 4}));
+  }
 }
 
 TEST(TestRootedStatusStrings) {
@@ -1479,19 +1531,25 @@ TEST(TestTimedZoneKeepsTheTagWhileStandingThere) {
   ASSERT_FALSE(Has(env, a, "wet"));
 }
 
+// Zones land once per turn, on the final cell, after the motion phase (the
+// cell a motion began on and the cells a dash crosses land nothing)
 TEST(TestZoneTagsFollowSkillMotions) {
-  {  // A lightningStep lands on an oil cell
+  {  // A lightningStep from a wet cell, across a wet cell, lands on an oil cell
     SynchroEnv env(10, 10, 2, 1, 0, 42);
     MakeArena(env);
     env.SetCellTag({3, 5}, "oil", kPermanentTag);
+    env.SetCellTag({3, 1}, "wet", kPermanentTag);
+    env.SetCellTag({3, 3}, "wet", kPermanentTag);
     Agent* a = Place(env, 0, {3, 1});
     env.SetCompanionSkill(a->GetId(), 0, "lightningStep");
     env.Step({Use(MovementAction::Right), kStay});
     ASSERT_TRUE(a->GetPosition() == (Position{3, 5}));
     ASSERT_TRUE(Has(env, a, "oil"));
+    ASSERT_FALSE(Has(env, a, "wet"));
+    ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
   }
-  {  // A fireball pushes `up` from (2,4) onto a wet cell (1,4): every use's
-     // motions come first (the zone lands then), then its hits (the tags)
+  {  // A fireball pushes `up` from (2,4) onto a wet cell (1,4): the motion
+     // phase first, then the zones on the final cells, then the hits (the tags)
     SynchroEnv env(10, 10, 2, 1, 0, 42);
     MakeArena(env);
     env.SetCellTag({1, 4}, "wet", kPermanentTag);
@@ -2090,19 +2148,23 @@ TEST(TestPreviewFireballMatchesTheStep) {
   ASSERT_TRUE(center->GetPosition() == (Position{3, 4}));
 }
 
-TEST(TestPreviewLightningStepLandsAndTagsThePath) {
+// A dash stops before the first agent on its line (as the turn begins): the
+// landing (3,3) and the cross around it, which reaches that agent; the path
+// before it is empty (an agent walking onto it would be hit: see
+// TestLightningStepElectrifiesPathAndLandingCross)
+TEST(TestPreviewLightningStepLandsBeforeTheFirstAgent) {
   SynchroEnv env(10, 10, 4, 1, 0, 42);
   MakeArena(env);
   Agent* caster = Place(env, 0, {3, 1});
-  Agent* crossed = Place(env, 1, {3, 3});  // Dashed through
-  Agent* beside = Place(env, 2, {2, 5});   // Above the landing cell (3,5)
+  Agent* crossed = Place(env, 1, {3, 4});  // On the line: the dash stops before it
+  Agent* beside = Place(env, 2, {2, 3});   // Above the landing cell (3,3)
   Place(env, 3, {5, 5});
   env.SetCompanionSkill(caster->GetId(), 0, "lightningStep");
   BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 4);
-  ASSERT_TRUE(p.caster_landing == (Position{3, 5}));
-  ASSERT_TRUE(p.centre == (Position{3, 5}));
-  // The caster on its own centre (friendly fire; self_tags spares it), its
-  // ring, then the path
+  ASSERT_TRUE(p.caster_landing == (Position{3, 3}));
+  ASSERT_TRUE(p.centre == (Position{3, 3}));
+  // The caster on its own centre (friendly fire; self_tags spares it), then
+  // its ring (up, right)
   ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), 0},
                                       {beside->GetId(), kTagsFx},
                                       {crossed->GetId(), kTagsFx}}));

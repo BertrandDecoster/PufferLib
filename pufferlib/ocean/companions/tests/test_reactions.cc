@@ -1981,9 +1981,10 @@ TEST(TestAZonePhaseWeaknessDefeatDoesNotDependOnTheOrder) {
 }
 
 // A fireball igniting the oil: the zone stays oil for the rest of the step
-// (a second caster's fireball on the same oil fires again, a dash landing on
-// it lands oil), and becomes fire at the end of the step, landing from the
-// next one. The rule keeps the oil, so the gob, still oiled, reacts again.
+// (a second caster's fireball on the same oil fires again; a dash landing on
+// it gets oil, once, in the zone phase after the motion phase, on its final
+// cell), and becomes fire at the end of the step, landing from the next one.
+// The rule keeps the oil, so the gob, still oiled, reacts again.
 TEST(TestASkillIgnitingTheOilLeavesItOilUntilTheEndOfTheStep) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);
@@ -2015,15 +2016,19 @@ TEST(TestASkillIgnitingTheOilLeavesItOilUntilTheEndOfTheStep) {
     ASSERT_EQ(r.cells.size(), oil.size());  // What becomes fire at the end of the step
   }
   ASSERT_EQ(fired.at(1).source, env.GetObjectManager().GetAllAgents().at(1)->GetId());
-  // The dash landed the oil: the zone as the step began
-  bool dash_landed_oil = false;
+  // The dash's final cell landed the oil, once, in the zone phase (before
+  // any skill's landing): the zone as the step began
+  int dash_oil_landings = 0;
+  bool skill_landed = false;
   for (const auto& t : env.GetLastTagsApplied()) {
+    skill_landed = skill_landed || t.kind == TagSource::Skill;
     if (t.agent == dasher->GetId() && t.kind == TagSource::Zone) {
       ASSERT_EQ(t.tag, Id(env, "oil"));
-      dash_landed_oil = true;
+      ASSERT_FALSE(skill_landed);
+      ++dash_oil_landings;
     }
   }
-  ASSERT_TRUE(dash_landed_oil);
+  ASSERT_EQ(dash_oil_landings, 1);
   ASSERT_TRUE(Has(env, dasher, "oil"));
   for (Position p : oil) {
     ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "fire"));

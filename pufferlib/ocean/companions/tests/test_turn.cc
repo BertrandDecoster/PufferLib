@@ -2,7 +2,9 @@
 // Unit tests for the phased turn: a turn totals every agent's damage and
 // heals (Marked on the total), and its downs, deaths and revives happen at its
 // end; nothing changes HP, alive or down during a Step. Every skill use is
-// planned from the world as the turn began (simultaneous casters).
+// planned from the world as the turn began (simultaneous casters). Every
+// motion of the turn (walks, dashes, teleports, pushes, pulls) is one phase,
+// and the zones land once, on the final cells.
 
 #include <algorithm>
 #include <iostream>
@@ -18,6 +20,7 @@
 #include "../src/core/reaction.h"
 #include "../src/core/skill_config.h"
 #include "../src/core/snapshot.h"
+#include "../src/env/skill_motion.h"
 #include "../src/env/synchro_env.h"
 #include "effect_registry_guard.h"
 
@@ -324,8 +327,9 @@ TEST(TestAHealSavesACompanionAtZeroThisTurn) {
   ASSERT_TRUE(t.outcome == TurnOutcome::None);
 }
 
-// A companion the zone takes to 0 still uses its skill and is still affected
-// (tagged, pushed) this turn; it goes down at the end
+// A companion the zone of its final cell takes to 0 (pushed onto the fire)
+// still uses its skill and is still affected (tagged) this turn; it goes
+// down at the end
 TEST(TestACompanionAtZeroStillActsAndIsAffectedThisTurn) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -336,7 +340,7 @@ TEST(TestACompanionAtZeroStillActsAndIsAffectedThisTurn) {
   Agent* gob = AddEnemy(env, {1, 3});
   GiveBolt(env, 0, "zap", "zapped");
   GiveGust(env, 1);
-  Require(env.SetCellTag({3, 3}, "burning", Hurting(1)), "fire");
+  Require(env.SetCellTag({3, 2}, "burning", Hurting(1)), "fire");
   std::vector<Action> actions = Stays(env);
   actions[0] = Use(MovementAction::Up);
   actions[1] = Use(MovementAction::Stay);
@@ -478,22 +482,24 @@ TEST(TestAnAgentPushedOntoItsWeaknessIsDefeatedAndStillGetsItsResult) {
   ASSERT_EQ(TurnOf(env, imp).damage, 1);
 }
 
-// Defeated first, pushed after: the zone phase defeats the imp (its lake
-// lands on it: weak to wet there); still in play, the gust's push then
-// moves it off the lake and tags it; it dies at the end of the turn
+// Pushed, then defeated, then still hit: the gust pushes the imp onto the
+// lake (the motion phase), the zone phase lands the lake on its final cell
+// (weak to wet there: defeated); still in play, the gust's hits then tag it
+// (and report the push that moved it); it dies at the end of the turn. (The
+// zone it began the turn on, dry, lands nothing.)
 TEST(TestADefeatedAgentIsStillPushedThisTurn) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   GiveGust(env, 1);
   Agent* gust = Place(env, 1, {3, 5});  // Gusts: the imp on its left ring cell, pushed to (3,3)
   Agent* imp = AddEnemy(env, {3, 4}, 5);
-  Require(env.SetCellTag({3, 4}, "wet"), "lake");
+  Require(env.SetCellTag({3, 3}, "wet"), "lake");
   Require(env.SetWeaknesses(imp->GetId(), {{"wet", "wet"}}), "weak_to");
   env.Step(With(env, 1, Use(MovementAction::Stay)));
   ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
   ASSERT_TRUE(env.GetLastDefeats().at(0).kind == BaseEnv::TagSource::Zone);
-  ASSERT_TRUE(imp->GetPosition() == (Position{3, 3}));  // Pushed after its defeat
-  ASSERT_TRUE(Has(env, imp, "gusted"));
+  ASSERT_TRUE(imp->GetPosition() == (Position{3, 3}));  // Pushed onto the lake
+  ASSERT_TRUE(Has(env, imp, "gusted"));                  // Hit after its defeat
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
   // The caster on its own centre (spared its tags), then the imp
   ASSERT_TRUE(env.GetLastSkillUses().at(0).affected ==
@@ -904,7 +910,7 @@ TEST(TestAnEnemyWalkingAwayIsMissed) {
 }
 
 // The cells are fixed as the turn began, the hits land on whoever stands on
-// them after the walking: a gob walking onto the fireball's ring burns (a
+// them after the motion phase: a gob walking onto the fireball's ring burns (a
 // push is planned on who stood there as the turn began: it is not pushed); a
 // gob walking onto the bolt's impact cell is hit; one walking into the bolt's
 // line before that cell is not (the line is not traced again).
@@ -1020,10 +1026,11 @@ TEST(TestAProjectileStopsOnTheFirstAgentAsTheTurnBegan) {
 }
 
 // A vortex (right: centre (3,4)) plans its pull on the ring thing as the turn
-// began: the ally above (first by ring priority). The ally walks away up: its
-// own motion wins (not pulled; out of the cells, not rooted either), and the
-// pull does not take the gob on the right ring cell instead: the gob is only
-// rooted where it stands.
+// began: the ally above (first by ring priority). The ally walks away up: a
+// companion's walk beats a forced move (its list: teleport > dash > walk >
+// forced move), so it is not pulled (out of the cells, not rooted either),
+// and the pull does not take the gob on the right ring cell instead: the gob
+// is only rooted where it stands.
 TEST(TestAPullTakesTheRingThingAsTheTurnBegan) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -1062,23 +1069,27 @@ TEST(TestADashLosingItsLandingFallsBackAndKeepsItsArea) {
   ASSERT_TRUE(Has(env, b, "electrified"));  // On a's down ring cell
 }
 
-// A tag_path dash's path is its crossed cells as the turn began: a gob
-// walking off it dodges, one walking onto it is hit (the dash crosses the
-// cells, whoever stands there after the walking)
+// A tag_path dash's cells are fixed as the turn began (its path, and its
+// area around the planned landing): a gob walking off the area dodges; one
+// walking onto the path is hit there, and holds that cell at the end of the
+// turn, so the dash stops before it (a dash stops at its first blocker: an
+// agent on its line as the turn begins stops it in the plan already)
 TEST(TestADashPathIsItsCellsAsTheTurnBegan) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   Agent* caster = Place(env, 0, {3, 1});  // lightningStep right: path (3,2)-(3,4), lands (3,5)
   Require(env.SetCompanionSkill(caster->GetId(), 0, "lightningStep"), "lightningStep");
-  Agent* off = AddEnemy(env, {3, 3});   // Walks down, off the path
-  Agent* onto = AddEnemy(env, {2, 2});  // Walks down, onto the path
-  const Action down = EncodeAction(MovementAction::Down);
-  env.Step({Use(MovementAction::Right), down, down});
-  ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
-  ASSERT_TRUE(off->GetPosition() == (Position{4, 3}));
-  ASSERT_TRUE(onto->GetPosition() == (Position{3, 2}));
+  Agent* off = AddEnemy(env, {2, 5});   // Above the landing (the area's ring); walks up, off it
+  Agent* onto = AddEnemy(env, {2, 3});  // Walks down, onto the path (3,3)
+  env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Up),
+            EncodeAction(MovementAction::Down)});
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 2}));
+  ASSERT_TRUE(off->GetPosition() == (Position{1, 5}));
+  ASSERT_TRUE(onto->GetPosition() == (Position{3, 3}));
   ASSERT_FALSE(Has(env, off, "electrified"));
   ASSERT_TRUE(Has(env, onto, "electrified"));
+  ASSERT_TRUE(env.GetLastSkillUses().at(0).target == (Position{3, 5}));
+  // The caster on its own path (self_tags spares it), then the gob
   ASSERT_TRUE(env.GetLastSkillUses().at(0).affected ==
               (Affected{{caster->GetId(), 0}, {onto->GetId(), kTagsFx}}));
 }
@@ -1096,6 +1107,557 @@ TEST(TestPushesAndPullsMoveThingsPlannedAsTheTurnBegan) {
     const bool push = std::string(skill) == "fireball";
     ASSERT_TRUE(boulder->GetPosition() == (push ? Position{3, 6} : Position{3, 4}));
     ASSERT_TRUE(env.GetLastSkillUses().at(0).affected.empty());  // Agents only
+  }
+}
+
+// =============================================================================
+// One motion phase
+// =============================================================================
+
+using OddMotion = BaseEnv::OddMotion;
+constexpr unsigned kNoFx = 0;
+
+// A Self cross pushing everyone on its ring `distance` cells away from the
+// caster (allies included), no tag, put in the companion's slot 0 as `name`
+static void GivePusher(SynchroEnv& env, int companion, const char* name, int distance) {
+  SkillConfig s;
+  s.name = name;
+  s.targeting = SkillTargeting::Self;
+  s.area = SkillArea::Cross;
+  s.motion = SkillMotion::PushOut;
+  s.motion_distance = distance;
+  env.GetMutableSkillBook().Define(s);
+  Require(env.SetCompanionSkill(AgentAt(env, companion)->GetId(), 0, name), name);
+}
+
+// A thing (a living actor, not an agent) on `p`
+static Actor* AddBoulder(SynchroEnv& env, Position p) {
+  return env.GetMutableObjectManager().CreateActor<Actor>(p);
+}
+
+static Action Walk(MovementAction m) { return EncodeAction(m); }
+
+// What the last step's use by `caster` did to `agent` (its SkillEffect
+// flags), -1 when the use did not affect it
+static int EffectsOn(const BaseEnv& env, const Agent* caster, const Agent* agent) {
+  for (const auto& u : env.GetLastSkillUses()) {
+    if (u.caster != caster->GetId()) continue;
+    for (const auto& a : u.affected) {
+      if (a.id == agent->GetId()) return static_cast<int>(a.effects);
+    }
+  }
+  return -1;
+}
+
+// The zones that landed on `agent` in the last step, by name
+static std::vector<std::string> ZonesLanded(const BaseEnv& env, const Agent* agent) {
+  std::vector<std::string> out;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    if (t.agent == agent->GetId() && t.kind == BaseEnv::TagSource::Zone) {
+      out.push_back(TagName(env, t.tag));
+    }
+  }
+  return out;
+}
+
+// A forced move's line (ForcedMovePath): straight on an axis, else the
+// rounded line toward its end; cut before the first wall or hole
+TEST(TestAForcedMovesLine) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  using Cells = std::vector<Position>;
+  Cells cells{{1, 1}};  // Stale content is replaced
+  ForcedMovePath(env.GetGrid(), {4, 4}, 0, 3, cells);
+  ASSERT_TRUE(cells == (Cells{{4, 5}, {4, 6}, {4, 7}}));
+  ForcedMovePath(env.GetGrid(), {4, 4}, 1, 2, cells);
+  ASSERT_TRUE(cells == (Cells{{5, 5}, {5, 6}}));
+  ForcedMovePath(env.GetGrid(), {4, 4}, -1, -2, cells);
+  ASSERT_TRUE(cells == (Cells{{3, 3}, {3, 2}}));
+  ForcedMovePath(env.GetGrid(), {4, 4}, 3, 1, cells);
+  ASSERT_TRUE(cells == (Cells{{5, 4}, {6, 5}, {7, 5}}));
+  ForcedMovePath(env.GetGrid(), {4, 4}, 1, 1, cells);
+  ASSERT_TRUE(cells == (Cells{{5, 5}}));
+  ForcedMovePath(env.GetGrid(), {4, 4}, 0, 0, cells);
+  ASSERT_TRUE(cells.empty());
+  env.GetMutableGrid().SetCell({4, 6}, CellKind::Hazard);
+  ForcedMovePath(env.GetGrid(), {4, 4}, 0, 3, cells);
+  ASSERT_TRUE(cells == (Cells{{4, 5}}));  // Stops before the hole
+  ForcedMovePath(env.GetGrid(), {4, 7}, 0, 3, cells);
+  ASSERT_TRUE(cells == (Cells{{4, 8}}));  // And before the wall
+}
+
+// Two pushes right on one gob (a gust around (4,2), a shove centred on (4,2)
+// from above) add up: 2 cells right, and both uses moved it. The gust's
+// caster, the shove's centre, is not pushed (only the ring is).
+TEST(TestForcedMovesOnOneAgentAddUp) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* gust = Place(env, 0, {4, 2});
+  GivePusher(env, 0, "gust1", 1);
+  Agent* shover = Place(env, 1, {1, 2});  // Aims down: centre (4,2)
+  SkillConfig shove;
+  shove.name = "shove";
+  shove.targeting = SkillTargeting::Ground;
+  shove.range = 3;
+  shove.area = SkillArea::Cross;
+  shove.motion = SkillMotion::PushOut;
+  shove.motion_distance = 1;
+  env.GetMutableSkillBook().Define(shove);
+  Require(env.SetCompanionSkill(shover->GetId(), 0, "shove"), "shove");
+  Agent* gob = AddEnemy(env, {4, 3});
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Down), kStay});
+  ASSERT_TRUE(gob->GetPosition() == (Position{4, 5}));
+  ASSERT_EQ(EffectsOn(env, gust, gob), static_cast<int>(kMotionFx));
+  ASSERT_EQ(EffectsOn(env, shover, gob), static_cast<int>(kMotionFx));
+  ASSERT_TRUE(gust->GetPosition() == (Position{4, 2}));
+  ASSERT_TRUE(env.GetLastOddMotions().empty());  // An axis sum
+}
+
+// Pushes right and left on one gob cancel: it stays, and neither use moved
+// it (no Motion), though both reached it
+TEST(TestOpposedPushesCancel) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Agent* left = Place(env, 0, {4, 2});
+  Agent* right = Place(env, 1, {4, 4});
+  GivePusher(env, 0, "gust1", 1);
+  Require(env.SetCompanionSkill(right->GetId(), 0, "gust1"), "gust1");
+  Agent* gob = AddEnemy(env, {4, 3});
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Left), kStay});
+  ASSERT_TRUE(gob->GetPosition() == (Position{4, 3}));
+  ASSERT_EQ(EffectsOn(env, left, gob), static_cast<int>(kNoFx));
+  ASSERT_EQ(EffectsOn(env, right, gob), static_cast<int>(kNoFx));
+}
+
+// A push 2 right (a gust around (4,3)) and a push 1 down (a gust around
+// (3,4)) on the gob on (4,4): (1, 2), off the axes. It travels the line
+// toward (5,6): (5,5), then (5,6), and stops at the last free cell (a boulder
+// on (5,6): (5,5)). Every such sum is recorded: the step's report, and a
+// count for the env's life (copied with it, kept by Reset).
+TEST(TestAnUnevenSumTravelsInAStraightLineAndIsRecorded) {
+  for (bool blocked : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 3});
+    GivePusher(env, 0, "gust2", 2);
+    Place(env, 1, {3, 4});
+    GivePusher(env, 1, "gust1", 1);
+    Agent* gob = AddEnemy(env, {4, 4});
+    if (blocked) AddBoulder(env, {5, 6});
+    ASSERT_EQ(env.GetOddMotionCount(), 0);
+    env.Step({Use(MovementAction::Right), Use(MovementAction::Right), kStay});
+    ASSERT_TRUE(gob->GetPosition() == (blocked ? Position{5, 5} : Position{5, 6}));
+    ASSERT_EQ(env.GetLastOddMotions().size(), static_cast<size_t>(1));
+    const OddMotion odd = env.GetLastOddMotions().at(0);
+    ASSERT_EQ(odd.actor, gob->GetId());
+    ASSERT_EQ(odd.dr, 1);
+    ASSERT_EQ(odd.dc, 2);
+    ASSERT_EQ(env.GetOddMotionCount(), 1);
+    std::unique_ptr<BaseEnv> copy = env.Clone();
+    ASSERT_EQ(copy->GetOddMotionCount(), 1);
+    ASSERT_EQ(copy->GetLastOddMotions().size(), static_cast<size_t>(1));
+    env.Step(Stays(env));
+    ASSERT_TRUE(env.GetLastOddMotions().empty());  // The step's report
+    ASSERT_EQ(env.GetOddMotionCount(), 1);         // The env's count
+    env.Reset();
+    ASSERT_EQ(env.GetOddMotionCount(), 1);
+  }
+}
+
+// A companion's list: teleport > dash > move > forced move. A companion on a
+// gust's ring walking away walks: not pushed, out of the ring, untouched. If
+// its walk loses (a gob stays where it walks), it stays: a motion never falls
+// back to a lower kind (not pushed; still on the ring: gusted). A walk into a
+// wall is no motion at all: then the push moves it.
+TEST(TestACompanionsWalkBeatsAPush) {
+  for (int scene = 0; scene < 3; ++scene) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {4, 2});
+    GiveGust(env, 0);
+    Agent* ally = Place(env, 1, {4, 3});  // The right ring cell; walks up to (3,3)
+    if (scene == 1) AddEnemy(env, {3, 3});
+    if (scene == 2) env.GetMutableGrid().SetCell({3, 3}, CellKind::Wall);
+    std::vector<Action> actions = Stays(env);
+    actions[0] = Use(MovementAction::Right);
+    actions[1] = Walk(MovementAction::Up);
+    env.Step(actions);
+    const Position expected[] = {{3, 3}, {4, 3}, {4, 4}};
+    ASSERT_TRUE(ally->GetPosition() == expected[scene]);
+    const int effects[] = {-1, static_cast<int>(kTagsFx), static_cast<int>(kTagsFx | kMotionFx)};
+    ASSERT_EQ(EffectsOn(env, caster, ally), effects[scene]);
+  }
+}
+
+// Anything but a companion: teleport > dash > forced move > move. A gob on a
+// gust's ring walking up is pushed instead: it does not walk (its executed
+// action is Stay). If the push loses (a gob stays where it would go), it
+// stays: it does not walk either. A push into a wall is no motion: then it
+// walks.
+TEST(TestAnEnemysPushBeatsItsWalk) {
+  for (int scene = 0; scene < 3; ++scene) {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 2});
+    GiveGust(env, 0);
+    Agent* gob = AddEnemy(env, {4, 3});
+    if (scene == 1) AddEnemy(env, {4, 4});
+    if (scene == 2) env.GetMutableGrid().SetCell({4, 4}, CellKind::Wall);
+    std::vector<Action> actions = Stays(env);
+    actions[0] = Use(MovementAction::Right);
+    actions[1] = Walk(MovementAction::Up);
+    env.Step(actions);
+    const Position expected[] = {{4, 4}, {4, 3}, {3, 3}};
+    ASSERT_TRUE(gob->GetPosition() == expected[scene]);
+    ASSERT_TRUE(gob->GetOriginalIntention().movement == MovementAction::Up);
+    ASSERT_TRUE(gob->GetExecutedAction().movement ==
+                (scene == 2 ? MovementAction::Up : MovementAction::Stay));
+  }
+}
+
+// Teleport > dash > the rest, in every list. A companion dashing off a gust's
+// ring dashes (not pushed). Onto one cell: a teleport (index 1) beats a dash
+// (index 0), which falls back along its line; a dash (index 1) beats a
+// companion's walk (index 0).
+TEST(TestTeleportBeatsDashBeatsTheRest) {
+  {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* caster = Place(env, 0, {4, 2});
+    GiveGust(env, 0);
+    Agent* dasher = Place(env, 1, {4, 3});  // On the ring; dashes up to (1,3)
+    Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+    env.Step({Use(MovementAction::Right), Use(MovementAction::Up)});
+    ASSERT_TRUE(dasher->GetPosition() == (Position{1, 3}));
+    ASSERT_EQ(EffectsOn(env, caster, dasher), -1);
+  }
+  {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    env.GetMutableGrid().SetCell({3, 6}, CellKind::Wall);  // The dash right ends on (3,5)
+    Agent* dasher = Place(env, 0, {3, 1});
+    Agent* teleporter = Place(env, 1, {6, 5});  // Teleports up 3: (3,5)
+    Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+    Require(env.SetCompanionSkill(teleporter->GetId(), 0, "teleport"), "teleport");
+    env.Step({Use(MovementAction::Right), Use(MovementAction::Up)});
+    ASSERT_TRUE(teleporter->GetPosition() == (Position{3, 5}));
+    ASSERT_TRUE(dasher->GetPosition() == (Position{3, 4}));
+  }
+  {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    env.GetMutableGrid().SetCell({3, 6}, CellKind::Wall);
+    Agent* walker = Place(env, 0, {2, 5});  // Walks down onto (3,5)
+    Agent* dasher = Place(env, 1, {3, 1});
+    Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+    env.Step({Walk(MovementAction::Down), Use(MovementAction::Right)});
+    ASSERT_TRUE(dasher->GetPosition() == (Position{3, 5}));
+    ASSERT_TRUE(walker->GetPosition() == (Position{2, 5}));
+  }
+}
+
+// Two agents' motions onto one cell: the lower tier wins (a motion's tier is
+// the place of its kind in ITS agent's list), a tie goes to the lower agent
+// index. A companion's walk (tier 2, index 1) vs a gob pushed (tier 2, index
+// 2): the walk. A companion pushed (tier 3, index 2) vs a gob pushed (tier 2,
+// index 3): the gob. Two gobs pushed (tier 2): the lower index.
+TEST(TestClashTiersBetweenAgentsThenIndex) {
+  {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 4});
+    GiveGust(env, 0);
+    Agent* walker = Place(env, 1, {3, 6});  // Walks down onto (4,6)
+    Agent* gob = AddEnemy(env, {4, 5});     // Pushed right onto (4,6)
+    env.Step({Use(MovementAction::Right), Walk(MovementAction::Down), kStay});
+    ASSERT_TRUE(walker->GetPosition() == (Position{4, 6}));
+    ASSERT_TRUE(gob->GetPosition() == (Position{4, 5}));
+  }
+  for (bool companion : {true, false}) {
+    // Gusts around (4,4) and (4,8): the things on (4,5) and (4,7) are pushed onto (4,6)
+    SynchroEnv env(10, 10, companion ? 3 : 2, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 4});
+    GiveGust(env, 0);
+    Agent* right = Place(env, 1, {4, 8});
+    Require(env.SetCompanionSkill(right->GetId(), 0, "gust"), "gust");
+    Agent* first = companion ? Place(env, 2, {4, 5}) : AddEnemy(env, {4, 5});
+    Agent* second = AddEnemy(env, {4, 7});
+    std::vector<Action> actions = Stays(env);
+    actions[0] = Use(MovementAction::Right);
+    actions[1] = Use(MovementAction::Left);
+    env.Step(actions);
+    ASSERT_TRUE(first->GetPosition() == (companion ? Position{4, 5} : Position{4, 6}));
+    ASSERT_TRUE(second->GetPosition() == (companion ? Position{4, 6} : Position{4, 7}));
+  }
+}
+
+// A cell whose occupant really leaves this turn is free: the gob pushed onto
+// (4,4) as the gob there walks up
+TEST(TestAPushIntoACellLeftThisTurn) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {4, 2});
+  GiveGust(env, 0);
+  Agent* pushed = AddEnemy(env, {4, 3});
+  Agent* leaver = AddEnemy(env, {4, 4});
+  env.Step({Use(MovementAction::Right), kStay, Walk(MovementAction::Up)});
+  ASSERT_TRUE(pushed->GetPosition() == (Position{4, 4}));
+  ASSERT_TRUE(leaver->GetPosition() == (Position{3, 4}));
+}
+
+// ...and blocked if the leaver ends up staying: its walk is blocked (a gob
+// stays on (3,4)), so the push is too
+TEST(TestAPushIntoACellWhoseLeaverStays) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {4, 2});
+  GiveGust(env, 0);
+  Agent* pushed = AddEnemy(env, {4, 3});
+  Agent* leaver = AddEnemy(env, {4, 4});
+  AddEnemy(env, {3, 4});
+  env.Step({Use(MovementAction::Right), kStay, Walk(MovementAction::Up), kStay});
+  ASSERT_TRUE(pushed->GetPosition() == (Position{4, 3}));
+  ASSERT_TRUE(leaver->GetPosition() == (Position{4, 4}));
+}
+
+// A push 3 right from (4,3) stops at the first blocker on its path, on the
+// last free cell before it (it never hops over one): a boulder, a hole or a
+// wall on (4,5), or a companion walking onto (4,5) this turn (a cell held at
+// the end of the turn): (4,4)
+TEST(TestAPushStopsAtTheFirstBlocker) {
+  for (int scene = 0; scene < 4; ++scene) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 2});
+    GivePusher(env, 0, "gust3", 3);
+    Agent* walker = Place(env, 1, {3, 5});
+    Agent* gob = AddEnemy(env, {4, 3});
+    if (scene == 0) AddBoulder(env, {4, 5});
+    if (scene == 1) env.GetMutableGrid().SetCell({4, 5}, CellKind::Hazard);
+    if (scene == 2) env.GetMutableGrid().SetCell({4, 5}, CellKind::Wall);
+    std::vector<Action> actions = Stays(env);
+    actions[0] = Use(MovementAction::Right);
+    if (scene == 3) actions[1] = Walk(MovementAction::Down);
+    env.Step(actions);
+    ASSERT_TRUE(gob->GetPosition() == (Position{4, 4}));
+    ASSERT_TRUE(walker->GetPosition() == (scene == 3 ? Position{4, 5} : Position{3, 5}));
+  }
+}
+
+// A dash jumps holes but never ends on one, and stops at the first blocker.
+// Planned as the turn began: a hole on (3,3), a boulder on (3,5): it lands on
+// (3,4). A gob walking onto its path this turn (3,3) holds that cell at the
+// end of the turn: the dash stops before it, on (3,2), and keeps its planned
+// centre (3,5) and path (the gob on it is electrified).
+TEST(TestADashStopsAtTheFirstActorButJumpsHoles) {
+  {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    env.GetMutableGrid().SetCell({3, 3}, CellKind::Hazard);
+    Agent* dasher = Place(env, 0, {3, 1});
+    Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+    AddBoulder(env, {3, 5});
+    ASSERT_TRUE(env.PreviewSkill(*AsCompanion(dasher), 0, Direction::Right).caster_landing ==
+                (Position{3, 4}));
+    env.Step({Use(MovementAction::Right)});
+    ASSERT_TRUE(dasher->GetPosition() == (Position{3, 4}));
+  }
+  {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Agent* dasher = Place(env, 0, {3, 1});
+    Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+    Agent* gob = AddEnemy(env, {2, 3});
+    env.Step({Use(MovementAction::Right), Walk(MovementAction::Down)});
+    ASSERT_TRUE(gob->GetPosition() == (Position{3, 3}));
+    ASSERT_TRUE(dasher->GetPosition() == (Position{3, 2}));
+    ASSERT_TRUE(env.GetLastSkillUses().at(0).target == (Position{3, 5}));
+    ASSERT_TRUE(Has(env, gob, "electrified"));
+  }
+}
+
+// A body down as the turn begins is a static blocker, never moved: it blocks
+// a walk onto it, a push through it, a dash through it (planned: it stops
+// before it) and a teleport onto it (planned: it falls back)
+TEST(TestADownedBodyBlocksEveryMotion) {
+  SynchroEnv env(10, 10, 5, 1, 0, 42);
+  MakeArena(env);
+  Agent* body = Place(env, 0, {4, 5});
+  Agent* walker = Place(env, 1, {3, 5});      // Walks down onto the body
+  Place(env, 2, {4, 3});                      // Pushes the gob on (4,4) 2 right, through it
+  GivePusher(env, 2, "gust2", 2);
+  Agent* dasher = Place(env, 3, {6, 5});      // Dashes up through it
+  Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+  Agent* teleporter = Place(env, 4, {4, 8});  // Teleports 3 left, onto it
+  Require(env.SetCompanionSkill(teleporter->GetId(), 0, "teleport"), "teleport");
+  Agent* gob = AddEnemy(env, {4, 4});
+  DownCompanion(env, 0);
+  std::vector<Action> actions = Stays(env);
+  actions[1] = Walk(MovementAction::Down);
+  actions[2] = Use(MovementAction::Right);
+  actions[3] = Use(MovementAction::Up);
+  actions[4] = Use(MovementAction::Left);
+  env.Step(actions);
+  ASSERT_TRUE(body->GetPosition() == (Position{4, 5}));
+  ASSERT_TRUE(AsCompanion(body)->IsDowned());
+  ASSERT_TRUE(walker->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(gob->GetPosition() == (Position{4, 4}));
+  ASSERT_TRUE(dasher->GetPosition() == (Position{5, 5}));
+  ASSERT_TRUE(teleporter->GetPosition() == (Position{4, 6}));
+}
+
+// Zones land once per turn, on each agent's final cell, after the motion
+// phase: a gob pushed 3 cells across wet, wet, then oil gets oil only, once;
+// a dash crossing a wet cell gets nothing from it (its landing has no zone);
+// a teleport landing on oil gets it once
+TEST(TestZonesLandOnceOnTheFinalCell) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {4, 2});
+  GivePusher(env, 0, "gust3", 3);
+  Agent* gob = AddEnemy(env, {4, 3});
+  Require(env.SetCellTag({4, 4}, "wet"), "wet");
+  Require(env.SetCellTag({4, 5}, "wet"), "wet");
+  Require(env.SetCellTag({4, 6}, "oil"), "oil");
+  Agent* dasher = Place(env, 1, {6, 1});  // Dashes right to (6,5) across wet (6,3)
+  Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+  Require(env.SetCellTag({6, 3}, "wet"), "wet");
+  Agent* teleporter = Place(env, 2, {2, 1});  // Teleports right onto oil (2,4)
+  Require(env.SetCompanionSkill(teleporter->GetId(), 0, "teleport"), "teleport");
+  Require(env.SetCellTag({2, 4}, "oil"), "oil");
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Right), Use(MovementAction::Right),
+            kStay});
+  ASSERT_TRUE(gob->GetPosition() == (Position{4, 6}));
+  ASSERT_TRUE(dasher->GetPosition() == (Position{6, 5}));
+  ASSERT_TRUE(teleporter->GetPosition() == (Position{2, 4}));
+  ASSERT_TRUE(ZonesLanded(env, gob) == (std::vector<std::string>{"oil"}));
+  ASSERT_TRUE(ZonesLanded(env, dasher).empty());
+  ASSERT_TRUE(ZonesLanded(env, teleporter) == (std::vector<std::string>{"oil"}));
+  ASSERT_FALSE(Has(env, gob, "wet"));
+  ASSERT_FALSE(Has(env, dasher, "wet"));
+}
+
+// Every agent affectable as the turn began gets its final cell's zone once,
+// moved or not: one standing on wet; a gob whose walk off the oil is blocked
+// (a thing stays where it walks: a walk into any living actor that stays is
+// blocked)
+TEST(TestAnAgentThatDidNotMoveStillLandsItsZone) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  Agent* stander = Place(env, 0, {4, 4});
+  Require(env.SetCellTag({4, 4}, "wet"), "wet");
+  Agent* gob = AddEnemy(env, {5, 4});  // Walks down into a boulder
+  AddBoulder(env, {6, 4});
+  Require(env.SetCellTag({5, 4}, "oil"), "oil");
+  env.Step({kStay, Walk(MovementAction::Down)});
+  ASSERT_TRUE(gob->GetPosition() == (Position{5, 4}));
+  ASSERT_TRUE(ZonesLanded(env, stander) == (std::vector<std::string>{"wet"}));
+  ASSERT_TRUE(ZonesLanded(env, gob) == (std::vector<std::string>{"oil"}));
+}
+
+// Walk vs walk keeps its rules, whatever the agents' kinds (a companion's
+// walk and a gob's are not the same tier): two walks onto one cell both stay,
+// a swap cancels, a walk into a cell succeeds only if its occupant leaves (a
+// chain moves on, a ring of 4 rotates), a walk into a wall or into one that
+// stays does not.
+TEST(TestWalkCollisionsAreUnchanged) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Agent* c0 = Place(env, 0, {1, 1});  // Right onto (1,2), as g0 walks left onto it
+  Agent* c1 = Place(env, 1, {3, 1});  // Right, swapping with c2
+  Agent* c2 = Place(env, 2, {3, 2});  // Left
+  Agent* g0 = AddEnemy(env, {1, 3});
+  Agent* g1 = AddEnemy(env, {5, 1});  // A chain right
+  Agent* g2 = AddEnemy(env, {5, 2});
+  Agent* g3 = AddEnemy(env, {5, 3});
+  Agent* r0 = AddEnemy(env, {7, 5});  // A ring: right, down, left, up
+  Agent* r1 = AddEnemy(env, {7, 6});
+  Agent* r2 = AddEnemy(env, {8, 6});
+  Agent* r3 = AddEnemy(env, {8, 5});
+  Agent* w = AddEnemy(env, {1, 7});   // Up into the border wall
+  Agent* s = AddEnemy(env, {3, 7});   // Down onto one that stays
+  AddEnemy(env, {4, 7});
+  const Action r = Walk(MovementAction::Right), l = Walk(MovementAction::Left);
+  const Action u = Walk(MovementAction::Up), d = Walk(MovementAction::Down);
+  env.Step({r, r, l, l, r, r, r, r, d, l, u, u, d, kStay});
+  ASSERT_TRUE(c0->GetPosition() == (Position{1, 1}));
+  ASSERT_TRUE(g0->GetPosition() == (Position{1, 3}));
+  ASSERT_TRUE(c1->GetPosition() == (Position{3, 1}));
+  ASSERT_TRUE(c2->GetPosition() == (Position{3, 2}));
+  ASSERT_TRUE(g1->GetPosition() == (Position{5, 2}));
+  ASSERT_TRUE(g2->GetPosition() == (Position{5, 3}));
+  ASSERT_TRUE(g3->GetPosition() == (Position{5, 4}));
+  ASSERT_TRUE(r0->GetPosition() == (Position{7, 6}));
+  ASSERT_TRUE(r1->GetPosition() == (Position{8, 6}));
+  ASSERT_TRUE(r2->GetPosition() == (Position{8, 5}));
+  ASSERT_TRUE(r3->GetPosition() == (Position{7, 5}));
+  ASSERT_TRUE(w->GetPosition() == (Position{1, 7}));
+  ASSERT_TRUE(s->GetPosition() == (Position{3, 7}));
+  ASSERT_TRUE(c0->GetExecutedAction().movement == MovementAction::Stay);  // Blocked
+  ASSERT_TRUE(g1->GetExecutedAction().movement == MovementAction::Right);
+}
+
+// A ring of 4 walkers whose motions depend on each other in a cycle, with
+// pushes on it: the gobs on (3,3) and (4,4) are pushed onto (3,4) (gusts
+// around (3,2) and (5,4); a push beats a gob's walk), a tie the lower index
+// wins; the loser stays, so the walker onto its cell stays, and so on around
+// the ring: everyone stays. Choices only advance: the solver ends.
+TEST(TestTheMotionSolverTerminatesOnACycle) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 2});
+  GiveGust(env, 0);
+  Agent* other = Place(env, 1, {5, 4});
+  Require(env.SetCompanionSkill(other->GetId(), 0, "gust"), "gust");
+  Agent* a = AddEnemy(env, {3, 3});  // Right (pushed right)
+  Agent* b = AddEnemy(env, {3, 4});  // Down
+  Agent* c = AddEnemy(env, {4, 4});  // Left (pushed up)
+  Agent* d = AddEnemy(env, {4, 3});  // Up
+  env.Step({Use(MovementAction::Right), Use(MovementAction::Up), Walk(MovementAction::Right),
+            Walk(MovementAction::Down), Walk(MovementAction::Left), Walk(MovementAction::Up)});
+  ASSERT_TRUE(a->GetPosition() == (Position{3, 3}));
+  ASSERT_TRUE(b->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(c->GetPosition() == (Position{4, 4}));
+  ASSERT_TRUE(d->GetPosition() == (Position{4, 3}));
+}
+
+// The motion phase's outcome depends on the agents' indices only through a
+// tie (the same tier on one cell): a companion pushed 2 right through the
+// cell a companion walks onto stops before it (here: stays), and a dash
+// through the cell a gob walks onto stops before it; the same whatever the
+// companions' indices.
+TEST(TestSwappingIndicesChangesNoMotionOutcome) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 4, 1, 0, 42);
+    MakeArena(env);
+    const int g = swapped ? 3 : 0, p = swapped ? 2 : 1, w = swapped ? 1 : 2, d = swapped ? 0 : 3;
+    Agent* gust = Place(env, g, {4, 2});
+    GivePusher(env, g, "gust2", 2);
+    Agent* pushed = Place(env, p, {4, 3});
+    Agent* walker = Place(env, w, {3, 4});
+    Agent* dasher = Place(env, d, {6, 1});
+    Require(env.SetCompanionSkill(dasher->GetId(), 0, "lightningStep"), "dash");
+    Agent* gob = AddEnemy(env, {5, 3});
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(g)] = Use(MovementAction::Right);
+    actions[static_cast<size_t>(w)] = Walk(MovementAction::Down);
+    actions[static_cast<size_t>(d)] = Use(MovementAction::Right);
+    actions[4] = Walk(MovementAction::Down);  // The gob
+    env.Step(actions);
+    ASSERT_TRUE(pushed->GetPosition() == (Position{4, 3}));
+    ASSERT_TRUE(walker->GetPosition() == (Position{4, 4}));
+    ASSERT_TRUE(dasher->GetPosition() == (Position{6, 2}));
+    ASSERT_TRUE(gob->GetPosition() == (Position{6, 3}));
+    traces[swapped] = RoleTrace(env, {{gust->GetId(), "G"},
+                                      {pushed->GetId(), "P"},
+                                      {walker->GetId(), "W"},
+                                      {dasher->GetId(), "D"},
+                                      {gob->GetId(), "X"}});
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
   }
 }
 

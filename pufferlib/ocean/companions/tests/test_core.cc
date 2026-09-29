@@ -581,12 +581,14 @@ class CollisionTestEnv : public BaseEnv {
     GatherIntentions(actions);
   }
 
+  // The one motion phase: walks resolve by the walk rules they always had
   void TestResolveCollisions() {
-    ResolveCollisions();
+    GatherMotionIntents();
+    ResolveMotion();
   }
 
   void TestExecuteValidatedMovements() {
-    ExecuteValidatedMovements();
+    ExecuteMotion();
   }
 
   void AddWall(Position pos) {
