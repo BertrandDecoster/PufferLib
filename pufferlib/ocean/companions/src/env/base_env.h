@@ -447,9 +447,9 @@ class BaseEnv {
   // Skills resolve one caster at a time in agent-index order, each from its
   // current cell: an earlier push / pull can move a later caster (ResolveSkills).
   // Report order in a step: the zone phase first (its zone landings, every
-  // one, in agent-index order; then its defeats; then its reactions in the
-  // order they fired, trigger agent-index order, each followed by its result
-  // landings), then the skill phase's, in resolution order.
+  // one, in agent-index order; its landing defeats; its reactions in trigger
+  // agent-index order, their result landings in that firing order, then the
+  // results' defeats), then the skill phase's, in resolution order.
   const std::vector<SkillUse>& GetLastSkillUses() const { return last_skill_uses_; }
   const std::vector<TagApplication>& GetLastTagsApplied() const { return last_tags_applied_; }
   // Companions that went down since the last report, one entry per down:
@@ -540,8 +540,9 @@ class BaseEnv {
   // regions and skill motions landing on a zone all read the unchanged map.
   // The zone phase (ApplyZoneTags) runs the steps above as sub-phases, each
   // over every zone landing (ResolveZoneLandings: 1-2 for all, 3 for all,
-  // 4 with every trigger found before any fires, 5 for all), so the order of
-  // the agents never changes an outcome (only the order of the reports).
+  // 4 gathered then applied per agent: every result, then one weakness check,
+  // then the summed damage; 5 for all), so the order of the agents never
+  // changes an outcome (only the order of the reports).
   // The skill phase resolves each landing at once, casters in agent-index
   // order. Between two steps (the host's ApplyTagTo) there is no phase: a
   // landing resolves at once and its zone_becomes applies at once.
@@ -831,17 +832,31 @@ class BaseEnv {
   // The first rule, in level order, pairing `tag` (just landed on `agent`)
   // with a tag it carries (the reverse too), or -1
   int FindReaction(const Agent& agent, TagId tag) const;
-  // Fires rule `rule`, triggered by `tag` landing on `agent`: the outcome on
-  // each affected agent (the region of the zone under it when the rule
-  // spreads and that zone provides a or b, else the agent alone), then the
-  // region's zone_becomes: recorded in pending_zones_ during a step (the map
-  // changes at its end, CommitPendingZones), written at once between two
-  // steps (a host landing). A trigger no longer affectable (a weakness
-  // defeated it, an earlier firing's damage downed it) still fires a spread
-  // one (it reaches the others); alone, nobody is left: nothing fires, nothing
-  // is reported.
+  // Fires rule `rule` at once (a skill's or the host's landing), triggered
+  // by `tag` landing on `agent`: StartReaction, the outcome on each affected
+  // agent in turn, then ApplyZoneBecomes.
   void FireReaction(Agent& agent, TagId tag, int rule, ObjectId source,
                     const std::string& cause, TagSource kind);
+  // A firing without its outcome: whom it affects (`affected`, replaced: the
+  // affectable agents of the region of the zone under `agent`, in
+  // agent-index order, when the rule spreads and that zone provides a or b;
+  // else the agent alone), its report (outcomes empty; `cells` = the region
+  // when it has a zone_becomes). Returns the report's index, or -1 when
+  // nothing fires: a trigger no longer affectable (a weakness defeated it)
+  // still fires a spread one (it reaches the others); alone, nobody is left.
+  int StartReaction(Agent& agent, TagId tag, int rule, ObjectId source, const std::string& cause,
+                    TagSource kind, std::vector<Agent*>& affected);
+  // The zone_becomes of fired reaction `index` over its report's cells:
+  // recorded in pending_zones_ during a step (the map changes at its end,
+  // CommitPendingZones), written at once between two steps (a host landing).
+  void ApplyZoneBecomes(size_t index);
+  // Sub-phase c's outcomes, gathered in reaction_hits_ (every firing's
+  // affected agents, computed before any applies), applied agent by agent:
+  // every firing's removals, then every result (immunity, tag, tag status;
+  // firing order), then ONE weakness check over the results that landed,
+  // then the summed damage if still affectable. All agent-local, so neither
+  // the agents' order nor the firings' changes an outcome.
+  void ApplyReactionHits();
   // The connected region (4 neighbours) of the zone on `start`: the cells
   // carrying that zone's tag, reachable from `start` through such cells, as a
   // row-major mask of rows_ * cols_ (empty when `start` has no zone)
@@ -862,12 +877,15 @@ class BaseEnv {
   void CollectZoneLanding(Agent& agent);
   // Sub-phases b-d over every landing of zone_landings_, each phase over all
   // of them (agent-index order only orders the reports): b. the weaknesses
-  // (defeats); c. the reactions: the triggers are ALL found first (the
-  // state after a and b, FindReaction), then fired one by one (trigger
-  // agent-index order), so one firing's outcome never cancels another's
-  // trigger; d. the zone damage of each landing still affectable. The map
-  // they read is the map as the step began (a firing's zone_becomes waits in
-  // pending_zones_), so the order of the agents never changes an outcome.
+  // (defeats); c. the reactions, gathered then applied: c1 the triggers are
+  // ALL found (the state after a and b, FindReaction); c2 every firing is
+  // started (StartReaction: its affected agents and report, nothing applied);
+  // c3 the outcomes apply per agent (ApplyReactionHits), then the
+  // zone_becomes in firing order (pending); so no firing's outcome cancels
+  // or changes another's; d. the zone damage of each landing still
+  // affectable. The map they read is the map as the step began (a firing's
+  // zone_becomes waits in pending_zones_), so the order of the agents never
+  // changes an outcome.
   void ResolveZoneLandings();
   // End of Step, before the agents' timers: the zone changes the step's
   // reactions recorded (pending_zones_), in the order they were recorded (a
@@ -979,6 +997,17 @@ class BaseEnv {
     int rule = -1;      // The reaction it triggers (FindReaction), or -1
   };
   std::vector<ZoneLanding> zone_landings_;
+  // Scratch of sub-phase c (never copied, reused): one entry per (firing,
+  // affected agent), in firing order then the firing's affected order
+  struct ReactionHit {
+    Agent* agent = nullptr;
+    size_t firing = 0;     // Its index in last_reactions_
+    bool carried = false;  // The agent carried the result before any removal
+    size_t outcome = 0;    // Its entry in the firing's affected
+  };
+  std::vector<ReactionHit> reaction_hits_;
+  std::vector<Agent*> reaction_affected_;  // StartReaction's output, per firing
+  std::vector<Agent*> hit_agents_;         // The distinct agents of reaction_hits_
 };
 
 }  // namespace companions

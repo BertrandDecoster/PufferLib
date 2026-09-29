@@ -140,9 +140,10 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
    `ExecuteValidatedMovements`
 3. `ApplyZoneTags`, the zone phase (every affectable agent on a zone cell: alive, not
    downed; one landing each), in sub-phases, each over ALL the landings: a. immunity,
-   the tag and its status; b. weaknesses; c. reactions (every trigger found first,
-   then fired one by one); d. the zone's damage on those still affectable (see Zones
-   and Reactions). From here to the end of the step the zone map is READ-ONLY: a
+   the tag and its status; b. weaknesses; c. reactions, gathered then applied (every
+   trigger found, every firing's affected agents computed, then the outcomes applied
+   per agent); d. the zone's damage on those still affectable (see Zones and
+   Reactions). From here to the end of the step the zone map is READ-ONLY: a
    reaction's `zone_becomes` waits in a pending buffer
 4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
    order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
@@ -382,12 +383,23 @@ tests: `tests/test_zones.cc`):
 - **The zone phase** (`ApplyZoneTags` → `CollectZoneLanding` per agent, then
   `ResolveZoneLandings`) runs those steps as sub-phases, each over every landing (agent
   order only orders the reports): a. every agent's landing (immunity, tag, status);
-  b. the weaknesses; c. the reactions: every landing's trigger is found first (the
-  first rule pairing the landed tag with one the agent carries, on the state after a
-  and b; a weakness-defeated agent still triggers a spreading one), then they fire in
-  trigger agent-index order, so one firing's outcome (removing the tag another agent
-  needed) never cancels another's trigger; d. each zone's damage. A skill motion's
-  landing (`MoveActor` → `ApplyZoneTag`) is the same phases over that one landing
+  b. the weaknesses; c. the reactions, gathered then applied: c1 every landing's
+  trigger (the first rule pairing the landed tag with one the agent carries, on the
+  state after a and b); every trigger fires, but a weakness-defeated one alone
+  (nobody to affect; spreading, it fires without itself); c2 every firing's affected
+  agents (the phase-start region's affectable agents, or the trigger alone) and its
+  report, nothing applied (`StartReaction`); c3 the outcomes, agent-local
+  (`ApplyReactionHits`): per agent, every firing's removals (originals not kept), then
+  every result landing (immunity, tag, tag status; firing order: trigger agent index),
+  then ONE weakness check over the results that landed (its first `(P, S)` with P under
+  it and S among them: defeated, every firing whose result is S reports `defeated`),
+  then the SUM of the firings' damage in one `TakeDamage` (Marked applies to the sum)
+  if still affectable, each firing reporting its own damage (0 for all when a result
+  defeated it); then the zones, in firing order. No firing's outcome cancels or changes
+  another's (a firing that would down B does not stop B's own reaction), so neither
+  the agents' order nor the firings' changes an outcome; d. each zone's damage. A skill
+  motion's landing (`MoveActor` → `ApplyZoneTag`) is the same phases over that one
+  landing
 - **A step reads one map** (see Step order): a zone a reaction creates during a step
   (`zone_becomes`) is written at the end of the step and first lands next step, tag and
   damage; everything in the step (the zone phase, a skill motion landing on the cell,
@@ -452,14 +464,15 @@ a status.
 - Whatever a skill's or the host's landing sets off happens at once, inside it (a
   reaction during a skill's tags, before its damage; inside `ApplyTagTo`), but for the
   zone change (end of step). The zone phase resolves its landings together, in
-  sub-phases (see Zones). A trigger alone that an earlier firing of the phase downed
-  or killed has nobody left to affect: nothing fires (as a defeated one)
+  sub-phases, its reactions gathered then applied (see Zones): there, a result's
+  weakness is checked once all of an agent's results landed, and the reactions'
+  damage to an agent is summed
 - Consequences of these rules worth knowing when writing a level: a zone re-lands its
   tag every step, so an agent carrying a reaction's result that is also one of its
   originals (`wet + electrified -> electrified`) reacts again with every landing of the
   other one (standing in the lake: every step). Spreading with `zone_becomes` = the
   other original (wet), everyone in the lake keeps the result, so every step each
-  agent's wet landing is a trigger (all found before any fires): N agents in the lake,
+  agent's wet landing is a trigger (all fire, gathered then applied): N agents in the lake,
   N firings per step, each over the whole region (N x `damage` to each), each one
   re-setting the lake at the end of the step (it never runs out). A result in {a, b} is a trap: the level
   should give the result another name (`wet + electrified -> shocked`); the env keeps
@@ -528,9 +541,10 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
 - Report order in a step: the zone phase first (every zone landing in agent-index
-  order; its defeats; its reactions as they fired, trigger agent-index order, each
-  followed by its result landings), then the skill phase in resolution order (a skill
-  motion's zone landing inside its use). The C API reads the same vectors (its
+  order; its landing defeats; its reactions in trigger agent-index order; their result
+  landings in the same firing order, each firing's in its affected order; then the
+  result defeats), then the skill phase in resolution order (a skill motion's zone
+  landing inside its use). The C API reads the same vectors (its
   `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
   AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a companion revived then

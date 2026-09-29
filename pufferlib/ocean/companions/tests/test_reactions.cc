@@ -723,10 +723,10 @@ TEST(TestAReactionChangingItsOwnCellStillTakesTheOldZonesDamage) {
 // A trap of the rules (kept: the level names another result): a result that
 // is one of its triggers (wet + electrified -> electrified), spreading with
 // zone_becomes = the other one (wet). Everyone in the lake keeps the result,
-// so each step every agent's wet landing is a trigger (the zone phase finds
-// them all before any fires): N agents, N firings (once per trigger), each
-// over the whole region (N damage each), and each one re-sets the lake at the
-// end of the step (its lifetime starts again). Unchanged numbers: the old
+// so each step every agent's wet landing is a trigger (the zone phase gathers
+// every firing, then applies them per agent): N agents, N firings (once per
+// trigger), each over the whole region (N damage each, summed), and each one
+// re-sets the lake at the end of the step (its lifetime starts again). Unchanged numbers: the old
 // agent-by-agent pass also re-fired once per agent (each firing re-landing
 // the result every trigger needs).
 TEST(TestAResultThatIsATriggerReFiresOncePerAgentInTheZone) {
@@ -1756,6 +1756,95 @@ TEST(TestTheZonePhaseFixesItsTriggersBeforeAnyOutcome) {
       ASSERT_TRUE(landed.at(i).kind == TagSource::Reaction);
       ASSERT_EQ(landed.at(i).reaction, static_cast<int>(i - 2) / 2);
     }
+  }
+}
+
+// The zone phase computes every firing before applying any: A's firing (a
+// spreading jolt, 3 damage) would down B, but B's own reaction (alone, 1
+// damage) still fires, whatever the agents' order. B takes both firings'
+// damage at once (4: down), each firing reporting its own.
+TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions({Rule("wet", "electrified", "shocked").Hurts(3).Spreads().r,
+                              Rule("wet", "burning", "steamed").Hurts(1).r}),
+            "reactions");
+    Agent* a = Place(env, swapped ? 1 : 0, {3, 4});
+    Agent* b = Place(env, swapped ? 0 : 1, {3, 5});
+    b->SetMaxHealth(3);
+    Require(env.ApplyTagTo(a->GetId(), "electrified", kPermanentTag), "electrified");
+    Require(env.ApplyTagTo(b->GetId(), "burning", kPermanentTag), "burning");
+    SetZones(env, {{3, 4}, {3, 5}}, "wet");
+    env.Step(Stays(env));
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(2));
+    for (const auto& r : env.GetLastReactions()) {
+      if (r.rule == 0) {
+        ASSERT_EQ(r.trigger, a->GetId());
+        ASSERT_EQ(r.affected.size(), static_cast<size_t>(2));
+        for (const auto& o : r.affected) ASSERT_EQ(o.damage, 3);
+      } else {
+        ASSERT_EQ(r.trigger, b->GetId());
+        ASSERT_FALSE(r.spread);
+        ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
+        ASSERT_TRUE(r.affected.at(0).result_landed);
+        ASSERT_EQ(r.affected.at(0).damage, 1);
+      }
+    }
+    ASSERT_EQ(a->GetHealth(), 7);
+    ASSERT_TRUE(dynamic_cast<Companion*>(b)->IsDowned());
+    ASSERT_TRUE(Has(env, b, "shocked"));
+    ASSERT_TRUE(Has(env, b, "steamed"));
+    ASSERT_FALSE(Has(env, b, "burning"));
+    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}});
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
+  }
+}
+
+// A result defeating an agent through its weakness while another firing
+// reaches it: per agent, every result lands, then the weaknesses, then the
+// damage, so the outcome is the same in both orders. X, weak to (wet,
+// shocked), gets A's spreading shocked and its own steamed, is defeated (down,
+// no damage from either firing).
+TEST(TestAZonePhaseWeaknessDefeatDoesNotDependOnTheOrder) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions({Rule("wet", "electrified", "shocked").Hurts(1).Spreads().r,
+                              Rule("wet", "burning", "steamed").Hurts(1).r}),
+            "reactions");
+    Agent* a = Place(env, swapped ? 1 : 0, {3, 4});
+    Agent* x = Place(env, swapped ? 0 : 1, {3, 5});
+    Require(env.SetWeaknesses(x->GetId(), {{"wet", "shocked"}}), "weak_to");
+    Require(env.ApplyTagTo(a->GetId(), "electrified", kPermanentTag), "electrified");
+    Require(env.ApplyTagTo(x->GetId(), "burning", kPermanentTag), "burning");
+    SetZones(env, {{3, 4}, {3, 5}}, "wet");
+    env.Step(Stays(env));
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(2));
+    ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+    ASSERT_EQ(env.GetLastDefeats().at(0).agent, x->GetId());
+    ASSERT_EQ(env.GetLastDefeats().at(0).tag, Id(env, "shocked"));
+    ASSERT_TRUE(env.GetLastDefeats().at(0).kind == TagSource::Reaction);
+    ASSERT_TRUE(dynamic_cast<Companion*>(x)->IsDowned());
+    ASSERT_TRUE(Has(env, x, "shocked"));
+    ASSERT_TRUE(Has(env, x, "steamed"));
+    ASSERT_EQ(a->GetHealth(), 9);
+    for (const auto& r : env.GetLastReactions()) {
+      for (const auto& o : r.affected) {
+        if (o.agent != x->GetId()) continue;
+        ASSERT_TRUE(o.result_landed);
+        ASSERT_EQ(o.defeated, r.rule == 0);  // Its shocked defeated it
+        ASSERT_EQ(o.damage, 0);              // Defeated: no damage
+      }
+    }
+    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {x->GetId(), "x"}});
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
   }
 }
 

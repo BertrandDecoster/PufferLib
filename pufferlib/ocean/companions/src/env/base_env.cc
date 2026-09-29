@@ -95,7 +95,11 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     zone_defs_ = other.zone_defs_;
     in_step_ = other.in_step_;
     pending_zones_ = other.pending_zones_;
-    zone_landings_.clear();  // Scratch: it would point at the other env's agents
+    // Scratch: it would point at the other env's agents
+    zone_landings_.clear();
+    reaction_hits_.clear();
+    reaction_affected_.clear();
+    hit_agents_.clear();
     intended_skills_ = other.intended_skills_;
     max_downs_ = other.max_downs_;
     context_skills_ = other.context_skills_;
@@ -1181,39 +1185,11 @@ int BaseEnv::FindReaction(const Agent& agent, TagId tag) const {
 
 void BaseEnv::FireReaction(Agent& agent, TagId tag, int rule, ObjectId source,
                            const std::string& cause, TagSource kind) {
+  std::vector<Agent*> affected;
+  const int index = StartReaction(agent, tag, rule, source, cause, kind, affected);
+  if (index < 0) return;
   const ReactionRule& spec = reactions_[static_cast<size_t>(rule)];
   const ResolvedReaction& r = resolved_reactions_[static_cast<size_t>(rule)];
-
-  // Who: the region of the zone it stands on, when that zone provides a or b
-  // (asked of the map, as the step began), else the agent alone
-  const TagId here = GetCellTag(agent.GetPosition()).tag;
-  const bool spread = spec.spread && here != kInvalidTag && (here == r.a || here == r.b);
-  // A trigger alone no longer affectable (defeated, or downed by an earlier
-  // firing): nobody left to affect, nothing fires
-  if (!spread && !agent.IsAffectable()) return;
-  std::vector<char> region;
-  std::vector<Agent*> affected;
-  if (spread) {
-    region = ZoneRegion(agent.GetPosition());
-    for (Agent* a : object_manager_->GetAllAgents()) {  // Agent-index order
-      const Position p = a->GetPosition();
-      if (a->IsAffectable() && region[static_cast<size_t>(p.row * cols_ + p.col)]) {
-        affected.push_back(a);
-      }
-    }
-  } else {
-    affected.push_back(&agent);
-  }
-
-  const int index = static_cast<int>(last_reactions_.size());
-  ReactionReport fired(kind);
-  fired.rule = rule;
-  fired.trigger = agent.GetId();
-  fired.tag = tag;
-  fired.source = source;
-  fired.cause = cause;
-  fired.spread = spread;
-  last_reactions_.push_back(std::move(fired));
 
   // The outcome, agent by agent (each read on the map as the step began: the
   // region changes at the end of the step, or last between two steps)
@@ -1236,25 +1212,147 @@ void BaseEnv::FireReaction(Agent& agent, TagId tag, int rule, ObjectId source,
     }
     last_reactions_[static_cast<size_t>(index)].affected.push_back(outcome);
   }
+  ApplyZoneBecomes(static_cast<size_t>(index));
+}
 
-  // The region becomes zone_becomes (a zone by name: the table's fields; a
-  // step timer, so set during a step it is kept as n + 1). During a step the
-  // map is read-only: the change waits for the end of the step
-  // (CommitPendingZones) and first lands next step. Between two steps (a
-  // host landing) there is no phase: it applies at once.
-  if (spread && !spec.zone_becomes.empty()) {
-    const CellTag becomes =
-        ResolveZone(tags_.Intern(spec.zone_becomes), GetZoneDef(spec.zone_becomes));
-    std::vector<Position>& cells = last_reactions_[static_cast<size_t>(index)].cells;
-    for (size_t i = 0; i < region.size(); ++i) {
-      if (!region[i]) continue;
-      if (in_step_) {
-        pending_zones_.push_back({i, becomes});
-      } else {
-        cell_tags_[i] = becomes;
+int BaseEnv::StartReaction(Agent& agent, TagId tag, int rule, ObjectId source,
+                           const std::string& cause, TagSource kind,
+                           std::vector<Agent*>& affected) {
+  const ReactionRule& spec = reactions_[static_cast<size_t>(rule)];
+  const ResolvedReaction& r = resolved_reactions_[static_cast<size_t>(rule)];
+  // Who: the region of the zone it stands on, when that zone provides a or b
+  // (asked of the map, as the step began), else the agent alone
+  const TagId here = GetCellTag(agent.GetPosition()).tag;
+  const bool spread = spec.spread && here != kInvalidTag && (here == r.a || here == r.b);
+  // A defeated trigger alone: nobody left to affect, nothing fires
+  if (!spread && !agent.IsAffectable()) return -1;
+  affected.clear();
+  std::vector<char> region;
+  if (spread) {
+    region = ZoneRegion(agent.GetPosition());
+    for (Agent* a : object_manager_->GetAllAgents()) {  // Agent-index order
+      const Position p = a->GetPosition();
+      if (a->IsAffectable() && region[static_cast<size_t>(p.row * cols_ + p.col)]) {
+        affected.push_back(a);
       }
-      cells.push_back({static_cast<int>(i) / cols_, static_cast<int>(i) % cols_});
     }
+  } else {
+    affected.push_back(&agent);
+  }
+  const int index = static_cast<int>(last_reactions_.size());
+  ReactionReport fired(kind);
+  fired.rule = rule;
+  fired.trigger = agent.GetId();
+  fired.tag = tag;
+  fired.source = source;
+  fired.cause = cause;
+  fired.spread = spread;
+  if (spread && !spec.zone_becomes.empty()) {  // The cells it will (re)set, row-major
+    for (size_t i = 0; i < region.size(); ++i) {
+      if (region[i]) fired.cells.push_back({static_cast<int>(i) / cols_, static_cast<int>(i) % cols_});
+    }
+  }
+  last_reactions_.push_back(std::move(fired));
+  return index;
+}
+
+void BaseEnv::ApplyZoneBecomes(size_t index) {
+  const ReactionReport& fired = last_reactions_[index];
+  if (fired.cells.empty()) return;
+  // A zone by name: the table's fields; a step timer, so set during a step it
+  // is kept as n + 1. During a step the map is read-only: the change waits for
+  // the end of the step (CommitPendingZones) and first lands next step.
+  // Between two steps (a host landing) there is no phase: it applies at once.
+  const std::string& name = reactions_[static_cast<size_t>(fired.rule)].zone_becomes;
+  const CellTag becomes = ResolveZone(tags_.Intern(name), GetZoneDef(name));
+  for (const Position& p : fired.cells) {
+    const size_t i = static_cast<size_t>(p.row * cols_ + p.col);
+    if (in_step_) {
+      pending_zones_.push_back({i, becomes});
+    } else {
+      cell_tags_[i] = becomes;
+    }
+  }
+}
+
+void BaseEnv::ApplyReactionHits() {
+  auto rule_of = [this](const ReactionHit& h) -> size_t {
+    return static_cast<size_t>(last_reactions_[h.firing].rule);
+  };
+  // 1. Every firing's removals (the originals not kept)
+  for (const ReactionHit& h : reaction_hits_) {
+    const ResolvedReaction& r = resolved_reactions_[rule_of(h)];
+    if (!r.keep_a) h.agent->RemoveTag(r.a);
+    if (!r.keep_b) h.agent->RemoveTag(r.b);
+  }
+  // 2. Every result (immunity, the tag, its status), in firing order: each
+  //    firing's outcome entry, in its affected order. Weaknesses wait for 3.
+  hit_agents_.clear();
+  for (ReactionHit& h : reaction_hits_) {
+    const ResolvedReaction& r = resolved_reactions_[rule_of(h)];
+    ReactionReport& fired = last_reactions_[h.firing];
+    ReactionOutcome outcome;
+    outcome.agent = h.agent->GetId();
+    const size_t landing = last_tags_applied_.size();  // The result's report entry
+    outcome.result_landed = PutTag(*h.agent, r.result, kPermanentTag, fired.source, fired.cause,
+                                   TagSource::Reaction, static_cast<int>(h.firing));
+    // Fresh: carried by the agent neither before the removals nor from an
+    // earlier result of this phase (PutTag read the latter)
+    if (outcome.result_landed && h.carried) last_tags_applied_[landing].fresh = false;
+    h.outcome = fired.affected.size();
+    fired.affected.push_back(outcome);
+    if (std::find(hit_agents_.begin(), hit_agents_.end(), h.agent) == hit_agents_.end()) {
+      hit_agents_.push_back(h.agent);
+    }
+  }
+  // 3. One weakness check per agent over the results that landed on it: its
+  //    first (P, S) (its own order) with P under it and S among them
+  for (Agent* x : hit_agents_) {
+    if (!x->IsAffectable() || x->GetWeakTo().empty()) continue;
+    const TagId here = GetCellTag(x->GetPosition()).tag;
+    if (here == kInvalidTag) continue;
+    for (const Agent::WeakTo& w : x->GetWeakTo()) {
+      if (w.zone != here) continue;
+      const ReactionHit* by = nullptr;  // The first result S that landed on x
+      for (const ReactionHit& h : reaction_hits_) {
+        if (h.agent == x && last_reactions_[h.firing].affected[h.outcome].result_landed &&
+            resolved_reactions_[rule_of(h)].result == w.tag) {
+          by = &h;
+          break;
+        }
+      }
+      if (!by) continue;
+      x->Defeat();
+      const ReactionReport& fired = last_reactions_[by->firing];
+      DefeatReport d(TagSource::Reaction);
+      d.agent = x->GetId();
+      d.zone = w.zone;
+      d.tag = w.tag;
+      d.source = fired.source;
+      d.cause = fired.cause;
+      d.reaction = static_cast<int>(by->firing);
+      last_defeats_.push_back(std::move(d));
+      for (const ReactionHit& h : reaction_hits_) {  // Every result S on x defeated it
+        ReactionOutcome& o = last_reactions_[h.firing].affected[h.outcome];
+        if (h.agent == x && o.result_landed && resolved_reactions_[rule_of(h)].result == w.tag) {
+          o.defeated = true;
+        }
+      }
+      break;
+    }
+  }
+  // 4. The damage, summed per agent (one TakeDamage: Marked applies to the
+  //    sum), on an agent still affectable; each firing reports its own
+  for (Agent* x : hit_agents_) {
+    if (!x->IsAffectable()) continue;
+    int total = 0;
+    for (const ReactionHit& h : reaction_hits_) {
+      if (h.agent != x) continue;
+      const int damage = reactions_[rule_of(h)].damage;
+      last_reactions_[h.firing].affected[h.outcome].damage = damage;
+      total += damage;
+    }
+    if (total > 0) x->TakeDamage(total);
   }
 }
 
@@ -1456,15 +1554,29 @@ void BaseEnv::ResolveZoneLandings() {
       ResolveWeakness(*l.agent, l.zone.tag, kInvalidObjectId, kZoneCause, TagSource::Zone, -1);
     }
   }
-  // c. The reactions: every trigger first (after a and b: a defeated agent
-  //    keeps its tags, so it still triggers), then the firings, so no
-  //    outcome cancels another agent's trigger
+  // c. The reactions, gathered then applied. c1: every trigger (after a and
+  //    b: a defeated agent keeps its tags, so it still triggers a spread).
   for (ZoneLanding& l : zone_landings_) l.rule = FindReaction(*l.agent, l.zone.tag);
+  //    c2: every firing, its affected agents and report, nothing applied
+  reaction_hits_.clear();
+  const size_t first_firing = last_reactions_.size();
   for (const ZoneLanding& l : zone_landings_) {
-    if (l.rule >= 0) {
-      FireReaction(*l.agent, l.zone.tag, l.rule, kInvalidObjectId, kZoneCause, TagSource::Zone);
+    if (l.rule < 0) continue;
+    const int index = StartReaction(*l.agent, l.zone.tag, l.rule, kInvalidObjectId, kZoneCause,
+                                    TagSource::Zone, reaction_affected_);
+    if (index < 0) continue;
+    const TagId result = resolved_reactions_[static_cast<size_t>(l.rule)].result;
+    for (Agent* a : reaction_affected_) {
+      ReactionHit hit;
+      hit.agent = a;
+      hit.firing = static_cast<size_t>(index);
+      hit.carried = a->HasTag(result);
+      reaction_hits_.push_back(hit);
     }
   }
+  //    c3: the outcomes, per agent; then the zones, in firing order (pending)
+  if (!reaction_hits_.empty()) ApplyReactionHits();
+  for (size_t i = first_firing; i < last_reactions_.size(); ++i) ApplyZoneBecomes(i);
   // d. The zone's own damage, last: only on an agent still affectable (not
   //    defeated, not downed or killed by a reaction's damage)
   for (const ZoneLanding& l : zone_landings_) {
