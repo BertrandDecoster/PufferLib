@@ -126,7 +126,7 @@ env.SetTaskLens(std::make_unique<DodgeLens>());
 Pure game logic. **No auto-reset.**
 
 - `Reset(seed)` - Creates new procedural map
-- `Step(actions)` - Returns `StepResult{rewards, done}`
+- `Step(actions)` - One turn, resolved in phases over every agent at once (see the companions `CLAUDE.md`, "Step order"); returns `StepResult{rewards, done}`
 - `IsSuccess()`, `NumAgentsOnSynchroCells()` - Query state
 - `SetTaskLens()` - Swap task interpretation at runtime
 

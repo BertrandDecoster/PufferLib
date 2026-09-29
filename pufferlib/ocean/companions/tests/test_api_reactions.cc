@@ -279,6 +279,18 @@ static std::string ApiTrace(const Companions_Env* env, Companions_ReportSource s
     ASSERT_TRUE(companions_get_down(env, source, i, &id));
     out << "down " << ApiIdx(env, id) << "\n";
   }
+  for (int32_t i = 0; i < companions_get_turn_health_count(env, source); ++i) {
+    Companions_TurnHealth t = {};
+    ASSERT_TRUE(companions_get_turn_health(env, source, i, &t));
+    out << "turn " << ApiIdx(env, t.agent) << " " << t.damage << " " << t.marked_bonus << " "
+        << t.heal << " " << t.change << " " << t.health << " " << static_cast<int>(t.outcome)
+        << "\n";
+  }
+  for (int32_t i = 0; i < companions_get_odd_motion_count(env, source); ++i) {
+    Companions_OddMotion m = {};
+    ASSERT_TRUE(companions_get_odd_motion(env, source, i, &m));
+    out << "odd " << ApiIdx(env, m.actor) << " " << m.dr << "," << m.dc << "\n";
+  }
   return out.str();
 }
 
@@ -314,6 +326,14 @@ static std::string CppTrace(const BaseEnv& env) {
         << d.reaction << "\n";
   }
   for (ObjectId id : env.GetLastDowns()) out << "down " << CppIdx(env, id) << "\n";
+  for (const auto& t : env.GetLastTurnHealth()) {
+    out << "turn " << CppIdx(env, t.agent) << " " << t.damage << " " << t.marked_bonus << " "
+        << t.heal << " " << t.change << " " << t.health << " " << static_cast<int>(t.outcome)
+        << "\n";
+  }
+  for (const auto& m : env.GetLastOddMotions()) {
+    out << "odd " << CppIdx(env, m.actor) << " " << m.dr << "," << m.dc << "\n";
+  }
   return out.str();
 }
 
@@ -562,7 +582,7 @@ TEST(TestTheEventsSayWhatLandedAndWhatFired) {
     if (e.type != Companions_Event_TagApplied) {
       ASSERT_EQ(e.tag_reaction, -1);
       if (e.type != Companions_Event_ReactionFired && e.type != Companions_Event_SkillUsed &&
-          e.type != Companions_Event_AgentDefeated) {
+          e.type != Companions_Event_AgentDefeated && e.type != Companions_Event_HealthChanged) {
         ASSERT_EQ(e.report_index, -1);
       }
       continue;
@@ -582,10 +602,19 @@ TEST(TestTheEventsSayWhatLandedAndWhatFired) {
   Companions_StepResult r = ApiStep(env, kCaster);
   ASSERT_EQ(r.events_dropped, 0);
   int landings = 0, skill = 0, zone = 0, result = 0, fired = 0, defeated = 0, used = 0;
+  int health = 0;
   int phase = 0;  // 0 zones, 1 skills, 2 results: never back
   for (int32_t i = 0; i < r.event_count; ++i) {
     const Companions_Event& e = r.events[i];
     switch (e.type) {
+      case Companions_Event_HealthChanged: {
+        ASSERT_EQ(e.report_index, health++);
+        Companions_TurnHealth t = {};
+        ASSERT_TRUE(companions_get_turn_health(env, Companions_Report_LastStep, e.report_index, &t));
+        ASSERT_EQ(t.agent, e.subject_id);
+        ASSERT_EQ(e.tag_reaction, -1);
+        break;
+      }
       case Companions_Event_SkillUsed: {
         ASSERT_EQ(e.report_index, used++);
         Companions_SkillUseInfo u = {};
@@ -660,6 +689,7 @@ TEST(TestTheEventsSayWhatLandedAndWhatFired) {
     }
   }
   ASSERT_EQ(used, 1);
+  ASSERT_EQ(health, companions_get_turn_health_count(env, Companions_Report_LastStep));
   ASSERT_EQ(landings, companions_get_tag_landing_count(env, Companions_Report_LastStep));
   ASSERT_EQ(fired, 1);  // The fireball's (frosty's chilled went at the first step)
   ASSERT_EQ(defeated, 2);
@@ -1105,8 +1135,8 @@ TEST(TestAStepSaysWhetherItStepped) {
   companions_destroy(env);
 }
 
-// The defeats are state-change events: after the downs and revives, before
-// the skill uses and tags (the cap drops those first)
+// The defeats are state-change events: after the health changes, the downs
+// and the revives, before the skill uses and tags (the cap drops those first)
 TEST(TestAgentDefeatedComesWithTheStateChanges) {
   Companions_Env* env = LoadKitchen(KitchenJson());
   ApiStep(env);
@@ -1116,6 +1146,7 @@ TEST(TestAgentDefeatedComesWithTheStateChanges) {
     switch (r.events[i].type) {
       case Companions_Event_AgentMoved:
       case Companions_Event_AgentBlocked:
+      case Companions_Event_HealthChanged:
       case Companions_Event_AgentDowned:
       case Companions_Event_AgentRevived:
         ASSERT_TRUE(first_defeat < 0);  // Before any defeat
@@ -1135,6 +1166,308 @@ TEST(TestAgentDefeatedComesWithTheStateChanges) {
   ASSERT_TRUE(first_defeat > last_state_change);
   ASSERT_TRUE(first_other > last_defeat);
   ASSERT_EQ(r.events[first_other].type, Companions_Event_SkillUsed);
+  companions_destroy(env);
+}
+
+// =============================================================================
+// The turn's health and the odd motions (since 1.6)
+// =============================================================================
+
+// The turn health entries of `source`, as structs
+static std::vector<Companions_TurnHealth> ApiTurnHealth(const Companions_Env* env,
+                                                        Companions_ReportSource source) {
+  std::vector<Companions_TurnHealth> out(
+      static_cast<size_t>(companions_get_turn_health_count(env, source)));
+  for (size_t i = 0; i < out.size(); ++i) {
+    ASSERT_TRUE(companions_get_turn_health(env, source, static_cast<int32_t>(i), &out[i]));
+  }
+  return out;
+}
+
+// Throws unless `api` is `cpp`'s turn health, field by field (ids by agent index)
+static void ExpectSameTurnHealth(const Companions_Env* env,
+                                 const std::vector<Companions_TurnHealth>& api,
+                                 const BaseEnv& cpp, const char* at) {
+  const auto& expected = cpp.GetLastTurnHealth();
+  if (api.size() != expected.size()) throw std::runtime_error(std::string(at) + ": entry count");
+  for (size_t i = 0; i < api.size(); ++i) {
+    const Companions_TurnHealth& a = api[i];
+    const BaseEnv::TurnHealth& c = expected[i];
+    ASSERT_EQ(ApiIdx(env, a.agent), CppIdx(cpp, c.agent));
+    ASSERT_EQ(a.damage, c.damage);
+    ASSERT_EQ(a.marked_bonus, c.marked_bonus);
+    ASSERT_EQ(a.heal, c.heal);
+    ASSERT_EQ(a.change, c.change);
+    ASSERT_EQ(a.health, c.health);
+    ASSERT_EQ(static_cast<int>(a.outcome), static_cast<int>(c.outcome));
+  }
+}
+
+// The index of the entry of agent `index` in `entries`, -1 when none
+static int TurnOf(const Companions_Env* env, const std::vector<Companions_TurnHealth>& entries,
+                  int32_t index) {
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (entries[i].agent == IdAt(env, index)) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+// Both sources hold the turn health as the C++ env reports it, field by
+// field: the preview's (the C++ preview's world) and the last step's (the C++
+// env stepped the same). The fireball's turn: the cook, a companion, is
+// defeated (0, down), the gob too (dead), the pal burns (1 damage).
+TEST(TestTheTurnHealthQueryBothSources) {
+  const std::string json = KitchenJson();
+  Companions_Env* env = LoadKitchen(json);
+  std::unique_ptr<SynchroEnv> cpp = LoadCppKitchen(json);
+  ApiStep(env);
+  cpp->Step(CppActions());
+  ExpectSameTurnHealth(env, ApiTurnHealth(env, Companions_Report_LastStep), *cpp, "the first step");
+  ASSERT_EQ(companions_get_turn_health_count(env, Companions_Report_Preview), 0);  // None yet
+
+  Companions_SkillOutcome outcome = {};
+  ASSERT_TRUE(companions_preview_skill_outcome(env, IdAt(env, kCaster), 0,
+                                               Companions_Direction_Right, &outcome));
+  const BaseEnv::SkillOutcome cpp_outcome =
+      cpp->PreviewSkillOutcome(cpp->GetObjectManager().GetAllAgents()[kCaster]->GetId(), 0,
+                               Direction::Right);
+  const std::vector<Companions_TurnHealth> previewed =
+      ApiTurnHealth(env, Companions_Report_Preview);
+  ExpectSameTurnHealth(env, previewed, *cpp_outcome.world, "the preview");
+
+  ApiStep(env, kCaster);
+  cpp->Step(CppActions(kCaster));
+  const std::vector<Companions_TurnHealth> stepped = ApiTurnHealth(env, Companions_Report_LastStep);
+  ExpectSameTurnHealth(env, stepped, *cpp, "the step");
+  const int cook = TurnOf(env, stepped, kCook);
+  ASSERT_TRUE(cook >= 0);
+  ASSERT_EQ(stepped[static_cast<size_t>(cook)].outcome, Companions_TurnOutcome_Defeated);
+  ASSERT_EQ(stepped[static_cast<size_t>(cook)].health, 0);
+  ASSERT_EQ(stepped[static_cast<size_t>(cook)].change, -10);
+  const int gob = TurnOf(env, stepped, kGob);
+  ASSERT_TRUE(gob >= 0);
+  ASSERT_EQ(stepped[static_cast<size_t>(gob)].outcome, Companions_TurnOutcome_Defeated);
+  const int pal = TurnOf(env, stepped, kPal);
+  ASSERT_TRUE(pal >= 0);
+  ASSERT_EQ(stepped[static_cast<size_t>(pal)].damage, 1);
+  ASSERT_EQ(stepped[static_cast<size_t>(pal)].change, -1);
+  ASSERT_EQ(stepped[static_cast<size_t>(pal)].outcome, Companions_TurnOutcome_None);
+  // The step dropped the preview
+  ASSERT_EQ(companions_get_turn_health_count(env, Companions_Report_Preview), 0);
+  companions_destroy(env);
+}
+
+// The outcome preview counts the turn's health entries (and its odd motions:
+// none for one use here), and they are the next step's, field by field,
+// when the use is its only change
+TEST(TestAnOutcomePreviewReportsTheTurnsHealth) {
+  Companions_Env* env = LoadKitchen(KitchenJson());
+  ApiStep(env);
+  Companions_SkillOutcome outcome = {};
+  ASSERT_TRUE(companions_preview_skill_outcome(env, IdAt(env, kCaster), 0,
+                                               Companions_Direction_Right, &outcome));
+  ASSERT_TRUE(outcome.turn_health_count > 0);
+  ASSERT_EQ(outcome.turn_health_count,
+            companions_get_turn_health_count(env, Companions_Report_Preview));
+  ASSERT_EQ(outcome.odd_motion_count, 0);
+  ASSERT_EQ(outcome.odd_motion_count,
+            companions_get_odd_motion_count(env, Companions_Report_Preview));
+  const std::vector<Companions_TurnHealth> previewed =
+      ApiTurnHealth(env, Companions_Report_Preview);
+  ApiStep(env, kCaster);
+  const std::vector<Companions_TurnHealth> stepped = ApiTurnHealth(env, Companions_Report_LastStep);
+  ASSERT_EQ(stepped.size(), previewed.size());
+  for (size_t i = 0; i < stepped.size(); ++i) {
+    ASSERT_TRUE(std::memcmp(&stepped[i], &previewed[i], sizeof(stepped[i])) == 0);
+  }
+  companions_destroy(env);
+}
+
+// One HealthChanged per turn health entry, in its order (subject = the agent,
+// at its cell after the step; health_amount = the change, health_new = the
+// HP, effect_id = the outcome, report_index = the entry), after the movement
+// events and before the downs. Frosty walks off the lake while the fireball
+// sets the oil ablaze.
+TEST(TestHealthChangedEventsComeBeforeTheDowns) {
+  Companions_Env* env = LoadKitchen(KitchenJson());
+  std::vector<Companions_Action> actions = ApiActions(kCaster);
+  actions[kFrosty] = {Companions_Movement_Left, Companions_Interact_None};
+  Companions_StepResult r = {};
+  ASSERT_TRUE(companions_step(env, actions.data(), kAgents, &r));
+  ASSERT_EQ(r.events_dropped, 0);
+  const std::vector<Companions_TurnHealth> entries = ApiTurnHealth(env, Companions_Report_LastStep);
+  ASSERT_TRUE(!entries.empty());
+  int last_move = -1, first_health = -1, last_health = -1, first_down = -1;
+  size_t seen = 0;
+  for (int32_t i = 0; i < r.event_count; ++i) {
+    const Companions_Event& e = r.events[i];
+    if (e.type == Companions_Event_AgentMoved || e.type == Companions_Event_AgentBlocked) {
+      last_move = i;
+    } else if (e.type == Companions_Event_HealthChanged) {
+      if (first_health < 0) first_health = i;
+      last_health = i;
+      ASSERT_TRUE(seen < entries.size());
+      const Companions_TurnHealth& t = entries[seen];
+      ASSERT_EQ(e.report_index, static_cast<int32_t>(seen));
+      ASSERT_EQ(e.subject_id, t.agent);
+      ASSERT_EQ(e.health_amount, t.change);
+      ASSERT_EQ(e.health_new, t.health);
+      ASSERT_EQ(e.effect_id, static_cast<int32_t>(t.outcome));
+      ASSERT_EQ(e.health_source_id, Companions_INVALID_ID);
+      Companions_AgentState a = {};
+      ASSERT_TRUE(companions_get_agent(env, t.agent, &a));
+      ASSERT_EQ(e.position.row, a.position.row);
+      ASSERT_EQ(e.position.col, a.position.col);
+      ++seen;
+    } else if (e.type == Companions_Event_AgentDowned && first_down < 0) {
+      first_down = i;
+    }
+  }
+  ASSERT_EQ(seen, entries.size());  // One per entry
+  ASSERT_TRUE(last_move >= 0);      // Frosty's walk
+  ASSERT_EQ(first_health, last_move + 1);
+  ASSERT_EQ(last_health - first_health + 1, static_cast<int>(entries.size()));  // Together
+  ASSERT_TRUE(first_down >= 0);  // The cook's
+  ASSERT_EQ(first_down, last_health + 1);
+  // The cook's: Defeated, at 0
+  bool cook = false;
+  for (int32_t i = first_health; i <= last_health; ++i) {
+    if (r.events[i].subject_id != IdAt(env, kCook)) continue;
+    ASSERT_EQ(r.events[i].effect_id, static_cast<int32_t>(Companions_TurnOutcome_Defeated));
+    ASSERT_EQ(r.events[i].health_new, 0);
+    cook = true;
+  }
+  ASSERT_TRUE(cook);
+  companions_destroy(env);
+}
+
+// Two companions and a gob: A's gust2 (a cross pushing its ring 2 cells
+// away) and B's gust1 (1 cell) both reach the gob, whose summed push
+// (1 down, 2 right) is off the axes: an odd motion. See test_turn.cc's
+// TestAnUnevenSumTravelsInAStraightLineAndIsRecorded.
+static std::string OddJson() {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  env.Reset();
+  Grid& g = env.GetMutableGrid();
+  for (int r = 0; r < 10; ++r) {
+    for (int c = 0; c < 10; ++c) {
+      const bool border = r == 0 || c == 0 || r == 9 || c == 9;
+      g.SetCell({r, c}, border ? CellKind::Wall : CellKind::Floor);
+    }
+  }
+  ObjectManager& objects = env.GetMutableObjectManager();
+  const std::vector<Agent*> companions = objects.GetAllAgents();
+  objects.UpdatePosition(companions.at(0)->GetId(), {4, 3});
+  objects.UpdatePosition(companions.at(1)->GetId(), {3, 4});
+  Agent* gob = objects.CreateActor<Agent>(Position{4, 4});
+  gob->SetFaction(Faction::ENEMY);
+  gob->SetMaxHealth(5);
+  for (int i = 0; i < 2; ++i) {
+    SkillConfig s;
+    s.name = i == 0 ? "gust2" : "gust1";
+    s.targeting = SkillTargeting::Self;
+    s.area = SkillArea::Cross;
+    s.motion = SkillMotion::PushOut;
+    s.motion_distance = 2 - i;
+    env.GetMutableSkillBook().Define(s);
+    Require(env.SetCompanionSkill(companions.at(static_cast<size_t>(i))->GetId(), 0, s.name),
+            "gust");
+  }
+  return SnapshotToJson(env.SaveSnapshot());
+}
+
+// The odd motions of both sources, and the env's total: a preview of one gust
+// has none (and leaves the total alone); the step of both gusts has the
+// gob's; the next step has none, the total stays
+TEST(TestTheOddMotionQueries) {
+  Companions_Env* env = LoadKitchen(OddJson(), 3);
+  ASSERT_EQ(companions_get_odd_motion_total(env), 0);
+  ASSERT_EQ(companions_get_odd_motion_count(env, Companions_Report_LastStep), 0);
+  Companions_SkillOutcome outcome = {};
+  ASSERT_TRUE(companions_preview_skill_outcome(env, IdAt(env, 0), 0, Companions_Direction_Right,
+                                               &outcome));
+  ASSERT_EQ(outcome.odd_motion_count, 0);
+  ASSERT_EQ(companions_get_odd_motion_count(env, Companions_Report_Preview), 0);
+  ASSERT_EQ(companions_get_odd_motion_total(env), 0);
+
+  const Companions_Action both[3] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                                     {Companions_Movement_Right, Companions_Interact_Skill1},
+                                     {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult r = {};
+  ASSERT_TRUE(companions_step(env, both, 3, &r));
+  ASSERT_EQ(companions_get_odd_motion_count(env, Companions_Report_LastStep), 1);
+  Companions_OddMotion odd = {};
+  ASSERT_TRUE(companions_get_odd_motion(env, Companions_Report_LastStep, 0, &odd));
+  ASSERT_EQ(odd.actor, IdAt(env, 2));
+  ASSERT_EQ(odd.dr, 1);
+  ASSERT_EQ(odd.dc, 2);
+  ASSERT_EQ(companions_get_odd_motion_total(env), 1);
+  Companions_AgentState gob = {};
+  ASSERT_TRUE(companions_get_agent_by_index(env, 2, &gob));
+  ASSERT_EQ(gob.position.row, 5);
+  ASSERT_EQ(gob.position.col, 6);
+
+  const Companions_Action stay[3] = {{Companions_Movement_Stay, Companions_Interact_None},
+                                     {Companions_Movement_Stay, Companions_Interact_None},
+                                     {Companions_Movement_Stay, Companions_Interact_None}};
+  ASSERT_TRUE(companions_step(env, stay, 3, &r));
+  ASSERT_EQ(companions_get_odd_motion_count(env, Companions_Report_LastStep), 0);
+  ASSERT_EQ(companions_get_odd_motion_total(env), 1);
+  companions_destroy(env);
+}
+
+// As the other report queries: 0 / false with `out` untouched for a null
+// env, a null `out`, a bad source or an index out of range; the total: 0 for
+// a null env
+TEST(TestTurnHealthQueriesRejectBadArguments) {
+  Companions_Env* env = LoadKitchen(KitchenJson());
+  ApiStep(env);
+  ApiStep(env, kCaster);
+  const auto bad = static_cast<Companions_ReportSource>(7);
+  const int32_t count = companions_get_turn_health_count(env, Companions_Report_LastStep);
+  ASSERT_TRUE(count > 0);
+
+  ASSERT_EQ(companions_get_turn_health_count(nullptr, Companions_Report_LastStep), 0);
+  ASSERT_ERROR("Invalid environment");
+  ASSERT_EQ(companions_get_turn_health_count(env, bad), 0);
+  ASSERT_ERROR("Invalid report source");
+  ASSERT_EQ(companions_get_odd_motion_count(nullptr, Companions_Report_LastStep), 0);
+  ASSERT_ERROR("Invalid environment");
+  ASSERT_EQ(companions_get_odd_motion_count(env, bad), 0);
+  ASSERT_ERROR("Invalid report source");
+  ASSERT_EQ(companions_get_odd_motion_total(nullptr), 0);
+  ASSERT_ERROR("Invalid environment");
+
+  Companions_TurnHealth health = {};
+  health.damage = 77;
+  Companions_OddMotion odd = {};
+  odd.dr = 77;
+  ASSERT_FALSE(companions_get_turn_health(nullptr, Companions_Report_LastStep, 0, &health));
+  ASSERT_ERROR("Invalid arguments");
+  ASSERT_FALSE(companions_get_turn_health(env, Companions_Report_LastStep, 0, nullptr));
+  ASSERT_ERROR("Invalid arguments");
+  ASSERT_FALSE(companions_get_turn_health(env, bad, 0, &health));
+  ASSERT_ERROR("Invalid report source");
+  ASSERT_FALSE(companions_get_turn_health(env, Companions_Report_LastStep, count, &health));
+  ASSERT_ERROR("Turn health index out of range");
+  ASSERT_FALSE(companions_get_turn_health(env, Companions_Report_LastStep, -1, &health));
+  ASSERT_ERROR("Turn health index out of range");
+  ASSERT_FALSE(companions_get_odd_motion(nullptr, Companions_Report_LastStep, 0, &odd));
+  ASSERT_ERROR("Invalid arguments");
+  ASSERT_FALSE(companions_get_odd_motion(env, Companions_Report_LastStep, 0, nullptr));
+  ASSERT_ERROR("Invalid arguments");
+  ASSERT_FALSE(companions_get_odd_motion(env, bad, 0, &odd));
+  ASSERT_ERROR("Invalid report source");
+  ASSERT_FALSE(companions_get_odd_motion(env, Companions_Report_LastStep, 0, &odd));
+  ASSERT_ERROR("Odd motion index out of range");
+  // No preview yet: empty, every index out of range
+  ASSERT_EQ(companions_get_turn_health_count(env, Companions_Report_Preview), 0);
+  ASSERT_FALSE(companions_get_turn_health(env, Companions_Report_Preview, 0, &health));
+  ASSERT_ERROR("Turn health index out of range");
+  ASSERT_FALSE(companions_get_odd_motion(env, Companions_Report_Preview, 0, &odd));
+  ASSERT_ERROR("Odd motion index out of range");
+  ASSERT_EQ(health.damage, 77);
+  ASSERT_EQ(odd.dr, 77);
   companions_destroy(env);
 }
 
@@ -1251,6 +1584,6 @@ int main() {
       failed++;
     }
   }
-  std::cout << "\nC API 1.5 tests: " << passed << " passed, " << failed << " failed" << std::endl;
+  std::cout << "\nC API 1.5 / 1.6 tests: " << passed << " passed, " << failed << " failed" << std::endl;
   return failed > 0 ? 1 : 0;
 }

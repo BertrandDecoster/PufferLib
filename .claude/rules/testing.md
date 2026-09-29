@@ -25,7 +25,8 @@ ctest
 ./companions_d4_transform_test
 ./companions_zones_test            # zones: lifetime, successor, damage, zone table
 ./companions_reactions_test        # reactions, weaknesses, immunities, tag statuses
-./companions_api_reactions_test    # C API 1.5: reports, level data, outcome previews
+./companions_turn_test             # the phased turn: ledger, motion layers, tag phase, effects, previews
+./companions_api_reactions_test    # C API 1.5 / 1.6: reports (turn health, odd motions), level data, outcome previews
 # (the full list, by area: the companions CLAUDE.md, "Tests"; on Windows
 # they land in build/bin/Release/ and ctest needs -C Release)
 

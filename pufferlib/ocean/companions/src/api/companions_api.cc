@@ -72,6 +72,16 @@
 // Companions_End_TaskFailed is no longer produced. A down interrupts the task
 // (Companions_End_Interrupted, provisional; a one-time down cost of -0.5 per
 // new down, then the task paused, rewards 0, until nobody is down).
+// Amended (the phased turn): a step is one turn resolved in phases (intents
+// from the turn start, motion layers, one tag phase, the HP ledger, the
+// outcomes at the end of the turn, effects planned); outcome previews run
+// that turn. The turn health report (Companions_TurnHealth,
+// Companions_TurnOutcome, companions_get_turn_health_count / _get_turn_health),
+// Companions_Event_HealthChanged (21; AgentDamaged / AgentHealed superseded),
+// the odd motions (Companions_OddMotion, companions_get_odd_motion_count /
+// _get_odd_motion / _get_odd_motion_total); Companions_SkillOutcome gained
+// turn_health_count and odd_motion_count (a layout change: consumers must
+// rebuild).
 #define COMPANIONS_VERSION "1.6.0"
 
 // =============================================================================
@@ -541,6 +551,43 @@ static void AddMovementEvents(Companions_Env* wrapper) {
 static Companions_Position ActorCell(const companions::BaseEnv& env, companions::ObjectId id) {
   const companions::Actor* actor = env.GetObjectManager().GetActor(id);
   return actor ? ToAPIPosition(actor->GetPosition()) : Companions_Position{-1, -1};
+}
+
+// The values of companions::BaseEnv::TurnOutcome are those of Companions_TurnOutcome
+static_assert(static_cast<int>(companions::BaseEnv::TurnOutcome::None) ==
+                      Companions_TurnOutcome_None &&
+                  static_cast<int>(companions::BaseEnv::TurnOutcome::Downed) ==
+                      Companions_TurnOutcome_Downed &&
+                  static_cast<int>(companions::BaseEnv::TurnOutcome::Died) ==
+                      Companions_TurnOutcome_Died &&
+                  static_cast<int>(companions::BaseEnv::TurnOutcome::Defeated) ==
+                      Companions_TurnOutcome_Defeated &&
+                  static_cast<int>(companions::BaseEnv::TurnOutcome::Revived) ==
+                      Companions_TurnOutcome_Revived,
+              "TurnOutcome out of sync with C API");
+
+// One HealthChanged event per turn health entry of this step, in its order
+// (subject = the agent, at its cell; health_amount = the change, health_new =
+// the HP after the turn, health_source_id = -1, effect_id = the outcome,
+// report_index = the entry): state changes, after the movements and before
+// the downs.
+static void AddHealthEvents(Companions_Env* wrapper) {
+  const companions::BaseEnv* env = wrapper->env.get();
+  const auto& turn = env->GetLastTurnHealth();
+  for (size_t i = 0; i < turn.size(); ++i) {
+    const companions::BaseEnv::TurnHealth& t = turn[i];
+    Companions_Event evt = NewEvent();
+    evt.type = Companions_Event_HealthChanged;
+    evt.tick = env->GetTick();
+    evt.subject_id = t.agent;
+    evt.position = ActorCell(*env, t.agent);
+    evt.health_amount = t.change;
+    evt.health_new = t.health;
+    evt.health_source_id = Companions_INVALID_ID;
+    evt.effect_id = static_cast<int32_t>(t.outcome);
+    evt.report_index = static_cast<int32_t>(i);
+    wrapper->events.push_back(evt);
+  }
 }
 
 // One SkillUsed event per skill use of this step (subject = caster, position
@@ -1037,11 +1084,13 @@ static bool StepAndReport(Companions_Env* env, const std::vector<companions::Act
   env->end_reason = CurrentEndReason(*env);
   env->last_rewards = result.rewards;
 
-  // Generate the events. The state changes (movements, downs, revives,
-  // defeats) come before the skills, tags and reactions, which can overflow
-  // Companions_MAX_EVENTS, so the cap cuts those first (see "Event System"
-  // in companions_api.h for when the state changes always fit).
+  // Generate the events. The state changes (movements, health changes,
+  // downs, revives, defeats) come before the skills, tags and reactions,
+  // which can overflow Companions_MAX_EVENTS, so the cap cuts those first
+  // (see "Event System" in companions_api.h for when the state changes always
+  // fit).
   AddMovementEvents(env);
+  AddHealthEvents(env);
   AddDownEvents(env);
   AddReviveEvents(env);
   AddDefeatEvents(env);
@@ -1679,6 +1728,14 @@ static const std::vector<companions::ObjectId>& DownsOf(const companions::BaseEn
 static const std::vector<companions::BaseEnv::Revival>& RevivesOf(const companions::BaseEnv& e) {
   return e.GetLastRevives();
 }
+static const std::vector<companions::BaseEnv::TurnHealth>& TurnHealthOf(
+    const companions::BaseEnv& e) {
+  return e.GetLastTurnHealth();
+}
+static const std::vector<companions::BaseEnv::OddMotion>& OddMotionsOf(
+    const companions::BaseEnv& e) {
+  return e.GetLastOddMotions();
+}
 
 // A tag id of `env`'s table by name ("" for none)
 static std::string TagNameIn(const companions::BaseEnv& env, companions::TagId tag) {
@@ -1856,6 +1913,56 @@ COMPANIONS_API bool companions_get_revive(const Companions_Env* env,
   return true;
 }
 
+COMPANIONS_API int32_t companions_get_turn_health_count(const Companions_Env* env,
+                                                        Companions_ReportSource source) {
+  return ReportCount(env, source, TurnHealthOf);
+}
+
+COMPANIONS_API bool companions_get_turn_health(const Companions_Env* env,
+                                               Companions_ReportSource source, int32_t index,
+                                               Companions_TurnHealth* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* turn = ReportEntry(env, source, index, out, TurnHealthOf,
+                                 "Turn health index out of range", &reports);
+  if (!turn) return false;
+  std::memset(out, 0, sizeof(*out));
+  out->agent = turn->agent;
+  out->damage = turn->damage;
+  out->marked_bonus = turn->marked_bonus;
+  out->heal = turn->heal;
+  out->change = turn->change;
+  out->health = turn->health;
+  out->outcome = static_cast<Companions_TurnOutcome>(turn->outcome);
+  return true;
+}
+
+COMPANIONS_API int32_t companions_get_odd_motion_count(const Companions_Env* env,
+                                                       Companions_ReportSource source) {
+  return ReportCount(env, source, OddMotionsOf);
+}
+
+COMPANIONS_API bool companions_get_odd_motion(const Companions_Env* env,
+                                              Companions_ReportSource source, int32_t index,
+                                              Companions_OddMotion* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* odd = ReportEntry(env, source, index, out, OddMotionsOf,
+                                "Odd motion index out of range", &reports);
+  if (!odd) return false;
+  std::memset(out, 0, sizeof(*out));
+  out->actor = odd->actor;
+  out->dr = odd->dr;
+  out->dc = odd->dc;
+  return true;
+}
+
+COMPANIONS_API int64_t companions_get_odd_motion_total(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0;
+  }
+  return static_cast<int64_t>(env->env->GetOddMotionCount());
+}
+
 COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
                                                      Companions_ObjectId agent, int32_t slot,
                                                      Companions_Direction aim,
@@ -1887,6 +1994,8 @@ COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
     out->defeat_count = static_cast<int32_t>(world.GetLastDefeats().size());
     out->down_count = static_cast<int32_t>(world.GetLastDowns().size());
     out->revive_count = static_cast<int32_t>(world.GetLastRevives().size());
+    out->turn_health_count = static_cast<int32_t>(world.GetLastTurnHealth().size());
+    out->odd_motion_count = static_cast<int32_t>(world.GetLastOddMotions().size());
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());

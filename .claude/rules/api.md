@@ -22,7 +22,7 @@ The C API wraps the pure C++17 game logic with POD-only types for safe DLL bound
 | `src/api/companions_api.cc` | Implementation wrapping SynchroEnv |
 | `tests/test_api.cc` | Unit tests for C API (14 tests) |
 | `tests/test_api_parity.cc` | Parity test vs direct C++ (7 tests) |
-| `tests/test_api_reactions.cc` | 1.5: reports, outcome previews, level data, parity |
+| `tests/test_api_reactions.cc` | 1.5 / 1.6: reports (turn health, odd motions included), outcome previews, level data, parity |
 
 ## Core API
 
@@ -76,6 +76,7 @@ Events returned by `companions_step()` for animation:
 |-------|-------------|
 | `Companions_Event_AgentMoved` | Agent successfully moved to new position |
 | `Companions_Event_AgentBlocked` | Agent tried to move but was blocked |
+| `Companions_Event_HealthChanged` | 1.6: one agent's turn health (`health_amount` = change, `health_new` = HP, `effect_id` = `Companions_TurnOutcome`, `report_index` = its `companions_get_turn_health` entry); a state-change event. Supersedes `AgentDamaged` / `AgentHealed` (declared, never emitted) |
 | `Companions_Event_AgentDowned` | A companion went down (1.3) |
 | `Companions_Event_AgentRevived` | A downed companion got up (1.4: reviver, HP) |
 | `Companions_Event_AgentDefeated` | 1.5: a weakness (P, S) defeated an agent (S, its landing's source / `tag_kind` / `tag_reaction`); a state-change event |
@@ -84,9 +85,11 @@ Events returned by `companions_step()` for animation:
 | `Companions_Event_ReactionFired` | 1.5: a reaction fired (trigger, rule, result, the triggering landing's source / kind) |
 | `Companions_Event_EpisodeEnd` | Episode ended (`effect_id` = the end reason) |
 
-Order in a step: moved / blocked, downed, revived, defeated, skill used, tag applied,
-reaction fired, episode end. Since 1.5 every event carries `report_index` (its entry in
-the uncapped report query, -1 for none): the events are capped, the reports are not.
+Order in a step: moved / blocked, health changed, downed, revived, defeated, skill used,
+tag applied, reaction fired, episode end (grouped by kind, not in time order; the state
+changes first, so the cap drops skill / tag / reaction events first). Since 1.5 every
+event carries `report_index` (its entry in the uncapped report query, -1 for none): the
+events are capped, the reports are not.
 
 The header's "Versioning" and "Event System" comments are the reference (order,
 event cap, what each version changed); the companions `CLAUDE.md` summarizes them.
@@ -109,6 +112,25 @@ Report queries with a `Companions_ReportSource` (`LastStep`, or `Preview`: the l
 reactions (with the cells a `zone_becomes` (re)set), defeats, downs, revives. The level
 data, read-only: zone table, cell zones, reaction rules, tag statuses, weaknesses,
 immunities. The header's "Reports" and "Level data" sections are the reference.
+
+## The phased turn (1.6)
+
+A step is one turn resolved in phases (intents from the world as the turn begins,
+motion layers, one tag phase, the HP ledger, downs / deaths / defeats / revives at the
+end of the turn; effects planned into the turn). Reports: the tag landings list the
+zones' first, then the skills', then the reactions' results; every report's `damage` is
+the source's raw share (before Marked) and the HP truth is the turn health
+(`Companions_TurnHealth`, `companions_get_turn_health_count` / `get_turn_health`, both
+sources; `Companions_TurnOutcome` None / Downed / Died / Defeated / Revived). A reaction
+or a defeat credits the first non-zone landing of its tag. Odd motions (an off-axis sum
+of forced moves): `companions_get_odd_motion_count` / `get_odd_motion` (both sources),
+`companions_get_odd_motion_total` (the env's life). `companions_preview_skill_outcome`
+runs a whole turn on a copy with that use alone (everyone else stays, no FSM, no effect
+activation); `Companions_SkillOutcome` gained `turn_health_count` / `odd_motion_count`
+(1.6.0 amended in place: rebuild both sides). `companions_spawn_effect` between steps
+applies an effect without a wind-up at once; the env's own spawns during a step wait
+for the next turn (`in_telegraph`, `ticks_remaining` 1). The header's "The Turn"
+section is the reference.
 
 ## Thread Safety
 

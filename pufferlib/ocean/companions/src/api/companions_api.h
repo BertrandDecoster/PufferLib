@@ -97,7 +97,12 @@
 // false with the error and the env's current state in out_result (no event),
 // and every other function returns its failure value with the error
 // ("Unknown error" for an exception that is not a std::exception).
-// 1.6 (behaviour, struct layouts and signatures unchanged): only a team down
+// 1.6 changed a struct layout (Companions_SkillOutcome: turn_health_count,
+// odd_motion_count): consumers must rebuild against this header (signatures
+// unchanged). 1.6.0 was amended in place before its release: DLLs built from
+// earlier 1.6.0 commits of this branch are NOT compatible with this header
+// (the struct size and the exports changed). Rebuild both sides.
+// 1.6 behaviour: only a team down
 // or the horizon fails a task, so a bad situation stays salvageable. Done is
 // the same for every env and lens: the success, the team down
 // (Companions_End_TeamDown), the horizon, or a down interrupting the task
@@ -117,6 +122,28 @@
 // the team down or the horizon replace it (priority: Success > TeamDown >
 // Horizon > Interrupted), ending the pause; a down on a step that ends the
 // episode (a success, the horizon, the team down) pauses nothing.
+// 1.6 behaviour: a step is one PHASED turn (see "The Turn" below): every
+// intent reads the world as the turn begins (simultaneous casters: the agent
+// order changes no outcome, only the report order), one motion phase in
+// layers, one tag phase (every tag of the turn lands together, then the
+// weaknesses, then the reactions), and HP, downs, deaths, defeats and
+// revives applied once, at the end of the turn. Reports whose order or
+// meaning changed: the tag landings (the zones' first, then the skills', then
+// the reactions' results), a report's damage (each source's raw share; the
+// HP truth is the turn health), a reaction's and a weakness defeat's credit
+// (the credited landing), the revives (at the end of the turn), and the
+// outcome preview (a whole turn: the zones land on everyone). 1.6 additions:
+// - the turn health report, per agent (Companions_TurnHealth: damage, Marked
+//   bonus, heal, change, health, Companions_TurnOutcome), both sources
+//   (companions_get_turn_health_count / _get_turn_health);
+// - Companions_Event_HealthChanged (21), one per turn health entry, a state
+//   change (after the movement events, before AgentDowned); AgentDamaged and
+//   AgentHealed stay declared, never emitted (superseded);
+// - the odd motions (Companions_OddMotion: a forced move whose summed offset
+//   is off the axes), both sources (companions_get_odd_motion_count /
+//   _get_odd_motion), and the env's cumulative count
+//   (companions_get_odd_motion_total);
+// - Companions_SkillOutcome.turn_health_count / odd_motion_count.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -145,22 +172,89 @@
 // string retrievable via companions_get_error().
 //
 // =============================================================================
+// The Turn (a step, since 1.6)
+// =============================================================================
+// companions_step resolves one turn in phases over every agent at once (the
+// agents' order changes no outcome, only the order of the reports):
+// 1. Intents, from the world as the turn begins: the moves; each skill use's
+//    plan (its effective skill, cells, targets and motions, as
+//    companions_preview_skill says; its cooldown spent: the use happened,
+//    whatever it then reaches); the enemies' decisions; the effects
+//    activating this turn. A companion down as the turn begins cannot act;
+//    one going down this turn still acts.
+// 2. Motion, in layers, each seeing the result of the ones before: the
+//    teleports, the dashes, every walk (companions and enemies together:
+//    two walks onto one cell both stay, a swap cancels, a walk into a cell
+//    whose occupant leaves succeeds), then the forced moves LAST (pushes,
+//    pulls, effect pushes) on whoever stands on their cells after the walks
+//    (a walk dodges a push). Within a layer the motions are simultaneous:
+//    only destinations are judged (a line pushed together slides together),
+//    one winner per destination (the lowest agent index among those that
+//    overtake nobody), a taken destination backs up one cell at a time,
+//    head-on and collinear motions never pass each other. Forced moves on one
+//    agent add up (an off-axis sum travels in a straight line: an odd
+//    motion, companions_get_odd_motion). A downed body blocks its cell.
+// 3. Tags: every tag of the turn lands together: first the zones, each
+//    affectable agent's final cell once, from the zone map as the turn
+//    began; then every skill use's hits, on whoever stands on its planned
+//    cells now, plus whom its own push / pull moved (walking out dodges,
+//    walking in is hit). Then each agent's weakness is checked once (P = the
+//    zone under its final cell, S = any tag that landed on it this turn),
+//    then the reactions, gathered then applied: at most one firing per
+//    (agent, rule); their results land and get one weakness check. A
+//    reaction's zone_becomes changes the map at the END of the turn (it
+//    first lands next turn; two rules writing one cell: the rule first in
+//    level order wins). Then the effects' hits (damage, heals, statuses).
+// 4. The ledger: per agent, the turn's damage total (skills, reactions,
+//    zones, strikes), Marked's x1.5 once on that total, rounded down, only if
+//    Marked as the turn BEGAN; then the heals come off.
+// 5. The end of the turn, at once: the HP (clamped to [0, max]); at 0 a
+//    companion goes down, another agent dies; a weakness defeat is 0 whatever
+//    the heals; the revives (of allies already down as the turn began) get
+//    them up with their HP. The turn health report says it all
+//    (Companions_TurnHealth). Then the timers tick (tags, statuses,
+//    cooldowns, zones).
+// Consequences: nobody leaves mid-turn (an agent the turn takes to 0 still
+// acts, and is still tagged, hit, pushed, healed until the turn ends: a heal
+// the same turn can save it); an enemy killed this turn still lands this
+// turn's strike (its strikes still winding up are cancelled at its death);
+// a companion cannot go down and get up in one turn; statuses and roots
+// landed this turn act from the next turn; a skill aimed at an enemy that
+// walks away this turn misses.
+// Credit (report only): a reaction and a weakness defeat credit the first
+// landing of the triggering tag in report order that is not a zone's, else
+// the first zone one (a zone + skill combo is credited to the skill).
+// Between two steps the host's calls stay immediate (companions_apply_tag,
+// companions_spawn_effect, companions_set_cell_tag, ...): outside any turn.
+//
+// =============================================================================
 // Event System (Partial Implementation)
 // =============================================================================
 // Currently implemented events, in this order within a step: the movement
 // events (AgentMoved / AgentBlocked, per agent in agent order), then
-// AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied,
-// ReactionFired, EpisodeEnd. Since 1.5, report_index gives a SkillUsed,
-// TagApplied, ReactionFired or AgentDefeated event's entry in its report
-// query (Companions_Report_LastStep, see "Reports"), -1 for the others;
-// tag_reaction is -1 but where said below:
+// HealthChanged, AgentDowned, AgentRevived, AgentDefeated, SkillUsed,
+// TagApplied, ReactionFired, EpisodeEnd. Since 1.5, report_index gives a
+// SkillUsed, TagApplied, ReactionFired or AgentDefeated event's entry in its
+// report query (Companions_Report_LastStep, see "Reports"; since 1.6 a
+// HealthChanged's too), -1 for the others; tag_reaction is -1 but where said
+// below:
 // - Companions_Event_AgentMoved: Agent moved to a new position (by walking,
 //   or by a skill: a teleport, dash, push or pull)
 // - Companions_Event_AgentBlocked: Agent tried to move but was blocked
+// - Companions_Event_HealthChanged: one agent's turn health (since 1.6), one
+//   per companions_get_turn_health entry, in its order (agent index):
+//   subject_id = the agent, position = its cell after the step,
+//   health_amount = the change (its HP after the turn minus before),
+//   health_new = its HP after the turn, effect_id = the
+//   Companions_TurnOutcome, health_source_id = -1 (a turn has many sources:
+//   read the reports), report_index = the entry. An entry, so an event, for
+//   every agent the turn hurt, healed, defeated or revived, even when its HP
+//   did not change. It supersedes AgentDamaged / AgentHealed (never emitted).
 // - Companions_Event_AgentDowned: a companion went down (0 HP: alive, inert,
 //   untouchable): subject_id = the companion, position = its cell. One per
-//   down; a down between two steps (a host effect, companions_spawn_effect)
-//   is reported by the next step. Since 1.3.
+//   down, at the end of the turn (after its HealthChanged, outcome Downed or
+//   Defeated); a down between two steps (a host effect,
+//   companions_spawn_effect) is reported by the next step. Since 1.3.
 // - Companions_Event_AgentRevived: a downed companion got up (a skill that
 //   revives, such as "revive", reported as a SkillUsed too): subject_id = the
 //   revived companion, health_source_id = the reviver (the skill's caster),
@@ -214,19 +308,24 @@
 // others are then cut to Companions_MAX_EVENTS - 1). events_dropped counts
 // the events not reported. The state itself (agents' tags, skills,
 // statuses, downed, health, downs) is always complete.
-// The state-change events (moved / blocked, downed, revived, defeated) come
-// first, so skill, tag and reaction events are dropped before them. Downs,
-// deaths and revives happen at the end of the step (the turn): an agent has
-// at most one movement event, one revive, one defeat (a companion's is also
-// its down) and the downs since the last step (one in the step; more only if
-// the host downed, revived and downed it again between two steps), so with
-// up to 12 agents (states report at most Companions_MAX_AGENTS = 8) they fit
-// next to EpisodeEnd unless the host did that.
+// The state-change events (moved / blocked, health changed, downed,
+// revived, defeated) come first, so skill, tag and reaction events are
+// dropped before them. Downs, deaths and revives happen at the end of the
+// step (the turn): an agent has at most one movement event, one
+// HealthChanged, and two of AgentDowned / AgentRevived / AgentDefeated (a
+// companion's defeat is also its down; a revive gets up an ally already down
+// as the turn began, so it comes with a down only when the host downed it
+// between two steps), plus more downs only if the host downed, revived and
+// downed it again between two steps: at most 4 per agent, so with up to 15
+// agents (states report at most Companions_MAX_AGENTS = 8) they fit next to
+// EpisodeEnd unless the host did that.
 //
 // Not yet implemented (will be added as needed):
-// - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
+// - Companions_Event_AgentDamaged, Companions_Event_AgentHealed: superseded
+//   by HealthChanged (1.6), never emitted
+// - Companions_Event_AgentDied (a death: HealthChanged with outcome Died or
+//   Defeated, and AgentDefeated for a defeat)
 // - Companions_Event_FSMTransition, Companions_Event_EffectSpawned, etc.
-//   (skill damage is visible in the agents' health, not yet as events)
 
 #ifndef COMPANIONS_API_H_
 #define COMPANIONS_API_H_
@@ -492,8 +591,8 @@ typedef enum {
   Companions_Event_None = 0,
   Companions_Event_AgentMoved = 1,
   Companions_Event_AgentBlocked = 2,  // Movement was blocked
-  Companions_Event_AgentDamaged = 3,
-  Companions_Event_AgentHealed = 4,
+  Companions_Event_AgentDamaged = 3,  // Never emitted: superseded by HealthChanged (1.6)
+  Companions_Event_AgentHealed = 4,   // Never emitted: superseded by HealthChanged (1.6)
   Companions_Event_AgentDied = 5,
   Companions_Event_AgentSpawned = 6,
   Companions_Event_FSMTransition = 7,
@@ -510,6 +609,7 @@ typedef enum {
   Companions_Event_AgentRevived = 18,  // A downed companion got up (see "Event System")
   Companions_Event_ReactionFired = 19,  // A reaction fired (see "Event System"). Since 1.5
   Companions_Event_AgentDefeated = 20,  // A weakness defeated an agent (see "Event System"). Since 1.5
+  Companions_Event_HealthChanged = 21,  // One agent's turn health (see "Event System"). Since 1.6
 } Companions_EventType;
 
 // What landed a tag (Companions_TagLanding.kind, Companions_Event.tag_kind).
@@ -546,9 +646,11 @@ typedef struct {
   Companions_Position to_pos;
   Companions_MovementAction move_action;
 
-  // For AgentDamaged/AgentHealed (and AgentRevived: health_new = the HP it
-  // got up with, health_amount = the same (gained from 0), health_source_id
-  // = the reviver):
+  // For HealthChanged (health_amount = the turn's change, health_new = the
+  // HP after it, health_source_id = -1; effect_id = the
+  // Companions_TurnOutcome) and AgentRevived (health_new = the HP it got up
+  // with, health_amount = the same (gained from 0), health_source_id = the
+  // reviver):
   int32_t health_amount;
   int32_t health_new;
   Companions_ObjectId health_source_id;
@@ -558,8 +660,8 @@ typedef struct {
   Companions_FSMStateType fsm_to;
 
   // For Effect events (and SkillUsed: slot / skill name; TagApplied: tag id /
-  // tag name; EpisodeEnd: the Companions_EndReason, see "Event System" at the
-  // top):
+  // tag name; EpisodeEnd: the Companions_EndReason; HealthChanged: the
+  // Companions_TurnOutcome, see "Event System" at the top):
   int32_t effect_id;
   char effect_name[Companions_EFFECT_NAME_LEN];
 
@@ -579,8 +681,9 @@ typedef struct {
   // Since 1.5: this event's entry in its uncapped report query, read with
   // Companions_Report_LastStep: SkillUsed -> companions_get_skill_use,
   // TagApplied -> companions_get_tag_landing, ReactionFired ->
-  // companions_get_reaction, AgentDefeated -> companions_get_defeat; -1 for
-  // the other events
+  // companions_get_reaction, AgentDefeated -> companions_get_defeat,
+  // HealthChanged -> companions_get_turn_health (since 1.6); -1 for the
+  // other events
   int32_t report_index;
 
   // For EpisodeEnd (effect_id = the Companions_EndReason):
@@ -789,8 +892,19 @@ COMPANIONS_API bool companions_set_cell(Companions_Env* env, int32_t row,
 // always available: "kill" (kills an agent; a companion goes down instead,
 // see Companions_AgentState.downed, reported by the next step's
 // Companions_Event_AgentDowned), "hit" (1 damage), "stun" (stunned, 3 ticks),
-// plus enemy attacks. Instant effects (no telegraph) apply
-// immediately; telegraphed ones resolve over the next steps.
+// plus enemy attacks. Called between two steps (as every C API call is), an
+// effect without a wind-up (telegraph 0) applies IMMEDIATELY, outside any
+// turn: its damage (Marked per hit), heal, status and push apply at once,
+// one agent after the other (a push lands no zone; a "kill" downs at once).
+// A telegraphed one starts in its telegraph (Companions_ActiveEffect.
+// in_telegraph, ticks_remaining = its telegraph steps) and activates in the
+// turn its telegraph ends: planned into that turn with its intents, its
+// push a forced move of the motion phase, its hits (into the turn's ledger)
+// on whoever stands on its cells after the motion (walking out dodges).
+// Effects the env spawns DURING a step (an enemy's strike, a DodgeEnv
+// hazard) wait for the next turn when they have no wind-up: they show as
+// in_telegraph with ticks_remaining 1 until then (a strike its FSM spawns
+// as the turn begins is planned into that very turn).
 // source_id: agent immune to the effect (-1 for none).
 // Returns false on error (unknown effect, out of bounds).
 COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
@@ -823,9 +937,11 @@ COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectI
 // Remove `tag` from an agent (true even if it did not carry it). False for an
 // unknown agent or a NULL tag.
 COMPANIONS_API bool companions_remove_tag(Companions_Env* env, Companions_ObjectId agent, const char* tag);
-// Zones: one tag per cell ("" or NULL clears), landed on whoever stands there
-// after each step's movement, and on whoever a skill moves there, with
-// `duration` (-1 = permanent); each landing is a Companions_Event_TagApplied.
+// Zones: one tag per cell ("" or NULL clears), landed once per step on every
+// agent whose final cell (after the motion phase) it is, from the zone map
+// as the step began, with `duration` (-1 = permanent); each landing is a
+// Companions_Event_TagApplied. Set between two steps, it changes the map at
+// once (the next step reads it).
 // Since 1.5 the zone's other fields (its steps, its successor, its damage per
 // landing) come from the level's zone table for that tag (see
 // companions_find_zone_def; the defaults when it does not define the tag:
@@ -940,11 +1056,13 @@ COMPANIONS_API bool companions_find_skill(const Companions_Env* env, const char*
 // against a wall moves nothing), or revived. The caster, affected under
 // friendly fire, gets only what its self_* flags allow; 0 = affected, but
 // nothing applies to it.
-// A preview's flags are what the use would do now, predicted before its
-// damage; a skill use's are what it DID: an agent its own damage downed or
-// killed is neither rooted nor moved (no Root, no Motion), and a pull that
-// then took the next thing of its ring reports that one with Motion. Tags
-// and Damage are the same in both.
+// A preview's flags are what the use's plan predicts now; a skill use's are
+// what it DID after the motion phase: a push or pull another motion kept
+// from moving its target has no Motion (a push against a wall neither), an
+// agent that walked out of its cells is not affected, one that walked in
+// is, and of two revivers of one ally only the credited one has Revive.
+// Nobody goes down during the turn, so an agent the use takes to 0 still
+// gets its Root and Motion.
 typedef enum {
   Companions_SkillEffect_Tags = 1 << 0,
   Companions_SkillEffect_Damage = 1 << 1,
@@ -1030,24 +1148,36 @@ COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int
 // =============================================================================
 //
 // What the env's rules did, as data and never cut (unlike the events, capped
-// at Companions_MAX_EVENTS). Every tag landing (a skill's, a zone's, a
-// reaction's result, the host's companions_apply_tag) resolves in this order:
-// 1. immunity: an agent immune to the tag gets nothing (no report);
-// 2. the tag lands (a Companions_TagLanding) with the status the level's tag
-//    statuses bind to it;
-// 3. weakness: the tag is S of one of the agent's (P, S) and the zone of the
-//    cell it stands on provides P: defeated (a Companions_DefeatInfo: an
-//    agent dies, a companion goes down), and it gets nothing more;
-// 4. reaction (never for a result): the first of the level's rules pairing
-//    the tag with one the agent carries fires (a Companions_ReactionInfo):
-//    its affected agents (the zone region's when it spreads) lose the
-//    originals not kept, get the result (a landing of kind Reaction, through
-//    steps 1-3: a result can defeat) and the damage; then a spread region
-//    is (re)set to the rule's zone_becomes (the reaction's cells);
-// 5. a zone's landing then deals the zone's damage (Companions_TagLanding.
-//    damage), if the agent is still affectable.
-// Reports come in the order things happened; a landing's and a defeat's
-// reaction index point into the same source's reactions.
+// at Companions_MAX_EVENTS). In a step, every tag landing of the turn
+// resolves together, in the tag phase (see "The Turn"):
+// 1. immunity: an agent immune to the tag gets nothing (no report, no zone
+//    damage);
+// 2. every tag lands (a Companions_TagLanding each: the zones' first, each
+//    agent's final cell in agent-index order, then every skill use's, by
+//    caster index) with the status the level's tag statuses bind to it
+//    (acting from the next turn);
+// 3. weakness, once per agent: its first (P, S), in its own order, with P
+//    the zone under its final cell and S any tag that landed on it this turn:
+//    defeated (a Companions_DefeatInfo), 0 HP at the end of the turn (an
+//    agent dies, a companion goes down); it stays in play until then;
+// 4. reactions (never for a result), gathered then applied: per agent, the
+//    level's rules in order, at most one firing per (agent, rule), whatever
+//    landings brought its two tags (a Companions_ReactionInfo each): its
+//    affected agents (the zone region's when it spreads) lose the
+//    originals not kept, get the result (a landing of kind Reaction; the
+//    results get their own single weakness check: a result can defeat) and
+//    the damage; a spread region is (re)set to the rule's zone_becomes at
+//    the end of the turn (the reaction's cells);
+// 5. each zone landing's damage (Companions_TagLanding.damage).
+// Every damage in the reports (a zone landing's, a reaction's, a skill's
+// Damage) is that source's raw share, before Marked, whatever the turn's
+// outcome: the HP truth is the turn health (companions_get_turn_health).
+// A reaction and a defeat report the credited landing (source, cause, kind):
+// the first landing of the tag in report order that is not a zone's, else
+// the first zone one. Between two steps the host's companions_apply_tag
+// resolves the same steps at once, for that one landing (its damage and
+// defeat at once too). A landing's and a defeat's reaction index point into
+// the same source's reactions.
 //
 // Two sources hold reports, read by the same functions:
 // - Companions_Report_LastStep: the env's own: the last step's, plus the
@@ -1126,7 +1256,7 @@ typedef struct {
 typedef struct {
   Companions_ObjectId reviver;  // The skill's caster
   Companions_ObjectId revived;
-  int32_t health;  // The HP it got up with (it may lose them later in the step)
+  int32_t health;  // The HP it got up with, at the end of the turn
 } Companions_ReviveInfo;
 
 // One agent a weakness (P, S) defeated: S landed on it while it stood on a
@@ -1149,7 +1279,8 @@ typedef struct {
 // report source"); a getter is also false for an index out of range ("Skill
 // use index out of range", "Tag landing index out of range", "Reaction index
 // out of range", "Defeat index out of range", "Down index out of range",
-// "Revive index out of range").
+// "Revive index out of range", "Turn health index out of range", "Odd motion
+// index out of range").
 // The skill uses (Companions_SkillUseInfo, as companions_get_last_skill_use)
 COMPANIONS_API int32_t companions_get_skill_use_count(const Companions_Env* env,
                                                       Companions_ReportSource source);
@@ -1191,15 +1322,76 @@ COMPANIONS_API bool companions_get_down(const Companions_Env* env,
                                         Companions_ReportSource source, int32_t index,
                                         Companions_ObjectId* out);
 // The revives, applied at the end of the step, in the revived agents' index
-// order (as the AgentRevived events)
+// order (as the AgentRevived events). A revive gets up an ally already down
+// as the turn began (so a companion cannot go down and get up in one turn);
+// two revivers of one ally revive it once, with the highest HP, credited to
+// the lowest agent index giving it.
 COMPANIONS_API int32_t companions_get_revive_count(const Companions_Env* env,
                                                   Companions_ReportSource source);
 COMPANIONS_API bool companions_get_revive(const Companions_Env* env,
                                           Companions_ReportSource source, int32_t index,
                                           Companions_ReviveInfo* out);
 
+// How an agent's turn ended (Companions_TurnHealth.outcome, HealthChanged's
+// effect_id). Since 1.6
+typedef enum {
+  Companions_TurnOutcome_None = 0,      // Its HP changed (or not), nothing more
+  Companions_TurnOutcome_Downed = 1,    // A companion the turn's damage took to 0: down
+  Companions_TurnOutcome_Died = 2,      // Another agent the turn's damage took to 0: dead
+  Companions_TurnOutcome_Defeated = 3,  // A weakness defeat: 0 whatever the heals (a companion down, another agent dead)
+  Companions_TurnOutcome_Revived = 4,   // A downed companion got up (its reviver: companions_get_revive)
+} Companions_TurnOutcome;
+
+// One agent's turn health (since 1.6): what the turn did to its HP, applied
+// once at its end (see "The Turn"). The HP truth: a host reads HP changes
+// here, not from each report's damage (their raw shares).
+typedef struct {
+  Companions_ObjectId agent;
+  int32_t damage;        // The turn's raw damage total (every source's share, before Marked)
+  // What Marked added: floor(damage * 1.5) - damage when Marked as the turn
+  // began, else 0 (and 0 for a defeat or a revive)
+  int32_t marked_bonus;
+  int32_t heal;    // The turn's heal total
+  int32_t change;  // health minus its HP before the turn's end (clamped to [0, max_health])
+  int32_t health;  // Its HP after the turn
+  Companions_TurnOutcome outcome;
+} Companions_TurnHealth;
+
+// The turn health entries (since 1.6): one per agent the turn hurt, healed,
+// defeated or revived (an entry even when its HP did not change), in
+// agent-index order (as the HealthChanged events). The last step's, or the
+// outcome preview's turn.
+COMPANIONS_API int32_t companions_get_turn_health_count(const Companions_Env* env,
+                                                        Companions_ReportSource source);
+COMPANIONS_API bool companions_get_turn_health(const Companions_Env* env,
+                                               Companions_ReportSource source, int32_t index,
+                                               Companions_TurnHealth* out);
+
+// One odd motion (since 1.6): a forced move whose summed offset (several
+// pushes / pulls on one actor in one turn) is off the axes, a diagonal or an
+// uneven sum. It travels in a straight line toward its end, stopping at the
+// last free cell. Recorded whether it then moved or not; expected to be very
+// rare (for post-analysis).
+typedef struct {
+  Companions_ObjectId actor;  // An agent, or a thing (a living actor that is not an agent)
+  int32_t dr;                 // The summed offset, rows
+  int32_t dc;                 // The summed offset, columns
+} Companions_OddMotion;
+
+// The odd motions of the last step (or of the outcome preview's turn), in the
+// actors' motion order (agents by index, then things)
+COMPANIONS_API int32_t companions_get_odd_motion_count(const Companions_Env* env,
+                                                       Companions_ReportSource source);
+COMPANIONS_API bool companions_get_odd_motion(const Companions_Env* env,
+                                              Companions_ReportSource source, int32_t index,
+                                              Companions_OddMotion* out);
+// Every odd motion of the env's life (its steps', not its previews'): kept by
+// resets and snapshot loads (not saved); 0 for a null env ("Invalid
+// environment").
+COMPANIONS_API int64_t companions_get_odd_motion_total(const Companions_Env* env);
+
 // What an outcome preview found (since 1.5); its reports are read with
-// Companions_Report_Preview.
+// Companions_Report_Preview. Each count is its report query's count.
 typedef struct {
   // As Companions_SkillPreview.usable; false: nothing was resolved (empty reports)
   bool usable;
@@ -1209,6 +1401,8 @@ typedef struct {
   int32_t defeat_count;
   int32_t down_count;
   int32_t revive_count;
+  int32_t turn_health_count;  // Since 1.6 (a layout change)
+  int32_t odd_motion_count;   // Since 1.6
 } Companions_SkillOutcome;
 
 // What companion `agent` using its slot `slot` aimed `aim` would DO now,
@@ -1225,12 +1419,14 @@ typedef struct {
 // replace the previous preview's (Companions_Report_Preview), as the step
 // would report that turn: the use, its tag landings (the zones' first, then
 // the skill's, then the reactions' results), its reactions (with the cells a
-// zone_becomes (re)set), its defeats, the downs, its revives. One preview is
-// held at a time: to compare several aims or slots, read each one's reports
-// before the next preview. The real step may differ: the others move and
-// use their skills, the enemies act, the effects land, and the motions clash
-// (see companions_preview_skill). False, `out` and the preview reports
-// untouched, for the arguments companions_preview_skill refuses (same errors).
+// zone_becomes (re)set), its defeats, the downs, its revives, the turn's
+// health (the HP each agent would end the turn with), its odd motions. One
+// preview is held at a time: to compare several aims or slots, read each
+// one's reports before the next preview. The real step may differ: the
+// others move and use their skills, the enemies act, the effects land, and
+// the motions clash (see companions_preview_skill). False, `out` and the
+// preview reports untouched, for the arguments companions_preview_skill
+// refuses (same errors).
 COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
                                                      Companions_ObjectId agent, int32_t slot,
                                                      Companions_Direction aim,

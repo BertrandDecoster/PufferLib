@@ -44,14 +44,16 @@ companions/                    # Standalone pure C++ implementation
   `tests/test_api.cc`
 - Zones' lifetime, successor, damage per landing and the zone table: `companions_zones_test`
   (`tests/test_zones.cc`)
-- The turn's health (the ledger, Marked on the total, heals, downs / deaths / defeats /
-  revives at the end of the turn, `GetLastTurnHealth`): `companions_turn_test`
-  (`tests/test_turn.cc`)
+- The phased turn: the turn's health (the ledger, Marked on the total, heals, downs /
+  deaths / defeats / revives at the end of the turn, `GetLastTurnHealth`), plans from the
+  turn start, the motion layers, the tag phase, effects planned into the turn, outcome
+  previews running the turn: `companions_turn_test` (`tests/test_turn.cc`)
 - Reactions, weaknesses, immunities, tag statuses, their reports and the landing order,
   outcome previews (`PreviewSkillOutcome`), a step that throws:
-  `companions_reactions_test` (`tests/test_reactions.cc`); their C API side (1.5: report
-  queries of both sources, events, level data, outcome previews, parity with the C++
-  env): `companions_api_reactions_test` (`tests/test_api_reactions.cc`)
+  `companions_reactions_test` (`tests/test_reactions.cc`); their C API side (1.5 / 1.6:
+  report queries of both sources, the turn health and odd motions included, events,
+  level data, outcome previews, parity with the C++ env): `companions_api_reactions_test`
+  (`tests/test_api_reactions.cc`)
 - v7 snapshots (the zone table, the zone cells' fields, reactions, tag statuses,
   weaknesses, immunities): binary in `tests/test_snapshot.cc`, JSON in
   `tests/test_snapshot_json.cc`, a zone's timer across a load in `tests/test_zones.cc`, a
@@ -184,35 +186,49 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 `ResolveSkillTargets`, `MotionPhase`, `TagPhase`, `UseSkill`,
 `PreviewSkill`, `EffectiveSkill`, `Affects`).
 
-**Step order** (`BaseEnv::Step`):
-1. Clear the per-step reports, `BeginStep` on every agent
-2. `PreStep` (enemy FSM: its strikes spawned now are planned into this turn) →
-   `EffectSystem::PlanTurn` (the turn's effect applications: timers, telegraphs ending,
-   continuous effects, loops; see Effects) → `GatherIntentions`, the intents phase: every
-   skill use is PLANNED here from the world as the turn begins (`AddSkillPlan`: its
-   effective skill, the context rules read once, its cells and targets, its cooldown
-   spent; see "Multiple casters") → the motion phase (`MotionPhase`, in layers:
-   teleports, dashes, walks, then the skills' and the effects' pushes / pulls on whoever
-   stands on their cells; see "The motion phase")
-3. `TagPhase`, the tag phase: EVERY tag of the turn lands together, in sub-phases,
-   each over ALL the landings (`turn_.landings`): a. every landing put (immunity, the
-   tag and its status): the zones (every affectable agent on a zone cell: alive, not
-   downed; one landing each, on its FINAL cell), then every use's hits (`UseSkill`, in
-   caster order: its tags as landings, and its own damage, revives and roots, see
-   "Resolution of one skill"); then `ResolveTurnLandings`: b. ONE weakness check per
-   agent; c. reactions, gathered then applied (every firing found, every firing's
-   affected agents computed, then the outcomes applied per agent); d. the zones' damage
-   on those still affectable (see Zones and Reactions). Statuses landed here (a skill's
-   root, a tag status) act from the NEXT turn (the intents are read before). From here
-   to the end of the step the zone map is READ-ONLY: a reaction's `zone_becomes` waits
-   in a pending buffer
-4. `ApplyEffectHits` (the effects' damage and heals into the ledger, their statuses
-   acting from the next turn, see Effects), `CommitPendingZones` (the step's reaction zones; two rules writing one
-   cell: the rule first in level order wins it), `ApplyTurnOutcomes` (the turn's
-   health, see below), `EndStep` on every agent (tags,
-   statuses, cooldowns tick), `TickZones` (zone lifetimes tick, expired zones become
-   their successor), the downs since the last report (`GetLastDowns`, after `EndStep`),
-   `tick_++`, `PostStep`, rewards (TaskLens)
+**Step order** (`BaseEnv::Step`): a step is ONE TURN, resolved in phases, each over
+every agent at once, so the agents' indices order the reports, never an outcome (but the
+motion phase's exact ties, see "The motion phase"). Before the phases: the verdict as
+the step starts is latched (`LatchEndReason`), the per-step reports are cleared,
+`BeginStep` on every agent, `BeginTurn` (the ledger, Marked read as the turn begins).
+1. **Intents**, from the world as the turn BEGINS: `PreStep` (the enemy FSMs decide;
+   a strike they spawn now is planned into this turn) → `EffectSystem::PlanTurn` (the
+   turn's effect applications: timers, telegraphs ending, continuous effects, loops; see
+   Effects) → `GatherIntentions`: the moves, and every skill use PLANNED (`AddSkillPlan`:
+   its effective skill, the context rules read once, its cells and targets, its cooldown
+   spent; see "Multiple casters"). Stunned and downed agents stay
+2. **Motion** (`ResolveTurn` → `MotionPhase`, in layers: teleports, dashes, walks, then
+   the skills' and the effects' pushes / pulls on whoever stands on their cells; see "The
+   motion phase"); the executed actions captured
+3. **Zones land** once on every agent affectable as the turn began, on its FINAL cell,
+   from the zone map as the turn began (the first sub-phase of the tag phase)
+4. **Tags** (`TagPhase`): EVERY tag of the turn lands together, in sub-phases, each over
+   ALL the landings (`turn_.landings`): a. every landing put (immunity, the tag and its
+   status): the zones, then every use's hits (`UseSkill`, in caster order: its tags as
+   landings, and its own damage, revives and roots into the turn, see "Resolution of one
+   skill"); then `ResolveTurnLandings`: b. ONE weakness check per agent; c. reactions,
+   gathered then applied (every firing found, every firing's affected agents computed,
+   then the outcomes applied per agent); d. the zones' damage (see Zones and Reactions).
+   Then `ApplyEffectHits` (the effects' damage and heals into the ledger, their statuses;
+   see Effects). Statuses landed in the turn (a skill's root, a tag status, an effect's
+   stun) act from the NEXT turn (the intents were read before). The zone map is
+   READ-ONLY during the turn: a reaction's `zone_becomes` waits in a pending buffer,
+   committed after the tag phase (`CommitPendingZones`; two rules writing one cell: the
+   rule first in level order wins it)
+5. **The ledger** (see "The turn's health"): per agent, the turn's damage total (skills,
+   reactions, zones, strikes), Marked's x1.5 once on that total if Marked as the turn
+   began, minus the heals
+6. **The end of the turn** (`ApplyTurnOutcomes`), at once: the HP, downs, deaths,
+   weakness defeats, revives (the turn health report), the dead's pending strikes
+   cancelled; then `EndStep` on every agent (tags, statuses, cooldowns tick), `TickZones`
+   (zone lifetimes tick, expired zones become their successor), the downs since the last
+   report (`GetLastDowns`, after `EndStep`), `tick_++`, `PostStep`
+7. **Rewards, verdict, interruption**: the lens's rewards (TaskLens) plus the down cost
+   per new down (downs read from the state), the success latched, the interruption (see
+   "Interruptions"), the verdict latched
+
+`ResolveTurn(fsm)` is phases 2-6 up to `ApplyTurnOutcomes`: `Step` runs it, and so does
+`PreviewSkillOutcome` on its clone (without the FSMs; see Previews).
 
 **The turn's health** (`BaseEnv::GetLastTurnHealth`, `turn_`; tests: `tests/test_turn.cc`):
 nothing changes HP, alive or down DURING a step. Every hit and heal (zones, reactions,
@@ -234,7 +250,9 @@ each hit's raw share (a landing's `damage`, a reaction outcome's `damage`, the `
 effect). `TurnHealth {agent, damage, marked_bonus, heal, change, health, outcome}`
 (`TurnOutcome`: None, Downed, Died, Defeated, Revived), one per agent with ledger
 activity, in agent-index order; copied with the env, cleared by the next step and
-`LoadSnapshot` (not in the C API yet). Between steps the host's primitives stay
+`LoadSnapshot`. It is the HP truth: every other report's damage is a raw share (C API
+1.6: `companions_get_turn_health*`, one `HealthChanged` event per entry). Between steps
+the host's primitives stay
 immediate (`TakeDamage` with Marked per hit, `Heal`, `Defeat`, `Revive`, a `kill` / `hit`
 it spawns). A step that throws applies its ledger and planned revives (`AbortStep`,
 agent-local, no report). `PreviewSkillOutcome` applies them on its clone.
@@ -353,8 +371,9 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
   agent walking into the line before it is not hit) → tags → damage → revive → root
   (area only). The damage goes into the turn's ledger: an agent it takes to 0 is still
   affected by anything else this turn (down or dead at its end)
-- Damage is not reported as events yet (`Companions_Event_AgentDamaged` is declared,
-  not implemented): read it from the agents' health
+- Damage and heals are reported per agent and per turn: `GetLastTurnHealth` (C API
+  1.6: `Companions_TurnHealth`, the `HealthChanged` event); `Companions_Event_AgentDamaged`
+  / `AgentHealed` stay declared, never emitted (superseded)
 - `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, damage, root_steps,
   cooldown ≥ 0 (root_steps, cooldown ≤ 1,000,000); tag names non-empty ≤ 31 bytes with
   duration -1 or in 1..1,000,000 (`kMaxTimerSteps`), at most
@@ -383,7 +402,7 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   `ceil(max_health * revive_percent / 100)` HP (clamped to [1, max]); its statuses are
   already clear (cleared as it went down), its tags kept, `times_downed` unchanged (the
   team's counter never goes back). It acts from the next step, and its cell's zone lands
-  on it from the next step (zones apply before skills)
+  on it from the next step (it was down as the turn began: no zone landing this turn)
 - A revive is a skill use: a `SkillUse` (the revived agent with the `Revive` effect) plus
   a `GetLastRevives()` entry (reviver, revived, health). It applies at the end of the turn
   (see The turn's health): the ally is down all turn, so nothing downs it again that
@@ -409,8 +428,9 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   (`ValidateContextSkills`), and a context use neither reads nor spends the slot's
   cooldown (usable whatever it says; it keeps ticking), even when the rule names the
   equipped skill itself (the origin decides, not the name)
-- `GatherIntentions` fixes each use's skill (the rule, if any): an ally revived or downed
-  later in the step does not change it
+- `GatherIntentions` fixes each use's skill (the rule, if any), from the world as the
+  turn begins: an ally revived or downed at the end of the turn changes the context for
+  the next turn only
 - Validation: `SetContextSkills` returns false (rules unchanged, the reason in `error`)
   unless `ValidateContextSkills` accepts them with the current book (a known condition,
   a slot in range, a skill of the book with cooldown 0); snapshots, see Levels. A rule
@@ -501,8 +521,8 @@ tests: `tests/test_zones.cc`):
 - Landed (cause `"zone"`, source -1) once per turn on every affectable agent standing
   there after the motion phase: its FINAL cell, moved or not (in the tag phase, with the
   skills' hits, reported before them;
-  the cell it began on and the cells a dash or a push crosses land nothing). Effect
-  pushes (still outside the motion phase) do not apply zones
+  the cell it began on and the cells a dash or a push crosses land nothing). An effect's
+  push is a forced move of the motion phase: its final cell's zone lands like any other
 - **One landing, in order** (see Reactions): immunity (nothing lands, no damage), the
   tag and its tag status (`PutTag`), weakness (a defeated agent stays in play until the
   end of the turn), reaction, then the zone's own `damage`, into the turn's ledger
@@ -686,9 +706,8 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - Statuses are step timers (see Step timers): `root_steps = n` roots for the n next steps
 - Going down clears a companion's statuses, and a downed one accepts none (see Downs)
 
-**Per-step reports** (cleared at the start of every `Step` and by `LoadSnapshot`, hence every `Reset`;
-also `GetLastOddMotions()`, the forced-move sums off the axes, C++ only, see "The motion
-phase"):
+**Per-step reports** (cleared at the start of every `Step` and by `LoadSnapshot`, hence
+every `Reset`; an outcome preview's world holds its turn's, see Previews):
 
 | BaseEnv | Content | C API event |
 |---------|---------|-------------|
@@ -698,6 +717,8 @@ phase"):
 | `GetLastDefeats()` | `DefeatReport`: agent, zone (P), tag (S), source / cause / kind / `reaction` of the landing of S | `Companions_Event_AgentDefeated` (1.5: effect_id / effect_name = S, health_source_id / tag_kind / tag_reaction, report_index); `companions_get_defeat*` |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
 | `GetLastRevives()` | reviver, revived, health (the HP it got up with), at the end of the turn, in the revived's agent-index order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
+| `GetLastTurnHealth()` | `TurnHealth`: agent, damage (raw total), marked_bonus, heal, change, health, outcome (`TurnOutcome`), one per agent the turn touched, in agent-index order: the HP truth (see The turn's health) | 1.6: `Companions_Event_HealthChanged` (21: health_amount = change, health_new = health, effect_id = outcome, health_source_id -1, report_index); `companions_get_turn_health*` (`Companions_TurnHealth`, `Companions_TurnOutcome`) |
+| `GetLastOddMotions()` | `OddMotion`: actor, dr, dc (a forced-move sum off the axes, see "The motion phase"), in motion order; `GetOddMotionCount()` counts the env's life | no event; 1.6: `companions_get_odd_motion*` (`Companions_OddMotion`), `companions_get_odd_motion_total` |
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
@@ -710,15 +731,17 @@ phase"):
   caster order. The C API reads the same vectors (its
   `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
-  AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a down from between the
-  steps comes before the step's AgentRevived; a companion revived in a step cannot be
-  downed in it); at most
-  `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest.
-  The state changes (movement, down, revive) come first, so SkillUsed / TagApplied are cut
-  first. They always fit when no companion is revived twice in the step (per agent: one
-  movement, one revive, two downs = 4 events; fits for up to 15 agents). Reviving the same
-  companion twice in a step needs a skill downing it between the two revives; only then
-  can state-change events be dropped
+  HealthChanged (1.6, one per `TurnHealth` entry), AgentDowned, AgentRevived,
+  AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not
+  in time order: a down from between the steps comes before the step's AgentRevived; a
+  companion cannot go down and get up in one turn); at most `Companions_MAX_EVENTS`
+  (64), EpisodeEnd always kept, `events_dropped` counts the rest. The state changes
+  (movement, health, down, revive, defeat) come first, so SkillUsed / TagApplied /
+  ReactionFired are cut first. Per agent: one movement, one HealthChanged, and two of
+  down / revive / defeat (a companion's defeat is its down; a revive comes with a down
+  only when the host downed it between steps) = 4 events, so they fit for up to 15
+  agents; only a host downing, reviving and downing a companion again between two steps
+  adds more
 - C API (`src/api/companions_api.h`, version 1.6.0 (1.5 and 1.6 below): 1.2 removed the legacy cast,
   1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
   `Companions_GameState.downs` / `max_downs` / `team_down`, `Companions_End_TeamDown` (4),
@@ -769,12 +792,22 @@ phase"):
   after `TickZones` keeps the incremented tick). A copy of an env (Clone, copy,
   assignment) re-points its FSM agents' `FSMContext::rng` at its own RNG
   (`RepointFsmRng`)
-- C API 1.6.0 (behaviour only, struct layouts unchanged): only a team down or the
-  horizon fails a task (see "Why an episode ended"). Aggro no longer fails when no
-  enemy lives, Dodge no longer fails on a down; `Companions_End_TaskFailed` (3) is no
-  longer produced (kept: the values are append-only). A down interrupts the task:
-  `Companions_End_Interrupted` (5, provisional), a one-time down cost per new down, the
-  task paused until nobody is down (see "Why an episode ended")
+- C API 1.6.0: only a team down or the horizon fails a task (see "Why an episode
+  ended"). Aggro no longer fails when no enemy lives, Dodge no longer fails on a down;
+  `Companions_End_TaskFailed` (3) is no longer produced (kept: the values are
+  append-only). A down interrupts the task: `Companions_End_Interrupted` (5,
+  provisional), a one-time down cost per new down, the task paused until nobody is down
+  (see "Why an episode ended"). Amended in place (unreleased) with the phased turn (see
+  Step order; the header's "The Turn" section): the turn health report
+  (`Companions_TurnHealth`, `Companions_TurnOutcome` with static_asserts to
+  `TurnOutcome`, `companions_get_turn_health_count` / `_get_turn_health`, both sources),
+  `Companions_Event_HealthChanged` (21), the odd motions (`Companions_OddMotion`,
+  `companions_get_odd_motion_count` / `_get_odd_motion`, both sources;
+  `companions_get_odd_motion_total`), `Companions_SkillOutcome.turn_health_count` /
+  `odd_motion_count` (a layout change: consumers rebuild, a DLL from an earlier 1.6.0
+  commit is not compatible). `companions_spawn_effect` (between steps) applies a
+  no-wind-up effect at once (Immediate); the env's own no-wind-up spawns during a step
+  wait for the next turn (NextTurn: `in_telegraph`, `ticks_remaining` 1)
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots
@@ -909,8 +942,9 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   `max_downs` and `team_down` (the live `IsTeamDown()`, independent of the latched end
   reason: a team down after the horizon stays `Horizon`, `team_down` says it);
   `Companions_End_TeamDown` (4); `Companions_Event_AgentDowned` (17, subject_id,
-  position), after the movement events and before AgentRevived / SkillUsed (the event cap
-  drops it only in a step reviving a companion twice: see Per-step reports)
+  position), after the movement and HealthChanged events and before AgentRevived /
+  SkillUsed (the event cap drops it only when the host downed, revived and downed a
+  companion again between two steps: see Per-step reports)
 
 ### Pathfinding
 A* with Euclidean heuristic in `pathfinder.cc`:
@@ -981,7 +1015,9 @@ Location: `companions/src/core/fsm/`
   motion phase: the plans never read a post-strike world). Between steps (the host, the
   C API, a post-step hook) `Immediate` (the default) applies a no-wind-up effect at once,
   a host primitive (its push moves at once without a zone landing; `kill` downs at
-  once); `NextTurn` keeps it pending (a telegraph of 1 step) for the next turn.
+  once); `NextTurn` keeps it pending (a telegraph of 1 step: it shows `in_telegraph`
+  with `ticks_remaining` 1) for the next turn. A spawn during a step after `PlanTurn` (a
+  hook) is NextTurn too.
   DodgeEnv spawns its hazards after the step with `NextTurn`: a no-wind-up hazard now
   applies on the next turn, dodgeable, instead of at once, so telegraph-0 and
   telegraph-1 hazards strike on the same turn (its builtin hazards have a wind-up and

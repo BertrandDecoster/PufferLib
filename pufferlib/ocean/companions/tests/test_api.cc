@@ -90,7 +90,8 @@ TEST(TestVersion) {
   // 1.2.2 made every timer tick at the end of a step; 1.3 added downs
   // (struct layouts changed); 1.4 added equipped_skills and AgentRevived
   // (struct layouts changed); 1.5 the rules as data; 1.6: only a team down
-  // or the horizon fails a task
+  // or the horizon fails a task, the phased turn and its health report (1.6.0
+  // amended in place: Companions_SkillOutcome's layout changed)
   ASSERT_EQ(std::string(version), std::string("1.6.0"));
   std::cout << "  Version: " << version << std::endl;
 }

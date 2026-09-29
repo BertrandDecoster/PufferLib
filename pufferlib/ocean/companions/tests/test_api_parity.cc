@@ -806,6 +806,7 @@ TEST(ParityTest_SkillsTagsZones) {
 
   pcg32 rng(2024);
   int skill_events = 0, tag_events = 0, down_events = 0, revive_events = 0, context_slots = 0;
+  int health_events = 0;
   for (int step = 0; step < 60; ++step) {
     if (step == 10 || step == 20) {  // A host kill between steps: companion 0, then 1
       const Position cell = cpp_agents[step / 10 - 1]->GetPosition();
@@ -881,12 +882,23 @@ TEST(ParityTest_SkillsTagsZones) {
       }
     }
 
-    std::vector<const Companions_Event*> used, landed, downed, revived;
+    std::vector<const Companions_Event*> used, landed, downed, revived, health;
     for (int e = 0; e < r.event_count; ++e) {
+      if (r.events[e].type == Companions_Event_HealthChanged) health.push_back(&r.events[e]);
       if (r.events[e].type == Companions_Event_SkillUsed) used.push_back(&r.events[e]);
       if (r.events[e].type == Companions_Event_TagApplied) landed.push_back(&r.events[e]);
       if (r.events[e].type == Companions_Event_AgentDowned) downed.push_back(&r.events[e]);
       if (r.events[e].type == Companions_Event_AgentRevived) revived.push_back(&r.events[e]);
+    }
+    // One HealthChanged per turn health entry (since 1.6)
+    const auto& turn = cpp_env.GetLastTurnHealth();
+    ASSERT_EQ(health.size(), turn.size());
+    for (size_t k = 0; k < turn.size(); ++k) {
+      ASSERT_EQ(health[k]->subject_id, turn[k].agent);
+      ASSERT_EQ(health[k]->health_amount, turn[k].change);
+      ASSERT_EQ(health[k]->health_new, turn[k].health);
+      ASSERT_EQ(health[k]->effect_id, static_cast<int32_t>(turn[k].outcome));
+      ASSERT_EQ(health[k]->report_index, static_cast<int32_t>(k));
     }
     const auto& uses = cpp_env.GetLastSkillUses();
     ASSERT_EQ(used.size(), uses.size());
@@ -929,6 +941,7 @@ TEST(ParityTest_SkillsTagsZones) {
     tag_events += static_cast<int>(landed.size());
     down_events += static_cast<int>(downed.size());
     revive_events += static_cast<int>(revived.size());
+    health_events += static_cast<int>(health.size());
     // A down only interrupts the task (the revives resume it): played on
     if (cpp_result.done && cpp_env.GetEndReason() != EndReason::Interrupted) break;
   }
@@ -936,10 +949,11 @@ TEST(ParityTest_SkillsTagsZones) {
   ASSERT_TRUE(tag_events > 0);
   ASSERT_TRUE(down_events > 0);
   ASSERT_TRUE(revive_events > 0);
+  ASSERT_TRUE(health_events > 0);
   ASSERT_TRUE(context_slots > 0);
   std::cout << "  " << skill_events << " skill uses, " << tag_events << " tag landings, "
-            << down_events << " downs, " << revive_events << " revives, " << context_slots
-            << " context slots" << std::endl;
+            << down_events << " downs, " << revive_events << " revives, " << health_events
+            << " health changes, " << context_slots << " context slots" << std::endl;
   companions_destroy(api_env);
 }
 
