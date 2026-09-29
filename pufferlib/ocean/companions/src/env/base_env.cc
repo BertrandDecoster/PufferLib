@@ -1102,13 +1102,12 @@ void BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const st
   for (const Agent::WeakTo& w : weak_to) {
     if (w.tag != tag || w.zone != here) continue;
     agent.Defeat();
-    DefeatReport d;
+    DefeatReport d(kind);
     d.agent = agent.GetId();
     d.zone = w.zone;
     d.tag = w.tag;
     d.source = source;
     d.cause = cause;
-    d.kind = kind;
     d.reaction = reaction;
     last_defeats_.push_back(std::move(d));
     return;
@@ -1172,13 +1171,12 @@ void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const st
   }
 
   const int index = static_cast<int>(last_reactions_.size());
-  ReactionReport fired;
+  ReactionReport fired(kind);
   fired.rule = rule;
   fired.trigger = agent.GetId();
   fired.tag = tag;
   fired.source = source;
   fired.cause = cause;
-  fired.kind = kind;
   fired.spread = spread;
   last_reactions_.push_back(std::move(fired));
 

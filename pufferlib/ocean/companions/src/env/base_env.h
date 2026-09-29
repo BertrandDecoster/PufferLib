@@ -429,6 +429,8 @@ class BaseEnv {
   };
   // One reaction that fired (in the order they fired)
   struct ReactionReport {
+    // No default kind: the triggering landing says what landed it
+    explicit ReactionReport(TagSource trigger_kind) : kind(trigger_kind) {}
     int rule = -1;                        // Index in GetReactions()
     ObjectId trigger = kInvalidObjectId;  // The agent the triggering tag landed on
     TagId tag = kInvalidTag;              // The triggering tag (the rule's a or b)
@@ -436,7 +438,7 @@ class BaseEnv {
     // do not trigger reactions)
     ObjectId source = kInvalidObjectId;
     std::string cause;
-    TagSource kind = TagSource::Skill;
+    TagSource kind;
     bool spread = false;  // Over the trigger's zone region (else the trigger alone)
     // Every agent it affected, in agent-index order (the trigger included,
     // unless a weakness defeated it: then possibly none)
@@ -448,13 +450,15 @@ class BaseEnv {
   // One agent defeated by a weakness (P, S): S landed on it while it stood on
   // a zone providing P
   struct DefeatReport {
+    // No default kind: the landing of S says what landed it
+    explicit DefeatReport(TagSource landing_kind) : kind(landing_kind) {}
     ObjectId agent = kInvalidObjectId;
     TagId zone = kInvalidTag;  // P
     TagId tag = kInvalidTag;   // S
     // The landing of S: its source, cause and kind (Reaction for a result)
     ObjectId source = kInvalidObjectId;
     std::string cause;
-    TagSource kind = TagSource::Skill;
+    TagSource kind;
     int reaction = -1;  // S a result: its reaction's index in GetLastReactions(); else -1
   };
   const std::vector<DefeatReport>& GetLastDefeats() const { return last_defeats_; }
