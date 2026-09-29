@@ -100,12 +100,14 @@
 // 1.6 (behaviour, struct layouts and signatures unchanged): only a team down
 // or the horizon fails a task, so a bad situation stays salvageable. Done is
 // the same for every env and lens: the success, the team down
-// (Companions_End_TeamDown) or the horizon. The Aggro task no longer fails
-// when no enemy lives (the episode runs on to the horizon, each step paying
-// the time penalty, the kill's included); the Dodge task no longer fails on a
-// companion down (the steps with someone down pay 0, no penalty; everyone up
-// at the horizon succeeds, a revived companion included). Nothing produces
-// Companions_End_TaskFailed any more (the value stays, reserved).
+// (Companions_End_TeamDown), the horizon, or a down interrupting the task
+// (Companions_End_Interrupted: done, but provisional, see below). The Aggro
+// task no longer fails when no enemy lives (the episode runs on to the
+// horizon, each step paying the time penalty, the kill's included); the Dodge
+// task no longer fails on a companion down (the steps with someone down pay
+// 0, no penalty; everyone up at the horizon succeeds, a revived companion
+// included). Nothing produces Companions_End_TaskFailed any more (the value
+// stays, reserved).
 // A down interrupts the task: the step the team's downs grow (a down the host
 // caused between steps included, caught by the next step), the episode is
 // done as Companions_End_Interrupted (new), and that step adds the down cost
@@ -113,7 +115,8 @@
 // is paused (rewards 0, no success); once nobody is down (a revive) it
 // resumes from the next step, done false again. Interrupted is provisional:
 // the team down or the horizon replace it (priority: Success > TeamDown >
-// Horizon > Interrupted); a success and a down on one step is a Success.
+// Horizon > Interrupted), ending the pause; a down on a step that ends the
+// episode (a success, the horizon, the team down) pauses nothing.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -1342,7 +1345,8 @@ COMPANIONS_API bool companions_is_done(const Companions_Env* env);
 COMPANIONS_API bool companions_is_success(const Companions_Env* env);
 // Why the episode is done (Companions_End_None while companions_is_done is
 // false, and for a null env). Fixed on the step (or lens change) where done
-// becomes true: steps played on afterwards keep it. Reset and snapshot loads
+// becomes true: steps played on afterwards keep it (but
+// Companions_End_Interrupted, provisional: see below). Reset and snapshot loads
 // start a new episode with the env's own: None, or Horizon for a snapshot
 // loaded at the horizon (done at once; the next step reports EpisodeEnd).
 // Since 1.2.1. Since 1.3, any env is also done as Companions_End_TeamDown
@@ -1351,7 +1355,8 @@ COMPANIONS_API bool companions_is_success(const Companions_Env* env);
 // horizon or a down interrupting the task (Companions_End_TaskFailed is never
 // returned). Companions_End_Interrupted is provisional: it becomes TeamDown
 // or Horizon when one of those comes, and None again (done false) once the
-// pause clears (nobody down, from the step after the revive).
+// pause clears (nobody down, from the step after the revive). Only a
+// final reason (Success, TeamDown, Horizon) is kept while a host plays on.
 COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env);
 
 // =============================================================================

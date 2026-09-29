@@ -828,7 +828,8 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
   or the horizon fails a task): the episode runs on to the horizon
 - Rewards: +1 win, `kTimePenalty` (-0.01) per other step, a kill's included: a
   killed-enemy episode returns what timing out does (`horizon * kTimePenalty`;
-  `AggroEnv::MinUtility` adds the downs' worst cost, `WorstDownCost`). A kill after a latched success pays `kTimePenalty` (the
+  `AggroEnv::MinUtility` adds the downs' worst cost, `WorstDownCost`). A step
+  paused by a down (see Interruptions) pays 0. A kill after a latched success pays `kTimePenalty` (the
   enemy is off the target, as after any success)
 - `done` is a verdict for RL episodes, never a stop: the env keeps stepping
 
@@ -874,18 +875,21 @@ the reason `None` again), and on any lens change, `Reset` or `LoadSnapshot`
 someone down loads not interrupted). Priority Success > TeamDown > Horizon >
 Interrupted: `Interrupted` is the only provisional reason (`LatchEndReason` upgrades
 it, `GetEndReason` computes it live): a team down while paused is `TeamDown`, a pause
-reaching the horizon `Horizon`; the horizon never pauses (a down on the horizon step
-ends as `Horizon`; a Dodge companion revived on the horizon step: `Horizon`, no
-success). A success and a down on one step is a `Success`; a down after a latched
-success pauses nothing. A step starting on a done env latches its reason first, so a
-team the host downed between steps is not turned into a success by the next step (no
-win reward either). A lens opts out with `TaskLens::IsInterruptible()` (default true):
+reaching the horizon `Horizon`, and a final verdict ends the pause (`IsInterrupted()`
+is true exactly when `GetEndReason()` is `Interrupted`; steps played on after it pay
+again). A down only pauses while the episode goes on: the horizon never pauses (a down
+on the horizon step ends as `Horizon`; a Dodge companion revived on the horizon step:
+`Horizon`, no success), a success and a down on one step is a `Success`, and a down
+after the episode ended pauses nothing. Every step latches the verdict as it starts, so
+a team the host downed between steps is not turned into a success by the next step (no
+win reward either), and a host raising max_downs after a `TeamDown` reopens the episode
+before the step. A lens opts out with `TaskLens::IsInterruptible()` (default true):
 its downs pay the cost, nothing pauses. Without a lens the rewards are all 0 (no cost,
 no pause). **Down cost**: `kDefaultDownCost` = -0.5, `SetDownCost(c)` (false for a
 non-finite or positive `c`, the cost unchanged; 0 allowed) / `GetDownCost()`; runtime,
 not in snapshots, copied with the env, kept across `Reset` / `LoadSnapshot`. The envs'
-`MinUtility` adds `WorstDownCost()` (every down paid up to the team down: max_downs - 1
-downs, then every companion at once)
+`MinUtility` adds `WorstDownCost()` (a loose bound: every down paid up to the team
+down, max_downs - 1 downs, then every companion at once)
 
 ### Known issue: D4 transform
 - `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)

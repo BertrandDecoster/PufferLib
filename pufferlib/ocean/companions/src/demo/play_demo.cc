@@ -584,7 +584,10 @@ int main(int argc, char* argv[]) {
     bool reset_requested = false;
     unsigned int new_seed = 0;  // For seed input
 
-    while (!env->IsDone() && !reset_requested && !g_should_exit) {
+    // The game plays on through an interruption (a companion down pauses the
+    // task, EndReason::Interrupted): only a final reason ends it
+    while ((!env->IsDone() || env->GetEndReason() == EndReason::Interrupted) &&
+           !reset_requested && !g_should_exit) {
       // Clear screen only when logging is disabled (otherwise let output scroll)
       if (!GameLogger::Instance().HasAnyEnabled()) {
         std::cout << "\033[2J\033[H";  // ANSI escape: clear screen, move cursor to top
@@ -596,7 +599,11 @@ int main(int argc, char* argv[]) {
       if (d4_transform != 0) {
         std::cout << " | Transform: " << d4_transform;
       }
-      std::cout << "\n\n";
+      std::cout << "\n";
+      if (env->IsInterrupted()) {
+        std::cout << "Task interrupted: a companion is down (paused until nobody is down)\n";
+      }
+      std::cout << "\n";
 
       // Get companions sorted by agent index (Player first due to creation order)
       auto companions = env->GetObjectManager().GetAllCompanions();
@@ -717,8 +724,8 @@ int main(int argc, char* argv[]) {
       current_seed++;  // Increment seed for next game
       total_reward = 0.0;  // Reset for next game
     } else {
-      if (env_name == "dodge") {
-        std::cout << "*** GAME OVER - You died! ***\n";
+      if (env->GetEndReason() == EndReason::TeamDown) {
+        std::cout << "*** GAME OVER - The team is down! ***\n";
       } else {
         std::cout << "*** Game ended (max steps reached) ***\n";
       }

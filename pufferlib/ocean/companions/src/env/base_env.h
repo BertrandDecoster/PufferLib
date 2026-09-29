@@ -106,11 +106,17 @@ class BaseEnv {
   // revives the last one is still paused: the lens rewards and decides again
   // from the next step), and on any lens change, Reset or LoadSnapshot (a
   // state loaded with someone down loads not interrupted: its downs are not
-  // new). Not on a success (a success and a down on one step is a Success; a
-  // down after it pauses nothing) nor for a lens that opts out
-  // (TaskLens::IsInterruptible: its downs pay the cost, nothing pauses).
-  // Without a lens the rewards are all 0: no cost.
-  bool IsInterrupted() const { return interrupted_; }
+  // new). Only while the episode goes on: a down on a step that ends it
+  // (a success, the horizon, the team down) pauses nothing, nor does one
+  // after it ended; and a final verdict reached while paused (the team down,
+  // the horizon) clears the pause (the steps played on after it pay again).
+  // Nor for a lens that opts out (TaskLens::IsInterruptible: its downs pay
+  // the cost, nothing pauses). Without a lens the rewards are all 0: no cost.
+  // True exactly when GetEndReason() is Interrupted (a final reason the host
+  // caused between steps, e.g. a team down, is live at once).
+  bool IsInterrupted() const {
+    return interrupted_ && GetEndReason() == EndReason::Interrupted;
+  }
   // Whether a companion is down now (alive, downed)
   bool AnyCompanionDowned() const;
   // The down cost: added to every agent's reward once per new down (see
@@ -730,15 +736,19 @@ class BaseEnv {
   // weaknesses or immunities (per-agent data).
   void LoadGeneratedLevel(Snapshot snapshot);
 
-  // The lowest total the down cost can add to an episode's return: every
-  // down paid, up to the team down (max_downs - 1 downs, then every
-  // companion at once on the last step). For MinUtility.
+  // A loose lower bound on the total the down cost can add to an episode's
+  // return: every down paid, up to the team down (max_downs - 1 downs, then
+  // every companion at once on the last step). Loose: with one companion the
+  // first down is the team down, and downs while paused pay nothing; but a
+  // companion downed, revived and downed again within one step could in
+  // theory exceed it. For MinUtility.
   double WorstDownCost() const;
 
   // GetEndReason's rules, for a done env
   EndReason ComputeEndReason() const;
   // Fixes the end reason once done becomes true (Interrupted stays
-  // provisional: upgraded to a later reason); None while not done
+  // provisional: upgraded to a later reason, which clears the pause); None
+  // while not done
   void LatchEndReason();
   // Latches the end reason of a state just loaded, afresh (its downs seen):
   // for a derived Reset / LoadSnapshot that changes state after

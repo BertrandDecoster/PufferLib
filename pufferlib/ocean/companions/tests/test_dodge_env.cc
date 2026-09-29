@@ -150,9 +150,10 @@ TEST(TestDodgeEnvDeath) {
 
 // A companion that goes down on the horizon step fails nothing: the horizon
 // ends the episode, as Horizon (not Interrupted: the horizon never pauses),
-// without the success (a companion is down); the step pays the down cost
-// alone (0 while someone is down), the paused steps after it 0. Two
-// companions: one down is not the team down (TeamDown would name the end).
+// without the success (a companion is down). The step pays the down cost
+// alone (Dodge pays 0 while someone is down), the steps played on after it 0
+// (not paused: Dodge's 0). Two companions: one down is not the team down
+// (TeamDown would name the end).
 TEST(TestDodgeEnvDownOnTheHorizonStepEndsAsHorizon) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfig lethal;
@@ -179,6 +180,7 @@ TEST(TestDodgeEnvDownOnTheHorizonStepEndsAsHorizon) {
   ASSERT_TRUE(last.done);
   ASSERT_FALSE(env.IsSuccess());
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  ASSERT_FALSE(env.IsInterrupted());
   for (double r : last.rewards) ASSERT_EQ(r, BaseEnv::kDefaultDownCost);
   StepResult after = env.Step(stay);  // Playing on changes nothing
   ASSERT_TRUE(after.done);
@@ -241,10 +243,9 @@ TEST(TestDodgeEnvRevivedBeforeTheHorizonSucceeds) {
   }
 }
 
-// The horizon ended the episode (a companion down there): a revive after it
-// succeeds no more. Nothing latches, no kWinReward; the survival bonus is
-// paid again (nobody is down) once the pause is over (the step after the
-// revive is still paused: 0).
+// The horizon ended the episode (a companion down there; the horizon ended
+// the pause too): a revive after it succeeds no more. Nothing latches, no
+// kWinReward; the survival bonus is paid again (nobody is down).
 TEST(TestDodgeEnvNoSuccessAfterTheHorizon) {
   DodgeEnv env(7, 2, 100, 2, 42);  // Horizon 2, no hazards
   const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
@@ -253,13 +254,14 @@ TEST(TestDodgeEnvNoSuccessAfterTheHorizon) {
   env.Step(stay);
   ASSERT_TRUE(env.Step(stay).done);
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  ASSERT_FALSE(env.IsInterrupted());
   ASSERT_TRUE(companion->Revive(1));
   for (int i = 0; i < 2; ++i) {
     StepResult after = env.Step(stay);
     ASSERT_TRUE(after.done);
     ASSERT_FALSE(env.IsSuccess());
     ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
-    for (double r : after.rewards) ASSERT_EQ(r, i == 0 ? 0.0 : DodgeEnv::kSurvivalBonus);
+    for (double r : after.rewards) ASSERT_EQ(r, DodgeEnv::kSurvivalBonus);
   }
 }
 

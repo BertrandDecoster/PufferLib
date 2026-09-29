@@ -135,10 +135,12 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     return result;
   }
 
-  // An episode already done fixes its reason before the step changes
-  // anything: a team the host downed between steps is lost, so this step
-  // latches no success and pays no win reward (SuccessCounts).
-  if (IsDone()) LatchEndReason();
+  // The verdict as the step starts, before it changes anything: a team the
+  // host downed between steps is lost (TeamDown latched, so this step latches
+  // no success and pays no win reward: SuccessCounts); an episode the host
+  // made not done again (max_downs raised after a team down) is open again
+  // (None: a success reached this step counts).
+  LatchEndReason();
 
   // Timers set from here on also cover the rest of this step (see
   // Agent::BeginStep); they all tick at its end.
@@ -236,8 +238,11 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     // Never once the episode ended (SuccessCounts): past the horizon, the
     // level is lost.
     if (!success_ && SuccessCounts() && task_lens_->IsSuccess(*this)) success_ = true;
-    // A new down interrupts the task, unless it succeeded (on this step too)
-    if (!success_ && new_downs > 0 && task_lens_->IsInterruptible()) interrupted_ = true;
+    // A new down interrupts the task while the episode goes on: not on a step
+    // that ends it (a success, this step's included; the horizon; the team
+    // down), nor after it ended (interrupted_ is false here: IsDone() is
+    // the final verdict alone)
+    if (new_downs > 0 && task_lens_->IsInterruptible() && !IsDone()) interrupted_ = true;
   }
   // Seen once the lens had its say (a lens that throws leaves them new)
   downs_seen_ = downs;
@@ -320,6 +325,8 @@ void BaseEnv::LatchEndReason() {
     end_reason_ = EndReason::None;
   } else if (end_reason_ == EndReason::None || end_reason_ == EndReason::Interrupted) {
     end_reason_ = ComputeEndReason();
+    // A final verdict reached while paused ends the pause
+    if (end_reason_ != EndReason::Interrupted) interrupted_ = false;
   }
 }
 

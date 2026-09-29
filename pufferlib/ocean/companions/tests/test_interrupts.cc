@@ -285,7 +285,8 @@ TEST(TestAReviveResumesTheTaskFromTheNextStep) {
 // =============================================================================
 
 // Interrupted, then the team goes down while paused: TeamDown (live between
-// steps, latched by the next step).
+// steps, latched as the next step starts). The final verdict ends the pause:
+// that step pays again (the lens's reward and the 3rd down's cost).
 TEST(TestATeamDownWhilePausedIsTeamDown) {
   ScopedEffectRegistry scoped_registry;
   SynchroEnv env(10, 10, 4, 1, 0, 42);
@@ -301,16 +302,22 @@ TEST(TestATeamDownWhilePausedIsTeamDown) {
   ASSERT_TRUE(AgentAt(env, 2)->IsDowned());
   for (double reward : second.rewards) ASSERT_TRUE(reward == 0.0);
   ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);  // 2 downs of 3
+  ASSERT_TRUE(env.IsInterrupted());
   DownCompanion(env, 3);  // The 3rd down, between steps
   ASSERT_TRUE(env.IsTeamDown());
   ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);  // Live
+  ASSERT_FALSE(env.IsInterrupted());
   StepResult last = env.Step(Stays(env));
   ASSERT_TRUE(last.done);
-  for (double reward : last.rewards) ASSERT_TRUE(reward == 0.0);
   ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
+  ASSERT_FALSE(env.IsInterrupted());
+  for (int i = 0; i < 4; ++i) {
+    ASSERT_TRUE(last.rewards[static_cast<size_t>(i)] == LensReward(env, i) + kCost);
+  }
 }
 
-// Interrupted, then the pause reaches the horizon: Horizon.
+// Interrupted, then the pause reaches the horizon: Horizon, which ends the
+// pause (the steps played on pay again).
 TEST(TestAPauseReachingTheHorizonIsHorizon) {
   SynchroEnv env(10, 10, 2, 1, 0, 42, 0, 3);
   MakeArena(env);
@@ -326,8 +333,15 @@ TEST(TestAPauseReachingTheHorizonIsHorizon) {
   StepResult last = env.Step(Stays(env));  // Tick 3: the horizon
   ASSERT_TRUE(last.done);
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
-  env.Step(Stays(env));  // Played on: the reason stays
+  ASSERT_FALSE(env.IsInterrupted());
+  for (double reward : last.rewards) ASSERT_TRUE(reward == 0.0);  // Still paused
+  StepResult after = env.Step(Stays(env));  // Played on: the reason stays
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  ASSERT_FALSE(env.IsInterrupted());
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(after.rewards[static_cast<size_t>(i)] == LensReward(env, i));
+    ASSERT_TRUE(after.rewards[static_cast<size_t>(i)] != 0.0);
+  }
 }
 
 // The horizon never pauses: a down on the horizon step ends as Horizon (the
@@ -346,8 +360,14 @@ TEST(TestADownOnTheHorizonStepIsHorizon) {
   ASSERT_TRUE(AgentAt(env, 1)->IsDowned());
   ASSERT_TRUE(last.done);
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  ASSERT_FALSE(env.IsInterrupted());
   for (int i = 0; i < 2; ++i) {
     ASSERT_TRUE(last.rewards[static_cast<size_t>(i)] == LensReward(env, i) + kCost);
+  }
+  StepResult after = env.Step(Stays(env));  // Not paused: the lens pays
+  ASSERT_FALSE(env.IsInterrupted());
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(after.rewards[static_cast<size_t>(i)] == LensReward(env, i));
   }
 }
 
@@ -577,13 +597,69 @@ TEST(TestTheDownCostIsSettable) {
   ASSERT_TRUE(env.GetDownCost() == -0.2);
   env.LoadSnapshot(snap);
   ASSERT_TRUE(env.GetDownCost() == -0.2);
+  DownCompanion(env, 1);  // Paid after the load
+  StepResult loaded = env.Step(Stays(env));
+  ASSERT_TRUE(env.IsInterrupted());
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(loaded.rewards[static_cast<size_t>(i)] == LensReward(env, i) + -0.2);
+  }
 
+  env.LoadSnapshot(snap);
   ASSERT_TRUE(env.SetDownCost(0.0));  // Free downs: still an interruption
   DownCompanion(env, 1);
   StepResult free_down = env.Step(Stays(env));
   ASSERT_TRUE(env.IsInterrupted());
   for (int i = 0; i < 3; ++i) {
     ASSERT_TRUE(free_down.rewards[static_cast<size_t>(i)] == LensReward(env, i));
+  }
+}
+
+// A host raising max_downs after a TeamDown reopens the episode before the
+// next step (the step latches the verdict as it starts): a success reached
+// on that step counts.
+TEST(TestRaisingMaxDownsAfterATeamDownReopensTheEpisode) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.SetMaxDowns(1));
+  const int r = Row(env);
+  Place(env, 0, {r, 1});
+  Place(env, 1, {r, 4});
+  DownCompanion(env, 1);
+  env.Step(Stays(env));
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
+  ASSERT_FALSE(env.IsInterrupted());  // A final verdict: no pause
+  ASSERT_TRUE(env.SetMaxDowns(3));
+  ASSERT_FALSE(env.IsDone());
+  Place(env, 0, Goal(env));
+  StepResult win = env.Step(Stays(env));
+  ASSERT_TRUE(win.done);
+  ASSERT_TRUE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(win.rewards[static_cast<size_t>(i)] == LensReward(env, i));
+    ASSERT_TRUE(win.rewards[static_cast<size_t>(i)] > SynchroLens::kWinReward / 2);
+  }
+}
+
+// A down the host caused between steps and a revive on the next step: that
+// step pays the cost, but nothing is down at its end, so nothing pauses and
+// it is not done. Pins the current behaviour of a down and a revive inside
+// one step: may change when the turn resolution is phased.
+TEST(TestAHostDownRevivedOnTheNextStepPaysButDoesNotPause) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  const int r = Row(env);
+  Place(env, 0, {r, 3});
+  Agent* downed = Place(env, 1, {r, 4});
+  Place(env, 2, {r, 7});
+  DownCompanion(env, 1);
+  StepResult revive = env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_FALSE(downed->IsDowned());
+  ASSERT_FALSE(revive.done);
+  ASSERT_FALSE(env.IsInterrupted());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(revive.rewards[static_cast<size_t>(i)] == LensReward(env, i) + kCost);
   }
 }
 
