@@ -1341,18 +1341,16 @@ void BaseEnv::ApplyReactionHits() {
       break;
     }
   }
-  // 4. The damage, summed per agent (one TakeDamage: Marked applies to the
-  //    sum), on an agent still affectable; each firing reports its own
-  for (Agent* x : hit_agents_) {
-    if (!x->IsAffectable()) continue;
-    int total = 0;
-    for (const ReactionHit& h : reaction_hits_) {
-      if (h.agent != x) continue;
-      const int damage = reactions_[rule_of(h)].damage;
-      last_reactions_[h.firing].affected[h.outcome].damage = damage;
-      total += damage;
-    }
-    if (total > 0) x->TakeDamage(total);
+  // 4. The damage: one TakeDamage per firing, in firing order (Marked
+  //    truncates each hit, as in the skill phase), on an agent still
+  //    affectable; each firing reports what it dealt (0 once the agent was
+  //    defeated or went down). An unaffectable agent takes nothing, so the
+  //    final state does not depend on the order.
+  for (const ReactionHit& h : reaction_hits_) {
+    const int damage = reactions_[rule_of(h)].damage;
+    if (damage <= 0 || !h.agent->IsAffectable()) continue;
+    last_reactions_[h.firing].affected[h.outcome].damage = damage;
+    h.agent->TakeDamage(damage);
   }
 }
 

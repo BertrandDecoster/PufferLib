@@ -158,8 +158,13 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 and a skill motion's landing), weaknesses (P), spread regions. A reaction's
 `zone_becomes` during a step is recorded, and the map changes at its end, before the
 timers (stored n + 1, so it covers its n next steps): a zone a reaction creates first
-lands NEXT step. So the order of the agents never changes an outcome of the zone phase
-(only the order of the reports), and it cannot cascade within a step: a spread fires
+lands NEXT step. So the order of the agents does not change an outcome of the zone
+phase, only the order of the reports, with one exception: two firings writing different
+`zone_becomes` to the same cells, the later one (firing order: trigger agent index)
+wins. Report-only effects of the order: a result's `DefeatReport::reaction` names the
+first firing whose result defeated, only the first of identical result landings on an
+agent is `fresh`, and a later firing reports 0 damage on an agent an earlier firing's
+damage downed. And it cannot cascade within a step: a spread fires
 once per trigger (N triggers in one region = N firings, each reaching everyone), and
 waits a step before its zone lands. Between two steps (a host's `ApplyTagTo`) there is
 no phase: a landing resolves at once and its `zone_becomes` applies at once. A step
@@ -393,11 +398,13 @@ tests: `tests/test_zones.cc`):
   every result landing (immunity, tag, tag status; firing order: trigger agent index),
   then ONE weakness check over the results that landed (its first `(P, S)` with P under
   it and S among them: defeated, every firing whose result is S reports `defeated`),
-  then the SUM of the firings' damage in one `TakeDamage` (Marked applies to the sum)
-  if still affectable, each firing reporting its own damage (0 for all when a result
-  defeated it); then the zones, in firing order. No firing's outcome cancels or changes
-  another's (a firing that would down B does not stop B's own reaction), so neither
-  the agents' order nor the firings' changes an outcome; d. each zone's damage. A skill
+  then each firing's damage, one `TakeDamage` per firing in firing order (Marked
+  truncates each hit, as in the skill phase) while the agent is still affectable, each
+  firing reporting what it dealt (0 once a result defeated it or an earlier firing's
+  damage downed it); then the zones, in firing order. No firing's outcome cancels
+  another's (a firing that would down B does not stop B's own reaction), so the
+  agents' final state does not depend on the order (the zones and the reports: see
+  "A step reads one zone map"); d. each zone's damage. A skill
   motion's landing (`MoveActor` → `ApplyZoneTag`) is the same phases over that one
   landing
 - **A step reads one map** (see Step order): a zone a reaction creates during a step
@@ -465,8 +472,8 @@ a status.
   reaction during a skill's tags, before its damage; inside `ApplyTagTo`), but for the
   zone change (end of step). The zone phase resolves its landings together, in
   sub-phases, its reactions gathered then applied (see Zones): there, a result's
-  weakness is checked once all of an agent's results landed, and the reactions'
-  damage to an agent is summed
+  weakness is checked once all of an agent's results landed, then each firing's
+  damage applies
 - Consequences of these rules worth knowing when writing a level: a zone re-lands its
   tag every step, so an agent carrying a reaction's result that is also one of its
   originals (`wet + electrified -> electrified`) reacts again with every landing of the

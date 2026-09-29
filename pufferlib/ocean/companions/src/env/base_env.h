@@ -541,8 +541,15 @@ class BaseEnv {
   // The zone phase (ApplyZoneTags) runs the steps above as sub-phases, each
   // over every zone landing (ResolveZoneLandings: 1-2 for all, 3 for all,
   // 4 gathered then applied per agent: every result, then one weakness check,
-  // then the summed damage; 5 for all), so the order of the agents never
-  // changes an outcome (only the order of the reports).
+  // then each firing's damage; 5 for all), so the order of the agents does
+  // not change an outcome, only the order of the reports.
+  // One exception, an outcome: two firings writing different zone_becomes
+  // to the same cells, the later one (firing order: trigger agent index)
+  // wins at the end of the step. Report-only effects of the order: a
+  // result's DefeatReport::reaction names the first firing whose result
+  // defeated, only the first of identical result landings on an agent is
+  // `fresh`, and the damage an agent downed by an earlier firing's damage no
+  // longer takes is reported 0 by the later firings.
   // The skill phase resolves each landing at once, casters in agent-index
   // order. Between two steps (the host's ApplyTagTo) there is no phase: a
   // landing resolves at once and its zone_becomes applies at once.
@@ -854,8 +861,9 @@ class BaseEnv {
   // affected agents, computed before any applies), applied agent by agent:
   // every firing's removals, then every result (immunity, tag, tag status;
   // firing order), then ONE weakness check over the results that landed,
-  // then the summed damage if still affectable. All agent-local, so neither
-  // the agents' order nor the firings' changes an outcome.
+  // then each firing's damage (one TakeDamage each, firing order) while still
+  // affectable. All agent-local, so the final state of the agents does not
+  // depend on the order (reports: see SetReactions).
   void ApplyReactionHits();
   // The connected region (4 neighbours) of the zone on `start`: the cells
   // carrying that zone's tag, reachable from `start` through such cells, as a
@@ -884,8 +892,9 @@ class BaseEnv {
   // zone_becomes in firing order (pending); so no firing's outcome cancels
   // or changes another's; d. the zone damage of each landing still
   // affectable. The map they read is the map as the step began (a firing's
-  // zone_becomes waits in pending_zones_), so the order of the agents never
-  // changes an outcome.
+  // zone_becomes waits in pending_zones_), so the order of the agents does
+  // not change an outcome, but for the zones (see SetReactions: two firings
+  // writing the same cells, the later one wins).
   void ResolveZoneLandings();
   // End of Step, before the agents' timers: the zone changes the step's
   // reactions recorded (pending_zones_), in the order they were recorded (a

@@ -720,41 +720,124 @@ TEST(TestAReactionChangingItsOwnCellStillTakesTheOldZonesDamage) {
   ASSERT_EQ(a->GetHealth(), 9);
 }
 
+static std::string Name(const BaseEnv& env, TagId tag);  // Below
+
+// The last step's reports and the world it left, by ROLE (ids and agent
+// indices dropped), the report lines sorted: two worlds that differ only in
+// their agents' order must give the same text. Without `outcome_damage`, a
+// reaction's outcomes leave out the damage each firing reports (which firing
+// reports 0 on an agent an earlier firing downed follows the firing order).
+static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles,
+                             bool outcome_damage = true) {
+  auto role = [&roles](ObjectId id) {
+    auto it = roles.find(id);
+    return it == roles.end() ? std::string("-") : it->second;
+  };
+  std::vector<std::string> lines;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    std::ostringstream out;
+    out << "tag " << role(t.agent) << " " << Name(env, t.tag) << " " << t.duration << " "
+        << role(t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
+        << static_cast<int>(t.kind) << " " << (t.reaction >= 0);
+    lines.push_back(out.str());
+  }
+  for (const auto& r : env.GetLastReactions()) {
+    std::ostringstream out;
+    out << "reaction " << r.rule << " " << role(r.trigger) << " " << Name(env, r.tag) << " "
+        << role(r.source) << " " << r.cause << " " << static_cast<int>(r.kind) << " " << r.spread
+        << ":";
+    std::vector<std::string> outcomes;
+    for (const auto& o : r.affected) {
+      outcomes.push_back(role(o.agent) + "/" + std::to_string(o.result_landed) + "/" +
+                         std::to_string(o.defeated) +
+                         (outcome_damage ? "/" + std::to_string(o.damage) : std::string()));
+    }
+    std::sort(outcomes.begin(), outcomes.end());
+    for (const std::string& o : outcomes) out << " " << o;
+    out << " cells";
+    for (const Position& p : r.cells) out << " " << p.row << "," << p.col;
+    lines.push_back(out.str());
+  }
+  for (const auto& d : env.GetLastDefeats()) {
+    lines.push_back("defeat " + role(d.agent) + " " + Name(env, d.zone) + " " + Name(env, d.tag));
+  }
+  for (const Agent* a : env.GetObjectManager().GetAllAgents()) {
+    std::ostringstream out;
+    out << "agent " << role(a->GetId()) << " " << a->GetHealth() << " " << a->IsAffectable()
+        << " " << a->GetPosition().row << "," << a->GetPosition().col << ":";
+    std::vector<std::string> tags;
+    for (const AgentTag& t : a->GetTags()) tags.push_back(Name(env, t.id) + "/" + std::to_string(t.duration));
+    std::sort(tags.begin(), tags.end());
+    for (const std::string& t : tags) out << " " << t;
+    for (const auto& s : a->GetStatuses()) out << " s" << static_cast<int>(s.type) << "/" << s.duration;
+    lines.push_back(out.str());
+  }
+  std::sort(lines.begin(), lines.end());
+  std::ostringstream out;
+  for (const std::string& l : lines) out << l << "\n";
+  for (int r = 0; r < env.GetRows(); ++r) {
+    for (int c = 0; c < env.GetCols(); ++c) {
+      const BaseEnv::CellTag z = env.GetCellTag({r, c});
+      if (z.tag == kInvalidTag) continue;
+      out << "zone " << r << "," << c << " " << Name(env, z.tag) << " " << z.steps << " "
+          << z.damage << "\n";
+    }
+  }
+  return out.str();
+}
+
 // A trap of the rules (kept: the level names another result): a result that
 // is one of its triggers (wet + electrified -> electrified), spreading with
 // zone_becomes = the other one (wet). Everyone in the lake keeps the result,
 // so each step every agent's wet landing is a trigger (the zone phase gathers
 // every firing, then applies them per agent): N agents, N firings (once per
-// trigger), each over the whole region (N damage each, summed), and each one
-// re-sets the lake at the end of the step (its lifetime starts again). Unchanged numbers: the old
-// agent-by-agent pass also re-fired once per agent (each firing re-landing
-// the result every trigger needs).
+// trigger), each over the whole region (N damage each), and each one re-sets
+// the lake at the end of the step (its lifetime starts again). Unchanged
+// numbers: the old agent-by-agent pass also re-fired once per agent (each
+// firing re-landing the result every trigger needs). The same in a second
+// agent order (the swimmers created in reverse), trace by trace.
 TEST(TestAResultThatIsATriggerReFiresOncePerAgentInTheZone) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
-  MakeArena(env);
-  Require(env.SetReactions(CombosRules()), "reactions");
-  Require(env.DefineZone("wet", Zone().Lasts(5).def), "wet");
-  GiveBolt(env, 0, "spark", "electrified");
-  Place(env, 0, {2, 1});  // Ashore
-  const std::vector<Agent*> swimmers = {AddEnemy(env, {2, 4}, 10), AddEnemy(env, {2, 5}, 10),
-                                        AddEnemy(env, {3, 5}, 10)};
-  const std::vector<Position> lake = {{2, 4}, {2, 5}, {2, 6}, {3, 5}, {3, 6}};
-  SetZones(env, lake, "wet");
-  env.Step(With(env, 0, Use(MovementAction::Right)));  // One firing, from the spark
-  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
-  for (const Agent* s : swimmers) ASSERT_EQ(s->GetHealth(), 9);
-
-  for (int step = 1; step <= 2; ++step) {  // Nobody casts any more
-    env.Step(Stays(env));
-    const auto& fired = env.GetLastReactions();
-    ASSERT_EQ(fired.size(), swimmers.size());
-    for (size_t i = 0; i < fired.size(); ++i) {
-      ASSERT_EQ(fired.at(i).trigger, swimmers.at(i)->GetId());
-      ASSERT_TRUE(fired.at(i).kind == TagSource::Zone);
-      ASSERT_EQ(fired.at(i).affected.size(), swimmers.size());
+  std::string traces[2];
+  for (bool reversed : {false, true}) {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions(CombosRules()), "reactions");
+    Require(env.DefineZone("wet", Zone().Lasts(5).def), "wet");
+    GiveBolt(env, 0, "spark", "electrified");
+    Agent* caster = Place(env, 0, {2, 1});  // Ashore
+    std::vector<Position> cells = {{2, 4}, {2, 5}, {3, 5}};
+    if (reversed) std::reverse(cells.begin(), cells.end());
+    std::vector<Agent*> swimmers;  // Agent-index order
+    std::map<ObjectId, std::string> roles = {{caster->GetId(), "caster"}};
+    for (Position p : cells) {
+      swimmers.push_back(AddEnemy(env, p, 10));
+      roles[swimmers.back()->GetId()] =
+          "swimmer@" + std::to_string(p.row) + "," + std::to_string(p.col);
     }
-    for (const Agent* s : swimmers) ASSERT_EQ(s->GetHealth(), 9 - 3 * step);
-    for (Position p : lake) ASSERT_EQ(env.GetCellTag(p).steps, 5);  // Re-set, never runs out
+    const std::vector<Position> lake = {{2, 4}, {2, 5}, {2, 6}, {3, 5}, {3, 6}};
+    SetZones(env, lake, "wet");
+    env.Step(With(env, 0, Use(MovementAction::Right)));  // One firing, from the spark
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+    for (const Agent* s : swimmers) ASSERT_EQ(s->GetHealth(), 9);
+    std::string trace = RoleTrace(env, roles);
+
+    for (int step = 1; step <= 2; ++step) {  // Nobody casts any more
+      env.Step(Stays(env));
+      trace += "--- step\n" + RoleTrace(env, roles);
+      const auto& fired = env.GetLastReactions();
+      ASSERT_EQ(fired.size(), swimmers.size());
+      for (size_t i = 0; i < fired.size(); ++i) {
+        ASSERT_EQ(fired.at(i).trigger, swimmers.at(i)->GetId());
+        ASSERT_TRUE(fired.at(i).kind == TagSource::Zone);
+        ASSERT_EQ(fired.at(i).affected.size(), swimmers.size());
+      }
+      for (const Agent* s : swimmers) ASSERT_EQ(s->GetHealth(), 9 - 3 * step);
+      for (Position p : lake) ASSERT_EQ(env.GetCellTag(p).steps, 5);  // Re-set, never runs out
+    }
+    traces[reversed] = trace;
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- reversed ---\n" + traces[1]);
   }
 }
 
@@ -1591,66 +1674,6 @@ TEST(TestAnOutcomePreviewOfAnUnusableSkillIsEmpty) {
 // A step reads one zone map: reaction zones commit at its end
 // =============================================================================
 
-// The last step's reports and the world it left, by ROLE (ids and agent
-// indices dropped), the report lines sorted: two worlds that differ only in
-// their agents' order must give the same text.
-static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles) {
-  auto role = [&roles](ObjectId id) {
-    auto it = roles.find(id);
-    return it == roles.end() ? std::string("-") : it->second;
-  };
-  std::vector<std::string> lines;
-  for (const auto& t : env.GetLastTagsApplied()) {
-    std::ostringstream out;
-    out << "tag " << role(t.agent) << " " << Name(env, t.tag) << " " << t.duration << " "
-        << role(t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
-        << static_cast<int>(t.kind) << " " << (t.reaction >= 0);
-    lines.push_back(out.str());
-  }
-  for (const auto& r : env.GetLastReactions()) {
-    std::ostringstream out;
-    out << "reaction " << r.rule << " " << role(r.trigger) << " " << Name(env, r.tag) << " "
-        << role(r.source) << " " << r.cause << " " << static_cast<int>(r.kind) << " " << r.spread
-        << ":";
-    std::vector<std::string> outcomes;
-    for (const auto& o : r.affected) {
-      outcomes.push_back(role(o.agent) + "/" + std::to_string(o.result_landed) + "/" +
-                         std::to_string(o.defeated) + "/" + std::to_string(o.damage));
-    }
-    std::sort(outcomes.begin(), outcomes.end());
-    for (const std::string& o : outcomes) out << " " << o;
-    out << " cells";
-    for (const Position& p : r.cells) out << " " << p.row << "," << p.col;
-    lines.push_back(out.str());
-  }
-  for (const auto& d : env.GetLastDefeats()) {
-    lines.push_back("defeat " + role(d.agent) + " " + Name(env, d.zone) + " " + Name(env, d.tag));
-  }
-  for (const Agent* a : env.GetObjectManager().GetAllAgents()) {
-    std::ostringstream out;
-    out << "agent " << role(a->GetId()) << " " << a->GetHealth() << " " << a->IsAffectable()
-        << " " << a->GetPosition().row << "," << a->GetPosition().col << ":";
-    std::vector<std::string> tags;
-    for (const AgentTag& t : a->GetTags()) tags.push_back(Name(env, t.id) + "/" + std::to_string(t.duration));
-    std::sort(tags.begin(), tags.end());
-    for (const std::string& t : tags) out << " " << t;
-    for (const auto& s : a->GetStatuses()) out << " s" << static_cast<int>(s.type) << "/" << s.duration;
-    lines.push_back(out.str());
-  }
-  std::sort(lines.begin(), lines.end());
-  std::ostringstream out;
-  for (const std::string& l : lines) out << l << "\n";
-  for (int r = 0; r < env.GetRows(); ++r) {
-    for (int c = 0; c < env.GetCols(); ++c) {
-      const BaseEnv::CellTag z = env.GetCellTag({r, c});
-      if (z.tag == kInvalidTag) continue;
-      out << "zone " << r << "," << c << " " << Name(env, z.tag) << " " << z.steps << " "
-          << z.damage << "\n";
-    }
-  }
-  return out.str();
-}
-
 // The final review's repro, with combos_duo's rules (oil + burning -> burning,
 // spreading, the oil becoming the burning zone: 5 steps, 1 damage per
 // landing): an igniter carrying burning steps onto the oil a bystander stands
@@ -1719,8 +1742,9 @@ TEST(TestTheZonePhaseDoesNotDependOnTheAgentsOrder) {
 // agents in the lake (wet + electrified -> shocked, keeping wet, spreading,
 // 1 damage) both trigger, even though the first firing takes the other's
 // electrified away. Two firings, each over both (2 damage each), whatever
-// their order.
+// their order: the two orders give the same trace.
 TEST(TestTheZonePhaseFixesItsTriggersBeforeAnyOutcome) {
+  std::string traces[2];
   for (bool swapped : {false, true}) {
     SynchroEnv env(10, 10, 2, 1, 0, 42);
     MakeArena(env);
@@ -1756,13 +1780,51 @@ TEST(TestTheZonePhaseFixesItsTriggersBeforeAnyOutcome) {
       ASSERT_TRUE(landed.at(i).kind == TagSource::Reaction);
       ASSERT_EQ(landed.at(i).reaction, static_cast<int>(i - 2) / 2);
     }
+    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}});
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
+  }
+}
+
+// Per-firing damage in the zone phase: a Marked agent hit by two firings of
+// 1 damage takes 2 (Marked truncates each hit: 1 stays 1, as in the skill
+// phase), not 3, in both orders.
+TEST(TestAMarkedAgentTakesEachFiringsDamageApart) {
+  std::string traces[2];
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions(
+                {Rule("wet", "electrified", "shocked").Keep({"wet"}).Hurts(1).Spreads().r}),
+            "reactions");
+    Agent* a = Place(env, swapped ? 1 : 0, {3, 4});
+    Agent* b = Place(env, swapped ? 0 : 1, {3, 5});
+    for (Agent* x : {a, b}) {
+      Require(env.ApplyTagTo(x->GetId(), "electrified", kPermanentTag), "e");
+      x->ApplyStatus(StatusType::Marked, 5);
+    }
+    SetZones(env, {{3, 4}, {3, 5}}, "wet");
+    env.Step(Stays(env));
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(2));
+    for (const auto& r : env.GetLastReactions()) {
+      for (const auto& o : r.affected) ASSERT_EQ(o.damage, 1);
+    }
+    ASSERT_EQ(a->GetHealth(), 8);
+    ASSERT_EQ(b->GetHealth(), 8);
+    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}});
+  }
+  if (traces[0] != traces[1]) {
+    throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
   }
 }
 
 // The zone phase computes every firing before applying any: A's firing (a
 // spreading jolt, 3 damage) would down B, but B's own reaction (alone, 1
-// damage) still fires, whatever the agents' order. B takes both firings'
-// damage at once (4: down), each firing reporting its own.
+// damage) still fires, whatever the agents' order. B ends down in both, its
+// tags the same. Each firing deals its damage in firing order and reports
+// what it dealt: A first, its 3 downs B and B's own firing deals 0; B first,
+// its 1 then A's 3. So the traces agree but for that attribution.
 TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
   std::string traces[2];
   for (bool swapped : {false, true}) {
@@ -1783,13 +1845,13 @@ TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
       if (r.rule == 0) {
         ASSERT_EQ(r.trigger, a->GetId());
         ASSERT_EQ(r.affected.size(), static_cast<size_t>(2));
-        for (const auto& o : r.affected) ASSERT_EQ(o.damage, 3);
+        for (const auto& o : r.affected) ASSERT_EQ(o.damage, 3);  // Dealt in both orders
       } else {
         ASSERT_EQ(r.trigger, b->GetId());
         ASSERT_FALSE(r.spread);
         ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
         ASSERT_TRUE(r.affected.at(0).result_landed);
-        ASSERT_EQ(r.affected.at(0).damage, 1);
+        ASSERT_EQ(r.affected.at(0).damage, swapped ? 1 : 0);  // B first: dealt; A first: B was down
       }
     }
     ASSERT_EQ(a->GetHealth(), 7);
@@ -1797,7 +1859,7 @@ TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
     ASSERT_TRUE(Has(env, b, "shocked"));
     ASSERT_TRUE(Has(env, b, "steamed"));
     ASSERT_FALSE(Has(env, b, "burning"));
-    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}});
+    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}}, false);
   }
   if (traces[0] != traces[1]) {
     throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
