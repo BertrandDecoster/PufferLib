@@ -927,30 +927,34 @@ class BaseEnv {
   //      (GetLastOddMotions: a radial effect's diagonal push included).
   // A body down as the turn begins, and a thing no push / pull moves, never
   // moves: it blocks every motion.
-  // Within a layer the motions are SIMULTANEOUS (SolveLayer for 1, 2, 4):
-  // each has candidates, preferred first (a teleport's / dash's
-  // caster_candidates, a forced move's line, the furthest first); `choice`
-  // only advances, past the last one it stays. A cell whose occupant leaves
-  // in the same layer is free; a dash / forced move stops before the first
-  // cell of its path held at the END of the layer (never contesting it);
-  // two motions ending on one cell: the lower rank wins (agent index; things,
-  // living non-agent actors, after every agent by ObjectId), the only use of
-  // the indices. Each round judges every motion against the same choices
-  // (the verdicts apply together):
-  //   A. firm blockers: a path or end cell surely held (an actor the layer
-  //      does not move, or a motion of it that stays): stop before it;
-  //   B. secure motions (none may still end on its path, none better on its
-  //      end, now or at a later candidate, and whoever it passes or lands on
-  //      surely leaves) keep their end: the others lose that end to them and
-  //      stop before it on their path;
-  //   C. nothing sure: settled if the choices agree (rings, crossings, swaps
-  //      of non-walks all move); else ONE verdict, of the worst-ranked
-  //      motion, preferring a path blocked by a clear end, then a clash lost
-  //      to a clear winner, then any.
-  // A verdict never rests on a motion that may still change (A, B), so no
-  // motion falls back for a blocker that then goes away, but in C's cycles
-  // (a tie-break). Termination: every round but the last advances a choice;
-  // choices are bounded by the candidates.
+  // Within a layer the motions are SIMULTANEOUS and judged by their
+  // DESTINATION (SolveLayer for 1, 2, 4), like the walks: each looks at its
+  // final destination; if it can't have it (something there, something also
+  // moving there) it backpedals one cell and looks again, at worst back to
+  // its start cell, which it always keeps.
+  //   0. Its candidates, the furthest first: a teleport's caster_candidates
+  //      but those an actor stands on; a dash's / forced move's path cells
+  //      back to its start, cut statically at a wall (and a hole for a
+  //      forced move; a dash jumps holes, never ends on one) and at the first
+  //      actor this layer does not move (it stays where it is for the whole
+  //      layer: the earlier layers already moved, the later ones not yet).
+  //   Then rounds, each judging every motion against the same choices, the
+  //   verdicts applied together (`choice` only advances: a backpedal):
+  //   a. something there: a motion of the layer that stays (it keeps its
+  //      start) on its destination (backpedal once), or on its path
+  //      (backpedal past it: it is a blocker once it is known to stay);
+  //   b. only when a found nothing: something also moving there: of the
+  //      motions claiming one destination, all but the winner backpedal
+  //      once. The winner: the one that does not overtake the other (the
+  //      other's path crosses its start: the rear of a line pushed into a
+  //      wall gives way to the front); an exact tie, the lower rank (agent
+  //      index; things, living non-agent actors, after every agent by
+  //      ObjectId), the only use of the indices.
+  //   Settled when no destination is taken. Only destinations are judged:
+  //   the path's other cells, crossed or left by movers of the same layer,
+  //   never block (a line pushed together slides like a train; crossing
+  //   dashes pass). Termination: every round but the last backpedals a
+  //   motion; the candidates are bounded by the path lengths.
   // The executed action (the C API's): the walk a walker made, Stay if it did
   // not walk (a walker then pushed: its walk, its final cell past it).
   void MotionPhase();
@@ -1368,12 +1372,11 @@ class BaseEnv {
     bool path = false;
     size_t choice = 0;  // Into stops; stops.size(): it stays
     int dr = 0, dc = 0;  // A forced move: the sum
-    // A round's scratch: its end, its first path cell another ends on (-1:
-    // none), a mark (secure / clash), the choice it advances to (0: none; a
-    // choice only grows, so a verdict is never 0)
+    // A round's scratch: its destination, a mark (the walks' clash), the
+    // choice it backpedals to (0: none; a choice only grows, so a verdict is
+    // never 0)
     Position end;
-    size_t block = static_cast<size_t>(-1);
-    bool secure = false;
+    bool mark = false;
     size_t next = 0;
     bool moved = false;  // ExecuteLayer: it changed cell
   };

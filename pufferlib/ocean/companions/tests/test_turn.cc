@@ -1568,12 +1568,12 @@ TEST(TestADashIsNotBlockedByADashThatIsItselfBlocked) {
   }
 }
 
-// The reviewer's two dashers, under the layers: A (3,1) dashes right to
-// (3,5), B (6,5) dashes up through (3,5) toward (2,5); a gob walks down onto
-// A's line (3,3). The walks come after the dashes: A has passed and lands on
-// (3,5), which holds B's line at the end of the dashes' layer: B stops before
-// it, on (4,5). (Had the gob stood on A's line as the turn began, A's plan
-// would stop before it and B would reach (2,5).)
+// The reviewer's two dashers: A (3,1) dashes right to (3,5), B (6,5) dashes
+// up through (3,5) to (2,5); a gob walks down onto A's line (3,3). Only
+// destinations are judged: B passes (3,5), where A ends, and lands on (2,5).
+// The walks come after the dashes: A has passed the gob's cell and lands on
+// (3,5); had the gob stood on A's line as the turn began, A's plan would
+// stop before it, on (3,2).
 TEST(TestTwoCrossingDashesAndALateWalker) {
   for (bool on_line : {false, true}) {
     SynchroEnv env(10, 10, 2, 1, 0, 42);
@@ -1587,17 +1587,19 @@ TEST(TestTwoCrossingDashesAndALateWalker) {
               on_line ? kStay : Walk(MovementAction::Down)});
     ASSERT_TRUE(gob->GetPosition() == (Position{3, 3}));
     ASSERT_TRUE(a->GetPosition() == (on_line ? Position{3, 2} : Position{3, 5}));
-    ASSERT_TRUE(b->GetPosition() == (on_line ? Position{2, 5} : Position{4, 5}));
+    ASSERT_TRUE(b->GetPosition() == (Position{2, 5}));
   }
 }
 
-// Reviewer I2, in the forced moves' layer: F1 (index lowest) is pushed 2
+// Only destinations are judged, in the forced moves' layer: F1 is pushed 2
 // right through (4,4) toward (4,5); F2 is pushed onto (4,5), F3 onto (4,4).
-// F1 would win (4,5) from F2 (the lower index), but its path is held by F3's
-// end: it stops before it (it stays), and F2 keeps (4,5) (it does not fall
-// back for a winner that never comes). Whatever the indices of F2 and F3.
+// F1 passes (4,4), where F3 ends (a path cell, never judged). F1 and F2
+// claim (4,5), an exact tie (neither overtakes the other): the lower index.
+// F1 the lowest: it gets (4,5), F2 backpedals (stays). F1 the highest: F2
+// gets (4,5); F1 backpedals to (4,4), which F3 (a lower index) claims too:
+// F1 backpedals again, to its start.
 TEST(TestAPathBlockedMotionNeverTakesTheCellBeyond) {
-  for (bool swapped : {false, true}) {
+  for (bool f1_first : {true, false}) {
     SynchroEnv env(10, 10, 3, 1, 0, 42);
     MakeArena(env);
     Place(env, 0, {4, 2});  // Pushes (4,3) 2 right
@@ -1606,14 +1608,14 @@ TEST(TestAPathBlockedMotionNeverTakesTheCellBeyond) {
     GivePusher(env, 1, "gust1", 1);
     Place(env, 2, {6, 4});  // Pushes (5,4) up 1
     Require(env.SetCompanionSkill(AgentAt(env, 2)->GetId(), 0, "gust1"), "gust1");
-    Agent* f1 = AddEnemy(env, {4, 3});
-    Agent* f2 = AddEnemy(env, swapped ? Position{5, 4} : Position{3, 5});
-    Agent* f3 = AddEnemy(env, swapped ? Position{3, 5} : Position{5, 4});
-    if (swapped) std::swap(f2, f3);
+    Agent* f1 = f1_first ? AddEnemy(env, {4, 3}) : nullptr;
+    Agent* f2 = AddEnemy(env, {3, 5});
+    Agent* f3 = AddEnemy(env, {5, 4});
+    if (!f1_first) f1 = AddEnemy(env, {4, 3});
     env.Step({Use(MovementAction::Stay), Use(MovementAction::Stay), Use(MovementAction::Stay),
               kStay, kStay, kStay});
-    ASSERT_TRUE(f1->GetPosition() == (Position{4, 3}));
-    ASSERT_TRUE(f2->GetPosition() == (Position{4, 5}));
+    ASSERT_TRUE(f1->GetPosition() == (f1_first ? Position{4, 5} : Position{4, 3}));
+    ASSERT_TRUE(f2->GetPosition() == (f1_first ? Position{3, 5} : Position{4, 5}));
     ASSERT_TRUE(f3->GetPosition() == (Position{4, 4}));
   }
 }
@@ -1772,7 +1774,8 @@ TEST(TestTheMotionSolverTerminatesOnACycle) {
 // through the cell a companion walks onto stops before it (the walks come
 // first: it stays); a dash along the line a gob then walks onto passes (the
 // dashes come first); two dashes crossing, one ending on the other's line
-// (that one stops before it); the same whatever the companions' indices.
+// (only destinations are judged: the other passes it); the same whatever the
+// companions' indices.
 TEST(TestSwappingIndicesChangesNoMotionOutcome) {
   std::string traces[2];
   for (bool swapped : {false, true}) {
@@ -1799,7 +1802,7 @@ TEST(TestSwappingIndicesChangesNoMotionOutcome) {
     ASSERT_TRUE(pushed->GetPosition() == (Position{4, 3}));
     ASSERT_TRUE(walker->GetPosition() == (Position{4, 4}));
     ASSERT_TRUE(dasher->GetPosition() == (Position{6, 5}));
-    ASSERT_TRUE(crosser->GetPosition() == (Position{7, 5}));  // Before D's landing
+    ASSERT_TRUE(crosser->GetPosition() == (Position{4, 5}));  // Passes D's landing
     ASSERT_TRUE(gob->GetPosition() == (Position{6, 3}));
     traces[swapped] = RoleTrace(env, {{gust->GetId(), "G"},
                                       {pushed->GetId(), "P"},
@@ -2295,6 +2298,16 @@ static void Register(const EffectConfig& cfg) {
   EffectConfigRegistry::Instance().RegisterConfig(cfg);
 }
 
+// A 3x3 effect (no telegraph, one active step) pushing everyone it reaches
+// `distance` cells east, not radially
+static EffectConfig LineGale(const char* name, int distance) {
+  EffectConfig gale = Effect(name, 1);
+  gale.area = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+  gale.push_dx = 1;
+  gale.push_distance = distance;
+  return gale;
+}
+
 // The FSM goblins' RNG (FSMContext::rng points at it): outlives every env
 static pcg32 goblin_rng(42);
 
@@ -2611,6 +2624,68 @@ TEST(TestSwappingIndicesChangesNoEffectOutcome) {
   RequireSameTraces(traces);
 }
 
+// One effect pushing two agents in a line 2 cells right (the T5 reviewer's
+// layout): the rear one's path crosses the front one's start, which it
+// leaves in the same layer: they slide together, like a train, whatever
+// their indices
+TEST(TestTwoAgentsInALinePushedTwoMoveTogether) {
+  for (bool swapped : {false, true}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* rear = Place(env, swapped ? 1 : 0, {4, 3});
+    Agent* front = Place(env, swapped ? 0 : 1, {4, 4});
+    EffectConfig gale = LineGale("line_gale", 2);
+    Register(gale);
+    env.SpawnEffect("line_gale", EffectTarget::AtCell({4, 4}));
+    env.Step(Stays(env));
+    ASSERT_TRUE(rear->GetPosition() == (Position{4, 5}));
+    ASSERT_TRUE(front->GetPosition() == (Position{4, 6}));
+  }
+}
+
+// A line pushed 2 right into a wall compresses: the front one stops at the
+// wall (its path is cut there: (4,8)); the rear one, claiming (4,8) too
+// through the front one's start, would overtake it: it gives way and
+// backpedals behind it, onto the front one's start (4,7). Whatever their
+// indices (not a tie: only the rear one overtakes).
+TEST(TestALinePushedIntoAWallCompresses) {
+  for (bool swapped : {false, true}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Agent* rear = Place(env, swapped ? 1 : 0, {4, 6});
+    Agent* front = Place(env, swapped ? 0 : 1, {4, 7});  // (4,9) is the border wall
+    Register(LineGale("line_gale", 2));
+    env.SpawnEffect("line_gale", EffectTarget::AtCell({4, 7}));
+    env.Step(Stays(env));
+    ASSERT_TRUE(front->GetPosition() == (Position{4, 8}));
+    ASSERT_TRUE(rear->GetPosition() == (Position{4, 7}));
+  }
+}
+
+// A train whose front stays blocks the rest: a gale pushes two gobs in a
+// line 1 right, and a gust from (4,5) pushes the front one 1 left: its sum
+// is 0, it stays, so the rear one, pushed into its start, backpedals to its
+// own. Without the gust, both move.
+TEST(TestATrainWhoseFrontStaysBlocksTheRest) {
+  for (bool gust : {true, false}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, gust ? Position{4, 5} : Position{8, 8});
+    GiveGust(env, 0);  // Around (4,5): (4,4) is its left ring cell
+    Agent* rear = AddEnemy(env, {4, 3});
+    Agent* front = AddEnemy(env, {4, 4});
+    EffectConfig gale = LineGale("line_gale", 1);
+    gale.filter = TargetFilter::Enemy;  // Not the gust's caster
+    Register(gale);
+    env.SpawnEffect("line_gale", EffectTarget::AtCell({4, 4}));
+    env.Step({Use(MovementAction::Stay), kStay, kStay});
+    ASSERT_TRUE(front->GetPosition() == (gust ? Position{4, 4} : Position{4, 5}));
+    ASSERT_TRUE(rear->GetPosition() == (gust ? Position{4, 3} : Position{4, 4}));
+  }
+}
 // =============================================================================
 // Main
 // =============================================================================

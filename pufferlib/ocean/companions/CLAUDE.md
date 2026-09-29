@@ -142,19 +142,24 @@ while the actors whose motion is in a later layer still stand where they were:
    `GetLastOddMotions()` (actor, dr, dc; a step report) and `GetOddMotionCount()` (the
    env's life: copied with it, kept by `Reset` / `LoadSnapshot`)
 
-- **Within a layer** the motions are simultaneous (`SolveLayer`; walks: `SolveWalkLayer`):
-  a cell whose occupant leaves in the same layer is free; a dash / push / pull stops
-  before the first cell of its path held at the END of the layer (a wall, a hole for a
-  forced move, a living actor), never contesting it; two motions ending on one cell: the
-  lower rank wins (agent index; things, living non-agent actors, after every agent by
-  ObjectId), the only use of the indices. Each round judges every motion against the same
-  choices: firm blockers first (an actor the layer does not move, a motion of it that
-  stays), then the secure motions (none may still end on its path, none better on its
-  end, whoever it passes or lands on surely leaves) take their end; a verdict never rests
-  on a motion that may still change, so nobody falls back for a blocker that goes away.
-  With nothing sure left: settled if the choices agree (rings, crossings, swaps of
-  non-walks all move), else one verdict of the worst-ranked motion (a tie-break of a
-  cycle). Choices only advance: it ends
+- **Within a layer** the motions are simultaneous and judged by their DESTINATION
+  (`SolveLayer`; walks: `SolveWalkLayer`, the walk rules), like the walks: each looks at
+  its final destination; if it can't have it (something there, something also moving
+  there) it backpedals one cell and looks again, at worst back to its start, which it
+  always keeps. Its candidates: the path's cells from the far end back to the start, cut
+  statically at a wall (a hole too for a forced move; a dash jumps holes, never ends on
+  one) and at the first actor the layer does not move (it stays put the whole layer); a
+  teleport's planned candidates but those an actor stands on. Each round, verdicts
+  together: a. a motion of the layer that stays on its start is on a destination
+  (backpedal once) or on a path (backpedal past it); b. only then, motions claiming one
+  destination: all but the winner backpedal once; the winner is the one that does not
+  overtake the other (the other's path crosses its start: a line pushed into a wall
+  compresses, its rear behind its front), an exact tie the lower rank (agent index;
+  things, living non-agent actors, after every agent by ObjectId), the only use of the
+  indices. Settled when no destination is taken. The path's other cells never block:
+  a cell left or crossed by a mover of the layer is free (a line pushed together slides
+  like a train, crossing dashes pass, a ring pushed round moves). Every round but the
+  last backpedals: it ends (bounded by the path lengths)
 - A body down as the turn begins and a thing no push / pull moves never move and block
   every motion (a walk into a thing is blocked)
 - Executed action (`GetExecutedAction`, the C API's): the walk a walker made (a walker then
@@ -270,9 +275,9 @@ steps is always the number of steps to come it covers.
 - Teleport: exactly `distance`, else `distance - 1`, ... 1 (ignores what lies between,
   walls included), else stays
 - Push: each ring thing `distance` away from the centre; a wall, a hole or a living
-  actor stops it on the cell before (the motion phase: a cell held at the end of its
-  layer; pushes on one thing add up; on whoever stands on the ring after the teleports,
-  dashes and walks). Pull: exactly one cell, only into a free, walkable
+  actor stops it on the cell before (the motion phase: an actor its layer does not move,
+  or one that stays; a line pushed together slides together; pushes on one thing add
+  up; on whoever stands on the ring after the teleports, dashes and walks). Pull: exactly one cell, only into a free, walkable
   centre
 
 **Builtins** (`SkillBook`, `skill_config.cc`). Tags are permanent (-1).

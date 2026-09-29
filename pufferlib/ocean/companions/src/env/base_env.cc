@@ -830,8 +830,7 @@ BaseEnv::MotionIntent& BaseEnv::AddMotion(Actor& actor, Agent* agent, int64_t ra
   m.choice = 0;
   m.dr = m.dc = 0;
   m.end = m.from;
-  m.block = kNoCell;
-  m.secure = false;
+  m.mark = false;
   m.next = 0;
   m.moved = false;
   return m;
@@ -1003,18 +1002,18 @@ void BaseEnv::SolveWalkLayer() {
       if (rejected) m.next = 1;
     }
     // b. Two walks or more onto one cell, among those a did not stop: all stay
-    // (judged first, then marked: `secure` is the mark here)
+    // (judged first, then marked)
     for (size_t i = 0; i < n; ++i) {
-      ms[i].secure = false;
+      ms[i].mark = false;
       if (!moving(i) || ms[i].next) continue;
       for (size_t j = 0; j < n; ++j) {
-        if (j != i && moving(j) && !ms[j].next && ms[j].end == ms[i].end) ms[i].secure = true;
+        if (j != i && moving(j) && !ms[j].next && ms[j].end == ms[i].end) ms[i].mark = true;
       }
     }
     bool any = false;
     for (size_t i = 0; i < n; ++i) {
       MotionIntent& m = ms[i];
-      if (m.secure) m.next = 1;
+      if (m.mark) m.next = 1;
       if (!m.next) continue;
       any = true;
       m.choice = 1;  // Its one candidate: it stays
@@ -1028,157 +1027,107 @@ void BaseEnv::SolveLayer() {
   std::vector<MotionIntent>& ms = turn_.motions;
   const size_t n = turn_.motion_count;
   auto moving = [&](size_t i) { return ms[i].choice < ms[i].stops.size(); };
-  // Its path's length: the cells of `cells` before its end
+  // Its path's length: the cells of `cells` before its destination
   auto stop = [&](size_t i) {
     return ms[i].path && moving(i) ? static_cast<size_t>(ms[i].stops[ms[i].choice]) : 0;
   };
-  auto better = [&](size_t a, size_t b) { return ms[a].rank < ms[b].rank; };
-  // A cell someone surely holds at the end of the layer: an actor no motion
-  // of the layer moves, or one whose motion stays
-  auto firm = [&](Position c, size_t self) {
-    bool starts_here = false;
+  // The motion of the layer starting on `c`, or kNoCell
+  auto starter = [&](Position c) {
     for (size_t j = 0; j < n; ++j) {
-      if (ms[j].from != c) continue;
-      if (j != self && !moving(j)) return true;
-      starts_here = true;
+      if (ms[j].from == c) return j;
     }
-    if (starts_here) return false;  // It leaves
-    const Actor* a = object_manager_->GetActorAt(c);
-    return a && a->IsAlive();
+    return kNoCell;
   };
-  // The first candidate of `i` before path cell `k`
+  // Its first candidate before path cell `k` (the backpedal past a blocker)
   auto before = [&](size_t i, size_t k) {
     size_t next = ms[i].choice + 1;
     while (next < ms[i].stops.size() && static_cast<size_t>(ms[i].stops[next]) >= k) ++next;
     return next;
   };
-  // Where `c` lies on the path of `i`, or kNoCell
-  auto on_path = [&](size_t i, Position c) {
+  // `i` passes through the start of `j` (a cell of its path before its destination)
+  auto passes = [&](size_t i, size_t j) {
     const size_t len = stop(i);
     for (size_t k = 0; k < len; ++k) {
-      if (ms[i].cells[k] == c) return k;
+      if (ms[i].cells[k] == ms[j].from) return true;
     }
-    return kNoCell;
+    return false;
   };
-  // `j` surely keeps its end: nobody may end on its path, nobody better on
-  // its end (now or at a later candidate), and whoever it passes or lands
-  // on surely leaves
-  auto secure = [&](size_t j) {
-    const Position e = ms[j].end;
-    for (size_t m = 0; m < n; ++m) {
-      if (m == j) continue;
-      if (moving(m)) {
-        if (ms[m].end == e && better(m, j)) return false;
-        if (on_path(j, ms[m].end) != kNoCell) return false;
-      }
-      for (size_t c = ms[m].choice + 1; c < ms[m].stops.size(); ++c) {
-        const Position q = ms[m].cells[static_cast<size_t>(ms[m].stops[c])];
-        if ((q == e && better(m, j)) || on_path(j, q) != kNoCell) return false;
-      }
-      if ((ms[m].from == e || on_path(j, ms[m].from) != kNoCell) && !ms[m].secure) return false;
+  // Of two motions claiming one destination, `j` beats `i`: the one that
+  // would overtake the other (its path crosses the other's start) loses; an
+  // exact tie goes to the lower rank
+  auto beats = [&](size_t j, size_t i) {
+    const bool j_over = passes(j, i), i_over = passes(i, j);
+    if (j_over != i_over) return i_over;
+    return ms[j].rank < ms[i].rank;
+  };
+
+  // 0. The static cut: an actor this layer does not move stays where it is
+  // for the whole layer. A path motion's candidates stop before the first
+  // one on its path; a teleport loses the candidates one stands on.
+  for (size_t i = 0; i < n; ++i) {
+    MotionIntent& m = ms[i];
+    auto is_static = [&](Position c) {
+      if (starter(c) != kNoCell) return false;
+      const Actor* a = object_manager_->GetActorAt(c);
+      return a && a->IsAlive();
+    };
+    size_t cut = m.cells.size();
+    for (size_t k = 0; k < m.cells.size() && cut == m.cells.size(); ++k) {
+      if (m.path && is_static(m.cells[k])) cut = k;
     }
-    return true;
-  };
+    size_t kept = 0;
+    for (int s : m.stops) {
+      const size_t k = static_cast<size_t>(s);
+      if (k < cut && (m.path || !is_static(m.cells[k]))) m.stops[kept++] = s;
+    }
+    m.stops.resize(kept);  // Shrinks: no allocation
+  }
+
 #ifndef NDEBUG
-  size_t bound = 0;  // Every round but the last advances a choice
+  size_t bound = 0;  // Every round but the last backpedals a motion
   for (size_t i = 0; i < n; ++i) bound += ms[i].stops.size();
   size_t round = 0;
 #endif
   for (;;) {
-    assert(round++ <= bound && "a layer must settle: every round advances a choice");
-    bool any = false;
+    assert(round++ <= bound && "a layer must settle: every round backpedals a motion");
     for (size_t i = 0; i < n; ++i) {
       MotionIntent& m = ms[i];
       m.next = 0;
-      m.secure = false;
       m.end = moving(i) ? m.cells[static_cast<size_t>(m.stops[m.choice])] : m.from;
     }
-    // A. Firm blockers: its path or its end surely held
+    // a. Something there: one of the layer that stays (it keeps its start)
+    // is on its destination, or on its path (then it backpedals past it)
+    bool any = false;
     for (size_t i = 0; i < n; ++i) {
       if (!moving(i)) continue;
       MotionIntent& m = ms[i];
       const size_t len = stop(i);
-      size_t hit = kNoCell;
-      for (size_t k = 0; k < len && hit == kNoCell; ++k) {
-        if (firm(m.cells[k], i)) hit = k;
+      for (size_t k = 0; k < len && !m.next; ++k) {
+        const size_t j = starter(m.cells[k]);
+        if (j != kNoCell && !moving(j)) m.next = before(i, k);
       }
-      if (hit != kNoCell) {
-        m.next = before(i, hit);
-      } else if (firm(m.end, i)) {
-        m.next = m.choice + 1;
+      if (!m.next) {
+        const size_t j = starter(m.end);
+        if (j != kNoCell && j != i && !moving(j)) m.next = m.choice + 1;
       }
       any = any || m.next;
     }
+    // b. Something also moving there: of the motions claiming one
+    // destination, all but the winner backpedal once (judged only once no
+    // stayer is found: a claim a stayer ends is withdrawn first)
     if (!any) {
-      // B. The motions that surely keep their end: the others lose that end
-      // to them, and stop before it on their path
-      for (bool grew = true; grew;) {
-        grew = false;
-        for (size_t j = 0; j < n; ++j) {
-          if (moving(j) && !ms[j].secure && secure(j)) ms[j].secure = grew = true;
-        }
-      }
       for (size_t i = 0; i < n; ++i) {
         if (!moving(i)) continue;
-        MotionIntent& m = ms[i];
-        size_t hit = kNoCell;
-        bool lost = false;
         for (size_t j = 0; j < n; ++j) {
-          if (j == i || !ms[j].secure) continue;
-          lost = lost || ms[j].end == m.end;
-          hit = std::min(hit, on_path(i, ms[j].end));
-        }
-        if (hit != kNoCell) {
-          m.next = before(i, hit);
-        } else if (lost) {
-          m.next = m.choice + 1;
-        }
-        any = any || m.next;
-      }
-    }
-    if (!any) {
-      // C. Nothing sure left: done if the choices agree; else the one
-      // verdict of the worst-ranked motion, preferring a path blocked by an
-      // end that is itself clear, then a clash lost to a clear winner
-      // (`block`: the first path cell another ends on; `secure` reused: it
-      // loses its end to a better one)
-      for (size_t i = 0; i < n; ++i) {
-        MotionIntent& m = ms[i];
-        m.block = kNoCell;
-        m.secure = false;
-        if (!moving(i)) continue;
-        for (size_t j = 0; j < n; ++j) {
-          if (j == i || !moving(j)) continue;
-          m.block = std::min(m.block, on_path(i, ms[j].end));
-          m.secure = m.secure || (ms[j].end == m.end && better(j, i));
-        }
-      }
-      auto clear = [&](size_t j) { return ms[j].block == kNoCell && !ms[j].secure; };
-      size_t pick = kNoCell;
-      for (int pass = 0; pass < 3 && pick == kNoCell; ++pass) {
-        for (size_t i = 0; i < n; ++i) {
-          const MotionIntent& m = ms[i];
-          bool fits = false;
-          if (m.block != kNoCell) {
-            // Blocked by a clear end (pass 0), or any (pass 2)
-            for (size_t j = 0; j < n && !fits; ++j) {
-              fits = j != i && moving(j) && on_path(i, ms[j].end) == m.block &&
-                     (pass == 2 || (pass == 0 && clear(j)));
-            }
-          } else if (m.secure) {
-            // Lost to a clear winner (pass 1), or any (pass 2)
-            for (size_t j = 0; j < n && !fits; ++j) {
-              fits = j != i && moving(j) && ms[j].end == m.end && better(j, i) &&
-                     (pass == 2 || (pass == 1 && clear(j)));
-            }
+          if (j != i && moving(j) && ms[j].end == ms[i].end && beats(j, i)) {
+            ms[i].next = ms[i].choice + 1;
+            any = true;
+            break;
           }
-          if (fits && (pick == kNoCell || better(pick, i))) pick = i;
         }
       }
-      if (pick == kNoCell) break;  // The choices agree: settled
-      MotionIntent& m = ms[pick];
-      m.next = m.block != kNoCell ? before(pick, m.block) : m.choice + 1;
     }
+    if (!any) break;  // Every destination is free: settled
     for (size_t i = 0; i < n; ++i) {
       if (ms[i].next) ms[i].choice = ms[i].next;
     }
