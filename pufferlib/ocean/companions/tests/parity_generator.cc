@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
     }
     std::fill(actions.begin(), actions.end(), 0);
     std::fill(rewards.begin(), rewards.end(), 0.0f);
-    std::fill(terminals.begin(), terminals.end(), 0);
+    std::fill(terminals.begin(), terminals.end(), uint8_t{0});
 
     write_step_record(out, actions, observations, rewards, terminals, env_seed);
 

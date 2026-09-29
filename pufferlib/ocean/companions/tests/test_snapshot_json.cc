@@ -1846,6 +1846,42 @@ TEST(TestJsonIntegersAreStrict) {
   SnapshotFromJson(j.dump());
 }
 
+// The RNG states (the root's rng_state / inc, an FSM's rng_state / rng_inc)
+// are unsigned 64-bit integers: a bool, a float, a negative number or a
+// string is an error naming the key, never a silent conversion. The full
+// uint64_t range loads.
+TEST(TestJsonRngStatesAreStrict) {
+  const std::vector<json> not_uint64s = {true, 2.5, -1, json(-9223372036854775807LL),
+                                         18446744073709551616.0, "3"};
+  for (const json& v : not_uint64s) {
+    json j = LevelJson();
+    j.at("rng_state")["state"] = v;
+    AssertJsonErrorMentions(j, {"rng_state: state"});
+    j = LevelJson();
+    j.at("rng_state")["inc"] = v;
+    AssertJsonErrorMentions(j, {"rng_state: inc"});
+    j = AggroJson();
+    FsmAgent(j).at("fsm")["rng_state"] = v;
+    AssertJsonErrorMentions(j, {"rng_state"});
+    j = AggroJson();
+    FsmAgent(j).at("fsm")["rng_inc"] = v;
+    AssertJsonErrorMentions(j, {"rng_inc"});
+  }
+  json j = LevelJson();
+  j.at("rng_state")["state"] = -1;
+  AssertJsonErrorMentions(j, {"out of range"});
+  j.at("rng_state")["state"] = 2.5;
+  AssertJsonErrorMentions(j, {"must be an integer"});
+  j.at("rng_state")["state"] = json(18446744073709551615ULL);
+  j.at("rng_state")["inc"] = 0;
+  const Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_EQ(s.rng_state, 18446744073709551615ULL);
+  ASSERT_EQ(s.rng_inc, 0ULL);
+  j = AggroJson();
+  FsmAgent(j).at("fsm")["rng_state"] = json(18446744073709551615ULL);
+  SnapshotFromJson(j.dump());
+}
+
 // "none" is a status name the agents' statuses accept, but not a tag status
 TEST(TestJsonTagStatusNoneIsNotAStatus) {
   json j = LevelJson();

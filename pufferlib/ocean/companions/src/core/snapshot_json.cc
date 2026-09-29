@@ -86,6 +86,21 @@ int StrictInt(const json& v, const std::string& what) {
   return static_cast<int>(v.get<int64_t>());
 }
 
+// A JSON integer that fits a uint64_t (an RNG's state): nlohmann's
+// get<uint64_t> would take a bool, truncate a float and wrap a negative number.
+uint64_t StrictUint64(const json& v, const std::string& what) {
+  if (!v.is_number()) {
+    throw std::runtime_error(what + ": type must be number, but is " + v.type_name());
+  }
+  if (!v.is_number_integer()) {  // A float, or an integer beyond uint64_t (parsed as a float)
+    throw std::runtime_error(what + ": must be an integer, but is " + v.dump());
+  }
+  if (!v.is_number_unsigned()) {  // nlohmann stores every non-negative integer unsigned
+    throw std::runtime_error(what + ": " + v.dump() + " is out of range for an unsigned integer");
+  }
+  return v.get<uint64_t>();
+}
+
 std::vector<int> StrictIntArray(const json& v, const std::string& what) {
   if (!v.is_array()) {
     throw std::runtime_error(what + ": type must be array, but is " + v.type_name());
@@ -98,13 +113,16 @@ std::vector<int> StrictIntArray(const json& v, const std::string& what) {
   return out;
 }
 
-// Every int (and array of ints) goes through StrictInt
+// Every int (and array of ints) goes through StrictInt, every uint64_t
+// through StrictUint64
 template <typename T>
 T Get(const json& j, const char* key, const std::string& section) {
   const json& v = Key(j, key, section);
   const std::string what = section + ": " + key;
   if constexpr (std::is_same<T, int>::value) {
     return StrictInt(v, what);
+  } else if constexpr (std::is_same<T, uint64_t>::value) {
+    return StrictUint64(v, what);
   } else if constexpr (std::is_same<T, std::vector<int>>::value) {
     return StrictIntArray(v, what);
   } else {
@@ -1020,10 +1038,9 @@ Snapshot ReadSnapshot(const json& j) {
   snapshot.horizon = Get<int>(j, "horizon", "snapshot");
 
   // RNG state
-  InSection("rng_state", [&] {
-    snapshot.rng_state = j.at("rng_state").at("state").get<uint64_t>();
-    snapshot.rng_inc = j.at("rng_state").at("inc").get<uint64_t>();
-  });
+  const json& rng = Key(j, "rng_state", "snapshot");
+  snapshot.rng_state = Get<uint64_t>(rng, "state", "rng_state");
+  snapshot.rng_inc = Get<uint64_t>(rng, "inc", "rng_state");
 
   // D4 transform
   snapshot.d4_transform = Get<int>(j, "d4_value", "snapshot");

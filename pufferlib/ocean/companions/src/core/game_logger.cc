@@ -23,7 +23,7 @@ std::string LogCategoryToString(LogCategory cat) {
 std::optional<LogCategory> LogCategoryFromString(const std::string& str) {
   std::string lower = str;
   std::transform(lower.begin(), lower.end(), lower.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
   if (lower == "fsm") return LogCategory::FSM;
   if (lower == "effects" || lower == "effect") return LogCategory::Effects;

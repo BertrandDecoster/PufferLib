@@ -4,6 +4,7 @@
 #include "agent_config.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -97,7 +98,8 @@ std::vector<int> ParseCadence(const std::string& str) {
 // Parse faction string
 Faction ParseFaction(const std::string& str) {
   std::string lower = str;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   if (lower == "companion") return Faction::COMPANION;
   if (lower == "neutral") return Faction::NEUTRAL;
   return Faction::ENEMY;  // Default
@@ -106,7 +108,8 @@ Faction ParseFaction(const std::string& str) {
 // Parse target filter string
 TargetFilter ParseTargetFilter(const std::string& str) {
   std::string lower = str;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   if (lower == "all") return TargetFilter::All;
   if (lower == "enemy") return TargetFilter::Enemy;
   if (lower == "neutral") return TargetFilter::Neutral;
@@ -116,7 +119,8 @@ TargetFilter ParseTargetFilter(const std::string& str) {
 // Parse bool string
 bool ParseBool(const std::string& str) {
   std::string lower = str;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return lower == "true" || lower == "1" || lower == "yes";
 }
 
@@ -143,7 +147,8 @@ bool AgentConfigRegistry::LoadFromCSV(const std::string& path) {
   std::unordered_map<std::string, size_t> header_idx;
   for (size_t i = 0; i < headers.size(); ++i) {
     std::string h = headers[i];
-    std::transform(h.begin(), h.end(), h.begin(), ::tolower);
+    std::transform(h.begin(), h.end(), h.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     header_idx[h] = i;
   }
 

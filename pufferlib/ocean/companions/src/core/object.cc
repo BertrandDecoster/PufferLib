@@ -350,7 +350,7 @@ StatusType StatusTypeFromString(const std::string& name) {
   // Case-insensitive comparison
   std::string lower = name;
   std::transform(lower.begin(), lower.end(), lower.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
   if (lower == "stunned" || lower == "stun") return StatusType::Stunned;
   if (lower == "marked" || lower == "mark") return StatusType::Marked;
