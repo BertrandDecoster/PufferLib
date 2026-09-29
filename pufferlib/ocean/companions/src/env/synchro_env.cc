@@ -220,10 +220,11 @@ int SynchroEnv::NumAgentsOnSynchroCells() const {
 
 double SynchroEnv::MinUtility() const {
   // Worst case: time penalty every step, no agents on synchro cells
-  // time_penalty = -num_agents * kProgressReward
+  // time_penalty = -num_agents * kProgressReward, and every down's cost
+  // (WorstDownCost)
   int num_agents = NumAgents();
   double time_penalty = -static_cast<double>(num_agents) * kProgressReward;
-  return horizon_ * time_penalty;
+  return horizon_ * time_penalty + WorstDownCost();
 }
 
 double SynchroEnv::MaxUtility() const {

@@ -388,9 +388,9 @@ TEST(TestGetEndReason) {
   ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
 }
 
-// A companion down fails no Dodge task: the episode ends at the horizon, as
-// Horizon (no success: the companion is still down). Two companions: one down
-// is not the team down.
+// A companion down fails no Dodge task: it interrupts it (Interrupted), the
+// pause runs on, and the episode ends at the horizon, as Horizon (no success:
+// the companion is still down). Two companions: one down is not the team down.
 TEST(TestADodgeDownOnSynchroEnvEndsAtTheHorizon) {
   const Action stay = EncodeAction(MovementAction::Stay);
   SynchroEnv env(6, 6, 2, 1, 0, 42, 0, 3);
@@ -400,8 +400,9 @@ TEST(TestADodgeDownOnSynchroEnvEndsAtTheHorizon) {
   ASSERT_TRUE(companion->IsDowned());
   ASSERT_FALSE(env.IsTeamDown());
   for (int i = 0; i < 2; ++i) {
-    ASSERT_FALSE(env.Step({stay, stay}).done);
-    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+    ASSERT_TRUE(env.Step({stay, stay}).done);
+    ASSERT_FALSE(env.IsTeamDown());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);
   }
   ASSERT_TRUE(env.Step({stay, stay}).done);
   ASSERT_FALSE(env.IsSuccess());

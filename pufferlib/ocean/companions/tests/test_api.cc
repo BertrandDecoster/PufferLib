@@ -1771,7 +1771,8 @@ TEST(TestEndReasonKeepsHorizonAfterAKill) {
 }
 
 // A companion at 0 HP goes down: its state says so, the step reports it, and
-// the team's downs count it. The level is lost at max_downs (TeamDown).
+// the team's downs count it. The down interrupts the task (done, as
+// Interrupted); the level is lost at max_downs (TeamDown).
 TEST(TestDownsThroughTheApi) {
   Companions_EnvConfig config = MakeConfig(8, 8, 2, 1, 42);
   Companions_Env* env = companions_create(&config);
@@ -1803,7 +1804,8 @@ TEST(TestDownsThroughTheApi) {
   ASSERT_EQ(result.state.downs, 1);
   ASSERT_EQ(result.state.max_downs, 3);
   ASSERT_FALSE(result.state.team_down);  // One down of two, one of three
-  ASSERT_FALSE(result.state.done);
+  ASSERT_TRUE(result.state.done);         // Interrupted
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Interrupted);
   // The step after the down reports it, once
   ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 1);
   const Companions_Event* down = FindEvent(result, Companions_Event_AgentDowned);

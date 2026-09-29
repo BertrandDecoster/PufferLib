@@ -61,8 +61,11 @@ class AggroEnv : public BaseEnv {
   EnemyType GetEnemyType() const { return enemy_type_; }
 
   // Utility bounds. The worst return is timing out (AggroLens): the time
-  // penalty of the whole horizon (a killed enemy returns the same).
-  double MinUtility() const override { return AggroLens::kTimePenalty * horizon_; }
+  // penalty of the whole horizon (a killed enemy returns the same), and every
+  // down's cost (WorstDownCost).
+  double MinUtility() const override {
+    return AggroLens::kTimePenalty * horizon_ + WorstDownCost();
+  }
   double MaxUtility() const override { return kWinReward; }
 
   // Vector Observation - adds AggroEnv-specific features:

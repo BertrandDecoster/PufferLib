@@ -621,7 +621,9 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - C API 1.6.0 (behaviour only, struct layouts unchanged): only a team down or the
   horizon fails a task (see "Why an episode ended"). Aggro no longer fails when no
   enemy lives, Dodge no longer fails on a down; `Companions_End_TaskFailed` (3) is no
-  longer produced (kept: the values are append-only)
+  longer produced (kept: the values are append-only). A down interrupts the task:
+  `Companions_End_Interrupted` (5, provisional), a one-time down cost per new down, the
+  task paused until nobody is down (see "Why an episode ended")
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots
@@ -731,8 +733,8 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   3, `core/types.h`). `IsTeamDown()` = downs >= max_downs, or no companion is affectable
   (a dead companion does not stand; an env without companions is never team down)
 - **Done**: `BaseEnv::IsDone()` is non-virtual and the same for every env and lens:
-  `success_ || tick_ >= horizon_ || IsTeamDown()`. `EndReason::TeamDown` (4): see "Why
-  an episode ended"
+  `success_ || tick_ >= horizon_ || interrupted_ || IsTeamDown()`.
+  `EndReason::TeamDown` (4), `EndReason::Interrupted` (5): see "Why an episode ended"
 - **max_downs is level data**: snapshots own it. `LoadSnapshot` sets it from the
   snapshot (absent = 3), so a host that wants another value sets it AFTER a load. A
   generated `Reset` loads through `LoadGeneratedLevel`, which keeps the env's current
@@ -825,8 +827,8 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
   or the team down (every env, see Downs). A dead enemy fails nothing (only a team down
   or the horizon fails a task): the episode runs on to the horizon
 - Rewards: +1 win, `kTimePenalty` (-0.01) per other step, a kill's included: a
-  killed-enemy episode returns what timing out does (`horizon * kTimePenalty`,
-  `AggroEnv::MinUtility`). A kill after a latched success pays `kTimePenalty` (the
+  killed-enemy episode returns what timing out does (`horizon * kTimePenalty`;
+  `AggroEnv::MinUtility` adds the downs' worst cost, `WorstDownCost`). A kill after a latched success pays `kTimePenalty` (the
   enemy is off the target, as after any success)
 - `done` is a verdict for RL episodes, never a stop: the env keeps stepping
 
@@ -834,27 +836,56 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 what ended the episode. `None` while `IsDone()` is false, else `Success` (latched by
 `Step` from the lens's `IsSuccess`: a success on the step the team goes down is a
 success), else `TeamDown` (`IsTeamDown()`, any env: the level is lost), else `Horizon`
-(tick >= horizon). Only a team down or the horizon fails a task (a bad situation stays
+(tick >= horizon), else `Interrupted` (a down paused the task: provisional, see
+Interruptions below). Only a team down or the horizon fails a task (a bad situation stays
 salvageable): no lens has a failure of its own (Aggro's dead enemy, a Dodge companion
 down), and `TaskFailed` (3) is no longer produced (since C API 1.6; the value stays,
 the enums are append-only). No success after the episode ended otherwise: `Step`
 latches one only while `BaseEnv::SuccessCounts()` (success latched, or no end reason
-latched yet: the horizon step itself still can), and the lenses pay their win reward
+latched yet: the horizon step itself still can; never while paused), and the lenses pay their win reward
 only then (a goal reached, or a Dodge companion revived, past the horizon wins
 nothing: the level is lost). A lens's own `IsDone` (success or horizon) is for tests and
 tools; `BaseEnv` never calls it. The reason is fixed when done first
 becomes true (latched by `Step`, `SetTaskLens*` and `LoadSnapshot`, cleared by
-`ResetOutcome`): a team down after the horizon, or after loading a snapshot at
+`ResetOutcome`; `Interrupted` excepted, upgraded by a later reason): a team down after the horizon, or after loading a snapshot at
 the horizon, keeps `Horizon` (`IsTeamDown()` / the C API's `team_down` still tell the
 team is down). C API (1.2.1, additive, no struct layout change; 1.3 added `TeamDown` 4):
 `Companions_EndReason` (same values: None 0, Success 1, Horizon 2, TaskFailed 3 (not
-produced since 1.6), TeamDown 4) from `companions_get_end_reason(env)`, fixed on the step or
+produced since 1.6), TeamDown 4, Interrupted 5 (since 1.6)) from `companions_get_end_reason(env)`, fixed on the step or
 lens change where done becomes true, kept while a host plays on; reset and snapshot
 loads take the env's (done / success / reason: a snapshot loaded at the horizon is done
 at once, as `Horizon`, and the next step reports EpisodeEnd); the EpisodeEnd event
 carries it in `effect_id`. A derived `Reset` / `LoadSnapshot` that changes state after
 `BaseEnv::LoadSnapshot` latched calls `RelatchEndReasonAfterLoad` (AggroEnv's `Reset`
-spawns its enemy and companions then)
+spawns its enemy and companions then; it also takes the loaded downs as seen)
+
+**Interruptions** (a down interrupts the task; `EndReason::Interrupted` 5, C API
+`Companions_End_Interrupted`, since 1.6). `Step` reads the team's downs from the state
+(`GetDowns()` vs `downs_seen_`: a down the host caused between steps is caught by the
+next step). The step they grow, the running lens's task is interrupted (`interrupted_`,
+`IsInterrupted()`): done as `Interrupted`, and that step pays every agent the lens's
+reward plus the down cost once per new down (`down_cost_ * new_downs`). From the next
+step the lens is paused while anyone is down (`AnyCompanionDowned()`): rewards 0, no
+success latched; downs meanwhile pay nothing, then or later (`downs_seen_` counts them).
+The pause clears once nobody is down (a revive; the step that revives the last one is
+still paused: the lens rewards and decides again from the next step, done false and
+the reason `None` again), and on any lens change, `Reset` or `LoadSnapshot`
+(`ResetOutcome` clears it and takes the current downs as seen: a snapshot loaded with
+someone down loads not interrupted). Priority Success > TeamDown > Horizon >
+Interrupted: `Interrupted` is the only provisional reason (`LatchEndReason` upgrades
+it, `GetEndReason` computes it live): a team down while paused is `TeamDown`, a pause
+reaching the horizon `Horizon`; the horizon never pauses (a down on the horizon step
+ends as `Horizon`; a Dodge companion revived on the horizon step: `Horizon`, no
+success). A success and a down on one step is a `Success`; a down after a latched
+success pauses nothing. A step starting on a done env latches its reason first, so a
+team the host downed between steps is not turned into a success by the next step (no
+win reward either). A lens opts out with `TaskLens::IsInterruptible()` (default true):
+its downs pay the cost, nothing pauses. Without a lens the rewards are all 0 (no cost,
+no pause). **Down cost**: `kDefaultDownCost` = -0.5, `SetDownCost(c)` (false for a
+non-finite or positive `c`, the cost unchanged; 0 allowed) / `GetDownCost()`; runtime,
+not in snapshots, copied with the env, kept across `Reset` / `LoadSnapshot`. The envs'
+`MinUtility` adds `WorstDownCost()` (every down paid up to the team down: max_downs - 1
+downs, then every companion at once)
 
 ### Known issue: D4 transform
 - `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)

@@ -149,9 +149,10 @@ TEST(TestDodgeEnvDeath) {
 }
 
 // A companion that goes down on the horizon step fails nothing: the horizon
-// ends the episode, as Horizon, without the success (a companion is down) and
-// with no reward (0 while someone is down). Two companions: one down is not
-// the team down (TeamDown would name the end).
+// ends the episode, as Horizon (not Interrupted: the horizon never pauses),
+// without the success (a companion is down); the step pays the down cost
+// alone (0 while someone is down), the paused steps after it 0. Two
+// companions: one down is not the team down (TeamDown would name the end).
 TEST(TestDodgeEnvDownOnTheHorizonStepEndsAsHorizon) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfig lethal;
@@ -178,7 +179,7 @@ TEST(TestDodgeEnvDownOnTheHorizonStepEndsAsHorizon) {
   ASSERT_TRUE(last.done);
   ASSERT_FALSE(env.IsSuccess());
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
-  for (double r : last.rewards) ASSERT_EQ(r, 0.0);
+  for (double r : last.rewards) ASSERT_EQ(r, BaseEnv::kDefaultDownCost);
   StepResult after = env.Step(stay);  // Playing on changes nothing
   ASSERT_TRUE(after.done);
   for (double r : after.rewards) ASSERT_EQ(r, 0.0);
@@ -186,8 +187,9 @@ TEST(TestDodgeEnvDownOnTheHorizonStepEndsAsHorizon) {
 }
 
 // Two companions: a down is no failure (only a team down or the horizon
-// fails a task). The episode runs on to the horizon; the steps with someone
-// down pay 0, the others kSurvivalBonus.
+// fails a task): it interrupts the task (Interrupted; the step pays the down
+// cost, Dodge paying 0 with someone down), and the pause (0) runs on to the
+// horizon, which ends it as Horizon.
 TEST(TestDodgeEnvADownIsNoFailure) {
   DodgeEnv env(7, 2, 100, 4, 42);  // Horizon 4, no hazards
   const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
@@ -198,10 +200,10 @@ TEST(TestDodgeEnvADownIsNoFailure) {
   ASSERT_FALSE(env.IsDone());
   for (int i = 0; i < 3; ++i) {
     StepResult result = env.Step(stay);
-    ASSERT_FALSE(result.done);
-    ASSERT_FALSE(env.IsDone());
-    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
-    for (double r : result.rewards) ASSERT_EQ(r, 0.0);
+    ASSERT_TRUE(result.done);
+    ASSERT_FALSE(env.IsTeamDown());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);
+    for (double r : result.rewards) ASSERT_EQ(r, i == 0 ? BaseEnv::kDefaultDownCost : 0.0);
   }
   StepResult last = env.Step(stay);
   ASSERT_TRUE(last.done);
@@ -211,8 +213,9 @@ TEST(TestDodgeEnvADownIsNoFailure) {
 }
 
 // A down is salvageable: revived before the horizon, the team that is all up
-// at the horizon succeeds (Success, kWinReward paid). The survival bonus
-// comes back with the revive.
+// at the horizon succeeds (Success, kWinReward paid). The down interrupts
+// the task (the down cost); the step after the revive is still paused (0),
+// the survival bonus comes back on the next.
 TEST(TestDodgeEnvRevivedBeforeTheHorizonSucceeds) {
   DodgeEnv env(7, 2, 100, 3, 42);  // Horizon 3, no hazards
   const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
@@ -220,13 +223,15 @@ TEST(TestDodgeEnvRevivedBeforeTheHorizonSucceeds) {
   companion->TakeDamage(companion->GetHealth());
   ASSERT_TRUE(companion->IsDowned());
   StepResult first = env.Step(stay);
-  ASSERT_FALSE(first.done);
-  for (double r : first.rewards) ASSERT_EQ(r, 0.0);
+  ASSERT_TRUE(first.done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);
+  for (double r : first.rewards) ASSERT_EQ(r, BaseEnv::kDefaultDownCost);
   ASSERT_TRUE(companion->Revive(1));
   ASSERT_FALSE(companion->IsDowned());
   StepResult second = env.Step(stay);
   ASSERT_FALSE(second.done);
-  for (double r : second.rewards) ASSERT_EQ(r, DodgeEnv::kSurvivalBonus);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  for (double r : second.rewards) ASSERT_EQ(r, 0.0);
   StepResult last = env.Step(stay);
   ASSERT_TRUE(last.done);
   ASSERT_TRUE(env.IsSuccess());
@@ -238,7 +243,8 @@ TEST(TestDodgeEnvRevivedBeforeTheHorizonSucceeds) {
 
 // The horizon ended the episode (a companion down there): a revive after it
 // succeeds no more. Nothing latches, no kWinReward; the survival bonus is
-// paid again (nobody is down).
+// paid again (nobody is down) once the pause is over (the step after the
+// revive is still paused: 0).
 TEST(TestDodgeEnvNoSuccessAfterTheHorizon) {
   DodgeEnv env(7, 2, 100, 2, 42);  // Horizon 2, no hazards
   const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
@@ -253,15 +259,15 @@ TEST(TestDodgeEnvNoSuccessAfterTheHorizon) {
     ASSERT_TRUE(after.done);
     ASSERT_FALSE(env.IsSuccess());
     ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
-    for (double r : after.rewards) ASSERT_EQ(r, DodgeEnv::kSurvivalBonus);
+    for (double r : after.rewards) ASSERT_EQ(r, i == 0 ? 0.0 : DodgeEnv::kSurvivalBonus);
   }
 }
 
-// The worst return is 0: someone down from the first step to the horizon
-// (no reward is negative).
+// The worst return: every down's cost (no lens reward is negative), up to
+// the team down: max_downs - 1 downs, then both companions at once.
 TEST(TestDodgeEnvMinUtility) {
   DodgeEnv env(7, 2, 100, 3, 42);
-  ASSERT_EQ(env.MinUtility(), 0.0);
+  ASSERT_EQ(env.MinUtility(), BaseEnv::kDefaultDownCost * (BaseEnv::kDefaultMaxDowns - 1 + 2));
 }
 
 TEST(TestDodgeEnvCopy) {

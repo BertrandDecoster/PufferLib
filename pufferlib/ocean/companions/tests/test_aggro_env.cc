@@ -866,13 +866,16 @@ static double AggroReturn(int horizon, int kill_step) {
 }
 
 // Killing the enemy changes no return: whatever the step, the episode runs to
-// the horizon and returns what timing out does, the lowest return there is.
+// the horizon and returns what timing out does, the lowest return there is
+// but for the downs' cost (MinUtility: every down paid, up to the team down;
+// one companion: max_downs downs).
 TEST(TestKillingTheEnemyReturnsWhatTimingOutDoes) {
   for (int horizon : {100, 400}) {
     const double time_out = AggroReturn(horizon, 0);
     ASSERT_TRUE(std::abs(time_out - horizon * AggroLens::kTimePenalty) < 1e-9);
     AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, horizon);
-    ASSERT_TRUE(std::abs(time_out - env.MinUtility()) < 1e-9);
+    const double downs_cost = env.GetDownCost() * env.GetMaxDowns();
+    ASSERT_TRUE(std::abs(time_out + downs_cost - env.MinUtility()) < 1e-9);
     for (int kill_step : {1, 2, horizon / 2, horizon - 1, horizon}) {
       const double killed = AggroReturn(horizon, kill_step);
       ASSERT_TRUE(std::abs(killed - time_out) < 1e-9);
@@ -1014,8 +1017,9 @@ TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
 }
 
 // Two companions: one down is not the team down, and no failure of the
-// Dodge task: the episode ends at the horizon, as Horizon (no success: a
-// companion is still down).
+// Dodge task: the down interrupts it (the next step reads Interrupted), the
+// pause runs on, and the episode ends at the horizon, as Horizon (no success:
+// a companion is still down).
 TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
   AggroEnv env(12, 2, EnemyType::Goblin, 7777, 0, 3);
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
@@ -1029,9 +1033,9 @@ TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
                                  EncodeAction(MovementAction::Stay));  // The enemy's too
   for (int i = 0; i < 2; ++i) {
     StepResult result = env.Step(stay);
-    ASSERT_FALSE(result.done);
-    ASSERT_FALSE(env.IsDone());
-    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+    ASSERT_TRUE(result.done);
+    ASSERT_FALSE(env.IsTeamDown());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);
   }
   ASSERT_TRUE(env.Step(stay).done);
   ASSERT_FALSE(env.IsSuccess());

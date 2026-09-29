@@ -69,7 +69,9 @@
 // 1.6.0: only a team down or the horizon fails a task (behaviour; struct
 // layouts unchanged). Done is uniform: success, team down, horizon. Aggro no
 // longer fails when no enemy lives, Dodge no longer fails on a down;
-// Companions_End_TaskFailed is no longer produced.
+// Companions_End_TaskFailed is no longer produced. A down interrupts the task
+// (Companions_End_Interrupted, provisional; a one-time down cost of -0.5 per
+// new down, then the task paused, rewards 0, until nobody is down).
 #define COMPANIONS_VERSION "1.6.0"
 
 // =============================================================================
@@ -814,7 +816,8 @@ static_assert(static_cast<int>(companions::EndReason::None) == Companions_End_No
                   static_cast<int>(companions::EndReason::Success) == Companions_End_Success &&
                   static_cast<int>(companions::EndReason::Horizon) == Companions_End_Horizon &&
                   static_cast<int>(companions::EndReason::TaskFailed) == Companions_End_TaskFailed &&
-                  static_cast<int>(companions::EndReason::TeamDown) == Companions_End_TeamDown,
+                  static_cast<int>(companions::EndReason::TeamDown) == Companions_End_TeamDown &&
+                  static_cast<int>(companions::EndReason::Interrupted) == Companions_End_Interrupted,
               "EndReason and Companions_EndReason must match");
 static Companions_EndReason CurrentEndReason(const Companions_Env& env) {
   if (!env.done) return Companions_End_None;

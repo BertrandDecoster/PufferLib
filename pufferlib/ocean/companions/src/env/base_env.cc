@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -49,6 +50,9 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       annotations_(other.annotations_),
       success_(other.success_),
       end_reason_(other.end_reason_),
+      interrupted_(other.interrupted_),
+      downs_seen_(other.downs_seen_),
+      down_cost_(other.down_cost_),
       tags_(other.tags_),
       skills_(other.skills_),
       last_skill_uses_(other.last_skill_uses_),
@@ -89,6 +93,9 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     annotations_ = other.annotations_;
     success_ = other.success_;
     end_reason_ = other.end_reason_;
+    interrupted_ = other.interrupted_;
+    downs_seen_ = other.downs_seen_;
+    down_cost_ = other.down_cost_;
     tags_ = other.tags_;
     skills_ = other.skills_;
     last_skill_uses_ = other.last_skill_uses_;
@@ -127,6 +134,11 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     result.done = IsDone();
     return result;
   }
+
+  // An episode already done fixes its reason before the step changes
+  // anything: a team the host downed between steps is lost, so this step
+  // latches no success and pays no win reward (SuccessCounts).
+  if (IsDone()) LatchEndReason();
 
   // Timers set from here on also cover the rest of this step (see
   // Agent::BeginStep); they all tick at its end.
@@ -193,6 +205,14 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Post-step hook
   PostStep();
 
+  // The team's new downs (this step's, and any the host caused between
+  // steps), read from the state
+  const int downs = GetDowns();
+  const int new_downs = std::max(0, downs - downs_seen_);
+  // Paused for this whole step (IsInterrupted): the step that clears the
+  // pause is still paused
+  const bool paused = interrupted_;
+
   // Calculate rewards via the active TaskLens (the single source of truth).
   // Envs without a lens get zeros; BaseEnv::Step never falls back to env-side
   // reward logic, since the TaskLens invariant requires rewards live with the task.
@@ -203,9 +223,11 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   } else {
     std::fill(reward_buffer_.begin(), reward_buffer_.end(), 0.0);
   }
-  if (task_lens_) {
+  if (task_lens_ && !paused) {
+    // The lens's reward, plus the down cost once per new down
+    const double down_cost = down_cost_ * new_downs;
     for (int i = 0; i < num_agents; ++i) {
-      reward_buffer_[i] = task_lens_->ComputeReward(*this, i);
+      reward_buffer_[i] = task_lens_->ComputeReward(*this, i) + down_cost;
     }
     // Latch success so IsSuccess/IsDone survive even if agents subsequently
     // leave a winning configuration (matches pre-TaskLens semantics where
@@ -214,7 +236,13 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     // Never once the episode ended (SuccessCounts): past the horizon, the
     // level is lost.
     if (!success_ && SuccessCounts() && task_lens_->IsSuccess(*this)) success_ = true;
+    // A new down interrupts the task, unless it succeeded (on this step too)
+    if (!success_ && new_downs > 0 && task_lens_->IsInterruptible()) interrupted_ = true;
   }
+  // Seen once the lens had its say (a lens that throws leaves them new)
+  downs_seen_ = downs;
+  // Nobody down: the lens rewards and decides again from the next step
+  if (interrupted_ && !AnyCompanionDowned()) interrupted_ = false;
   result.rewards = reward_buffer_;
 
   // Check termination
@@ -250,32 +278,54 @@ bool BaseEnv::IsTeamDown() const {
   return downs >= max_downs_ || !anyone_standing;
 }
 
+bool BaseEnv::AnyCompanionDowned() const {
+  for (const Companion* c : object_manager_->GetAllCompanions()) {
+    if (c->IsAlive() && c->IsDowned()) return true;
+  }
+  return false;
+}
+
+bool BaseEnv::SetDownCost(double cost) {
+  if (!std::isfinite(cost) || cost > 0.0) return false;
+  down_cost_ = cost;
+  return true;
+}
+
+double BaseEnv::WorstDownCost() const {
+  const int companions = static_cast<int>(object_manager_->GetAllCompanions().size());
+  if (companions == 0) return 0.0;
+  return down_cost_ * (max_downs_ - 1 + companions);
+}
+
 EndReason BaseEnv::GetEndReason() const {
   if (!IsDone()) return EndReason::None;
-  if (end_reason_ != EndReason::None) return end_reason_;
+  // A fixed reason; Interrupted is provisional (a later reason upgrades it)
+  if (end_reason_ != EndReason::None && end_reason_ != EndReason::Interrupted) return end_reason_;
   return ComputeEndReason();
 }
 
 EndReason BaseEnv::ComputeEndReason() const {
   // IsDone's terms (success_, not the virtual IsSuccess, as IsDone reads it),
-  // the success first, then the team down: on a done env, what is left is the
-  // horizon
+  // by priority: the success, the team down, the horizon; on a done env, what
+  // is left is the interruption
   if (success_) return EndReason::Success;
   if (IsTeamDown()) return EndReason::TeamDown;
-  assert(tick_ >= horizon_ && "ComputeEndReason on an env that is not done");
-  return EndReason::Horizon;
+  if (tick_ >= horizon_) return EndReason::Horizon;
+  assert(interrupted_ && "ComputeEndReason on an env that is not done");
+  return EndReason::Interrupted;
 }
 
 void BaseEnv::LatchEndReason() {
   if (!IsDone()) {
     end_reason_ = EndReason::None;
-  } else if (end_reason_ == EndReason::None) {
+  } else if (end_reason_ == EndReason::None || end_reason_ == EndReason::Interrupted) {
     end_reason_ = ComputeEndReason();
   }
 }
 
 void BaseEnv::RelatchEndReasonAfterLoad() {
   end_reason_ = EndReason::None;
+  downs_seen_ = GetDowns();  // The state as it now is: its downs are not new
   LatchEndReason();
 }
 

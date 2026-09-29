@@ -374,8 +374,9 @@ TEST(TestResetClearsTheDowns) {
 }
 
 // Objectives need a standing companion: a downed body on the only goal does
-// not cover it (no success: the lens and the env count 0), until a standing
-// companion stands there.
+// not cover it (no success: the lens and the env count 0; the down only
+// interrupts the task), until a standing companion stands there (after a lens
+// change, which resumes the task with the body still down).
 TEST(TestTheDownedControlNoObjective) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -387,6 +388,10 @@ TEST(TestTheDownedControlNoObjective) {
   SynchroLens lens;
   ASSERT_FALSE(lens.IsSuccess(env));
   ASSERT_EQ(env.NumAgentsOnSynchroCells(), 0);
+  env.Step({kStay, kStay});
+  ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<SynchroLens>()));
   env.Step({kStay, kStay});
   ASSERT_FALSE(env.IsSuccess());
   ASSERT_FALSE(env.IsDone());
@@ -439,7 +444,8 @@ TEST(TestADeadCompanionDoesNotStand) {
 }
 
 // TeamDown ends a multi-companion AggroEnv (whatever its lens says): the
-// second companion goes down during a step, which reports done.
+// first down only interrupts the task; the second companion goes down during
+// a step, which reports done as TeamDown.
 TEST(TestTeamDownEndsAMultiCompanionAggroEnv) {
   ScopedEffectRegistry scoped_registry;
   AggroEnv env(10, 2, EnemyType::Goblin, 42, 0, 100);
@@ -449,8 +455,9 @@ TEST(TestTeamDownEndsAMultiCompanionAggroEnv) {
   ASSERT_EQ(companions.size(), static_cast<size_t>(2));
   companions[0]->TakeDamage(companions[0]->GetHealth());
   StepResult first = env.Step(stay);
-  ASSERT_FALSE(first.done);  // One down, one standing
-  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  ASSERT_TRUE(first.done);  // One down, one standing: interrupted
+  ASSERT_FALSE(env.IsTeamDown());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);
   SpawnKillNextStep(env, companions[1]->GetPosition());
   ASSERT_FALSE(companions[1]->IsDowned());
   StepResult last = env.Step(stay);
@@ -479,7 +486,8 @@ TEST(TestTheStepReportsEachDownOnce) {
   SpawnKillNextStep(env, {3, 3});
   env.Step(stay);
   ASSERT_TRUE(during->IsDowned());
-  ASSERT_FALSE(env.IsDone());  // Companion 2 stands
+  ASSERT_FALSE(env.IsTeamDown());  // Companion 2 stands
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Interrupted);
   ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastDowns()[0], during->GetId());
   env.Step(stay);

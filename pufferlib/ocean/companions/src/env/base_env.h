@@ -61,6 +61,7 @@ enum class EndReason : int {
   Horizon = 2,     // The horizon was reached without an outcome
   TaskFailed = 3,  // No longer produced since C API 1.6 (only a team down or the horizon fails a task); kept, the values are append-only
   TeamDown = 4,    // The team is down: max_downs reached, or every companion down at once (the level is lost)
+  Interrupted = 5, // A companion went down: the task is interrupted (paused until nobody is down). Since C API 1.6
 };
 
 // =============================================================================
@@ -89,11 +90,37 @@ class BaseEnv {
   // what came after the throw is missing.
   virtual StepResult Step(const std::vector<Action>& actions);
   // Done, the same for every env and lens: the latched success, the team is
-  // down, or the horizon. Nothing else fails a task (a dead Aggro enemy, a
-  // Dodge companion down: a bad situation stays salvageable). A verdict for
-  // RL episodes, not a stop: the env steps on if the host does. The cheap
-  // terms first.
-  bool IsDone() const { return success_ || tick_ >= horizon_ || IsTeamDown(); }
+  // down, the horizon, or the task interrupted by a down (IsInterrupted).
+  // Nothing else fails a task (a dead Aggro enemy: a bad situation stays
+  // salvageable). A verdict for RL episodes, not a stop: the env steps on if
+  // the host does. The cheap terms first.
+  bool IsDone() const { return success_ || tick_ >= horizon_ || interrupted_ || IsTeamDown(); }
+
+  // Interruptions. The step the team's downs grow (read from the state: a
+  // down the host caused between steps is caught by the next step), the
+  // running lens's task is interrupted: done as EndReason::Interrupted, and
+  // that step pays every agent the lens's reward plus the down cost once per
+  // new down. From the next step the lens is paused while anyone is down: no
+  // reward (0), no verdict (no success latched); downs meanwhile pay nothing,
+  // then or later. The pause clears once nobody is down (the step that
+  // revives the last one is still paused: the lens rewards and decides again
+  // from the next step), and on any lens change, Reset or LoadSnapshot (a
+  // state loaded with someone down loads not interrupted: its downs are not
+  // new). Not on a success (a success and a down on one step is a Success; a
+  // down after it pauses nothing) nor for a lens that opts out
+  // (TaskLens::IsInterruptible: its downs pay the cost, nothing pauses).
+  // Without a lens the rewards are all 0: no cost.
+  bool IsInterrupted() const { return interrupted_; }
+  // Whether a companion is down now (alive, downed)
+  bool AnyCompanionDowned() const;
+  // The down cost: added to every agent's reward once per new down (see
+  // above). Runtime, not level data: not in snapshots; copied with the env,
+  // kept across Reset and LoadSnapshot. SetDownCost refuses a non-finite or
+  // positive cost (false, the cost unchanged); 0 makes downs free (they
+  // still interrupt).
+  static constexpr double kDefaultDownCost = -0.5;
+  bool SetDownCost(double cost);
+  double GetDownCost() const { return down_cost_; }
 
   // Downs. Every companion going down counts (revived or not); the level is
   // lost (EndReason::TeamDown) once the count reaches max_downs, or when every
@@ -117,22 +144,31 @@ class BaseEnv {
   // Whether a lens's success still counts: latched already, or the episode
   // not ended yet (no end reason latched; the step that reaches the horizon
   // included, its reason is latched after). Once the episode ended otherwise
-  // (the horizon, the team down: the level is lost), nothing succeeds any
-  // more: Step latches no success and the lenses pay no win reward.
+  // (the horizon, the team down: the level is lost; a team the host downed
+  // between steps included, latched as the next step starts), nothing
+  // succeeds any more: Step latches no success and the lenses pay no win
+  // reward. While interrupted the lens is paused anyway.
   bool SuccessCounts() const { return success_ || end_reason_ == EndReason::None; }
-  // The latched outcome and end reason. SetTaskLens, LoadSnapshot and Reset
-  // clear them (a new episode).
+  // The latched outcome, end reason and interruption. SetTaskLens,
+  // LoadSnapshot and Reset clear them (a new episode): the downs so far are
+  // seen, not new to the next step.
   void ResetOutcome() {
     ResetSuccess();
     end_reason_ = EndReason::None;
+    interrupted_ = false;
+    downs_seen_ = GetDowns();
   }
   // Why the episode is done, i.e. what ended it: None while IsDone() is
   // false, else Success (the latched success), else TeamDown (IsTeamDown),
-  // else Horizon (tick >= horizon). Never TaskFailed (C API 1.6).
+  // else Horizon (tick >= horizon), else Interrupted (IsInterrupted). Never
+  // TaskFailed (C API 1.6).
   // The reason is fixed when done first becomes true (latched by Step,
   // SetTaskLens* and LoadSnapshot): a team down after the horizon keeps
   // Horizon. Between those calls (e.g. a down between steps) it is evaluated
-  // live.
+  // live. Interrupted is the only provisional reason: an interrupted episode
+  // becomes TeamDown or Horizon when one of those comes (upgraded by the
+  // latch, live between steps), and not done again (None) once the pause
+  // clears (a revive).
   virtual EndReason GetEndReason() const;
 
   // Task lens management
@@ -179,6 +215,7 @@ class BaseEnv {
 
   // Utility bounds (for MCTS and planning algorithms)
   // Pure virtual - each environment defines its own reward structure
+  // (MinUtility includes WorstDownCost)
   virtual double MinUtility() const = 0;
   virtual double MaxUtility() const = 0;
   int GetHorizon() const { return horizon_; }
@@ -693,14 +730,20 @@ class BaseEnv {
   // weaknesses or immunities (per-agent data).
   void LoadGeneratedLevel(Snapshot snapshot);
 
+  // The lowest total the down cost can add to an episode's return: every
+  // down paid, up to the team down (max_downs - 1 downs, then every
+  // companion at once on the last step). For MinUtility.
+  double WorstDownCost() const;
+
   // GetEndReason's rules, for a done env
   EndReason ComputeEndReason() const;
-  // Fixes the end reason once done becomes true; None while not done
+  // Fixes the end reason once done becomes true (Interrupted stays
+  // provisional: upgraded to a later reason); None while not done
   void LatchEndReason();
-  // Latches the end reason of a state just loaded, afresh: for a derived
-  // Reset / LoadSnapshot that changes state after BaseEnv::LoadSnapshot
-  // latched (AggroEnv spawns its enemy and companions then). Not after a
-  // Step: the reason fixed then must stay.
+  // Latches the end reason of a state just loaded, afresh (its downs seen):
+  // for a derived Reset / LoadSnapshot that changes state after
+  // BaseEnv::LoadSnapshot latched (AggroEnv spawns its enemy and companions
+  // then). Not after a Step: the reason fixed then must stay.
   void RelatchEndReasonAfterLoad();
 
   // A copy's FSM agents still point at the copied env's RNG
@@ -931,6 +974,14 @@ class BaseEnv {
   // Latched when done first becomes true (LatchEndReason). Reset via
   // ResetOutcome.
   EndReason end_reason_ = EndReason::None;
+  // The running lens is paused by a down (IsInterrupted). Reset via
+  // ResetOutcome.
+  bool interrupted_ = false;
+  // The team's downs (GetDowns) the last Step or ResetOutcome saw: a Step
+  // finding more has new downs.
+  int downs_seen_ = 0;
+  // Runtime, not level data (SetDownCost)
+  double down_cost_ = kDefaultDownCost;
   TagTable tags_;
   SkillBook skills_;
   std::vector<SkillUse> last_skill_uses_;

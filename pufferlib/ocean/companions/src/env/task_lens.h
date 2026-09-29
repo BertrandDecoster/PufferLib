@@ -70,10 +70,20 @@ class TaskLens {
   //   latches it: the success the env's done reads)
   // IsDone: the lens's own view, success or the horizon (tests, tools).
   //   BaseEnv::IsDone never calls it: done is the env's, the same for every
-  //   lens (the latched success, the team down, the horizon). No lens fails
-  //   its task: only a team down or the horizon does.
+  //   lens (the latched success, the team down, the horizon, a down's
+  //   interruption). No lens fails its task: only a team down or the horizon
+  //   does.
   virtual bool IsDone(const BaseEnv& env) const = 0;
   virtual bool IsSuccess(const BaseEnv& env) const = 0;
+
+  // ===========================================================================
+  // Interruptions
+  // ===========================================================================
+  // A companion going down interrupts an interruptible lens's task (BaseEnv::
+  // Step: done as EndReason::Interrupted, the lens paused until nobody is
+  // down). A lens whose task is about downs opts out: its downs still pay the
+  // down cost, but nothing pauses.
+  virtual bool IsInterruptible() const { return true; }
 
   // ===========================================================================
   // Reward calculation (called per agent per step)

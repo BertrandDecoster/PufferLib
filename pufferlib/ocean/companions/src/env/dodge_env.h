@@ -68,9 +68,9 @@ class DodgeEnv : public BaseEnv {
   int GetNumCompanions() const { return num_companions_; }
   int GetHazardInterval() const { return hazard_interval_; }
 
-  // Utility bounds. The worst return: someone down from the first step to the
-  // horizon (DodgeLens: no reward is negative).
-  double MinUtility() const override { return 0.0; }
+  // Utility bounds. The worst return: every down's cost (WorstDownCost;
+  // DodgeLens: no reward is negative).
+  double MinUtility() const override { return WorstDownCost(); }
   double MaxUtility() const override { return kWinReward; }
 
   // Reward constants (DodgeLens's)

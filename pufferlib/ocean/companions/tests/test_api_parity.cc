@@ -849,6 +849,8 @@ TEST(ParityTest_SkillsTagsZones) {
     ASSERT_EQ(r.state.downs, cpp_env.GetDowns());
     ASSERT_EQ(r.state.max_downs, cpp_env.GetMaxDowns());
     ASSERT_EQ(r.state.team_down, cpp_env.IsTeamDown());
+    ASSERT_EQ(static_cast<int>(companions_get_end_reason(api_env)),
+              static_cast<int>(cpp_env.GetEndReason()));
 
     cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
     ASSERT_EQ(r.state.agent_count, static_cast<int>(cpp_agents.size()));
@@ -927,7 +929,8 @@ TEST(ParityTest_SkillsTagsZones) {
     tag_events += static_cast<int>(landed.size());
     down_events += static_cast<int>(downed.size());
     revive_events += static_cast<int>(revived.size());
-    if (cpp_result.done) break;
+    // A down only interrupts the task (the revives resume it): played on
+    if (cpp_result.done && cpp_env.GetEndReason() != EndReason::Interrupted) break;
   }
   ASSERT_TRUE(skill_events > 0);
   ASSERT_TRUE(tag_events > 0);

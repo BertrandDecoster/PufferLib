@@ -106,6 +106,14 @@
 // companion down (the steps with someone down pay 0, no penalty; everyone up
 // at the horizon succeeds, a revived companion included). Nothing produces
 // Companions_End_TaskFailed any more (the value stays, reserved).
+// A down interrupts the task: the step the team's downs grow (a down the host
+// caused between steps included, caught by the next step), the episode is
+// done as Companions_End_Interrupted (new), and that step adds the down cost
+// (-0.5 per new down) to every agent's reward. While anyone is down the task
+// is paused (rewards 0, no success); once nobody is down (a revive) it
+// resumes from the next step, done false again. Interrupted is provisional:
+// the team down or the horizon replace it (priority: Success > TeamDown >
+// Horizon > Interrupted); a success and a down on one step is a Success.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -521,6 +529,7 @@ typedef enum {
   Companions_End_Horizon = 2,     // The horizon was reached
   Companions_End_TaskFailed = 3,  // No longer produced since 1.6 (only a team down or the horizon fails a task); reserved
   Companions_End_TeamDown = 4,    // The team is down: max_downs reached or every companion down (the level is lost). Since 1.3
+  Companions_End_Interrupted = 5, // A companion went down: the task is paused until nobody is down (provisional). Since 1.6
 } Companions_EndReason;
 
 // Transition event (delta information for animations)
@@ -1338,8 +1347,11 @@ COMPANIONS_API bool companions_is_success(const Companions_Env* env);
 // loaded at the horizon (done at once; the next step reports EpisodeEnd).
 // Since 1.2.1. Since 1.3, any env is also done as Companions_End_TeamDown
 // when the team is down (max_downs downs, or every companion down at once):
-// the level is lost. Since 1.6, done is only the success, the team down or
-// the horizon (Companions_End_TaskFailed is never returned).
+// the level is lost. Since 1.6, done is only the success, the team down, the
+// horizon or a down interrupting the task (Companions_End_TaskFailed is never
+// returned). Companions_End_Interrupted is provisional: it becomes TeamDown
+// or Horizon when one of those comes, and None again (done false) once the
+// pause clears (nobody down, from the step after the revive).
 COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env);
 
 // =============================================================================
