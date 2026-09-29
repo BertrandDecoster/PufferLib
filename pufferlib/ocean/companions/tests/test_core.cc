@@ -581,15 +581,11 @@ class CollisionTestEnv : public BaseEnv {
     GatherIntentions(actions);
   }
 
-  // The one motion phase: walks resolve by the walk rules they always had
-  void TestResolveCollisions() {
-    GatherMotionIntents();
-    ResolveMotion();
-  }
+  // The motion phase: walks resolve by the walk rules they always had (its
+  // walk layer), moving as it resolves
+  void TestResolveCollisions() { MotionPhase(); }
 
-  void TestExecuteValidatedMovements() {
-    ExecuteMotion();
-  }
+  void TestExecuteValidatedMovements() {}  // Moved already, layer by layer
 
   void AddWall(Position pos) {
     grid_->SetCell(pos, CellKind::Wall);

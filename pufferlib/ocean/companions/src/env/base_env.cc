@@ -185,10 +185,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // Capture original intentions before the motion phase modifies them
   CaptureOriginalIntentions();
 
-  // The one motion phase: every walk, dash, teleport, push and pull at once
-  GatherMotionIntents();
-  ResolveMotion();
-  ExecuteMotion();
+  // The motion phase, in layers: teleports, dashes, walks, then the forced
+  // moves (pushes, pulls) on whoever stands on their cells
+  MotionPhase();
 
   // Snapshot the executed actions (post-motion, pre-clear) so the C API can
   // read them after Step returns (GetIntention() alone would be {Stay, None}
@@ -806,10 +805,15 @@ void BaseEnv::CaptureOriginalIntentions() {
 }
 
 // =============================================================================
-// The one motion phase (see ResolveMotion in the header)
+// The motion phase, in layers (see MotionPhase in the header)
 // =============================================================================
 
-BaseEnv::MotionIntent& BaseEnv::AddMotion(Actor& actor, Agent* agent, int rank) {
+namespace {
+constexpr size_t kNoCell = static_cast<size_t>(-1);  // No path cell
+}  // namespace
+
+BaseEnv::MotionIntent& BaseEnv::AddMotion(Actor& actor, Agent* agent, int64_t rank,
+                                          MotionKind kind) {
   std::vector<MotionIntent>& motions = turn_.motions;
   if (turn_.motion_count == motions.size()) motions.emplace_back();
   MotionIntent& m = motions[turn_.motion_count++];
@@ -817,17 +821,16 @@ BaseEnv::MotionIntent& BaseEnv::AddMotion(Actor& actor, Agent* agent, int rank) 
   m.agent = agent;
   m.rank = rank;
   m.from = actor.GetPosition();
-  m.kind = MotionKind::None;
-  m.tier = 0;
+  m.kind = kind;
   m.cells.clear();  // Keeps the capacity
   m.stops.clear();
   m.path = false;
   m.choice = 0;
-  m.plan = -1;
-  m.forced = false;
   m.dr = m.dc = 0;
+  m.end = m.from;
+  m.block = kNoCell;
+  m.secure = false;
   m.next = 0;
-  m.clash_lost = false;
   m.moved = false;
   return m;
 }
@@ -839,251 +842,346 @@ BaseEnv::MotionIntent* BaseEnv::FindMotion(ObjectId id) {
   return nullptr;
 }
 
-void BaseEnv::GatherMotionIntents() {
+void BaseEnv::MotionPhase() {
+  turn_.moved.clear();
+  for (MotionKind layer : {MotionKind::Teleport, MotionKind::Dash, MotionKind::Walk,
+                           MotionKind::Forced}) {
+    GatherLayer(layer);
+    if (layer == MotionKind::Walk) {
+      SolveWalkLayer();
+    } else {
+      SolveLayer();
+    }
+    ExecuteLayer(layer);
+  }
+}
+
+void BaseEnv::GatherLayer(MotionKind layer) {
   turn_.motion_count = 0;
-  // Every living agent (a corpse neither moves nor blocks), by agent index
-  const auto agents = object_manager_->GetAllAgents();
-  int things = 0;  // A thing's rank: after every agent
-  for (Agent* a : agents) {
-    things = std::max(things, a->GetAgentIndex() + 1);
-    if (a->IsAlive()) AddMotion(*a, a, a->GetAgentIndex());
-  }
-  // The plans' motions: the caster's own dash / teleport, and the forced
-  // moves, summed per actor (a thing a skill moves gets its intent here)
-  for (size_t p = 0; p < turn_.plan_count; ++p) {
-    const SkillPlan& plan = turn_.plans[p];
-    if (!plan.caster_candidates.empty()) {
-      MotionIntent* m = FindMotion(plan.caster);
-      if (m && m->agent && m->agent->IsAffectable()) m->plan = static_cast<int>(p);
-    }
-    for (const SkillPlan::Forced& f : plan.forced) {
-      MotionIntent* m = FindMotion(f.actor);
-      if (!m) {
-        Actor* thing = object_manager_->GetActor(f.actor);
-        // Every living agent has its intent already
-        if (!thing || !thing->IsAlive() || dynamic_cast<Agent*>(thing)) continue;
-        m = &AddMotion(*thing, nullptr, things + thing->GetId());
-      }
-      if (m->agent && !m->agent->IsAffectable()) continue;  // A body down is never moved
-      m->forced = true;
-      m->dr += f.dr;
-      m->dc += f.dc;
-    }
-  }
-  // The things came in plan order: by rank (the agents already are, first)
-  std::sort(turn_.motions.begin(),
-            turn_.motions.begin() + static_cast<std::ptrdiff_t>(turn_.motion_count),
-            [](const MotionIntent& a, const MotionIntent& b) { return a.rank < b.rank; });
-  for (size_t i = 0; i < turn_.motion_count; ++i) ChooseMotion(turn_.motions[i]);
-}
-
-bool BaseEnv::TryMotion(MotionIntent& m, MotionKind kind) {
-  m.cells.clear();
-  m.stops.clear();
-  m.path = false;
-  const SkillPlan* plan = m.plan >= 0 ? &turn_.plans[static_cast<size_t>(m.plan)] : nullptr;
-  switch (kind) {
+  switch (layer) {
     case MotionKind::Teleport:
-      if (!plan || plan->skill.motion != SkillMotion::Teleport) return false;
-      m.cells = plan->caster_candidates;
-      for (size_t i = 0; i < m.cells.size(); ++i) m.stops.push_back(static_cast<int>(i));
-      break;
-    case MotionKind::Dash: {
-      if (!plan || plan->skill.motion != SkillMotion::Dash) return false;
-      assert(plan->origin == m.from && "a plan is made from where the turn begins");
-      // Its line, every step up to its planned landing (holes included); it
-      // may end on each walkable one, the furthest first
-      const Position to = plan->landing;
-      const int dr = (to.row > m.from.row) - (to.row < m.from.row);
-      const int dc = (to.col > m.from.col) - (to.col < m.from.col);
-      const int steps = std::abs(to.row - m.from.row) + std::abs(to.col - m.from.col);
-      for (int i = 1; i <= steps; ++i) m.cells.push_back({m.from.row + dr * i, m.from.col + dc * i});
-      for (int i = steps - 1; i >= 0; --i) {
-        if (grid_->IsWalkable(m.cells[static_cast<size_t>(i)])) m.stops.push_back(i);
+    case MotionKind::Dash:
+      // The casters' own motions, in caster order (the plans'), as planned
+      // from where the turn began
+      for (size_t p = 0; p < turn_.plan_count; ++p) {
+        const SkillPlan& plan = turn_.plans[p];
+        const bool teleport = plan.skill.motion == SkillMotion::Teleport;
+        if (plan.caster_candidates.empty() || teleport != (layer == MotionKind::Teleport) ||
+            (!teleport && plan.skill.motion != SkillMotion::Dash)) {
+          continue;
+        }
+        auto* caster = dynamic_cast<Agent*>(object_manager_->GetActor(plan.caster));
+        if (!caster || !caster->IsAffectable()) continue;
+        assert(caster->GetPosition() == plan.origin && "a caster only moves by its own skill");
+        MotionIntent& m = AddMotion(*caster, caster, caster->GetAgentIndex(), layer);
+        if (teleport) {
+          m.cells = plan.caster_candidates;
+          for (size_t i = 0; i < m.cells.size(); ++i) m.stops.push_back(static_cast<int>(i));
+        } else {
+          // Its line, every step up to its planned landing (holes included);
+          // it may end on each walkable one, the furthest first
+          const Position to = plan.landing;
+          const int dr = (to.row > m.from.row) - (to.row < m.from.row);
+          const int dc = (to.col > m.from.col) - (to.col < m.from.col);
+          const int steps = std::abs(to.row - m.from.row) + std::abs(to.col - m.from.col);
+          for (int i = 1; i <= steps; ++i) {
+            m.cells.push_back({m.from.row + dr * i, m.from.col + dc * i});
+          }
+          for (int i = steps - 1; i >= 0; --i) {
+            if (grid_->IsWalkable(m.cells[static_cast<size_t>(i)])) m.stops.push_back(i);
+          }
+          m.path = true;
+        }
       }
-      m.path = true;
+      break;
+    case MotionKind::Walk:
+      // Every walker, companions and enemies alike, by agent index
+      for (Agent* a : object_manager_->GetAllAgents()) {
+        const MovementAction move = a->GetIntention().movement;
+        if (!a->IsAlive() || move == MovementAction::Stay) continue;
+        const Position to = ApplyMovement(a->GetPosition(), move);
+        if (!a->IsAffectable() || !grid_->IsInBounds(to) || !grid_->IsWalkable(to)) {
+          a->SetIntention({MovementAction::Stay});  // No motion at all
+          continue;
+        }
+        MotionIntent& m = AddMotion(*a, a, a->GetAgentIndex(), layer);
+        m.cells.push_back(to);
+        m.stops.push_back(0);
+      }
+      break;
+    case MotionKind::Forced: {
+      // Every use's pushes / pulls, on whoever stands on its cells now (after
+      // the layers before), summed per actor
+      int agent_ranks = -1;  // A thing ranks after every agent, by ObjectId (-1: not read yet)
+      for (size_t p = 0; p < turn_.plan_count; ++p) {
+        SkillPlan& plan = turn_.plans[p];
+        plan.moved.clear();
+        const auto* caster = dynamic_cast<const Agent*>(object_manager_->GetActor(plan.caster));
+        if (!caster) {
+          plan.forced.clear();
+          continue;
+        }
+        FindForcedMoves(plan.skill, plan.area, *caster, caster->GetPosition(), plan.forced);
+        for (const SkillPlan::Forced& f : plan.forced) {
+          MotionIntent* m = FindMotion(f.actor);
+          if (!m) {
+            Actor* thing = object_manager_->GetActor(f.actor);
+            auto* agent = dynamic_cast<Agent*>(thing);
+            if (!agent && agent_ranks < 0) {
+              agent_ranks = 0;
+              for (const Agent* a : object_manager_->GetAllAgents()) {
+                agent_ranks = std::max(agent_ranks, a->GetAgentIndex() + 1);
+              }
+            }
+            const int64_t rank = agent ? static_cast<int64_t>(agent->GetAgentIndex())
+                                       : static_cast<int64_t>(agent_ranks) +
+                                             static_cast<int64_t>(thing->GetId());
+            m = &AddMotion(*thing, agent, rank, layer);
+          }
+          m->dr += f.dr;
+          m->dc += f.dc;
+        }
+      }
+      std::sort(turn_.motions.begin(),
+                turn_.motions.begin() + static_cast<std::ptrdiff_t>(turn_.motion_count),
+                [](const MotionIntent& a, const MotionIntent& b) { return a.rank < b.rank; });
+      for (size_t i = 0; i < turn_.motion_count; ++i) {
+        MotionIntent& m = turn_.motions[i];
+        // Opposed moves cancel: no cells
+        ForcedMovePath(*grid_, m.from, m.dr, m.dc, m.cells);
+        for (int k = static_cast<int>(m.cells.size()) - 1; k >= 0; --k) m.stops.push_back(k);
+        m.path = true;
+        // Every sum off the axes (diagonal or uneven), for post-analysis
+        if (m.dr != 0 && m.dc != 0) {
+          last_odd_motions_.push_back({m.actor->GetId(), m.dr, m.dc});
+          ++odd_motion_count_;
+        }
+      }
       break;
     }
-    case MotionKind::Walk: {
-      if (!m.agent) return false;
-      const MovementAction move = m.agent->GetIntention().movement;
-      if (move == MovementAction::Stay) return false;
-      const Position to = ApplyMovement(m.from, move);
-      if (!grid_->IsInBounds(to) || !grid_->IsWalkable(to)) return false;  // No motion at all
-      m.cells.push_back(to);
-      m.stops.push_back(0);
-      break;
-    }
-    case MotionKind::Forced:
-      if (!m.forced || (m.dr == 0 && m.dc == 0)) return false;  // Opposed moves cancel
-      ForcedMovePath(*grid_, m.from, m.dr, m.dc, m.cells);
-      for (int i = static_cast<int>(m.cells.size()) - 1; i >= 0; --i) m.stops.push_back(i);
-      m.path = true;
-      break;
     case MotionKind::None:
-      return false;
-  }
-  return !m.stops.empty();
-}
-
-void BaseEnv::ChooseMotion(MotionIntent& m) {
-  // The lists belong to the agent moved
-  static constexpr MotionKind kCompanionList[] = {MotionKind::Teleport, MotionKind::Dash,
-                                                  MotionKind::Walk, MotionKind::Forced};
-  static constexpr MotionKind kOtherList[] = {MotionKind::Teleport, MotionKind::Dash,
-                                              MotionKind::Forced, MotionKind::Walk};
-  const bool companion = m.agent && dynamic_cast<const Companion*>(m.agent);
-  const MotionKind* list = companion ? kCompanionList : kOtherList;
-  m.kind = MotionKind::None;
-  // A body down as the turn begins takes none: a static blocker
-  if (!m.agent || m.agent->IsAffectable()) {
-    for (int tier = 0; tier < 4; ++tier) {
-      if (TryMotion(m, list[tier])) {
-        m.kind = list[tier];
-        m.tier = tier;
-        break;
-      }
-    }
-  }
-  if (m.kind == MotionKind::None) {
-    m.cells.clear();
-    m.stops.clear();
-    m.path = false;
-  }
-  // An agent that does not walk stays, as its intention says (the C API
-  // reads it: a walk into a wall, a walk another motion of its list beat)
-  if (m.agent && m.kind != MotionKind::Walk &&
-      m.agent->GetIntention().movement != MovementAction::Stay) {
-    m.agent->SetIntention({MovementAction::Stay});
-  }
-  // A sum off the axes (diagonal or uneven), for post-analysis
-  if (m.kind == MotionKind::Forced && m.dr != 0 && m.dc != 0) {
-    last_odd_motions_.push_back({m.actor->GetId(), m.dr, m.dc});
-    ++odd_motion_count_;
+      break;
   }
 }
 
-void BaseEnv::ResolveMotion() {
+void BaseEnv::SolveWalkLayer() {
   std::vector<MotionIntent>& ms = turn_.motions;
   const size_t n = turn_.motion_count;
-  auto moving = [](const MotionIntent& m) { return m.choice < m.stops.size(); };
-  auto end = [](const MotionIntent& m) {
-    return m.choice < m.stops.size() ? m.cells[static_cast<size_t>(m.stops[m.choice])] : m.from;
-  };
-  // `c` is someone's (not ms[self]'s) as the turn ends: a motion ends there
-  // (a stayer on its own cell included), or it holds a living actor no
-  // motion starts from (every living agent has an intent: a thing)
-  auto held = [&](Position c, size_t self) {
-    bool starts_here = false;
-    for (size_t j = 0; j < n; ++j) {
-      if (j != self && end(ms[j]) == c) return true;
-      starts_here = starts_here || ms[j].from == c;
-    }
-    if (starts_here) return false;  // It leaves
-    const Actor* a = object_manager_->GetActorAt(c);
-    return a && a->IsAlive();
-  };
-  // `c` is held by one that stays there: a stayer, or a thing
+  auto moving = [&](size_t i) { return ms[i].choice < ms[i].stops.size(); };
+  auto end = [&](size_t i) { return moving(i) ? ms[i].cells[0] : ms[i].from; };
+  // `c` holds one that stays there: a walker that stays, or anyone else
   auto stayed_on = [&](Position c, size_t self) {
     bool starts_here = false;
     for (size_t j = 0; j < n; ++j) {
       if (ms[j].from != c) continue;
-      if (j != self && !moving(ms[j])) return true;
+      if (j != self && !moving(j)) return true;
       starts_here = true;
     }
     if (starts_here) return false;
     const Actor* a = object_manager_->GetActorAt(c);
     return a && a->IsAlive();
   };
-  auto before = [&](size_t a, size_t b) {  // a's claim beats b's
-    return ms[a].tier != ms[b].tier ? ms[a].tier < ms[b].tier : ms[a].rank < ms[b].rank;
-  };
-  auto is_walk = [&](size_t i) { return ms[i].kind == MotionKind::Walk; };
-  const size_t kClear = static_cast<size_t>(-1);
-  // b. The path: the first of its cells another holds at the end (kClear: none)
-  auto blocker = [&](size_t i) {
-    const MotionIntent& m = ms[i];
-    if (!m.path || !moving(m)) return kClear;
-    const size_t stop = static_cast<size_t>(m.stops[m.choice]);
-    for (size_t k = 0; k < stop; ++k) {
-      if (held(m.cells[k], i)) return k;
-    }
-    return kClear;
-  };
 #ifndef NDEBUG
-  size_t bound = 0;  // Every round but the last advances a choice
-  for (size_t i = 0; i < n; ++i) bound += ms[i].stops.size();
+  size_t round = 0;
 #endif
-  for (size_t round = 0;; ++round) {
-    assert(round <= bound && "the motion phase must end");
-    (void)round;
-    bool firm = false;  // A verdict of a or c
-    // a. The end cell: held by one that stays there; a walk swapping with a walk
+  for (;;) {
+    assert(round++ <= n && "the walks must settle: every round stops one");
+    // a. Into one that stays; a swap with a walker
     for (size_t i = 0; i < n; ++i) {
       MotionIntent& m = ms[i];
       m.next = 0;
-      if (!moving(m)) continue;
-      const Position to = end(m);
-      bool rejected = stayed_on(to, i);
-      for (size_t j = 0; !rejected && is_walk(i) && j < n; ++j) {
-        rejected = j != i && is_walk(j) && moving(ms[j]) && ms[j].from == to && end(ms[j]) == m.from;
+      m.end = end(i);
+      if (!moving(i)) continue;
+      bool rejected = stayed_on(m.end, i);
+      for (size_t j = 0; !rejected && j < n; ++j) {
+        rejected = j != i && moving(j) && ms[j].from == m.end && end(j) == m.from;
       }
-      if (rejected) {
-        m.next = m.choice + 1;
-        firm = true;
-      }
+      if (rejected) m.next = 1;
     }
-    auto contends = [&](size_t i) { return moving(ms[i]) && ms[i].next == 0 && blocker(i) == kClear; };
-    // c. Clashes on one end cell, among the contenders (the losers are
-    // judged first, then marked: a verdict of c never changes who contends)
+    // b. Two walks or more onto one cell, among those a did not stop: all stay
+    // (judged first, then marked: `secure` is the mark here)
     for (size_t i = 0; i < n; ++i) {
-      ms[i].clash_lost = false;
-      if (!contends(i)) continue;
-      const Position to = end(ms[i]);
-      int walks = 0;
+      ms[i].secure = false;
+      if (!moving(i) || ms[i].next) continue;
       for (size_t j = 0; j < n; ++j) {
-        if (is_walk(j) && contends(j) && end(ms[j]) == to) ++walks;
-      }
-      bool loses = is_walk(i) && walks >= 2;  // Walk vs walk: both stay
-      for (size_t j = 0; !loses && j < n; ++j) {
-        if (j == i || !contends(j) || end(ms[j]) != to) continue;
-        if (is_walk(j) && walks >= 2) continue;  // Out of the running
-        loses = before(j, i);
-      }
-      ms[i].clash_lost = loses;
-    }
-    for (size_t i = 0; i < n; ++i) {
-      if (!ms[i].clash_lost) continue;
-      ms[i].next = ms[i].choice + 1;
-      firm = true;
-    }
-    // d. Nothing firm: the blocked stop before their first blocker
-    if (!firm) {
-      for (size_t i = 0; i < n; ++i) {
-        MotionIntent& m = ms[i];
-        const size_t b = blocker(i);
-        if (b == kClear) continue;
-        size_t next = m.choice + 1;
-        while (next < m.stops.size() && static_cast<size_t>(m.stops[next]) >= b) ++next;
-        m.next = next;
+        if (j != i && moving(j) && !ms[j].next && ms[j].end == ms[i].end) ms[i].secure = true;
       }
     }
-    // The verdicts, together
     bool any = false;
     for (size_t i = 0; i < n; ++i) {
       MotionIntent& m = ms[i];
-      if (m.next == 0) continue;
+      if (m.secure) m.next = 1;
+      if (!m.next) continue;
       any = true;
-      m.choice = m.next;
-      m.next = 0;
-      // A walk that lost stays (its one candidate)
-      if (m.kind == MotionKind::Walk) m.agent->SetIntention({MovementAction::Stay});
+      m.choice = 1;  // Its one candidate: it stays
+      m.agent->SetIntention({MovementAction::Stay});
     }
     if (!any) break;
   }
 }
 
-void BaseEnv::ExecuteMotion() {
+void BaseEnv::SolveLayer() {
+  std::vector<MotionIntent>& ms = turn_.motions;
+  const size_t n = turn_.motion_count;
+  auto moving = [&](size_t i) { return ms[i].choice < ms[i].stops.size(); };
+  // Its path's length: the cells of `cells` before its end
+  auto stop = [&](size_t i) {
+    return ms[i].path && moving(i) ? static_cast<size_t>(ms[i].stops[ms[i].choice]) : 0;
+  };
+  auto better = [&](size_t a, size_t b) { return ms[a].rank < ms[b].rank; };
+  // A cell someone surely holds at the end of the layer: an actor no motion
+  // of the layer moves, or one whose motion stays
+  auto firm = [&](Position c, size_t self) {
+    bool starts_here = false;
+    for (size_t j = 0; j < n; ++j) {
+      if (ms[j].from != c) continue;
+      if (j != self && !moving(j)) return true;
+      starts_here = true;
+    }
+    if (starts_here) return false;  // It leaves
+    const Actor* a = object_manager_->GetActorAt(c);
+    return a && a->IsAlive();
+  };
+  // The first candidate of `i` before path cell `k`
+  auto before = [&](size_t i, size_t k) {
+    size_t next = ms[i].choice + 1;
+    while (next < ms[i].stops.size() && static_cast<size_t>(ms[i].stops[next]) >= k) ++next;
+    return next;
+  };
+  // Where `c` lies on the path of `i`, or kNoCell
+  auto on_path = [&](size_t i, Position c) {
+    const size_t len = stop(i);
+    for (size_t k = 0; k < len; ++k) {
+      if (ms[i].cells[k] == c) return k;
+    }
+    return kNoCell;
+  };
+  // `j` surely keeps its end: nobody may end on its path, nobody better on
+  // its end (now or at a later candidate), and whoever it passes or lands
+  // on surely leaves
+  auto secure = [&](size_t j) {
+    const Position e = ms[j].end;
+    for (size_t m = 0; m < n; ++m) {
+      if (m == j) continue;
+      if (moving(m)) {
+        if (ms[m].end == e && better(m, j)) return false;
+        if (on_path(j, ms[m].end) != kNoCell) return false;
+      }
+      for (size_t c = ms[m].choice + 1; c < ms[m].stops.size(); ++c) {
+        const Position q = ms[m].cells[static_cast<size_t>(ms[m].stops[c])];
+        if ((q == e && better(m, j)) || on_path(j, q) != kNoCell) return false;
+      }
+      if ((ms[m].from == e || on_path(j, ms[m].from) != kNoCell) && !ms[m].secure) return false;
+    }
+    return true;
+  };
+#ifndef NDEBUG
+  size_t bound = 0;  // Every round but the last advances a choice
+  for (size_t i = 0; i < n; ++i) bound += ms[i].stops.size();
+  size_t round = 0;
+#endif
+  for (;;) {
+    assert(round++ <= bound && "a layer must settle: every round advances a choice");
+    bool any = false;
+    for (size_t i = 0; i < n; ++i) {
+      MotionIntent& m = ms[i];
+      m.next = 0;
+      m.secure = false;
+      m.end = moving(i) ? m.cells[static_cast<size_t>(m.stops[m.choice])] : m.from;
+    }
+    // A. Firm blockers: its path or its end surely held
+    for (size_t i = 0; i < n; ++i) {
+      if (!moving(i)) continue;
+      MotionIntent& m = ms[i];
+      const size_t len = stop(i);
+      size_t hit = kNoCell;
+      for (size_t k = 0; k < len && hit == kNoCell; ++k) {
+        if (firm(m.cells[k], i)) hit = k;
+      }
+      if (hit != kNoCell) {
+        m.next = before(i, hit);
+      } else if (firm(m.end, i)) {
+        m.next = m.choice + 1;
+      }
+      any = any || m.next;
+    }
+    if (!any) {
+      // B. The motions that surely keep their end: the others lose that end
+      // to them, and stop before it on their path
+      for (bool grew = true; grew;) {
+        grew = false;
+        for (size_t j = 0; j < n; ++j) {
+          if (moving(j) && !ms[j].secure && secure(j)) ms[j].secure = grew = true;
+        }
+      }
+      for (size_t i = 0; i < n; ++i) {
+        if (!moving(i)) continue;
+        MotionIntent& m = ms[i];
+        size_t hit = kNoCell;
+        bool lost = false;
+        for (size_t j = 0; j < n; ++j) {
+          if (j == i || !ms[j].secure) continue;
+          lost = lost || ms[j].end == m.end;
+          hit = std::min(hit, on_path(i, ms[j].end));
+        }
+        if (hit != kNoCell) {
+          m.next = before(i, hit);
+        } else if (lost) {
+          m.next = m.choice + 1;
+        }
+        any = any || m.next;
+      }
+    }
+    if (!any) {
+      // C. Nothing sure left: done if the choices agree; else the one
+      // verdict of the worst-ranked motion, preferring a path blocked by an
+      // end that is itself clear, then a clash lost to a clear winner
+      // (`block`: the first path cell another ends on; `secure` reused: it
+      // loses its end to a better one)
+      for (size_t i = 0; i < n; ++i) {
+        MotionIntent& m = ms[i];
+        m.block = kNoCell;
+        m.secure = false;
+        if (!moving(i)) continue;
+        for (size_t j = 0; j < n; ++j) {
+          if (j == i || !moving(j)) continue;
+          m.block = std::min(m.block, on_path(i, ms[j].end));
+          m.secure = m.secure || (ms[j].end == m.end && better(j, i));
+        }
+      }
+      auto clear = [&](size_t j) { return ms[j].block == kNoCell && !ms[j].secure; };
+      size_t pick = kNoCell;
+      for (int pass = 0; pass < 3 && pick == kNoCell; ++pass) {
+        for (size_t i = 0; i < n; ++i) {
+          const MotionIntent& m = ms[i];
+          bool fits = false;
+          if (m.block != kNoCell) {
+            // Blocked by a clear end (pass 0), or any (pass 2)
+            for (size_t j = 0; j < n && !fits; ++j) {
+              fits = j != i && moving(j) && on_path(i, ms[j].end) == m.block &&
+                     (pass == 2 || (pass == 0 && clear(j)));
+            }
+          } else if (m.secure) {
+            // Lost to a clear winner (pass 1), or any (pass 2)
+            for (size_t j = 0; j < n && !fits; ++j) {
+              fits = j != i && moving(j) && ms[j].end == m.end && better(j, i) &&
+                     (pass == 2 || (pass == 1 && clear(j)));
+            }
+          }
+          if (fits && (pick == kNoCell || better(pick, i))) pick = i;
+        }
+      }
+      if (pick == kNoCell) break;  // The choices agree: settled
+      MotionIntent& m = ms[pick];
+      m.next = m.block != kNoCell ? before(pick, m.block) : m.choice + 1;
+    }
+    for (size_t i = 0; i < n; ++i) {
+      if (ms[i].next) ms[i].choice = ms[i].next;
+    }
+  }
+}
+
+void BaseEnv::ExecuteLayer(MotionKind layer) {
   // Everyone at once (the actor grid takes the moves in any order: a living
   // actor arriving on a cell another leaves takes it, see ObjectManager)
   for (size_t i = 0; i < turn_.motion_count; ++i) {
@@ -1091,15 +1189,17 @@ void BaseEnv::ExecuteMotion() {
     const Position to =
         m.choice < m.stops.size() ? m.cells[static_cast<size_t>(m.stops[m.choice])] : m.from;
     m.moved = to != m.from;
-    if (m.moved) object_manager_->UpdatePosition(m.actor->GetId(), to);
+    if (!m.moved) continue;
+    object_manager_->UpdatePosition(m.actor->GetId(), to);
+    turn_.moved.push_back(m.actor);
   }
-  // Whom each use's forced moves moved: those whose motion was their sum
+  if (layer != MotionKind::Forced) return;
+  // Whom each use's forced moves moved (their sum did)
   for (size_t p = 0; p < turn_.plan_count; ++p) {
     SkillPlan& plan = turn_.plans[p];
-    plan.moved.clear();
     for (const SkillPlan::Forced& f : plan.forced) {
       const MotionIntent* m = FindMotion(f.actor);
-      if (m && m->kind == MotionKind::Forced && m->moved) plan.moved.push_back(f.actor);
+      if (m && m->moved) plan.moved.push_back(f.actor);
     }
   }
 }
@@ -1728,9 +1828,9 @@ const std::string kZoneCause = "zone";  // A zone landing's cause
 void BaseEnv::ApplyMovedZoneTags() {
   if (cell_tags_.empty()) return;
   assert(zone_landings_.empty() && "a zone phase inside a zone phase");
-  for (size_t i = 0; i < turn_.motion_count; ++i) {
-    const MotionIntent& m = turn_.motions[i];
-    if (m.moved && m.agent) CollectZoneLanding(*m.agent);
+  const std::vector<Actor*>& moved = turn_.moved;
+  for (Agent* agent : object_manager_->GetAllAgents()) {  // Agent-index order
+    if (std::find(moved.begin(), moved.end(), agent) != moved.end()) CollectZoneLanding(*agent);
   }
   ResolveZoneLandings();
 }
@@ -2095,16 +2195,21 @@ void BaseEnv::UseSkill(SkillPlan& plan) {
     const bool area = moved(p.id) || on(plan.area, a->GetPosition());
     if (area || on(plan.path, a->GetPosition())) hit(a, area);
   }
+  auto listed = [&plan](ObjectId id) {
+    return std::any_of(plan.did.begin(), plan.did.end(),
+                       [id](const AffectedAgent& x) { return x.id == id; });
+  };
+  // ...then whom its own push / pull moved (it stood on the ring after the
+  // walks: it walked or dashed in), in its forced moves' order...
+  for (ObjectId id : plan.moved) {
+    auto* a = dynamic_cast<Agent*>(object_manager_->GetActor(id));
+    if (a && Affects(skill, *caster, *a) && !listed(id)) hit(a, true);
+  }
   // ...then whoever else stands on them (walking in gets hit), in cell order
   for (int part = 0; part < 2; ++part) {
     for (const Position& p : part == 0 ? plan.area : plan.path) {
       auto* a = dynamic_cast<Agent*>(object_manager_->GetActorAt(p));
-      if (!a || !Affects(skill, *caster, *a)) continue;
-      const ObjectId id = a->GetId();
-      if (std::any_of(plan.did.begin(), plan.did.end(),
-                      [id](const AffectedAgent& x) { return x.id == id; })) {
-        continue;
-      }
+      if (!a || !Affects(skill, *caster, *a) || listed(a->GetId())) continue;
       hit(a, part == 0);
     }
   }
@@ -2201,9 +2306,7 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
     // The motion phase with that use's motions only (everyone else stays),
     // the zones of those it moved, then its hits
     for (Agent* agent : world->object_manager_->GetAllAgents()) agent->ClearIntention();
-    world->GatherMotionIntents();
-    world->ResolveMotion();
-    world->ExecuteMotion();
+    world->MotionPhase();
     world->ApplyMovedZoneTags();
     world->ResolveSkills();
   }
@@ -2401,22 +2504,30 @@ void BaseEnv::ResolveSkillTargets(const Companion& caster, const SkillConfig& sk
     plan.predicted[i].effects = e;
   }
 
-  // 4. The forced moves, on the things on the ring as the turn begins (not
-  // only agents: any living actor MotionThingAt allows): a push moves each
-  // away from the centre by motion_distance, a pull takes its one thing into
-  // the centre.
+  // 4. The forced moves as the turn begins (the motion phase finds them
+  // again after its first layers, on whoever stands on the cells then)
+  FindForcedMoves(skill, plan.area, caster, plan.landing, plan.forced);
+}
+
+void BaseEnv::FindForcedMoves(const SkillConfig& skill, const std::vector<Position>& area,
+                              const Agent& caster, Position landing,
+                              std::vector<SkillPlan::Forced>& forced) const {
+  forced.clear();
+  if (area.empty()) return;
+  const Position centre = area.front();
   if (skill.motion == SkillMotion::PushOut && skill.motion_distance > 0) {
-    for (size_t i = 1; i < plan.area.size(); ++i) {
-      const Position p = plan.area[i];
-      if (const Actor* thing = MotionThingAt(p, skill, caster, plan.landing)) {
-        plan.forced.push_back({thing->GetId(), (p.row - plan.centre.row) * skill.motion_distance,
-                               (p.col - plan.centre.col) * skill.motion_distance});
+    for (size_t i = 1; i < area.size(); ++i) {
+      const Position p = area[i];
+      if (const Actor* thing = MotionThingAt(p, skill, caster, landing)) {
+        forced.push_back({thing->GetId(), (p.row - centre.row) * skill.motion_distance,
+                          (p.col - centre.col) * skill.motion_distance});
       }
     }
-  } else if (pulled_from) {
-    const Actor* thing = MotionThingAt(*pulled_from, skill, caster, plan.landing);
-    plan.forced.push_back({thing->GetId(), plan.centre.row - pulled_from->row,
-                           plan.centre.col - pulled_from->col});
+  } else if (skill.motion == SkillMotion::PullIn) {
+    if (const std::optional<Position> from = PullFrom(skill, area, caster, landing)) {
+      const Actor* thing = MotionThingAt(*from, skill, caster, landing);
+      forced.push_back({thing->GetId(), centre.row - from->row, centre.col - from->col});
+    }
   }
 }
 

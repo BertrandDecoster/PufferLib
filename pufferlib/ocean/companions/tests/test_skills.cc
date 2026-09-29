@@ -525,10 +525,10 @@ TEST(TestTeleportThroughStep) {
   ASSERT_EQ(AsCompanion(a)->GetCooldown(0), 4);
 }
 
-// The path and the cross around the planned landing (3,5) are electrified.
-// An ally walking onto the path this turn is hit there; it holds that cell
-// at the end of the turn, so the dash stops before it, on (3,2) (a dash no
-// longer crosses anyone), and keeps its planned cells.
+// The path and the cross around the landing (3,5) are electrified. A dash
+// no longer crosses anyone (an agent on its line as the turn begins stops
+// it); an ally walking onto the path this turn (the walks come after the
+// dashes: the dash has passed) is hit there.
 TEST(TestLightningStepElectrifiesPathAndLandingCross) {
   SynchroEnv env(10, 10, 4, 1, 0, 42);
   MakeArena(env);
@@ -539,7 +539,7 @@ TEST(TestLightningStepElectrifiesPathAndLandingCross) {
   env.SetCompanionSkill(caster->GetId(), 0, "lightningStep");
   env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Down), kStay, kStay});
   ASSERT_TRUE(crossed->GetPosition() == (Position{3, 3}));
-  ASSERT_TRUE(caster->GetPosition() == (Position{3, 2}));
+  ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
   ASSERT_TRUE(Has(env, crossed, "electrified"));
   ASSERT_TRUE(Has(env, beside, "electrified"));
   ASSERT_FALSE(Has(env, away, "electrified"));
@@ -1589,12 +1589,14 @@ TEST(TestZoneTagsFollowSkillMotions) {
 }
 
 TEST(TestZonesApplyBeforeSkills) {
-  // A target walking into water and hit the same step: "wet" lands first.
+  // A target ending in water and hit the same step: "wet" lands first. (It
+  // walks onto the ring's left cell (3,3), then the fireball pushes it on,
+  // onto the wet cell (3,2): the zone of its final cell.)
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
-  env.SetCellTag({3, 3}, "wet", kPermanentTag);
+  env.SetCellTag({3, 2}, "wet", kPermanentTag);
   Agent* caster = Place(env, 0, {3, 1});  // fireball target (3,4)
-  Agent* walker = Place(env, 1, {3, 4});  // walks left onto the wet cell, on the ring
+  Agent* walker = Place(env, 1, {3, 4});  // walks left onto the ring, pushed onto the wet cell
   env.SetCompanionSkill(caster->GetId(), 0, "fireball");
   env.Step({Use(MovementAction::Right), EncodeAction(MovementAction::Left)});
   const auto& landed = env.GetLastTagsApplied();
@@ -2491,7 +2493,8 @@ TEST(TestPreviewPushOfTheCasterItself) {
 
 // The step's SkillUse lists whom it affected, on the cells its plan fixed as
 // the turn began (the preview's before the step): b, pulled this turn, still
-// aims from (2,4). An ally walking onto b's ring is hit there.
+// aims from (2,4). An ally walking onto b's ring is hit, and pushed (the
+// forced moves come last, on whoever stands on the ring after the walks).
 TEST(TestSkillUseAffectedIsTheStepsOwn) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);
@@ -2508,8 +2511,9 @@ TEST(TestSkillUseAffectedIsTheStepsOwn) {
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(2));
   ASSERT_TRUE(env.GetLastSkillUses()[0].affected == (Affected{{b->GetId(), kRootFx | kMotionFx}}));
   ASSERT_TRUE(env.GetLastSkillUses()[1].target == before.centre);
-  ASSERT_TRUE(env.GetLastSkillUses()[1].affected == (Affected{{c->GetId(), kTagsFx}}));
-  ASSERT_TRUE(c->GetPosition() == (Position{5, 5}));  // Not planned as the turn began: not pushed
+  ASSERT_TRUE(env.GetLastSkillUses()[1].affected ==
+              (Affected{{c->GetId(), kTagsFx | kMotionFx}}));
+  ASSERT_TRUE(c->GetPosition() == (Position{5, 6}));  // Pushed on, right
 }
 
 // =============================================================================

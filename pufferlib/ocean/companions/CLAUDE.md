@@ -121,43 +121,47 @@ observation masking) is handled by **TaskLens** objects that can be swapped at r
    slot 0) is gone, with its C API setter / getter and EffectSpawned events (C API 1.2.0)
 
 ### The motion phase
-One phase for every motion of the turn (`base_env.cc`: `GatherMotionIntents`,
-`ResolveMotion`, `ExecuteMotion`; the header documents the algorithm; tests:
-`tests/test_turn.cc`): walks, dashes, teleports and forced moves (the skills' pushes and
-pulls; an effect's push still goes through the effect system until effects are planned).
-- **One motion per actor**, the first of its agent's list it has a statically valid one of
-  (a cell to end on: walls and the grid read, not the actors): a companion: teleport >
-  dash > walk > forced move; anything else: teleport > dash > forced move > walk. So a
-  companion's walk beats a push on it, a push on an enemy beats its walk (it does not
-  walk), a walk into a wall is no motion (the push applies). A motion that loses a clash
-  falls back along its own candidates or stays: never to another kind (a companion whose
-  walk is blocked stays, unpushed). An agent that does not walk has its intention Stay.
-- **Forced moves on one actor add up** as vectors (opposed ones cancel). A sum off the
-  axes travels the rounded line toward its end (`ForcedMovePath`) and is recorded:
-  `GetLastOddMotions()` (actor, dr, dc; a step report) and `GetOddMotionCount()` (the
-  env's life: copied with it, kept by `Reset` / `LoadSnapshot`)
-- **Paths**: a push / pull stops at the first blocker on its path, on the cell before it:
-  a wall, a hole, a cell held at the END of the turn (never hopping over one). A dash
-  likewise, but it jumps holes (never ending on one); planned as the turn begins, its
-  landing already stops before the first living actor on its line. A teleport only
-  needs its landing (3, else 2, else 1, as planned)
-- **Clashes on one end cell**: the lower tier wins (a motion's tier: the place of its kind
-  in ITS agent's list), a tie to the lower rank (agent index; things, living non-agent
-  actors, after every agent by ObjectId). Walk vs walk keeps its rules, whatever the
-  tiers: two walks onto one cell both stay, a swap cancels, a walk into a cell succeeds
-  only if its occupant leaves (chains and rings of 3+ move). A cell whose occupant really
-  leaves is free; blocked if the leaver ends up staying. A body down as the turn begins
-  and a thing no skill moves are static blockers (a walk into a thing is blocked)
-- Rounds, each judging every motion against the same choices (the verdicts apply
-  together: no order dependence but the ties): rejections of the end cell (held by one
-  that stays, a walk swap, a lost clash among those whose path is clear) first; only when
-  there are none, the blocked paths stop before their first blocker. Choices only
-  advance, so it ends (at most the sum of the candidates rounds). Paths and clashes can
-  have no stable answer (a dash whose path a lower-tier push ends on): the monotone
-  rounds decide
-- The C API's movement events are unchanged: AgentMoved for any change of cell
-  (`move_action` = the executed walk, Stay for a dash / teleport / forced move),
-  AgentBlocked for an original walk that did not move
+Every motion of the turn (`BaseEnv::MotionPhase`; the header documents the algorithm;
+tests: `tests/test_turn.cc`): teleports, dashes, walks and forced moves (the skills' pushes
+and pulls; an effect's push still goes through the effect system until effects are
+planned). It resolves in **layers**, each seeing the FINAL result of the layers before it,
+while the actors whose motion is in a later layer still stand where they were:
+1. **Teleports** (the casters', as planned: 3, else 2, else 1; only the landing matters)
+2. **Dashes** (as planned: an agent on the line as the turn begins stops the plan, and an
+   agent that only walks later still stands there; a teleport landed on the line holds
+   it). A dash jumps holes, never ends on one
+3. **Walks**: every walker, companions and enemies together, by the walk rules as they
+   always were (fuzzed identical to the old `ResolveCollisions`): two walks onto one cell
+   both stay, a swap cancels, a walk into a cell succeeds only if its occupant leaves
+   (chains and rings of 3+ move), a walk into a wall or into one that stays does not
+4. **Forced moves, last** (so a walk dodges one): every use's pushes and pulls are found
+   again (`FindForcedMoves`) on whoever stands on its cells after layers 1-3: a walker
+   stepping into a ring is pushed, one walking out dodges, a dasher landing on it is
+   pushed; a pull takes the first ring thing by its priority from there. An actor's
+   forced moves add up as vectors (opposed ones cancel); a sum off the axes travels the
+   rounded line toward its end (`ForcedMovePath`), and every such sum is recorded:
+   `GetLastOddMotions()` (actor, dr, dc; a step report) and `GetOddMotionCount()` (the
+   env's life: copied with it, kept by `Reset` / `LoadSnapshot`)
+
+- **Within a layer** the motions are simultaneous (`SolveLayer`; walks: `SolveWalkLayer`):
+  a cell whose occupant leaves in the same layer is free; a dash / push / pull stops
+  before the first cell of its path held at the END of the layer (a wall, a hole for a
+  forced move, a living actor), never contesting it; two motions ending on one cell: the
+  lower rank wins (agent index; things, living non-agent actors, after every agent by
+  ObjectId), the only use of the indices. Each round judges every motion against the same
+  choices: firm blockers first (an actor the layer does not move, a motion of it that
+  stays), then the secure motions (none may still end on its path, none better on its
+  end, whoever it passes or lands on surely leaves) take their end; a verdict never rests
+  on a motion that may still change, so nobody falls back for a blocker that goes away.
+  With nothing sure left: settled if the choices agree (rings, crossings, swaps of
+  non-walks all move), else one verdict of the worst-ranked motion (a tie-break of a
+  cycle). Choices only advance: it ends
+- A body down as the turn begins and a thing no push / pull moves never move and block
+  every motion (a walk into a thing is blocked)
+- Executed action (`GetExecutedAction`, the C API's): the walk a walker made (a walker then
+  pushed keeps it; its final cell is past it), Stay if it did not walk. Events unchanged:
+  AgentMoved for any change of cell (`move_action` = that walk, Stay for a teleport / dash
+  / push), AgentBlocked for an original walk that did not move
 
 ### Skills, tags, zones
 The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque data
@@ -166,7 +170,7 @@ The env knows no MEANING: skill and tag names ("fireball", "burning") are opaque
 host's business. But the env simulates every mechanic: targeting, motion, tags, roots,
 cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table.h`,
 `core/context_skill.{h,cc}`, `env/skill_motion.{h,cc}`, `env/base_env.cc` (`PlanSkillUse`,
-`ResolveSkillTargets`, `GatherMotionIntents` / `ResolveMotion`, `ResolveSkills`, `UseSkill`,
+`ResolveSkillTargets`, `MotionPhase`, `ResolveSkills`, `UseSkill`,
 `PreviewSkill`, `EffectiveSkill`, `Affects`).
 
 **Step order** (`BaseEnv::Step`):
@@ -174,9 +178,8 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 2. `PreStep` (enemy FSM) → `GatherIntentions`, the intents phase: every skill use is
    PLANNED here from the world as the turn begins (`AddSkillPlan`: its effective skill,
    the context rules read once, its cells and targets, its cooldown spent; see "Multiple
-   casters") → the motion phase (`GatherMotionIntents` → `ResolveMotion` →
-   `ExecuteMotion`: every walk, dash, teleport, push and pull at once, see "The motion
-   phase")
+   casters") → the motion phase (`MotionPhase`, in layers: teleports, dashes, walks,
+   then pushes / pulls on whoever stands on their cells; see "The motion phase")
 3. `ApplyZoneTags`, the zone phase (every affectable agent on a zone cell: alive, not
    downed; one landing each, on its FINAL cell), in sub-phases, each over ALL the landings: a. immunity,
    the tag and its status; b. weaknesses; c. reactions, gathered then applied (every
@@ -259,8 +262,9 @@ steps is always the number of steps to come it covers.
 - Teleport: exactly `distance`, else `distance - 1`, ... 1 (ignores what lies between,
   walls included), else stays
 - Push: each ring thing `distance` away from the centre; a wall, a hole or a living
-  actor stops it on the cell before (the motion phase: a cell held at the end of the
-  turn; pushes on one thing add up). Pull: exactly one cell, only into a free, walkable
+  actor stops it on the cell before (the motion phase: a cell held at the end of its
+  layer; pushes on one thing add up; on whoever stands on the ring after the teleports,
+  dashes and walks). Pull: exactly one cell, only into a free, walkable
   centre
 
 **Builtins** (`SkillBook`, `skill_config.cc`). Tags are permanent (-1).
@@ -344,7 +348,8 @@ use happened, whatever it then reaches; a step that throws before the use applie
 it spent). A caster down as the turn begins cannot cast; one going down this turn still
 casts. A caster rooted this turn still resolves its skill (the root blocks from the next
 step). The indices order the reports (uses in caster index order); the motion phase
-depends on them only through its ties (the same tier on one cell: the lower index), and
+depends on them only through its ties (two motions of one layer onto one cell: the
+lower index), and
 they still change outcomes in one TEMPORARY way (until the one tag phase): a skill's
 landing fires its reaction at once (`LandTag`), in caster order: an agent carrying wet
 hit by electrified (index 0) and chilled (index 1) reacts by the rule the first landing
@@ -411,7 +416,9 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   resolved on a `Clone()` (nothing in the env changes or is interned) by the step's own
   code for a use (`AddSkillPlan`, the motion phase with only its motions, then
   `ResolveSkills`), as the next step would resolve it were it the step's only change:
-  nobody else moves, zones land only on those its motions moved (their final cell), no
+  nobody else moves, zones land only on those its motions moved (their final cell;
+  TEMPORARY until the preview runs a whole turn: a caster standing in a fire gets no
+  landing in its preview), no
   enemy acting, no end-of-step timers. The clone is mid-step
   around the use (`in_step_`, `Agent::BeginStep`), so what the use sets (a
   `zone_becomes` zone, a status) is stored as the step stores it (the zones its
