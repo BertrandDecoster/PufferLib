@@ -53,8 +53,10 @@
 // either, even when they load: the struct sizes changed
 // (Companions_SkillPreview, Companions_SkillUseInfo). Rebuild both sides.
 // 1.5 made the env's rules readable as data, and changed a struct layout
-// (Companions_Event: tag_kind, tag_reaction, report_index): consumers must
-// rebuild against this header. The rest is additive:
+// (Companions_Event: tag_kind, tag_reaction, report_index) and two
+// signatures (companions_step and companions_reset return bool: false with
+// the error, see each): consumers must rebuild against this header. The
+// rest is additive:
 // - report queries with a source (Companions_ReportSource: the last step's,
 //   or the last outcome preview's), never cut by the event cap: skill uses
 //   (companions_get_skill_use*; companions_get_last_skill_use* stay, equal
@@ -63,7 +65,8 @@
 //   damage dealt), reactions (Companions_ReactionInfo: the rule and its tags,
 //   the trigger, the affected agents with their outcomes, and the cells a
 //   zone_becomes changed: companions_get_reaction_cell), defeats
-//   (Companions_DefeatInfo) and downs; see "Reports" below for the landing
+//   (Companions_DefeatInfo), downs and revives (Companions_ReviveInfo); see
+//   "Reports" below for the landing
 //   order (immunity, the tag and its status, weakness, reaction, zone damage);
 // - companions_preview_skill_outcome: a use resolved on a copy of the env,
 //   its reports read with Companions_Report_Preview;
@@ -71,7 +74,8 @@
 //   companions_find_zone_def), a cell's zone with its remaining steps
 //   (companions_get_cell_zone), the reaction rules, the tag statuses, each
 //   agent's weaknesses and immunities;
-// - events Companions_Event_ReactionFired (19) and _AgentDefeated (20);
+// - events Companions_Event_ReactionFired (19) and _AgentDefeated (20, a
+//   state-change event, kept by the cap before the skills and tags);
 //   TagApplied's tag_kind / tag_reaction (a reaction's result no longer
 //   reads as its caster's skill landing it) and health_amount (the zone
 //   damage it dealt);
@@ -87,9 +91,12 @@
 // (the defaults for a tag it does not define: permanent, none, 0); a JSON
 // snapshot with an unknown root or agent key, or a non-integer where an
 // integer goes (a bool, a float, a number out of range, a negative RNG
-// state), is rejected; a step that throws sets the error and returns
-// (out_result untouched) instead of letting the exception cross the C
-// boundary.
+// state, a key the rng_state object does not know), is rejected;
+// companions_step refuses an action_count other than the agent count, and
+// no exception crosses the C boundary any more: a step that throws returns
+// false with the error and the env's current state in out_result (no event),
+// and every other function returns its failure value with the error
+// ("Unknown error" for an exception that is not a std::exception).
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -122,8 +129,8 @@
 // =============================================================================
 // Currently implemented events, in this order within a step: the movement
 // events (AgentMoved / AgentBlocked, per agent in agent order), then
-// AgentDowned, AgentRevived, SkillUsed, TagApplied, ReactionFired,
-// AgentDefeated, EpisodeEnd. Since 1.5, report_index gives a SkillUsed,
+// AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied,
+// ReactionFired, EpisodeEnd. Since 1.5, report_index gives a SkillUsed,
 // TagApplied, ReactionFired or AgentDefeated event's entry in its report
 // query (Companions_Report_LastStep, see "Reports"), -1 for the others;
 // tag_reaction is -1 but where said below:
@@ -171,8 +178,10 @@
 //   (since 1.5): subject_id = the agent, position = its cell after the step,
 //   effect_id / effect_name = the tag S (id and name), health_source_id /
 //   tag_kind / tag_reaction = the landing of S's source, kind and reaction.
-//   A companion goes down (its AgentDowned too), another agent dies. The
-//   zone P: companions_get_defeat (report_index).
+//   A companion goes down (its AgentDowned too), another agent dies: for it,
+//   the only event of its death, so it is one of the state-change events
+//   (after AgentRevived, before SkillUsed). The zone P:
+//   companions_get_defeat (report_index).
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
 //   reported once per false->true transition of done, on the step where it
 //   happens: the steps a host keeps playing afterwards (done stays true) do
@@ -185,16 +194,18 @@
 // others are then cut to Companions_MAX_EVENTS - 1). events_dropped counts
 // the events not reported. The state itself (agents' tags, skills,
 // statuses, downed, health, downs) is always complete.
-// The state-change events (moved / blocked, downed, revived) come first, so
-// skill and tag events are dropped before them. They always fit when no
-// companion is revived twice in the step: an agent then has at most one
-// movement event, one revive and two downs (down between two steps, revived,
-// down again), 4 events, so with up to 15 agents (states report at most
-// Companions_MAX_AGENTS = 8) they fit next to EpisodeEnd. Reviving the same
-// companion twice in a step takes a skill downing it between two revives
-// (skills resolve one caster at a time); each such extra revive adds one
-// revive and one down, and in such a step the last state-change events may
-// be dropped too.
+// The state-change events (moved / blocked, downed, revived, defeated) come
+// first, so skill, tag and reaction events are dropped before them. They
+// always fit when no companion is revived twice in the step: an agent then
+// has at most one movement event, one revive, two downs (down between two
+// steps, revived, down again) and one defeat (a defeat takes an affectable
+// agent: a companion's is one of its downs, another agent dies), 5 events,
+// so with up to 12 agents (states report at most Companions_MAX_AGENTS = 8)
+// they fit next to EpisodeEnd. Reviving the same companion twice in a step
+// takes a skill downing it between two revives (skills resolve one caster at
+// a time); each such extra revive adds one revive, one down and possibly one
+// defeat, and in such a step the last state-change events may be dropped
+// too.
 //
 // Not yet implemented (will be added as needed):
 // - Companions_Event_AgentDamaged, Companions_Event_AgentHealed, Companions_Event_AgentDied
@@ -688,18 +699,31 @@ COMPANIONS_API void companions_destroy(Companions_Env* env);
 // Environment Control
 // =============================================================================
 
-// Reset environment with new seed
-COMPANIONS_API void companions_reset(Companions_Env* env,
+// Reset environment with new seed (a generated level). False with the error
+// set for a null env, or when the level cannot be generated (e.g. "Not enough
+// empty cells"; the env may then be half reset: reset again or load a
+// snapshot). Since 1.5 it returns bool (it returned nothing).
+COMPANIONS_API bool companions_reset(Companions_Env* env,
                                            uint32_t seed);
 
-// Step environment with actions, returns full result with events
-// actions array must have env->agent_count elements
-// A movement outside Stay..Right or an interact outside None..Skill2 refuses
-// the whole step (error set, nothing stepped, out_result untouched). An
-// interact for a skill slot the action space does not enable yet (today:
+// Step environment with actions, returns full result with events.
+// True when the env stepped (out_result: its state and events). It clears
+// companions_get_error() first, so a false always comes with this step's
+// error. Since 1.5 it returns bool (it returned nothing).
+// Refused, false, nothing stepped, out_result untouched: a null argument
+// ("Invalid arguments"), action_count other than companions_get_agent_count
+// ("Invalid action count"), a movement outside Stay..Right ("Invalid movement
+// action") or an interact outside None..Skill2 ("Invalid interact action").
+// An interact for a skill slot the action space does not enable yet (today:
 // Companions_Interact_Skill2) is treated as None: the movement applies and no
 // skill is used.
-COMPANIONS_API void companions_step(Companions_Env* env,
+// A step that throws inside the env: false with the error, and out_result
+// holds the env's state as it is now, with no event (event_count and
+// events_dropped 0). The env is between two steps again, but keeps what the
+// step did before it threw; a throw after the step's timers ticked (its
+// rewards, its lens) keeps the incremented tick too. Its reports are what
+// that partial step left.
+COMPANIONS_API bool companions_step(Companions_Env* env,
                                           const Companions_Action* actions,
                                           int32_t action_count,
                                           Companions_StepResult* out_result);
@@ -1000,7 +1024,7 @@ COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int
 //    its affected agents (the zone region's when it spreads) lose the
 //    originals not kept, get the result (a landing of kind Reaction, through
 //    steps 1-3: a result can defeat) and the damage; then a spread region
-//    becomes the rule's zone_becomes (the reaction's cells);
+//    is (re)set to the rule's zone_becomes (the reaction's cells);
 // 5. a zone's landing then deals the zone's damage (Companions_TagLanding.
 //    damage), if the agent is still affectable.
 // Reports come in the order things happened; a landing's and a defeat's
@@ -1011,9 +1035,10 @@ COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int
 //   host's landings since (companions_apply_tag: kind Host, with what they
 //   set off; no events). The next step, a reset or a snapshot load empties
 //   them. Its skill uses are those of companions_get_last_skill_use*.
-// - Companions_Report_Preview: the last companions_preview_skill_outcome's,
-//   until the next outcome preview, step, reset or snapshot load (a host
-//   change in between does not update it: preview again). Empty before any.
+// - Companions_Report_Preview: the last companions_preview_skill_outcome's
+//   (one at a time), until the next outcome preview, step, reset or snapshot
+//   load (a host change in between does not update it: preview again). Empty
+//   before any.
 // Names (tags, causes) are copied in: they always fit (31 bytes at most).
 typedef enum {
   Companions_Report_LastStep = 0,
@@ -1067,11 +1092,20 @@ typedef struct {
   int32_t affected_damage[Companions_MAX_AGENTS];
   int32_t affected_count;
   int32_t affected_total;
-  // The zone the spread region became ("" when it kept its zone) and how
-  // many cells did (companions_get_reaction_cell); 0 without a change
+  // The zone the reaction (re)set its spread region to (the rule's
+  // zone_becomes; "" when it set none) and how many cells it (re)set
+  // (companions_get_reaction_cell). A zone_becomes equal to the region's zone
+  // still counts its cells: the tag stays, its lifetime starts again.
   char zone_becomes[Companions_SKILL_NAME_LEN];
   int32_t cell_count;
 } Companions_ReactionInfo;
+
+// One revive: a downed companion a skill got up (a skill use too)
+typedef struct {
+  Companions_ObjectId reviver;  // The skill's caster
+  Companions_ObjectId revived;
+  int32_t health;  // The HP it got up with (it may lose them later in the step)
+} Companions_ReviveInfo;
 
 // One agent a weakness (P, S) defeated: S landed on it while it stood on a
 // zone providing P
@@ -1092,7 +1126,8 @@ typedef struct {
 // `out` too) or a source that is not a Companions_ReportSource ("Invalid
 // report source"); a getter is also false for an index out of range ("Skill
 // use index out of range", "Tag landing index out of range", "Reaction index
-// out of range", "Defeat index out of range", "Down index out of range").
+// out of range", "Defeat index out of range", "Down index out of range",
+// "Revive index out of range").
 // The skill uses (Companions_SkillUseInfo, as companions_get_last_skill_use)
 COMPANIONS_API int32_t companions_get_skill_use_count(const Companions_Env* env,
                                                       Companions_ReportSource source);
@@ -1112,7 +1147,7 @@ COMPANIONS_API bool companions_get_reaction(const Companions_Env* env,
                                             Companions_ReportSource source, int32_t index,
                                             Companions_ReactionInfo* out);
 // Cell `cell_index` (0-based, below the reaction's cell_count) that reaction
-// `reaction_index` turned into its zone_becomes, in row-major order. False as
+// `reaction_index` (re)set to its zone_becomes, in row-major order. False as
 // the getters, and for a cell index out of range ("Reaction cell index out of
 // range").
 COMPANIONS_API bool companions_get_reaction_cell(const Companions_Env* env,
@@ -1133,6 +1168,12 @@ COMPANIONS_API int32_t companions_get_down_count(const Companions_Env* env,
 COMPANIONS_API bool companions_get_down(const Companions_Env* env,
                                         Companions_ReportSource source, int32_t index,
                                         Companions_ObjectId* out);
+// The revives, in resolution order (as the AgentRevived events)
+COMPANIONS_API int32_t companions_get_revive_count(const Companions_Env* env,
+                                                  Companions_ReportSource source);
+COMPANIONS_API bool companions_get_revive(const Companions_Env* env,
+                                          Companions_ReportSource source, int32_t index,
+                                          Companions_ReviveInfo* out);
 
 // What an outcome preview found (since 1.5); its reports are read with
 // Companions_Report_Preview.
@@ -1144,6 +1185,7 @@ typedef struct {
   int32_t reaction_count;
   int32_t defeat_count;
   int32_t down_count;
+  int32_t revive_count;
 } Companions_SkillOutcome;
 
 // What companion `agent` using its slot `slot` aimed `aim` would DO now,
@@ -1155,8 +1197,10 @@ typedef struct {
 // as they were; no tag is interned). The reports replace the previous
 // preview's (Companions_Report_Preview): the use, its tag landings (the
 // skill's, a zone's where a skill motion lands someone, the reactions'
-// results), its reactions (with the cells a zone_becomes changed), its
-// defeats and the downs it caused. The real step may differ as
+// results), its reactions (with the cells a zone_becomes (re)set), its
+// defeats, the downs it caused and its revives. One preview is held at a
+// time: to compare several aims or slots, read each one's reports before
+// the next preview. The real step may differ as
 // companions_preview_skill says, and it also lands the zones on those
 // standing on them before the skills (reported first: a tag they did not
 // carry yet can react or defeat before the use). False, `out` and the

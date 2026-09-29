@@ -1039,6 +1039,8 @@ Snapshot ReadSnapshot(const json& j) {
 
   // RNG state
   const json& rng = Key(j, "rng_state", "snapshot");
+  RequireObject(rng, "rng_state");
+  CheckKeys(rng, {"state", "inc"}, "rng_state");
   snapshot.rng_state = Get<uint64_t>(rng, "state", "rng_state");
   snapshot.rng_inc = Get<uint64_t>(rng, "inc", "rng_state");
 

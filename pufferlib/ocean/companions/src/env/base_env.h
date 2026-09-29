@@ -81,6 +81,11 @@ class BaseEnv {
   // RL interface
   virtual void Reset() = 0;
   virtual void Reset(unsigned int seed) = 0;
+  // A step that throws is aborted (AbortStep): the env is between two steps
+  // again, but keeps what the step did before the throw. One that throws
+  // after its timers ticked (TickZones: the downs report, PostStep, the
+  // lens's rewards and outcome latch) keeps the incremented tick too; only
+  // what came after the throw is missing.
   virtual StepResult Step(const std::vector<Action>& actions);
   // Done: the env's own rule (IsEnvDone: success, horizon, a failure it
   // honours), or the team is down (whatever the env). The cheap term first.
@@ -354,7 +359,9 @@ class BaseEnv {
   // between steps still to report). Tag ids in them are the clone's (a skill's
   // tags may not be interned in this env yet): read their names in the
   // clone's GetTagTable().
-  // Costs a copy of the env: meant for a UI, not the RL hot path. The real
+  // Each call returns its own world (the C API keeps one: its last
+  // preview's). Costs a copy of the env: meant for a UI, not the RL hot
+  // path. The real
   // step may differ as PreviewSkill says (everyone moves first, the zones
   // land on those standing on them, the casters resolve in agent order).
   struct SkillOutcome {
@@ -470,9 +477,11 @@ class BaseEnv {
     // Every agent it affected, in agent-index order (the trigger included,
     // unless a weakness defeated it: then possibly none)
     std::vector<ReactionOutcome> affected;
-    // The cells the spread region became the rule's zone_becomes, in
-    // row-major order (empty when the region kept its zone: no spread, or no
-    // zone_becomes), so a host knows the zone changed without diffing the grid
+    // The cells the reaction (re)set to the rule's zone_becomes, in
+    // row-major order (empty without a spread or a zone_becomes; a
+    // zone_becomes equal to the region's zone still lists them: the tag
+    // stays, its lifetime starts again), so a host knows the zone changed
+    // without diffing the grid
     std::vector<Position> cells;
   };
   // `rule` indexes the current reactions: a SetReactions between the step and
@@ -672,6 +681,13 @@ class BaseEnv {
   // latched (AggroEnv spawns its enemy then). Not after a Step: the reason
   // fixed then must stay.
   void RelatchEndReasonAfterLoad();
+
+  // A copy's FSM agents still point at the copied env's RNG
+  // (FSMContext::rng, a raw pointer copied with them): re-points those at
+  // `from` to `to`, the copy's own, so a copy (a Clone, an outcome preview's
+  // world) never draws from, or advances, the original's. The derived envs,
+  // which own the RNG, call it from their copy constructor and assignment.
+  void RepointFsmRng(const pcg32* from, pcg32* to);
 
   // D4 symmetry transform - call at end of Reset() in subclasses
   // Transforms grid cells, actor positions, cell annotations and zones

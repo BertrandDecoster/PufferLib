@@ -282,6 +282,55 @@ TEST(TestAgentHasFSM) {
   ASSERT_EQ(fsm_agent->GetCurrentState()->GetName(), "Patrol");
 }
 
+// The FSM's RNG state of the first FSM agent, as a snapshot saves it
+static uint64_t FsmRngState(const BaseEnv& env) {
+  for (const auto& a : env.SaveSnapshot().agents) {
+    if (a.has_fsm) return a.fsm.rng_state;
+  }
+  throw std::runtime_error("no FSM agent");
+}
+
+static const FSMContext& FsmContext(BaseEnv& env) {
+  for (Agent* agent : env.GetMutableObjectManager().GetAllAgents()) {
+    if (auto* e = dynamic_cast<AgentFSM*>(agent)) return e->GetFSMContext();
+  }
+  throw std::runtime_error("no FSM agent");
+}
+
+// A copy (Clone, copy constructor, assignment) draws from its own RNG: its
+// FSM agents no longer point at the original env's, so stepping the copy
+// leaves the original's RNG where it was.
+TEST(TestACloneDrawsFromItsOwnRng) {
+  AggroEnv env(10, 1, EnemyType::Zombie, 42);
+  const pcg32* original = FsmContext(env).rng;
+  ASSERT_TRUE(original != nullptr);
+  const uint64_t before = FsmRngState(env);
+
+  std::unique_ptr<BaseEnv> clone = env.Clone();
+  ASSERT_TRUE(FsmContext(*clone).rng != nullptr);
+  ASSERT_TRUE(FsmContext(*clone).rng != original);
+  ASSERT_TRUE(FsmRngState(*clone) == before);  // The same state, its own copy
+  AggroEnv copy(env);
+  ASSERT_TRUE(FsmContext(copy).rng != original);
+  AggroEnv assigned(10, 1, EnemyType::Zombie, 7);
+  assigned = env;
+  ASSERT_TRUE(FsmContext(assigned).rng != original);
+  ASSERT_TRUE(FsmContext(assigned).rng != FsmContext(copy).rng);
+
+  // The companion walks around the patrol (the zombie chases it: its
+  // pathfinder breaks ties with the RNG), in the clone only
+  const MovementAction walk[] = {MovementAction::Up, MovementAction::Left, MovementAction::Down,
+                                 MovementAction::Right};
+  for (int i = 0; i < 40; ++i) {
+    std::vector<Action> actions(clone->NumAgents(), EncodeAction(MovementAction::Stay));
+    actions[0] = EncodeAction(walk[(i / 3) % 4]);
+    clone->Step(actions);
+  }
+  ASSERT_TRUE(FsmRngState(*clone) != before);  // The clone did draw
+  ASSERT_TRUE(FsmRngState(env) == before);
+  ASSERT_TRUE(FsmContext(env).rng == original);
+}
+
 // =============================================================================
 // Win Condition Tests
 // =============================================================================

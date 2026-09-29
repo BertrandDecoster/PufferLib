@@ -1882,6 +1882,19 @@ TEST(TestJsonRngStatesAreStrict) {
   SnapshotFromJson(j.dump());
 }
 
+// The rng_state object holds its two keys only, like the root and the agents
+TEST(TestJsonRngStateRejectsUnknownKeys) {
+  json j = LevelJson();
+  j.at("rng_state")["seed"] = 1;
+  AssertJsonErrorMentions(j, {"rng_state: unknown key 'seed'"});
+  j = LevelJson();
+  j["rng_state"] = json::array({1, 2});
+  AssertJsonErrorMentions(j, {"rng_state", "must be object"});
+  j = LevelJson();
+  j.at("rng_state").erase("inc");
+  AssertJsonErrorMentions(j, {"rng_state: key 'inc' not found"});
+}
+
 // "none" is a status name the agents' statuses accept, but not a tag status
 TEST(TestJsonTagStatusNoneIsNotAStatus) {
   json j = LevelJson();

@@ -5,6 +5,7 @@
 // The world is built in C++, saved as a JSON snapshot (v7) and loaded through
 // the C API; a C++ env loaded from the same snapshot is the reference (parity).
 
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -154,7 +155,7 @@ static std::string KitchenJson() {
   return SnapshotToJson(env.SaveSnapshot());
 }
 
-static Companions_Env* LoadKitchen(const std::string& json) {
+static Companions_Env* LoadKitchen(const std::string& json, int32_t agents = kAgents) {
   Companions_EnvConfig config = {};
   config.rows = 10;
   config.cols = 10;
@@ -167,7 +168,7 @@ static Companions_Env* LoadKitchen(const std::string& json) {
   if (!companions_load_snapshot_json(env, json.c_str())) {
     throw std::runtime_error(std::string("the kitchen did not load: ") + companions_get_error());
   }
-  ASSERT_EQ(companions_get_agent_count(env), kAgents);
+  ASSERT_EQ(companions_get_agent_count(env), agents);
   return env;
 }
 
@@ -909,6 +910,216 @@ TEST(TestAnOutcomePreviewOfAnUnusableSkillIsEmpty) {
   ASSERT_EQ(outcome.down_count, 0);
   ApiStep(env);
   ASSERT_EQ(companions_get_down_count(env, Companions_Report_LastStep), 1);
+  companions_destroy(env);
+}
+
+// Two companions side by side, (3, 3) and (3, 4), 10 HP, in a walled 10x10
+static std::string DuoJson() {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  env.Reset();
+  Grid& g = env.GetMutableGrid();
+  for (int r = 0; r < 10; ++r) {
+    for (int c = 0; c < 10; ++c) {
+      const bool border = r == 0 || c == 0 || r == 9 || c == 9;
+      g.SetCell({r, c}, border ? CellKind::Wall : CellKind::Floor);
+    }
+  }
+  ObjectManager& objects = env.GetMutableObjectManager();
+  const std::vector<Agent*> companions = objects.GetAllAgents();
+  objects.UpdatePosition(companions.at(0)->GetId(), {3, 3});
+  objects.UpdatePosition(companions.at(1)->GetId(), {3, 4});
+  for (Agent* a : companions) a->SetMaxHealth(10);
+  return SnapshotToJson(env.SaveSnapshot());
+}
+
+// Next to its downed ally, the caster's slot 0 is "revive": the preview
+// reports the revive (reviver, revived, the HP it gets up with), and the
+// step then does the same.
+TEST(TestAPreviewedReviveIsReported) {
+  Companions_Env* env = LoadKitchen(DuoJson(), 2);
+  const Companions_ObjectId caster = IdAt(env, 0), ally = IdAt(env, 1);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", 3, 4, Companions_Direction_Up, -1));
+  Companions_SkillOutcome outcome = {};
+  ASSERT_TRUE(companions_preview_skill_outcome(env, caster, 0, Companions_Direction_Right, &outcome));
+  ASSERT_TRUE(outcome.usable);
+  ASSERT_EQ(outcome.skill_use_count, 1);
+  ASSERT_EQ(outcome.revive_count, 1);
+  ASSERT_EQ(outcome.down_count, 0);  // The kill is the next step's report
+  ASSERT_EQ(companions_get_revive_count(env, Companions_Report_Preview), 1);
+  Companions_ReviveInfo preview = {};
+  ASSERT_TRUE(companions_get_revive(env, Companions_Report_Preview, 0, &preview));
+  ASSERT_EQ(preview.reviver, caster);
+  ASSERT_EQ(preview.revived, ally);
+  ASSERT_EQ(preview.health, 5);  // Half of 10
+  Companions_SkillUseInfo use = {};
+  ASSERT_TRUE(companions_get_skill_use(env, Companions_Report_Preview, 0, &use));
+  ASSERT_EQ(std::string(use.skill), std::string("revive"));
+  ASSERT_EQ(companions_get_revive_count(env, Companions_Report_LastStep), 0);
+  Companions_ReviveInfo untouched = {};
+  untouched.health = 77;
+  ASSERT_FALSE(companions_get_revive(env, Companions_Report_Preview, 1, &untouched));
+  ASSERT_ERROR("Revive index out of range");
+  ASSERT_FALSE(companions_get_revive(env, static_cast<Companions_ReportSource>(7), 0, &untouched));
+  ASSERT_ERROR("Invalid report source");
+  ASSERT_FALSE(companions_get_revive(env, Companions_Report_Preview, 0, nullptr));
+  ASSERT_ERROR("Invalid arguments");
+  ASSERT_EQ(companions_get_revive_count(nullptr, Companions_Report_Preview), 0);
+  ASSERT_ERROR("Invalid environment");
+  ASSERT_EQ(untouched.health, 77);
+
+  const Companions_Action actions[2] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                                        {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  ASSERT_TRUE(companions_step(env, actions, 2, &result));
+  ASSERT_EQ(companions_get_revive_count(env, Companions_Report_LastStep), 1);
+  Companions_ReviveInfo stepped = {};
+  ASSERT_TRUE(companions_get_revive(env, Companions_Report_LastStep, 0, &stepped));
+  ASSERT_TRUE(std::memcmp(&stepped, &preview, sizeof(stepped)) == 0);
+  companions_destroy(env);
+}
+
+// A reset and every snapshot load (binary, JSON, JSON file) drop the outcome
+// preview; the loads empty the last step's reports too
+TEST(TestResetAndLoadsDropThePreview) {
+  const std::string json = KitchenJson();
+  Companions_Env* env = LoadKitchen(json);
+  ApiStep(env);
+  const std::vector<uint8_t> bytes = SnapshotBytes(env);
+  auto preview = [&] {
+    Companions_SkillOutcome outcome = {};
+    ASSERT_TRUE(companions_preview_skill_outcome(env, IdAt(env, kCaster), 0,
+                                                 Companions_Direction_Right, &outcome));
+    ASSERT_EQ(companions_get_skill_use_count(env, Companions_Report_Preview), 1);
+  };
+  auto dropped = [&](const char* by) {
+    if (companions_get_tag_landing_count(env, Companions_Report_Preview) != 0 ||
+        companions_get_skill_use_count(env, Companions_Report_Preview) != 0) {
+      throw std::runtime_error(std::string("the preview survived ") + by);
+    }
+  };
+  auto empty_step_reports = [&](const char* by) {
+    if (ApiTrace(env, Companions_Report_LastStep) != "") {
+      throw std::runtime_error(std::string("the last step's reports survived ") + by);
+    }
+  };
+
+  ApiStep(env, kCaster);  // Reports to empty
+  preview();
+  ASSERT_TRUE(companions_load_snapshot(env, bytes.data(), static_cast<int32_t>(bytes.size())));
+  dropped("a binary load");
+  empty_step_reports("a binary load");
+
+  ApiStep(env, kCaster);
+  preview();
+  ASSERT_TRUE(companions_load_snapshot_json(env, json.c_str()));
+  dropped("a JSON load");
+  empty_step_reports("a JSON load");
+
+  const char* path = "test_api_reactions_kitchen.json";
+  ASSERT_TRUE(companions_save_snapshot_json(env, path));
+  ApiStep(env);
+  ApiStep(env, kCaster);
+  preview();
+  const bool loaded = companions_load_snapshot_json_file(env, path);
+  std::remove(path);
+  ASSERT_TRUE(loaded);
+  dropped("a JSON file load");
+  empty_step_reports("a JSON file load");
+
+  ApiStep(env);
+  preview();
+  ASSERT_TRUE(companions_reset(env, 5));
+  dropped("a reset");
+  empty_step_reports("a reset");
+  companions_destroy(env);
+}
+
+// =============================================================================
+// companions_step: its return value and its error
+// =============================================================================
+
+// True when it stepped, with no error left from an earlier call; false with
+// this step's error, out_result and the env untouched, when refused. (A step
+// that throws inside the env cannot be provoked through the API without a
+// test hook in the DLL; BaseEnv's side is test_reactions'
+// TestAStepThatThrowsLeavesTheStep.)
+TEST(TestAStepSaysWhetherItStepped) {
+  Companions_Env* env = LoadKitchen(KitchenJson());
+  companions_find_tag(nullptr, nullptr);  // Leaves "Invalid arguments"
+  ASSERT_ERROR("Invalid arguments");
+  std::vector<Companions_Action> actions = ApiActions();
+  Companions_StepResult result = {};
+  ASSERT_TRUE(companions_step(env, actions.data(), kAgents, &result));
+  ASSERT_ERROR("");  // Cleared: a step's error is its own
+  ASSERT_EQ(result.state.tick, 1);
+
+  auto refused = [&](const Companions_Action* a, int32_t count, Companions_StepResult* out,
+                     const char* error) {
+    Companions_StepResult before = {};
+    before.state.tick = -7;
+    before.event_count = -7;
+    Companions_StepResult* target = out ? &before : nullptr;
+    if (companions_step(env, a, count, target)) {
+      throw std::runtime_error(std::string("a step was not refused: ") + error);
+    }
+    ASSERT_EQ(std::string(companions_get_error()), std::string(error));
+    ASSERT_EQ(before.state.tick, -7);  // out_result untouched
+    ASSERT_EQ(before.event_count, -7);
+    ASSERT_EQ(companions_get_tick(env), 1);  // Nothing stepped
+  };
+  refused(actions.data(), kAgents, nullptr, "Invalid arguments");
+  refused(nullptr, kAgents, &result, "Invalid arguments");
+  refused(actions.data(), kAgents - 1, &result, "Invalid action count");
+  refused(actions.data(), kAgents + 1, &result, "Invalid action count");
+  refused(actions.data(), -1, &result, "Invalid action count");
+  actions[1].movement = static_cast<Companions_MovementAction>(9);
+  refused(actions.data(), kAgents, &result, "Invalid movement action");
+  actions[1].movement = Companions_Movement_Stay;
+  actions[1].interact = static_cast<Companions_InteractAction>(-1);
+  refused(actions.data(), kAgents, &result, "Invalid interact action");
+  ASSERT_FALSE(companions_step(nullptr, actions.data(), kAgents, &result));
+  ASSERT_ERROR("Invalid arguments");
+
+  // It steps again once the actions are valid
+  actions[1].interact = Companions_Interact_None;
+  ASSERT_TRUE(companions_step(env, actions.data(), kAgents, &result));
+  ASSERT_EQ(result.state.tick, 2);
+  ASSERT_TRUE(companions_reset(env, 3));
+  ASSERT_FALSE(companions_reset(nullptr, 3));
+  ASSERT_ERROR("Invalid environment");
+  companions_destroy(env);
+}
+
+// The defeats are state-change events: after the downs and revives, before
+// the skill uses and tags (the cap drops those first)
+TEST(TestAgentDefeatedComesWithTheStateChanges) {
+  Companions_Env* env = LoadKitchen(KitchenJson());
+  ApiStep(env);
+  const Companions_StepResult r = ApiStep(env, kCaster);
+  int last_state_change = -1, first_defeat = -1, last_defeat = -1, first_other = -1;
+  for (int32_t i = 0; i < r.event_count; ++i) {
+    switch (r.events[i].type) {
+      case Companions_Event_AgentMoved:
+      case Companions_Event_AgentBlocked:
+      case Companions_Event_AgentDowned:
+      case Companions_Event_AgentRevived:
+        ASSERT_TRUE(first_defeat < 0);  // Before any defeat
+        last_state_change = i;
+        break;
+      case Companions_Event_AgentDefeated:
+        if (first_defeat < 0) first_defeat = i;
+        last_defeat = i;
+        break;
+      default:
+        if (first_other < 0) first_other = i;
+        break;
+    }
+  }
+  ASSERT_TRUE(last_state_change >= 0);  // The cook's AgentDowned
+  ASSERT_EQ(last_defeat - first_defeat, 1);  // The gob and the cook, together
+  ASSERT_TRUE(first_defeat > last_state_change);
+  ASSERT_TRUE(first_other > last_defeat);
+  ASSERT_EQ(r.events[first_other].type, Companions_Event_SkillUsed);
   companions_destroy(env);
 }
 

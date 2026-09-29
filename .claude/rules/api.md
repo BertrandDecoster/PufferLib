@@ -22,6 +22,7 @@ The C API wraps the pure C++17 game logic with POD-only types for safe DLL bound
 | `src/api/companions_api.cc` | Implementation wrapping SynchroEnv |
 | `tests/test_api.cc` | Unit tests for C API (14 tests) |
 | `tests/test_api_parity.cc` | Parity test vs direct C++ (7 tests) |
+| `tests/test_api_reactions.cc` | 1.5: reports, outcome previews, level data, parity |
 
 ## Core API
 
@@ -30,19 +31,22 @@ The C API wraps the pure C++17 game logic with POD-only types for safe DLL bound
 ```c
 Companions_Env* companions_create(const Companions_EnvConfig* config);
 void companions_destroy(Companions_Env* env);
-void companions_reset(Companions_Env* env, uint32_t seed);
+bool companions_reset(Companions_Env* env, uint32_t seed);  // 1.5: false on error
 ```
 
 ### Game Loop
 
 ```c
-void companions_step(
+bool companions_step(                // 1.5: false with the error (cleared first)
     Companions_Env* env,
     const Companions_Action* actions,  // [num_agents] movement + interact
-    int32_t action_count,
+    int32_t action_count,              // Must be the agent count
     Companions_StepResult* out_result  // State + transition events
 );
 ```
+
+A refused step leaves `out_result` untouched; a step that throws inside the env fills it
+with the env's current state and no event. No exception crosses the boundary.
 
 ### State Queries
 
@@ -74,9 +78,15 @@ Events returned by `companions_step()` for animation:
 | `Companions_Event_AgentBlocked` | Agent tried to move but was blocked |
 | `Companions_Event_AgentDowned` | A companion went down (1.3) |
 | `Companions_Event_AgentRevived` | A downed companion got up (1.4: reviver, HP) |
+| `Companions_Event_AgentDefeated` | 1.5: a weakness (P, S) defeated an agent (S, its landing's source / `tag_kind` / `tag_reaction`); a state-change event |
 | `Companions_Event_SkillUsed` | A companion used a skill slot (caster, centre, slot, skill) |
-| `Companions_Event_TagApplied` | A tag landed on an agent (skill or zone) |
+| `Companions_Event_TagApplied` | A tag landed on an agent (a skill's, a zone's or a reaction's result; 1.5: `tag_kind`, `tag_reaction`, `health_amount` = zone damage) |
+| `Companions_Event_ReactionFired` | 1.5: a reaction fired (trigger, rule, result, the triggering landing's source / kind) |
 | `Companions_Event_EpisodeEnd` | Episode ended (`effect_id` = the end reason) |
+
+Order in a step: moved / blocked, downed, revived, defeated, skill used, tag applied,
+reaction fired, episode end. Since 1.5 every event carries `report_index` (its entry in
+the uncapped report query, -1 for none): the events are capped, the reports are not.
 
 The header's "Versioning" and "Event System" comments are the reference (order,
 event cap, what each version changed); the companions `CLAUDE.md` summarizes them.
@@ -91,6 +101,14 @@ the last step's uses (`companions_get_last_skill_use_count` / `get_last_skill_us
 `Companions_SkillUseInfo`, the affected agents with `Companions_SkillEffect` flags).
 `Companions_AgentState.skills` are the effective skills (context rules applied),
 `equipped_skills` the slots' own.
+
+## Rules as data (1.5)
+
+Report queries with a `Companions_ReportSource` (`LastStep`, or `Preview`: the last
+`companions_preview_skill_outcome`, one held at a time): skill uses, tag landings,
+reactions (with the cells a `zone_becomes` (re)set), defeats, downs, revives. The level
+data, read-only: zone table, cell zones, reaction rules, tag statuses, weaknesses,
+immunities. The header's "Reports" and "Level data" sections are the reference.
 
 ## Thread Safety
 

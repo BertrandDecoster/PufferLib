@@ -1402,6 +1402,13 @@ void BaseEnv::ApplyZoneTags() {
   }
 }
 
+void BaseEnv::RepointFsmRng(const pcg32* from, pcg32* to) {
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    auto* fsm = dynamic_cast<AgentFSM*>(agent);
+    if (fsm && fsm->GetFSMContext().rng == from) fsm->GetFSMContext().rng = to;
+  }
+}
+
 void BaseEnv::AbortStep() {
   in_step_ = false;
   for (Agent* agent : object_manager_->GetAllAgents()) agent->AbortStep();

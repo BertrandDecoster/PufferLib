@@ -460,9 +460,10 @@ a status.
   result: its reaction's index in `GetLastReactions()`). A result keeps the source and
   cause of the landing that triggered its reaction; its `fresh` reads the agent before
   the reaction removed the originals (a result that is one of them is not fresh on an
-  agent that carried it). A `ReactionReport`'s `cells`: the cells its spread region
-  became `zone_becomes`, row-major (empty when the region kept its zone), so a host
-  sees "the oil caught fire" without diffing. C API: 1.5 (see Per-step reports)
+  agent that carried it). A `ReactionReport`'s `cells`: the cells it (re)set to
+  `zone_becomes`, row-major (empty without a spread or a `zone_becomes`; a
+  `zone_becomes` equal to the region's zone still lists them, its lifetime restarting),
+  so a host sees "the oil caught fire" without diffing. C API: 1.5 (see Per-step reports)
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
 (damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
@@ -488,7 +489,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
-  AgentDowned, AgentRevived, SkillUsed, TagApplied, ReactionFired, AgentDefeated, EpisodeEnd (grouped by kind, not in time order: a companion revived then
+  AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a companion revived then
   downed again in one step has its second AgentDowned before its AgentRevived); at most
   `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest.
   The state changes (movement, down, revive) come first, so SkillUsed / TagApplied are cut
@@ -530,16 +531,22 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   `_tag_landing*` (`Companions_TagLanding`: names, cause, `Companions_TagSource` kind,
   reaction, fresh, damage), `_reaction*` (`Companions_ReactionInfo`: the rule's a / b /
   result, trigger, triggering landing, spread, affected with outcomes, `zone_becomes` and
-  `cell_count`; `companions_get_reaction_cell`), `_defeat*`, `_down*`;
+  `cell_count`; `companions_get_reaction_cell`), `_defeat*`, `_down*`, `_revive*`;
   `companions_preview_skill_outcome` (`PreviewSkillOutcome`, the clone kept in the
-  wrapper); level data, read-only: `companions_get_zone_def*` / `_find_zone_def` (the
+  wrapper: one preview at a time, read each aim's reports before the next); level data, read-only: `companions_get_zone_def*` / `_find_zone_def` (the
   table, sorted by tag), `companions_get_cell_zone` (a cell's resolved zone, remaining
   steps included), `_reaction_rule*`, `_tag_status*`, `_agent_weakness*`,
-  `_agent_immunity*`; events `ReactionFired` (19) / `AgentDefeated` (20) after TagApplied;
-  `Companions_Event.tag_kind` / `tag_reaction` / `report_index` (-1 when none). A step
-  that throws sets the error and returns (the exception no longer crosses the boundary;
-  `BaseEnv::Step` aborts the step, `AbortStep`, so `SaveSnapshot`, which now throws
-  inside a step, works after it)
+  `_agent_immunity*`; events `ReactionFired` (19, after TagApplied) / `AgentDefeated`
+  (20, a state-change event after AgentRevived: the cap keeps it before the skills);
+  `Companions_Event.tag_kind` / `tag_reaction` / `report_index` (-1 when none).
+  `companions_step` / `companions_reset` return bool (false with the error; the step
+  clears the error first and refuses an action count other than the agent count).
+  No exception crosses the boundary: a step that throws returns false with the env's
+  current state in `out_result` and no event (`BaseEnv::Step` aborts the step,
+  `AbortStep`, so `SaveSnapshot`, which throws inside a step, works after it; a throw
+  after `TickZones` keeps the incremented tick). A copy of an env (Clone, copy,
+  assignment) re-points its FSM agents' `FSMContext::rng` at its own RNG
+  (`RepointFsmRng`)
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots

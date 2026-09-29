@@ -46,7 +46,9 @@ DodgeEnv::DodgeEnv(const DodgeEnv& other)
       seed_(other.seed_),
       rng_(other.rng_),
       any_dead_(other.any_dead_),
-      hazard_effects_(other.hazard_effects_) {}
+      hazard_effects_(other.hazard_effects_) {
+  RepointFsmRng(&other.rng_, &rng_);  // A copy draws from its own RNG
+}
 
 DodgeEnv& DodgeEnv::operator=(const DodgeEnv& other) {
   if (this != &other) {
@@ -55,6 +57,7 @@ DodgeEnv& DodgeEnv::operator=(const DodgeEnv& other) {
     hazard_interval_ = other.hazard_interval_;
     seed_ = other.seed_;
     rng_ = other.rng_;
+    RepointFsmRng(&other.rng_, &rng_);
     any_dead_ = other.any_dead_;
     hazard_effects_ = other.hazard_effects_;
   }

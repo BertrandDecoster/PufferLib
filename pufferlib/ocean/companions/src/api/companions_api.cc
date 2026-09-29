@@ -64,7 +64,8 @@
 // downs; companions_preview_skill_outcome; the level data (zone table, cell
 // zones, reaction rules, tag statuses, weaknesses, immunities);
 // Companions_Event_ReactionFired / _AgentDefeated, Companions_Event.tag_kind /
-// tag_reaction / report_index, TagApplied's health_amount (zone damage).
+// tag_reaction / report_index, TagApplied's health_amount (zone damage),
+// revives as a report too; companions_step and companions_reset return bool.
 #define COMPANIONS_VERSION "1.5.0"
 
 // =============================================================================
@@ -543,10 +544,7 @@ static Companions_Position ActorCell(const companions::BaseEnv& env, companions:
 // tag_reaction; health_amount = the zone damage it dealt), then one
 // ReactionFired per reaction (subject = the trigger, at its cell; effect_id =
 // the rule, effect_name = its result; health_source_id / tag_kind = the
-// triggering landing's), then one AgentDefeated per defeat (subject = the
-// agent, at its cell; effect_id / effect_name = the tag S; health_source_id /
-// tag_kind / tag_reaction = its landing's). report_index = the entry in the
-// report query.
+// triggering landing's). report_index = the entry in the report query.
 static void AddSkillAndTagEvents(Companions_Env* wrapper) {
   auto* env = wrapper->env.get();
   const auto& uses = env->GetLastSkillUses();
@@ -599,6 +597,15 @@ static void AddSkillAndTagEvents(Companions_Env* wrapper) {
     evt.report_index = static_cast<int32_t>(i);
     wrapper->events.push_back(evt);
   }
+}
+
+// One AgentDefeated per defeat (subject = the agent, at its cell; effect_id /
+// effect_name = the tag S; health_source_id / tag_kind / tag_reaction = its
+// landing's; report_index), among the state changes: for an agent that is
+// not a companion it is the only event of its death, so the cap must not
+// drop it before the skills and tags.
+static void AddDefeatEvents(Companions_Env* wrapper) {
+  auto* env = wrapper->env.get();
   const auto& defeats = env->GetLastDefeats();
   for (size_t i = 0; i < defeats.size(); ++i) {
     const auto& defeat = defeats[i];
@@ -651,6 +658,41 @@ static void AddReviveEvents(Companions_Env* wrapper) {
   }
 }
 
+// A step that threw: the state as the env holds it now (what the aborted step
+// did before it threw included), and no event
+static void FillFailedStep(Companions_Env* env, Companions_StepResult* out) {
+  env->events.clear();
+  ExtractGameState(env, &out->state);
+  out->event_count = 0;
+  out->events_dropped = 0;
+}
+
+// The companion `agent` of `env` (errors "Agent not found" / "Not a
+// companion"), or null
+static const companions::Companion* PreviewedCompanion(const Companions_Env* env,
+                                                       Companions_ObjectId agent) {
+  const companions::Actor* actor = env->env->GetObjectManager().GetActor(agent);
+  if (!dynamic_cast<const companions::Agent*>(actor)) {
+    SetError("Agent not found");
+    return nullptr;
+  }
+  const auto* comp = dynamic_cast<const companions::Companion*>(actor);
+  if (!comp) SetError("Not a companion");
+  return comp;
+}
+
+// `aim` as a companions::Direction; false ("Invalid direction") outside Up..Right
+static bool ToDirection(Companions_Direction aim, companions::Direction* out) {
+  switch (aim) {
+    case Companions_Direction_Up: *out = companions::Direction::Up; return true;
+    case Companions_Direction_Down: *out = companions::Direction::Down; return true;
+    case Companions_Direction_Left: *out = companions::Direction::Left; return true;
+    case Companions_Direction_Right: *out = companions::Direction::Right; return true;
+  }
+  SetError("Invalid direction");
+  return false;
+}
+
 // Name of `tag_id` from the wrapper's stable copies (see tag_names), or null.
 static const char* StableTagName(const Companions_Env* wrapper, int32_t tag_id) {
   const auto& table = wrapper->env->GetTagTable();
@@ -695,6 +737,10 @@ COMPANIONS_API Companions_Env* companions_create(
 
   } catch (const std::exception& e) {
     SetError(e.what());
+    delete wrapper;
+    return nullptr;
+  } catch (...) {
+    SetError("Unknown error");
     delete wrapper;
     return nullptr;
   }
@@ -747,6 +793,10 @@ COMPANIONS_API Companions_Env* companions_create_aggro(
 
   } catch (const std::exception& e) {
     SetError(e.what());
+    delete wrapper;
+    return nullptr;
+  } catch (...) {
+    SetError("Unknown error");
     delete wrapper;
     return nullptr;
   }
@@ -813,6 +863,9 @@ COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_Len
   } catch (const std::exception& e) {
     SetError(e.what());
     return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
   }
 }
 
@@ -865,6 +918,9 @@ COMPANIONS_API bool companions_set_task_lens_with_params(
   } catch (const std::exception& e) {
     SetError(e.what());
     return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
   }
 }
 
@@ -888,15 +944,24 @@ COMPANIONS_API Companions_LensType companions_get_task_lens(Companions_Env* env)
   return Companions_Lens_Unknown;
 }
 
-COMPANIONS_API void companions_reset(Companions_Env* env,
+COMPANIONS_API bool companions_reset(Companions_Env* env,
                                            uint32_t seed) {
   if (!env || !env->env) {
     SetError("Invalid environment");
-    return;
+    return false;
   }
 
-  env->env->Reset(seed);
   env->preview.reset();
+  env->events.clear();
+  try {
+    env->env->Reset(seed);
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
+  }
   StartEpisode(*env);
   std::fill(env->last_rewards.begin(), env->last_rewards.end(), 0.0);
   env->events.clear();
@@ -907,32 +972,19 @@ COMPANIONS_API void companions_reset(Companions_Env* env,
   for (size_t i = 0; i < agents.size(); i++) {
     env->prev_positions[i] = agents[i]->GetPosition();
   }
+  return true;
 }
 
-COMPANIONS_API void companions_step(Companions_Env* env,
-                                          const Companions_Action* actions,
-                                          int32_t action_count,
-                                          Companions_StepResult* out_result) {
-  if (!env || !env->env || !actions || !out_result) {
-    SetError("Invalid arguments");
-    return;
-  }
-
-  // Store previous positions for event generation
-  auto agents = env->env->GetObjectManager().GetAllAgents();
-  env->prev_positions.resize(agents.size());
-  for (size_t i = 0; i < agents.size(); i++) {
-    env->prev_positions[i] = agents[i]->GetPosition();
-  }
-
-  // Validate and convert actions to C++ format
-  std::vector<companions::Action> cpp_actions(action_count);
+// The actions as the env's flat actions; false with the error set for a
+// value outside the enums
+static bool ConvertActions(const Companions_Action* actions, int32_t action_count,
+                           std::vector<companions::Action>* out) {
+  out->resize(static_cast<size_t>(action_count));
   for (int i = 0; i < action_count; i++) {
-    // Validate movement action range
     if (actions[i].movement < Companions_Movement_Stay ||
         actions[i].movement > Companions_Movement_Right) {
       SetError("Invalid movement action");
-      return;
+      return false;
     }
     // An interact outside None..Skill2 is invalid. A skill slot the action
     // space does not enable yet (today Skill2) is None: EncodeAction would
@@ -940,12 +992,25 @@ COMPANIONS_API void companions_step(Companions_Env* env,
     int32_t interact = static_cast<int32_t>(actions[i].interact);
     if (interact < Companions_Interact_None || interact > Companions_Interact_Skill2) {
       SetError("Invalid interact action");
-      return;
+      return false;
     }
     if (interact >= companions::kNumInteractActions) interact = Companions_Interact_None;
-    cpp_actions[i] = companions::EncodeAction(
+    (*out)[static_cast<size_t>(i)] = companions::EncodeAction(
         static_cast<companions::MovementAction>(actions[i].movement),
         static_cast<companions::InteractAction>(interact));
+  }
+  return true;
+}
+
+// Steps, then fills `out_result` (see companions_step); throws what the env
+// throws
+static bool StepAndReport(Companions_Env* env, const std::vector<companions::Action>& cpp_actions,
+                          Companions_StepResult* out_result) {
+  // Store previous positions for event generation
+  auto agents = env->env->GetObjectManager().GetAllAgents();
+  env->prev_positions.resize(agents.size());
+  for (size_t i = 0; i < agents.size(); i++) {
+    env->prev_positions[i] = agents[i]->GetPosition();
   }
 
   // Clear events from previous step, and the outcome preview (of the world
@@ -953,16 +1018,7 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->events.clear();
   env->preview.reset();
 
-  // Step the environment. A step that throws reports the error (nothing
-  // crosses the C boundary); the env is between two steps again (it aborts
-  // the step), out_result untouched.
-  companions::StepResult result;
-  try {
-    result = env->env->Step(cpp_actions);
-  } catch (const std::exception& e) {
-    SetError(e.what());
-    return;
-  }
+  companions::StepResult result = env->env->Step(cpp_actions);
 
   // Update wrapper state
   const bool episode_ended = result.done && !env->last_step_done;
@@ -974,13 +1030,14 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   env->end_reason = CurrentEndReason(*env);
   env->last_rewards = result.rewards;
 
-  // Generate movement, down, revive, skill and tag events. The state changes
-  // (movements, downs, revives) come before the skills and tags, which can
-  // overflow Companions_MAX_EVENTS, so the cap cuts those first (see "Event
-  // System" in companions_api.h for when the state changes always fit).
+  // Generate the events. The state changes (movements, downs, revives,
+  // defeats) come before the skills, tags and reactions, which can overflow
+  // Companions_MAX_EVENTS, so the cap cuts those first (see "Event System"
+  // in companions_api.h for when the state changes always fit).
   AddMovementEvents(env);
   AddDownEvents(env);
   AddReviveEvents(env);
+  AddDefeatEvents(env);
   AddSkillAndTagEvents(env);
 
   // Add the episode end event on the step that ends the episode
@@ -1009,63 +1066,130 @@ COMPANIONS_API void companions_step(Companions_Env* env,
   if (episode_ended && total > count) out_result->events[count - 1] = env->events.back();
   out_result->event_count = count;
   out_result->events_dropped = total - count;
+  return true;
+}
+
+COMPANIONS_API bool companions_step(Companions_Env* env,
+                                          const Companions_Action* actions,
+                                          int32_t action_count,
+                                          Companions_StepResult* out_result) {
+  g_error_buffer[0] = '\0';  // A step's error is its own
+  if (!env || !env->env || !actions || !out_result) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  if (action_count != env->env->NumAgents()) {
+    SetError("Invalid action count");
+    return false;
+  }
+  std::vector<companions::Action> cpp_actions;
+  try {
+    if (!ConvertActions(actions, action_count, &cpp_actions)) return false;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
+  }
+  // A step that throws reports the error (nothing crosses the C boundary),
+  // and out_result the state as the env holds it (BaseEnv::Step aborted the
+  // step: between two steps again), with no event.
+  try {
+    return StepAndReport(env, cpp_actions, out_result);
+  } catch (const std::exception& e) {
+    SetError(e.what());
+  } catch (...) {
+    SetError("Unknown error");
+  }
+  try {
+    FillFailedStep(env, out_result);
+  } catch (...) {
+    out_result->event_count = 0;
+    out_result->events_dropped = 0;
+  }
+  return false;
 }
 
 COMPANIONS_API void companions_get_state(const Companions_Env* env,
                                                Companions_GameState* out_state) {
-  if (!env || !env->env || !out_state) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env || !out_state) {
+      SetError("Invalid arguments");
+      return;
+    }
+
+    ExtractGameState(env, out_state);
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return;
+  } catch (...) {
+    SetError("Unknown error");
     return;
   }
-
-  ExtractGameState(env, out_state);
 }
 
 COMPANIONS_API bool companions_get_agent(const Companions_Env* env,
                                                Companions_ObjectId id,
                                                Companions_AgentState* out_agent) {
-  if (!env || !env->env || !out_agent) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env || !out_agent) {
+      SetError("Invalid arguments");
+      return false;
+    }
+
+    auto agents = env->env->GetObjectManager().GetAllAgents();
+    for (size_t i = 0; i < agents.size(); i++) {
+      if (agents[i]->GetId() == id) {
+        companions::Position prev = agents[i]->GetPosition();
+        if (i < env->prev_positions.size()) {
+          prev = env->prev_positions[i];
+        }
+        ExtractAgentState(*env->env, agents[i], out_agent, prev);
+        return true;
+      }
+    }
+
+    SetError("Agent not found");
+    return false;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
-
-  auto agents = env->env->GetObjectManager().GetAllAgents();
-  for (size_t i = 0; i < agents.size(); i++) {
-    if (agents[i]->GetId() == id) {
-      companions::Position prev = agents[i]->GetPosition();
-      if (i < env->prev_positions.size()) {
-        prev = env->prev_positions[i];
-      }
-      ExtractAgentState(*env->env, agents[i], out_agent, prev);
-      return true;
-    }
-  }
-
-  SetError("Agent not found");
-  return false;
 }
 
 COMPANIONS_API bool companions_get_agent_by_index(
     const Companions_Env* env,
     int32_t index,
     Companions_AgentState* out_agent) {
-  if (!env || !env->env || !out_agent) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env || !out_agent) {
+      SetError("Invalid arguments");
+      return false;
+    }
+
+    auto agents = env->env->GetObjectManager().GetAllAgents();
+    if (index < 0 || index >= static_cast<int>(agents.size())) {
+      SetError("Index out of range");
+      return false;
+    }
+
+    companions::Position prev = agents[index]->GetPosition();
+    if (static_cast<size_t>(index) < env->prev_positions.size()) {
+      prev = env->prev_positions[index];
+    }
+    ExtractAgentState(*env->env, agents[index], out_agent, prev);
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
-
-  auto agents = env->env->GetObjectManager().GetAllAgents();
-  if (index < 0 || index >= static_cast<int>(agents.size())) {
-    SetError("Index out of range");
-    return false;
-  }
-
-  companions::Position prev = agents[index]->GetPosition();
-  if (static_cast<size_t>(index) < env->prev_positions.size()) {
-    prev = env->prev_positions[index];
-  }
-  ExtractAgentState(*env->env, agents[index], out_agent, prev);
-  return true;
 }
 
 COMPANIONS_API Companions_CellKind companions_get_cell(
@@ -1134,30 +1258,38 @@ COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
                                             int32_t row, int32_t col,
                                             Companions_Direction direction,
                                             Companions_ObjectId source_id) {
-  if (!env || !env->env || !effect_name) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env || !effect_name) {
+      SetError("Invalid arguments");
+      return false;
+    }
+    if (row < 0 || row >= env->env->GetRows() ||
+        col < 0 || col >= env->env->GetCols()) {
+      SetError("Position out of bounds");
+      return false;
+    }
+    if (!companions::EffectConfigRegistry::Instance().GetConfig(effect_name)) {
+      SetError((std::string("Unknown effect: ") + effect_name).c_str());
+      return false;
+    }
+    companions::Direction dir = companions::Direction::Up;
+    switch (direction) {
+      case Companions_Direction_Up: dir = companions::Direction::Up; break;
+      case Companions_Direction_Down: dir = companions::Direction::Down; break;
+      case Companions_Direction_Left: dir = companions::Direction::Left; break;
+      case Companions_Direction_Right: dir = companions::Direction::Right; break;
+    }
+    env->env->SpawnEffect(effect_name,
+                          companions::EffectTarget::AtCell(companions::Position{row, col}), dir,
+                          source_id);
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
-  if (row < 0 || row >= env->env->GetRows() ||
-      col < 0 || col >= env->env->GetCols()) {
-    SetError("Position out of bounds");
-    return false;
-  }
-  if (!companions::EffectConfigRegistry::Instance().GetConfig(effect_name)) {
-    SetError((std::string("Unknown effect: ") + effect_name).c_str());
-    return false;
-  }
-  companions::Direction dir = companions::Direction::Up;
-  switch (direction) {
-    case Companions_Direction_Up: dir = companions::Direction::Up; break;
-    case Companions_Direction_Down: dir = companions::Direction::Down; break;
-    case Companions_Direction_Left: dir = companions::Direction::Left; break;
-    case Companions_Direction_Right: dir = companions::Direction::Right; break;
-  }
-  env->env->SpawnEffect(effect_name,
-                        companions::EffectTarget::AtCell(companions::Position{row, col}), dir,
-                        source_id);
-  return true;
 }
 
 // =============================================================================
@@ -1165,62 +1297,102 @@ COMPANIONS_API bool companions_spawn_effect(Companions_Env* env,
 // =============================================================================
 
 COMPANIONS_API const char* companions_get_tag_name(const Companions_Env* env, int32_t tag_id) {
-  if (!env || !env->env) {
-    SetError("Invalid environment");
+  try {
+    if (!env || !env->env) {
+      SetError("Invalid environment");
+      return nullptr;
+    }
+    const char* name = StableTagName(env, tag_id);
+    if (!name) SetError("Unknown tag id");
+    return name;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return nullptr;
+  } catch (...) {
+    SetError("Unknown error");
     return nullptr;
   }
-  const char* name = StableTagName(env, tag_id);
-  if (!name) SetError("Unknown tag id");
-  return name;
 }
 
 COMPANIONS_API int32_t companions_find_tag(const Companions_Env* env, const char* name) {
-  if (!env || !env->env || !name) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env || !name) {
+      SetError("Invalid arguments");
+      return -1;
+    }
+    return env->env->GetTagTable().Find(name);
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return -1;
+  } catch (...) {
+    SetError("Unknown error");
     return -1;
   }
-  return env->env->GetTagTable().Find(name);
 }
 
 COMPANIONS_API bool companions_apply_tag(Companions_Env* env, Companions_ObjectId agent,
                                          const char* tag, int32_t duration) {
-  if (!env || !env->env || !tag) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env || !tag) {
+      SetError("Invalid arguments");
+      return false;
+    }
+    if (!env->env->ApplyTagTo(agent, tag, duration)) {
+      SetError("companions_apply_tag: unknown, downed or dead agent, an agent immune to the tag, "
+               "empty or overlong tag, or duration 0, below -1 or above 1000000");
+      return false;
+    }
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
-  if (!env->env->ApplyTagTo(agent, tag, duration)) {
-    SetError("companions_apply_tag: unknown, downed or dead agent, an agent immune to the tag, "
-             "empty or overlong tag, or duration 0, below -1 or above 1000000");
-    return false;
-  }
-  return true;
 }
 
 COMPANIONS_API bool companions_remove_tag(Companions_Env* env, Companions_ObjectId agent,
                                           const char* tag) {
-  if (!env || !env->env || !tag) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env || !tag) {
+      SetError("Invalid arguments");
+      return false;
+    }
+    if (!env->env->RemoveTagFrom(agent, tag)) {
+      SetError("companions_remove_tag: unknown agent");
+      return false;
+    }
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
-  if (!env->env->RemoveTagFrom(agent, tag)) {
-    SetError("companions_remove_tag: unknown agent");
-    return false;
-  }
-  return true;
 }
 
 COMPANIONS_API bool companions_set_cell_tag(Companions_Env* env, int32_t row, int32_t col,
                                             const char* tag, int32_t duration) {
-  if (!env || !env->env) {
-    SetError("Invalid environment");
+  try {
+    if (!env || !env->env) {
+      SetError("Invalid environment");
+      return false;
+    }
+    if (!env->env->SetCellTag(companions::Position{row, col}, tag ? tag : "", duration)) {
+      SetError("companions_set_cell_tag: out of bounds, overlong tag, or duration 0, below -1 or "
+               "above 1000000");
+      return false;
+    }
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
-  if (!env->env->SetCellTag(companions::Position{row, col}, tag ? tag : "", duration)) {
-    SetError("companions_set_cell_tag: out of bounds, overlong tag, or duration 0, below -1 or "
-             "above 1000000");
-    return false;
-  }
-  return true;
 }
 
 COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_t row,
@@ -1238,16 +1410,24 @@ COMPANIONS_API int32_t companions_get_cell_tag(const Companions_Env* env, int32_
 
 COMPANIONS_API bool companions_set_agent_skill(Companions_Env* env, Companions_ObjectId agent,
                                                int32_t slot, const char* skill) {
-  if (!env || !env->env) {
-    SetError("Invalid arguments");
+  try {
+    if (!env || !env->env) {
+      SetError("Invalid arguments");
+      return false;
+    }
+    // NULL, like "", puts the default skill back.
+    if (!env->env->SetCompanionSkill(agent, slot, skill ? skill : "")) {
+      SetError("companions_set_agent_skill: unknown skill, slot or companion");
+      return false;
+    }
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
-  // NULL, like "", puts the default skill back.
-  if (!env->env->SetCompanionSkill(agent, slot, skill ? skill : "")) {
-    SetError("companions_set_agent_skill: unknown skill, slot or companion");
-    return false;
-  }
-  return true;
 }
 
 // Companions_SkillInfo of a book entry. Names and tags fit (the env refuses
@@ -1346,44 +1526,36 @@ static void CopyAffected(const std::vector<companions::BaseEnv::AffectedAgent>& 
 COMPANIONS_API bool companions_preview_skill(const Companions_Env* env, Companions_ObjectId agent,
                                              int32_t slot, Companions_Direction aim,
                                              Companions_SkillPreview* out) {
-  if (!env || !env->env || !out) {
-    SetError("Invalid arguments");
-    return false;
-  }
-  const companions::Actor* actor = env->env->GetObjectManager().GetActor(agent);
-  if (!dynamic_cast<const companions::Agent*>(actor)) {
-    SetError("Agent not found");
-    return false;
-  }
-  const auto* comp = dynamic_cast<const companions::Companion*>(actor);
-  if (!comp) {
-    SetError("Not a companion");
-    return false;
-  }
-  if (slot < 0 || slot >= Companions_MAX_SKILL_SLOTS) {
-    SetError("Skill slot out of range");
-    return false;
-  }
-  companions::Direction dir = companions::Direction::Up;
-  switch (aim) {
-    case Companions_Direction_Up: dir = companions::Direction::Up; break;
-    case Companions_Direction_Down: dir = companions::Direction::Down; break;
-    case Companions_Direction_Left: dir = companions::Direction::Left; break;
-    case Companions_Direction_Right: dir = companions::Direction::Right; break;
-    default:
-      SetError("Invalid direction");
+  try {
+    if (!env || !env->env || !out) {
+      SetError("Invalid arguments");
       return false;
+    }
+    const companions::Companion* comp = PreviewedCompanion(env, agent);
+    if (!comp) return false;
+    if (slot < 0 || slot >= Companions_MAX_SKILL_SLOTS) {
+      SetError("Skill slot out of range");
+      return false;
+    }
+    companions::Direction dir = companions::Direction::Up;
+    if (!ToDirection(aim, &dir)) return false;
+    const companions::BaseEnv::SkillPreview p = env->env->PreviewSkill(*comp, slot, dir);
+    // Zeroed first, padding included, like Companions_SkillInfo
+    std::memset(out, 0, sizeof(*out));
+    out->usable = p.usable;
+    CopyName(out->skill, p.skill);
+    out->centre = ToAPIPosition(p.centre);
+    out->caster_landing = ToAPIPosition(p.caster_landing);
+    CopyAffected(p.affected, out->affected, out->affected_effects, &out->affected_count,
+                 &out->affected_total);
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
   }
-  const companions::BaseEnv::SkillPreview p = env->env->PreviewSkill(*comp, slot, dir);
-  // Zeroed first, padding included, like Companions_SkillInfo
-  std::memset(out, 0, sizeof(*out));
-  out->usable = p.usable;
-  CopyName(out->skill, p.skill);
-  out->centre = ToAPIPosition(p.centre);
-  out->caster_landing = ToAPIPosition(p.caster_landing);
-  CopyAffected(p.affected, out->affected, out->affected_effects, &out->affected_count,
-               &out->affected_total);
-  return true;
 }
 
 COMPANIONS_API int32_t companions_get_last_skill_use_count(const Companions_Env* env) {
@@ -1496,6 +1668,9 @@ static const std::vector<companions::BaseEnv::DefeatReport>& DefeatsOf(
 }
 static const std::vector<companions::ObjectId>& DownsOf(const companions::BaseEnv& e) {
   return e.GetLastDowns();
+}
+static const std::vector<companions::BaseEnv::Revival>& RevivesOf(const companions::BaseEnv& e) {
+  return e.GetLastRevives();
 }
 
 // A tag id of `env`'s table by name ("" for none)
@@ -1655,29 +1830,23 @@ COMPANIONS_API bool companions_get_down(const Companions_Env* env,
   return true;
 }
 
-// The companion `agent` of `env` (errors as companions_preview_skill), or null
-static const companions::Companion* PreviewedCompanion(const Companions_Env* env,
-                                                       Companions_ObjectId agent) {
-  const companions::Actor* actor = env->env->GetObjectManager().GetActor(agent);
-  if (!dynamic_cast<const companions::Agent*>(actor)) {
-    SetError("Agent not found");
-    return nullptr;
-  }
-  const auto* comp = dynamic_cast<const companions::Companion*>(actor);
-  if (!comp) SetError("Not a companion");
-  return comp;
+COMPANIONS_API int32_t companions_get_revive_count(const Companions_Env* env,
+                                                   Companions_ReportSource source) {
+  return ReportCount(env, source, RevivesOf);
 }
 
-// `aim` as a companions::Direction; false ("Invalid direction") outside Up..Right
-static bool ToDirection(Companions_Direction aim, companions::Direction* out) {
-  switch (aim) {
-    case Companions_Direction_Up: *out = companions::Direction::Up; return true;
-    case Companions_Direction_Down: *out = companions::Direction::Down; return true;
-    case Companions_Direction_Left: *out = companions::Direction::Left; return true;
-    case Companions_Direction_Right: *out = companions::Direction::Right; return true;
-  }
-  SetError("Invalid direction");
-  return false;
+COMPANIONS_API bool companions_get_revive(const Companions_Env* env,
+                                          Companions_ReportSource source, int32_t index,
+                                          Companions_ReviveInfo* out) {
+  const companions::BaseEnv* reports = nullptr;
+  const auto* revival =
+      ReportEntry(env, source, index, out, RevivesOf, "Revive index out of range", &reports);
+  if (!revival) return false;
+  std::memset(out, 0, sizeof(*out));
+  out->reviver = revival->reviver;
+  out->revived = revival->revived;
+  out->health = revival->health;
+  return true;
 }
 
 COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
@@ -1710,9 +1879,13 @@ COMPANIONS_API bool companions_preview_skill_outcome(const Companions_Env* env,
     out->reaction_count = static_cast<int32_t>(world.GetLastReactions().size());
     out->defeat_count = static_cast<int32_t>(world.GetLastDefeats().size());
     out->down_count = static_cast<int32_t>(world.GetLastDowns().size());
+    out->revive_count = static_cast<int32_t>(world.GetLastRevives().size());
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
 }
@@ -1957,33 +2130,41 @@ COMPANIONS_API int32_t companions_render_ascii(
     const Companions_Env* env,
     char* out_buffer,
     int32_t buffer_size) {
-  if (!env || !env->env) {
-    SetError("Invalid environment");
+  try {
+    if (!env || !env->env) {
+      SetError("Invalid environment");
+      return 0;
+    }
+
+    // Use the renderer to generate ASCII output
+    companions::Renderer renderer;
+    std::string ascii = renderer.RenderAscii(*env->env);
+
+    int32_t required_size = static_cast<int32_t>(ascii.size() + 1);  // +1 for null terminator
+
+    // If out_buffer is NULL, just return required size
+    if (!out_buffer) {
+      return required_size;
+    }
+
+    // Check buffer size
+    if (buffer_size < required_size) {
+      SetError("Buffer too small");
+      return required_size;
+    }
+
+    // Copy to output buffer
+    std::memcpy(out_buffer, ascii.c_str(), ascii.size());
+    out_buffer[ascii.size()] = '\0';
+
+    return required_size;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return 0;
+  } catch (...) {
+    SetError("Unknown error");
     return 0;
   }
-
-  // Use the renderer to generate ASCII output
-  companions::Renderer renderer;
-  std::string ascii = renderer.RenderAscii(*env->env);
-
-  int32_t required_size = static_cast<int32_t>(ascii.size() + 1);  // +1 for null terminator
-
-  // If out_buffer is NULL, just return required size
-  if (!out_buffer) {
-    return required_size;
-  }
-
-  // Check buffer size
-  if (buffer_size < required_size) {
-    SetError("Buffer too small");
-    return required_size;
-  }
-
-  // Copy to output buffer
-  std::memcpy(out_buffer, ascii.c_str(), ascii.size());
-  out_buffer[ascii.size()] = '\0';
-
-  return required_size;
 }
 
 // =============================================================================
@@ -2031,27 +2212,35 @@ companions_get_annotation_count(const Companions_Env* env) {
 
 COMPANIONS_API int32_t companions_get_annotations(
     const Companions_Env* env, Companions_Annotation* out, int32_t count) {
-  if (!env || !env->env || !out) {
-    SetError("Invalid environment or output buffer");
+  try {
+    if (!env || !env->env || !out) {
+      SetError("Invalid environment or output buffer");
+      return 0;
+    }
+    const auto& store = env->env->GetAnnotations();
+    auto serialized = store.Serialize();
+    int32_t n = std::min(count, static_cast<int32_t>(serialized.size()));
+    for (int32_t i = 0; i < n; ++i) {
+      const auto& a = serialized[i];
+      out[i].target_kind = a.target_type;
+      out[i].pos.row = a.pos.row;
+      out[i].pos.col = a.pos.col;
+      out[i].agent_id = a.agent_id;
+      out[i].tag = static_cast<int32_t>(a.tag);
+      out[i].owner_lens_id = a.owner_lens_id;
+      std::unordered_map<std::string, std::string> params_map;
+      for (const auto& kv : a.params) params_map.emplace(kv.first, kv.second);
+      ParamsToCompactJson(params_map, out[i].params_json,
+                          COMPANIONS_MAX_ANNOTATION_PARAMS);
+    }
+    return n;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return 0;
+  } catch (...) {
+    SetError("Unknown error");
     return 0;
   }
-  const auto& store = env->env->GetAnnotations();
-  auto serialized = store.Serialize();
-  int32_t n = std::min(count, static_cast<int32_t>(serialized.size()));
-  for (int32_t i = 0; i < n; ++i) {
-    const auto& a = serialized[i];
-    out[i].target_kind = a.target_type;
-    out[i].pos.row = a.pos.row;
-    out[i].pos.col = a.pos.col;
-    out[i].agent_id = a.agent_id;
-    out[i].tag = static_cast<int32_t>(a.tag);
-    out[i].owner_lens_id = a.owner_lens_id;
-    std::unordered_map<std::string, std::string> params_map;
-    for (const auto& kv : a.params) params_map.emplace(kv.first, kv.second);
-    ParamsToCompactJson(params_map, out[i].params_json,
-                        COMPANIONS_MAX_ANNOTATION_PARAMS);
-  }
-  return n;
 }
 
 COMPANIONS_API bool companions_has_tag_at(
@@ -2105,6 +2294,9 @@ companions_get_snapshot_size(const Companions_Env* env) {
     return static_cast<int32_t>(env->cached_snapshot.size());
   } catch (const std::exception& e) {
     SetError(e.what());
+    return 0;
+  } catch (...) {
+    SetError("Unknown error");
     return 0;
   }
 }
@@ -2175,6 +2367,9 @@ COMPANIONS_API bool companions_load_snapshot(Companions_Env* env,
   } catch (const std::exception& e) {
     SetError(e.what());
     return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
   }
 }
 
@@ -2225,6 +2420,9 @@ COMPANIONS_API int32_t companions_generate_level(
   } catch (const std::exception& e) {
     SetError(e.what());
     return 0;
+  } catch (...) {
+    SetError("Unknown error");
+    return 0;
   }
 }
 
@@ -2271,6 +2469,9 @@ COMPANIONS_API const char* companions_snapshot_to_json(
   } catch (const std::exception& e) {
     SetError(e.what());
     return nullptr;
+  } catch (...) {
+    SetError("Unknown error");
+    return nullptr;
   }
 }
 
@@ -2305,6 +2506,9 @@ COMPANIONS_API bool companions_load_snapshot_json(
   } catch (const std::exception& e) {
     SetError(e.what());
     return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
   }
 }
 
@@ -2321,6 +2525,9 @@ COMPANIONS_API bool companions_save_snapshot_json(
     return companions::SaveSnapshotToJsonFile(snap, filepath);
   } catch (const std::exception& e) {
     SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
 }
@@ -2351,6 +2558,9 @@ COMPANIONS_API bool companions_load_snapshot_json_file(
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
     return false;
   }
 }
