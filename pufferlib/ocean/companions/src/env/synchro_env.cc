@@ -202,12 +202,6 @@ void SynchroEnv::SpawnAgents() {
   }
 }
 
-bool SynchroEnv::IsEnvDone() const {
-  // A latched failure (a Dodge lens's companion down) does not end it: the
-  // episode ends at the horizon, as Horizon (no IsDoneWithoutHorizon)
-  return success_ || tick_ >= horizon_;
-}
-
 int SynchroEnv::NumAgentsOnSynchroCells() const {
   int count = 0;
   const AnnotationStore& annotations = GetAnnotations();

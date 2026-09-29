@@ -66,7 +66,11 @@
 // Companions_Event_ReactionFired / _AgentDefeated, Companions_Event.tag_kind /
 // tag_reaction / report_index, TagApplied's health_amount (zone damage),
 // revives as a report too; companions_step and companions_reset return bool.
-#define COMPANIONS_VERSION "1.5.0"
+// 1.6.0: only a team down or the horizon fails a task (behaviour; struct
+// layouts unchanged). Done is uniform: success, team down, horizon. Aggro no
+// longer fails when no enemy lives, Dodge no longer fails on a down;
+// Companions_End_TaskFailed is no longer produced.
+#define COMPANIONS_VERSION "1.6.0"
 
 // =============================================================================
 // Thread-local error message

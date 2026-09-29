@@ -25,14 +25,7 @@ bool AggroLens::CanOperateOn(const BaseEnv& env) const {
 }
 
 bool AggroLens::IsDone(const BaseEnv& env) const {
-  return IsSuccess(env) || env.GetTick() >= env.GetHorizon() || IsFailed(env);
-}
-
-bool AggroLens::HasLivingEnemy(const BaseEnv& env) {
-  for (const AgentFSM* fsm_agent : env.GetObjectManager().GetAllAgentFSMs()) {
-    if (fsm_agent->IsAlive()) return true;
-  }
-  return false;
+  return IsSuccess(env) || env.GetTick() >= env.GetHorizon();
 }
 
 bool AggroLens::IsSuccess(const BaseEnv& env) const {
@@ -55,15 +48,6 @@ double AggroLens::ComputeReward(const BaseEnv& env, int agent_id) const {
 
   if (IsSuccess(env)) {
     return kWinReward;
-  }
-  if (IsFailed(env)) {
-    // Terminal: paid once, on the step of the kill (BaseEnv latches the
-    // failure after the rewards), and it covers the rest of the episode.
-    if (env.IsTaskFailed()) return 0.0;
-    // A kill after a latched success is no failure (the first outcome is
-    // final): the enemy is just off the target, as after any success.
-    if (env.IsSuccess()) return kTimePenalty;
-    return FailurePenalty(env.GetHorizon(), env.GetTick());
   }
   return kTimePenalty;
 }

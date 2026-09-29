@@ -68,14 +68,14 @@ class DodgeEnv : public BaseEnv {
   int GetNumCompanions() const { return num_companions_; }
   int GetHazardInterval() const { return hazard_interval_; }
 
-  // Utility bounds
-  double MinUtility() const override { return -10.0; }  // Death penalty
+  // Utility bounds. The worst return: someone down from the first step to the
+  // horizon (DodgeLens: no reward is negative).
+  double MinUtility() const override { return 0.0; }
   double MaxUtility() const override { return kWinReward; }
 
-  // Reward constants
+  // Reward constants (DodgeLens's)
   static constexpr double kWinReward = 10.0;
-  static constexpr double kDeathPenalty = -10.0;
-  static constexpr double kSurvivalBonus = 0.1;  // Per tick bonus
+  static constexpr double kSurvivalBonus = 0.1;  // Per tick bonus, while nobody is down
 
   // Register default hazard effects (call once at startup)
   static void RegisterDefaultEffects();
@@ -84,11 +84,8 @@ class DodgeEnv : public BaseEnv {
   void ValidateSnapshot(const Snapshot& snapshot) const override;
 
  protected:
-  bool IsEnvDone() const override;  // Horizon, or a companion died
   void PreStep() override;
   void PostStep() override;
-  // A companion died
-  bool IsDoneWithoutHorizon() const override;
 
  private:
   void SetupGrid();
@@ -100,8 +97,6 @@ class DodgeEnv : public BaseEnv {
   int hazard_interval_;
   unsigned int seed_;
   pcg32 rng_;
-
-  bool any_dead_ = false;
 
   // Effect names to randomly spawn
   std::vector<std::string> hazard_effects_;

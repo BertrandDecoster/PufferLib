@@ -8,28 +8,27 @@
 
 namespace companions {
 
+// Survive until the horizon: success when every companion is up at the
+// horizon step. A companion down is no failure (only a team down or the
+// horizon fails a task): an ally may revive it before the horizon.
+//
+// Rewards: kSurvivalBonus per step while nobody is down (0 while someone is),
+// plus kWinReward on success.
 class DodgeLens : public TaskLens {
  public:
   static constexpr double kSurvivalBonus = 0.1;
   static constexpr double kWinReward = 10.0;
-  static constexpr double kDeathPenalty = -10.0;
 
   std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<DodgeLens>(*this); }
   Kind GetKind() const override { return kDodge; }
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;
   bool IsSuccess(const BaseEnv& env) const override;
-  // Any companion incapacitated: the survival task can no longer succeed.
-  // BaseEnv latches it. DodgeEnv ends on a death, even on the horizon step,
-  // as TaskFailed; SynchroEnv / AggroEnv ignore the latch and end at the
-  // horizon, as Horizon. The rewards do not depend on the latch: every
-  // step with a companion down pays kDeathPenalty (DodgeEnv is done from the
-  // first one on).
-  bool IsFailed(const BaseEnv& env) const override { return AnyCompanionIncapacitated(env); }
   double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
 
  private:
+  // A companion down (or dead): not affectable
   bool AnyCompanionIncapacitated(const BaseEnv& env) const;
 };
 

@@ -6,7 +6,7 @@
 // =============================================================================
 // Versioning
 // =============================================================================
-// companions_version() is "1.5.0". 1.1 changed struct layouts
+// companions_version() is "1.6.0". 1.1 changed struct layouts
 // (Companions_AgentState, Companions_Event, Companions_StepResult): consumers
 // must be rebuilt against this header, never mixed with a 1.0 DLL or header.
 // 1.2 removed the legacy generic companion cast (its on/off setter and
@@ -97,6 +97,15 @@
 // false with the error and the env's current state in out_result (no event),
 // and every other function returns its failure value with the error
 // ("Unknown error" for an exception that is not a std::exception).
+// 1.6 (behaviour, struct layouts and signatures unchanged): only a team down
+// or the horizon fails a task, so a bad situation stays salvageable. Done is
+// the same for every env and lens: the success, the team down
+// (Companions_End_TeamDown) or the horizon. The Aggro task no longer fails
+// when no enemy lives (the episode runs on to the horizon, each step paying
+// the time penalty, the kill's included); the Dodge task no longer fails on a
+// companion down (the steps with someone down pay 0, no penalty; everyone up
+// at the horizon succeeds, a revived companion included). Nothing produces
+// Companions_End_TaskFailed any more (the value stays, reserved).
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,
@@ -510,7 +519,7 @@ typedef enum {
   Companions_End_None = 0,        // Not done
   Companions_End_Success = 1,     // The task succeeded
   Companions_End_Horizon = 2,     // The horizon was reached
-  Companions_End_TaskFailed = 3,  // A task failure ended the episode (e.g. Aggro: the enemy is dead)
+  Companions_End_TaskFailed = 3,  // No longer produced since 1.6 (only a team down or the horizon fails a task); reserved
   Companions_End_TeamDown = 4,    // The team is down: max_downs reached or every companion down (the level is lost). Since 1.3
 } Companions_EndReason;
 
@@ -1327,10 +1336,10 @@ COMPANIONS_API bool companions_is_success(const Companions_Env* env);
 // becomes true: steps played on afterwards keep it. Reset and snapshot loads
 // start a new episode with the env's own: None, or Horizon for a snapshot
 // loaded at the horizon (done at once; the next step reports EpisodeEnd).
-// A host that keeps playing on a task failure (a game layer) can tell
-// Companions_End_TaskFailed from a time out. Since 1.2.1. Since 1.3, any env
-// is also done as Companions_End_TeamDown when the team is down (max_downs
-// downs, or every companion down at once): the level is lost.
+// Since 1.2.1. Since 1.3, any env is also done as Companions_End_TeamDown
+// when the team is down (max_downs downs, or every companion down at once):
+// the level is lost. Since 1.6, done is only the success, the team down or
+// the horizon (Companions_End_TaskFailed is never returned).
 COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env);
 
 // =============================================================================

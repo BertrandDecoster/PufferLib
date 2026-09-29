@@ -273,12 +273,9 @@ TEST(TestAggroLensRewardStructure) {
   ASSERT_EQ(reward, AggroLens::kTimePenalty);
 }
 
-static_assert(AggroLens::kEnemyDeadPenalty < 0.0, "a dead enemy is a penalty");
-
-// No living FSM enemy left: the lens is done, as a failure, with the penalty
-// (the rest of the episode's time cost plus kEnemyDeadPenalty) until the env
-// latches the failure.
-TEST(TestAggroLensDoneAsFailureWithoutALivingEnemy) {
+// No living FSM enemy left fails nothing: the lens is not done (only a
+// success or the horizon ends it) and pays kTimePenalty, as any other step.
+TEST(TestAggroLensIsNotDoneWithoutALivingEnemy) {
   AggroEnv env(10, 1, EnemyType::Zombie, 42);
   AggroLens lens;
   ASSERT_FALSE(lens.IsDone(env));
@@ -286,18 +283,14 @@ TEST(TestAggroLensDoneAsFailureWithoutALivingEnemy) {
   for (AgentFSM* enemy : env.GetMutableObjectManager().GetAllAgentFSMs()) {
     enemy->TakeDamage(enemy->GetHealth());
   }
-  ASSERT_TRUE(lens.IsDone(env));
-  ASSERT_TRUE(lens.IsFailed(env));
+  ASSERT_FALSE(lens.IsDone(env));
   ASSERT_FALSE(lens.IsSuccess(env));
-  ASSERT_FALSE(env.IsTaskFailed());
-  ASSERT_EQ(lens.ComputeReward(env, 0),
-            AggroLens::FailurePenalty(env.GetHorizon(), env.GetTick()));
-  ASSERT_TRUE(AggroLens::FailurePenalty(env.GetHorizon(), env.GetTick()) <=
-              AggroLens::kTimePenalty * env.GetHorizon() + AggroLens::kEnemyDeadPenalty);
+  ASSERT_FALSE(env.IsDone());
+  ASSERT_EQ(lens.ComputeReward(env, 0), AggroLens::kTimePenalty);
 }
 
 // A new episode (Reset, LoadSnapshot) starts without an outcome: a latched
-// success or failure never leaks into it.
+// success or end reason never leaks into it.
 TEST(TestResetAndLoadSnapshotClearTheLatchedOutcome) {
   SynchroEnv synchro(6, 6, 1, 1, 0, 42, 0, 10);
   auto to_goal = [&synchro]() {
@@ -319,22 +312,22 @@ TEST(TestResetAndLoadSnapshotClearTheLatchedOutcome) {
   ASSERT_FALSE(synchro.IsSuccess());
   ASSERT_FALSE(synchro.IsDone());
 
-  AggroEnv aggro(10, 1, EnemyType::Zombie, 42);
-  const Snapshot alive = aggro.SaveSnapshot();
-  for (AgentFSM* enemy : aggro.GetMutableObjectManager().GetAllAgentFSMs()) {
-    enemy->TakeDamage(enemy->GetHealth());
-  }
+  AggroEnv aggro(10, 1, EnemyType::Zombie, 42, 0, 1);
+  const Snapshot start = aggro.SaveSnapshot();
   aggro.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Stay)});
-  ASSERT_TRUE(aggro.IsTaskFailed());
-  aggro.LoadSnapshot(alive);
-  ASSERT_FALSE(aggro.IsTaskFailed());
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::Horizon);
+  aggro.LoadSnapshot(start);
   ASSERT_FALSE(aggro.IsDone());
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
+  aggro.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Stay)});
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::Horizon);
   aggro.Reset();
-  ASSERT_FALSE(aggro.IsTaskFailed());
+  ASSERT_FALSE(aggro.IsDone());
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
 }
 
-// Why the episode ended: None while it runs, then the latched success, the
-// task failure, or the horizon.
+// Why the episode ended: None while it runs, then the latched success, or the
+// horizon (TeamDown: test_downs). A dead Aggro enemy is no end.
 TEST(TestGetEndReason) {
   const Action stay = EncodeAction(MovementAction::Stay);
   SynchroEnv win(6, 6, 1, 1, 0, 42, 0, 10);
@@ -355,18 +348,22 @@ TEST(TestGetEndReason) {
   for (AgentFSM* enemy : aggro.GetMutableObjectManager().GetAllAgentFSMs()) {
     enemy->TakeDamage(enemy->GetHealth());
   }
-  // A kill between steps already ends the task; the next step latches it
-  ASSERT_TRUE(aggro.GetEndReason() == EndReason::TaskFailed);
+  // A kill between steps ends nothing, nor does the next step
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
   aggro.Step({stay, stay});
-  ASSERT_TRUE(aggro.GetEndReason() == EndReason::TaskFailed);
+  ASSERT_FALSE(aggro.IsDone());
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
+  while (!aggro.IsDone()) aggro.Step({stay, stay});
+  ASSERT_EQ(aggro.GetTick(), aggro.GetHorizon());
+  ASSERT_TRUE(aggro.GetEndReason() == EndReason::Horizon);
   aggro.Reset();
   ASSERT_TRUE(aggro.GetEndReason() == EndReason::None);
 }
 
-// The end reason names what ended the episode: SynchroEnv ignores the Dodge
-// lens's latched failure (a companion down), so the episode ends at the
-// horizon, as Horizon. Two companions: one down is not the team down.
-TEST(TestADodgeFailureOnSynchroEnvEndsAtTheHorizon) {
+// A companion down fails no Dodge task: the episode ends at the horizon, as
+// Horizon (no success: the companion is still down). Two companions: one down
+// is not the team down.
+TEST(TestADodgeDownOnSynchroEnvEndsAtTheHorizon) {
   const Action stay = EncodeAction(MovementAction::Stay);
   SynchroEnv env(6, 6, 2, 1, 0, 42, 0, 3);
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
@@ -376,7 +373,6 @@ TEST(TestADodgeFailureOnSynchroEnvEndsAtTheHorizon) {
   ASSERT_FALSE(env.IsTeamDown());
   for (int i = 0; i < 2; ++i) {
     ASSERT_FALSE(env.Step({stay, stay}).done);
-    ASSERT_TRUE(env.IsTaskFailed());
     ASSERT_TRUE(env.GetEndReason() == EndReason::None);
   }
   ASSERT_TRUE(env.Step({stay, stay}).done);
@@ -460,6 +456,26 @@ TEST(TestDodgeLensIsSuccessRequiresSurvival) {
 
   // Success only if survived to horizon
   ASSERT_TRUE(lens.IsSuccess(env));
+}
+
+// A companion down fails nothing: the lens is not done before the horizon,
+// pays 0 while someone is down (no penalty), and does not succeed at the
+// horizon with someone still down.
+TEST(TestDodgeLensADownIsNoFailure) {
+  SynchroEnv env(6, 6, 2, 1, 0, 42, 0, 3);
+  DodgeLens lens;
+  Agent* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
+  companion->TakeDamage(companion->GetHealth());
+  ASSERT_TRUE(companion->IsDowned());
+  ASSERT_FALSE(lens.IsDone(env));
+  ASSERT_FALSE(lens.IsSuccess(env));
+  ASSERT_EQ(lens.ComputeReward(env, 0), 0.0);
+  ASSERT_EQ(lens.ComputeReward(env, 1), 0.0);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  for (int i = 0; i < 3; ++i) env.Step({stay, stay});
+  ASSERT_TRUE(lens.IsDone(env));
+  ASSERT_FALSE(lens.IsSuccess(env));
+  ASSERT_EQ(lens.ComputeReward(env, 0), 0.0);
 }
 
 // =============================================================================

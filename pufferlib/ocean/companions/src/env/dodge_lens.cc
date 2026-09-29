@@ -17,7 +17,7 @@ bool DodgeLens::CanOperateOn(const BaseEnv& env) const {
 }
 
 bool DodgeLens::IsDone(const BaseEnv& env) const {
-  return AnyCompanionIncapacitated(env) || env.GetTick() >= env.GetHorizon();
+  return IsSuccess(env) || env.GetTick() >= env.GetHorizon();
 }
 
 bool DodgeLens::IsSuccess(const BaseEnv& env) const {
@@ -26,11 +26,9 @@ bool DodgeLens::IsSuccess(const BaseEnv& env) const {
 
 double DodgeLens::ComputeReward(const BaseEnv& env, int agent_id) const {
   (void)agent_id;  // Same reward for all agents in cooperative task
-  bool any_dead = AnyCompanionIncapacitated(env);
-  double reward = 0.0;
-  if (!any_dead) reward += kSurvivalBonus;
+  if (AnyCompanionIncapacitated(env)) return 0.0;  // No success either
+  double reward = kSurvivalBonus;
   if (IsSuccess(env)) reward += kWinReward;
-  if (any_dead) reward += kDeathPenalty;
   return reward;
 }
 
@@ -39,7 +37,7 @@ std::string DodgeLens::GetObjectiveString(const BaseEnv& env) const {
   ss << "Dodge: survive until horizon (" << env.GetTick() << "/"
      << env.GetHorizon() << ")";
   if (AnyCompanionIncapacitated(env)) {
-    ss << " [FAILED - companion incapacitated]";
+    ss << " [companion down]";
   } else if (IsSuccess(env)) {
     ss << " [SUCCESS]";
   }
@@ -50,10 +48,8 @@ bool DodgeLens::AnyCompanionIncapacitated(const BaseEnv& env) const {
   const ObjectManager& om = env.GetObjectManager();
 
   for (const Companion* companion : om.GetAllCompanions()) {
-    // Check if companion is dead (health <= 0) or not alive
-    if (companion->IsDead() || !companion->IsAlive()) {
-      return true;
-    }
+    // Down (0 HP, alive) or dead
+    if (!companion->IsAffectable()) return true;
   }
   return false;
 }

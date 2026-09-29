@@ -48,7 +48,6 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       task_lens_(other.task_lens_ ? other.task_lens_->Clone() : nullptr),
       annotations_(other.annotations_),
       success_(other.success_),
-      failed_(other.failed_),
       end_reason_(other.end_reason_),
       tags_(other.tags_),
       skills_(other.skills_),
@@ -89,7 +88,6 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     task_lens_ = other.task_lens_ ? other.task_lens_->Clone() : nullptr;
     annotations_ = other.annotations_;
     success_ = other.success_;
-    failed_ = other.failed_;
     end_reason_ = other.end_reason_;
     tags_ = other.tags_;
     skills_ = other.skills_;
@@ -211,16 +209,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     }
     // Latch success so IsSuccess/IsDone survive even if agents subsequently
     // leave a winning configuration (matches pre-TaskLens semantics where
-    // CalculateRewards set success_ once per episode). Latch a failure the
-    // same way, after the rewards: the lens pays it on this step only. The
-    // first outcome is final.
-    if (!success_ && !failed_) {
-      if (task_lens_->IsSuccess(*this)) {
-        success_ = true;
-      } else if (task_lens_->IsFailed(*this)) {
-        failed_ = true;
-      }
-    }
+    // CalculateRewards set success_ once per episode). The only outcome a
+    // lens latches: a task fails only by the team down or the horizon (IsDone).
+    if (!success_ && task_lens_->IsSuccess(*this)) success_ = true;
   }
   result.rewards = reward_buffer_;
 
@@ -264,13 +255,12 @@ EndReason BaseEnv::GetEndReason() const {
 }
 
 EndReason BaseEnv::ComputeEndReason() const {
+  // IsDone's terms, the success first, then the team down: on a done env,
+  // what is left is the horizon
   if (IsSuccess()) return EndReason::Success;
   if (IsTeamDown()) return EndReason::TeamDown;
-  // Done even without the horizon: a failure ended the episode, latched or by
-  // the env's own rule. A latched failure the env's IsEnvDone ignores did not.
-  if (IsDoneWithoutHorizon()) return EndReason::TaskFailed;
-  if (tick_ >= horizon_) return EndReason::Horizon;
-  return EndReason::TaskFailed;  // An env's end rule it does not describe
+  assert(tick_ >= horizon_ && "ComputeEndReason on an env that is not done");
+  return EndReason::Horizon;
 }
 
 void BaseEnv::LatchEndReason() {
@@ -2490,15 +2480,12 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     ApplyD4Transform();
   }
 
-  // A state loaded already done (at or past the horizon) ended there: a
-  // later kill keeps that reason, as after a Step.
+  // A state loaded already done (at or past the horizon, or the team down)
+  // ended there: a later down keeps that reason, as after a Step.
   // The latch reads IsDone() on the state as loaded so far: a derived
   // LoadSnapshot override, or a Reset that loads a generated level, must
-  // finish its own state first, then latch again (RelatchEndReasonAfterLoad).
-  // AggroEnv's Reset spawns its enemy after this: under the Aggro lens its
-  // level, with no living enemy yet, is done here and would keep a stale
-  // TaskFailed. DodgeEnv has no override; its any_dead_ is not cleared by a
-  // load (its Reset clears it).
+  // finish its own state first, then latch again (RelatchEndReasonAfterLoad:
+  // AggroEnv's Reset spawns its enemy and companions after this).
   LatchEndReason();
 }
 
@@ -2561,7 +2548,9 @@ bool BaseEnv::SetTaskLens(std::unique_ptr<TaskLens> lens) {
   task_lens_ = std::move(lens);
   // Reset the outcome so the new lens evaluates its task from scratch
   ResetOutcome();
-  LatchEndReason();  // A lens change can end the episode
+  // A lens change starts a new episode: done again at once only at or past
+  // the horizon or with the team down (a success is latched by a Step)
+  LatchEndReason();
   return true;
 }
 
@@ -2597,7 +2586,7 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
   }
   task_lens_ = std::move(lens);
   ResetOutcome();
-  LatchEndReason();  // A lens change can end the episode
+  LatchEndReason();  // As SetTaskLens
   return true;
 }
 

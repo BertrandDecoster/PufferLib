@@ -568,7 +568,7 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   movement, one revive, two downs = 4 events; fits for up to 15 agents). Reviving the same
   companion twice in a step needs a skill downing it between the two revives; only then
   can state-change events be dropped
-- C API (`src/api/companions_api.h`, version 1.5.0 (1.5 below): 1.2 removed the legacy cast,
+- C API (`src/api/companions_api.h`, version 1.6.0 (1.5 and 1.6 below): 1.2 removed the legacy cast,
   1.2.1 added `companions_get_end_reason`, 1.3 added downs: `Companions_AgentState.downed`,
   `Companions_GameState.downs` / `max_downs` / `team_down`, `Companions_End_TeamDown` (4),
   `Companions_Event_AgentDowned` (17); 1.4 added revives and context skills:
@@ -618,6 +618,10 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   after `TickZones` keeps the incremented tick). A copy of an env (Clone, copy,
   assignment) re-points its FSM agents' `FSMContext::rng` at its own RNG
   (`RepointFsmRng`)
+- C API 1.6.0 (behaviour only, struct layouts unchanged): only a team down or the
+  horizon fails a task (see "Why an episode ended"). Aggro no longer fails when no
+  enemy lives, Dodge no longer fails on a down; `Companions_End_TaskFailed` (3) is no
+  longer produced (kept: the values are append-only)
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots
@@ -718,15 +722,17 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   (`SynchroLens::CountAgentsOnSynchroCells` / `SynchroEnv::NumAgentsOnSynchroCells`
   count affectable agents only); occupancy checks (collisions, landing, `IsOccupied`)
   stay on `IsAlive()`. Anything else is the host's rules (e.g. a game layer's plates)
-- `Agent::IsDead()` stays health-based (a downed companion `IsDead()`): DodgeEnv /
-  DodgeLens count it as fallen (DodgeEnv: done, `TaskFailed`, unless the team is down)
+- `Agent::IsDead()` stays health-based (a downed companion `IsDead()`). DodgeLens
+  counts a companion that is not affectable (down or dead) as fallen: no survival bonus
+  that step, no success at the horizon; no failure either (only a team down or the
+  horizon fails a task)
 - **Team counter**: `GetDowns()` = the sum of `Companion::GetTimesDowned()` (every down
   counts). `GetMaxDowns()` / `SetMaxDowns(n)` (n >= 1, else false; `kDefaultMaxDowns` =
   3, `core/types.h`). `IsTeamDown()` = downs >= max_downs, or no companion is affectable
   (a dead companion does not stand; an env without companions is never team down)
-- **Done**: `BaseEnv::IsDone()` is non-virtual, `IsEnvDone() || IsTeamDown()`; envs
-  implement the protected `IsEnvDone()` (success, horizon, a failure they honour), so
-  every env gets the team verdict. `EndReason::TeamDown` (4): see "Why an episode ended"
+- **Done**: `BaseEnv::IsDone()` is non-virtual and the same for every env and lens:
+  `success_ || tick_ >= horizon_ || IsTeamDown()`. `EndReason::TeamDown` (4): see "Why
+  an episode ended"
 - **max_downs is level data**: snapshots own it. `LoadSnapshot` sets it from the
   snapshot (absent = 3), so a host that wants another value sets it AFTER a load. A
   generated `Reset` loads through `LoadGeneratedLevel`, which keeps the env's current
@@ -815,53 +821,36 @@ env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 - 3x3 patrol square (8 cells perimeter, clockwise)
 - Aggro range: 3, Return range: 5
 - Smart spawning: companions and target outside aggro range
-- Episode end: success when a living FSM enemy stands on the target; failure at the
-  horizon or as soon as no living FSM enemy remains (killed: the lure can't succeed
-  any more, `AggroLens::IsFailed`). `AggroEnv::IsEnvDone` applies the dead-enemy rule
-  only while the active lens is the Aggro lens; it never consults another lens's `IsDone`.
-  As in every env, the team being down also ends it (`TeamDown`, see Downs)
-- Rewards: +1 win, `kTimePenalty` (-0.01) per other step. The failure is terminal:
-  `BaseEnv::Step` latches it after the rewards (`IsTaskFailed`, like `success_`; the
-  first outcome is final; `SetTaskLens` / `LoadSnapshot` / `Reset` clear both with
-  `ResetOutcome`), so only the killing step pays `AggroLens::FailurePenalty(horizon,
-  tick)` = `kTimePenalty * (horizon - tick + 1) + kEnemyDeadPenalty` (the rest of the
-  episode's time cost, that step included, plus -1); later steps pay 0. A kill at any
-  step returns `horizon * kTimePenalty - 1`, one below timing out: killing is never
-  a shortcut, whatever the horizon. `AggroEnv::MinUtility` is that return. A kill
-  after a latched success is no failure: it pays `kTimePenalty` (the enemy is off the
-  target, as after any success)
-- The reward design assumes UNCLIPPED returns. `pufferl.py` clamps rewards to [-1, 1]
-  (`torch.clamp(r, -1, 1)`): the failure penalty flattens to -1, and an early kill
-  then beats timing out once the horizon exceeds ~100 steps. Training Aggro through
-  pufferl needs either no clamp or a smaller time penalty (e.g. `kTimePenalty =
-  -0.5 / horizon`); neither is done today
-- `done` is a verdict for RL episodes, never a stop: the env keeps stepping. A host
-  that keeps playing after a kill (a game layer) ignores `done` for that reason:
-  `EndReason::TaskFailed`, see below
+- Episode end: success when a living FSM enemy stands on the target, else the horizon,
+  or the team down (every env, see Downs). A dead enemy fails nothing (only a team down
+  or the horizon fails a task): the episode runs on to the horizon
+- Rewards: +1 win, `kTimePenalty` (-0.01) per other step, a kill's included: a
+  killed-enemy episode returns what timing out does (`horizon * kTimePenalty`,
+  `AggroEnv::MinUtility`). A kill after a latched success pays `kTimePenalty` (the
+  enemy is off the target, as after any success)
+- `done` is a verdict for RL episodes, never a stop: the env keeps stepping
 
 **Why an episode ended** (`BaseEnv::GetEndReason`, `EndReason` in `base_env.h`):
-what ended the episode. `None` while `IsDone()` is false, else `Success` (latched: a
-success on the step the team goes down is a success), else `TeamDown` (`IsTeamDown()`,
-any env: the level is lost), else `TaskFailed` when the env is done even without the
-horizon (`IsDoneWithoutHorizon`, even on the horizon step): a latched lens failure the
-env's `IsEnvDone` honours (AggroEnv's dead enemy under the Aggro lens) or the env's own
-end rule (a Dodge companion at 0 HP in DodgeEnv, an Aggro enemy killed between steps),
-else `Horizon` (tick >= horizon). A latched failure the env's `IsEnvDone` ignores did
-not end the episode: a Dodge lens on SynchroEnv, or on AggroEnv (whose `IsEnvDone`
-honours a latched failure only under the Aggro lens), with a companion at 0 HP (and the
-team not down) ends at the horizon, as `Horizon`. The reason is fixed when done first
+what ended the episode. `None` while `IsDone()` is false, else `Success` (latched by
+`Step` from the lens's `IsSuccess`: a success on the step the team goes down is a
+success), else `TeamDown` (`IsTeamDown()`, any env: the level is lost), else `Horizon`
+(tick >= horizon). Only a team down or the horizon fails a task (a bad situation stays
+salvageable): no lens has a failure of its own (Aggro's dead enemy, a Dodge companion
+down), and `TaskFailed` (3) is no longer produced (since C API 1.6; the value stays,
+the enums are append-only). A lens's own `IsDone` (success or horizon) is for tests and
+tools; `BaseEnv` never calls it. The reason is fixed when done first
 becomes true (latched by `Step`, `SetTaskLens*` and `LoadSnapshot`, cleared by
-`ResetOutcome`): a kill or a team down after the horizon, or after loading a snapshot at
+`ResetOutcome`): a team down after the horizon, or after loading a snapshot at
 the horizon, keeps `Horizon` (`IsTeamDown()` / the C API's `team_down` still tell the
 team is down). C API (1.2.1, additive, no struct layout change; 1.3 added `TeamDown` 4):
-`Companions_EndReason` (same values: None 0, Success 1, Horizon 2, TaskFailed 3,
-TeamDown 4) from `companions_get_end_reason(env)`, fixed on the step or
+`Companions_EndReason` (same values: None 0, Success 1, Horizon 2, TaskFailed 3 (not
+produced since 1.6), TeamDown 4) from `companions_get_end_reason(env)`, fixed on the step or
 lens change where done becomes true, kept while a host plays on; reset and snapshot
 loads take the env's (done / success / reason: a snapshot loaded at the horizon is done
 at once, as `Horizon`, and the next step reports EpisodeEnd); the EpisodeEnd event
 carries it in `effect_id`. A derived `Reset` / `LoadSnapshot` that changes state after
 `BaseEnv::LoadSnapshot` latched calls `RelatchEndReasonAfterLoad` (AggroEnv's `Reset`
-spawns its enemy then: under the Aggro lens, no stale `TaskFailed`)
+spawns its enemy and companions then)
 
 ### Known issue: D4 transform
 - `SaveSnapshot` writes the TRANSFORMED world (current rows/cols, positions, zones)

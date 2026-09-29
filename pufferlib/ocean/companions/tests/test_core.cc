@@ -567,10 +567,6 @@ class CollisionTestEnv : public BaseEnv {
     // Seed not used in collision tests
   }
 
-  bool IsEnvDone() const override {
-    return false;
-  }
-
   // Required pure virtual implementations (not used in collision tests)
   double MinUtility() const override { return -100.0; }
   double MaxUtility() const override { return 100.0; }

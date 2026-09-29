@@ -780,7 +780,7 @@ TEST(TestRootedGoblinStillThinksButDoesNotMove) {
 }
 
 // =============================================================================
-// A dead enemy ends the episode as a failure
+// A dead enemy fails nothing: only a team down or the horizon fails a task
 // =============================================================================
 
 // Open floor, the companion on (5,3) facing a 1-HP goblin on (5,4) whose FSM
@@ -806,24 +806,33 @@ static StepResult AttackRight(AggroEnv& env) {
                    EncodeAction(MovementAction::Right, InteractAction::Skill1)});
 }
 
-TEST(TestKillingTheEnemyEndsTheEpisodeAsFailure) {
-  AggroEnv env(12, 1, EnemyType::Goblin, 7777);
+// Killing the enemy is no failure: the episode runs on to the horizon, which
+// ends it (as Horizon), and every step pays kTimePenalty, the kill's included.
+TEST(TestKillingTheEnemyDoesNotEndTheEpisode) {
+  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 5);
   AgentFSM* goblin = GoblinNextToCompanion(env, 1);
   StepResult result = AttackRight(env);
   ASSERT_FALSE(goblin->IsAlive());
-  ASSERT_TRUE(result.done);
-  ASSERT_TRUE(env.IsDone());
+  ASSERT_FALSE(result.done);
+  ASSERT_FALSE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());
-  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
-  for (double r : result.rewards) {
-    ASSERT_EQ(r, AggroLens::FailurePenalty(env.GetHorizon(), env.GetTick()));
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
+  const Action stay = EncodeAction(MovementAction::Stay);
+  while (env.GetTick() < env.GetHorizon()) {
+    result = env.Step({stay, stay});
+    ASSERT_EQ(result.done, env.GetTick() == env.GetHorizon());
+    for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
   }
-  // The env never stops by itself: a host that keeps playing just steps on
-  const int tick = env.GetTick();
-  env.Step({EncodeAction(MovementAction::Stay), EncodeAction(MovementAction::Up)});
-  ASSERT_EQ(env.GetTick(), tick + 1);
-  ASSERT_TRUE(env.IsDone());
   ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  // The env never stops by itself: a host that keeps playing just steps on,
+  // still paid kTimePenalty
+  result = env.Step({stay, stay});
+  ASSERT_EQ(env.GetTick(), 6);
+  ASSERT_TRUE(result.done);
+  for (double r : result.rewards) ASSERT_EQ(r, AggroLens::kTimePenalty);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
 }
 
 TEST(TestAWoundedEnemyKeepsTheEpisodeGoing) {
@@ -849,52 +858,32 @@ static double AggroReturn(int horizon, int kill_step) {
     StepResult r = step == kill_step ? AttackRight(env) : env.Step({stay, stay});
     total += r.rewards[1];
     if (r.done) {
-      ASSERT_EQ(env.GetTick(), kill_step == 0 ? horizon : kill_step);
+      ASSERT_EQ(env.GetTick(), horizon);  // Only the horizon ends it
       return total;
     }
   }
   throw std::runtime_error("the episode never ended");
 }
 
-// Killing the enemy is never a shortcut: whatever the step, the episode's
-// return stays below timing out (the failure pays the rest of the episode's
-// time cost, plus kEnemyDeadPenalty), and it is the lowest return there is.
-TEST(TestKillingTheEnemyNeverBeatsTimingOut) {
+// Killing the enemy changes no return: whatever the step, the episode runs to
+// the horizon and returns what timing out does, the lowest return there is.
+TEST(TestKillingTheEnemyReturnsWhatTimingOutDoes) {
   for (int horizon : {100, 400}) {
     const double time_out = AggroReturn(horizon, 0);
     ASSERT_TRUE(std::abs(time_out - horizon * AggroLens::kTimePenalty) < 1e-9);
     AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, horizon);
-    for (int kill_step = 1; kill_step <= horizon; ++kill_step) {
+    ASSERT_TRUE(std::abs(time_out - env.MinUtility()) < 1e-9);
+    for (int kill_step : {1, 2, horizon / 2, horizon - 1, horizon}) {
       const double killed = AggroReturn(horizon, kill_step);
-      ASSERT_TRUE(killed < time_out);
-      ASSERT_TRUE(std::abs(killed - env.MinUtility()) < 1e-9);
+      ASSERT_TRUE(std::abs(killed - time_out) < 1e-9);
     }
   }
 }
 
-// The failure is terminal: its penalty is paid on the step the enemy dies,
-// once; a host that keeps playing afterwards is rewarded 0.
-TEST(TestTheFailurePenaltyIsPaidOnce) {
-  AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 100);
-  GoblinNextToCompanion(env, 1);
-  StepResult kill = AttackRight(env);
-  ASSERT_TRUE(kill.done);
-  for (double r : kill.rewards) ASSERT_EQ(r, AggroLens::FailurePenalty(100, 1));
-  ASSERT_TRUE(env.IsTaskFailed());
-  const Action stay = EncodeAction(MovementAction::Stay);
-  while (env.GetTick() < 110) {
-    StepResult r = env.Step({stay, stay});
-    ASSERT_TRUE(r.done);
-    for (double reward : r.rewards) ASSERT_EQ(reward, 0.0);
-  }
-  ASSERT_FALSE(env.IsSuccess());
-  ASSERT_TRUE(env.IsTaskFailed());
-}
-
-// The first outcome is final: a kill after a latched success is no failure.
-// A host that keeps playing is rewarded as after any success with the enemy
-// off the target (kTimePenalty), never FailurePenalty.
-TEST(TestAKillAfterASuccessPaysNoFailurePenalty) {
+// The first outcome is final: a kill after a latched success keeps it. A host
+// that keeps playing is rewarded as after any success with the enemy off the
+// target (kTimePenalty).
+TEST(TestAKillAfterASuccessKeepsTheSuccess) {
   AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 100);
   AgentFSM* goblin = GoblinNextToCompanion(env, 1);
   env.GetMutableObjectManager().UpdatePosition(goblin->GetId(), env.GetTargetPosition());
@@ -912,12 +901,11 @@ TEST(TestAKillAfterASuccessPaysNoFailurePenalty) {
     for (double reward : r.rewards) ASSERT_EQ(reward, AggroLens::kTimePenalty);
   }
   ASSERT_TRUE(env.IsSuccess());
-  ASSERT_FALSE(env.IsTaskFailed());
   ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
 }
 
 // The end reason is fixed when done first becomes true: a kill after the
-// horizon latches the failure, but the episode still ended at the horizon.
+// horizon changes nothing, the episode ended at the horizon.
 TEST(TestAKillAfterTheHorizonKeepsTheHorizonEndReason) {
   AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 3);
   AgentFSM* goblin = GoblinNextToCompanion(env, 1);
@@ -930,12 +918,11 @@ TEST(TestAKillAfterTheHorizonKeepsTheHorizonEndReason) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
   AttackRight(env);
   ASSERT_FALSE(goblin->IsAlive());
-  ASSERT_TRUE(env.IsTaskFailed());
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
   env.Step({stay, stay});
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
-  // Copies keep the lens and the latched reason (the kill alone would now say
-  // TaskFailed; a new AggroLens would refuse this env: the goblin's FSM is off)
+  // Copies keep the lens and the latched reason (a new AggroLens would refuse
+  // this env: the goblin's FSM is off)
   AggroEnv copy(env);
   ASSERT_TRUE(copy.GetTaskLens() != nullptr);
   ASSERT_TRUE(copy.GetTaskLens()->GetKind() == TaskLens::kAggro);
@@ -951,9 +938,9 @@ TEST(TestAKillAfterTheHorizonKeepsTheHorizonEndReason) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::None);
 }
 
-// The kill that ends the Aggro task on the horizon step ended the episode:
-// TaskFailed, not Horizon.
-TEST(TestAKillOnTheHorizonStepIsATaskFailure) {
+// A kill on the horizon step is no failure either: the horizon ended the
+// episode, as Horizon.
+TEST(TestAKillOnTheHorizonStepEndsAsHorizon) {
   AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 2);
   AgentFSM* goblin = GoblinNextToCompanion(env, 1);
   const Action stay = EncodeAction(MovementAction::Stay);
@@ -961,12 +948,12 @@ TEST(TestAKillOnTheHorizonStepIsATaskFailure) {
   ASSERT_TRUE(AttackRight(env).done);
   ASSERT_FALSE(goblin->IsAlive());
   ASSERT_EQ(env.GetTick(), env.GetHorizon());
-  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
+  ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
 }
 
-// A Reset under the Aggro lens loads its level before spawning the enemy: the
-// end reason is fixed with the enemy there, not while none lived (a stale
-// TaskFailed would name a later horizon's end).
+// A Reset under the Aggro lens loads its level before spawning the enemy: it
+// starts with no end reason, and the first step's end is its own.
 TEST(TestAResetUnderTheAggroLensLatchesNoStaleEndReason) {
   AggroEnv env(12, 1, EnemyType::Goblin, 7777, 0, 1);
   ASSERT_TRUE(env.GetTaskLens()->GetKind() == TaskLens::kAggro);
@@ -976,7 +963,6 @@ TEST(TestAResetUnderTheAggroLensLatchesNoStaleEndReason) {
     ASSERT_FALSE(env.IsDone());
     ASSERT_TRUE(env.GetEndReason() == EndReason::None);
     ASSERT_TRUE(env.Step({stay, stay}).done);
-    ASSERT_FALSE(env.IsTaskFailed());
     ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
   }
 }
@@ -995,12 +981,11 @@ TEST(TestASnapshotLoadedAtTheHorizonKeepsTheHorizonEndReason) {
   AgentFSM* goblin = GoblinNextToCompanion(loaded, 1);
   AttackRight(loaded);
   ASSERT_FALSE(goblin->IsAlive());
-  ASSERT_TRUE(loaded.IsTaskFailed());
   ASSERT_TRUE(loaded.GetEndReason() == EndReason::Horizon);
 }
 
-// Only the Aggro task ends on a dead enemy: under another lens, AggroEnv is
-// done on a latched success or at the horizon, whatever that lens says.
+// No task ends on a dead enemy: under another lens either, AggroEnv is done
+// on a latched success, a team down or at the horizon.
 TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
   AggroEnv env(12, 1, EnemyType::Goblin, 7777);
   AgentFSM* goblin = GoblinNextToCompanion(env, 1);
@@ -1011,7 +996,9 @@ TEST(TestAKilledEnemyDoesNotEndAnotherLenssEpisode) {
   ASSERT_FALSE(env.IsDone());
 }
 
-// Two companions: one down is not the team down.
+// Two companions: one down is not the team down, and no failure of the
+// Dodge task: the episode ends at the horizon, as Horizon (no success: a
+// companion is still down).
 TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
   AggroEnv env(12, 2, EnemyType::Goblin, 7777, 0, 3);
   ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
@@ -1019,7 +1006,7 @@ TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
   companion->TakeDamage(companion->GetHealth());
   ASSERT_TRUE(companion->IsDowned());
   ASSERT_FALSE(env.IsTeamDown());
-  ASSERT_TRUE(env.GetTaskLens()->IsDone(env));  // The lens alone would say done
+  ASSERT_FALSE(env.GetTaskLens()->IsDone(env));
   ASSERT_FALSE(env.IsDone());
   const std::vector<Action> stay(static_cast<size_t>(env.NumAgents()),
                                  EncodeAction(MovementAction::Stay));  // The enemy's too
@@ -1027,12 +1014,10 @@ TEST(TestADownedCompanionDoesNotEndAggroEnvUnderDodgeLens) {
     StepResult result = env.Step(stay);
     ASSERT_FALSE(result.done);
     ASSERT_FALSE(env.IsDone());
-    // The Dodge task did fail (latched): the episode ends so at the horizon
-    ASSERT_TRUE(env.IsTaskFailed());
     ASSERT_TRUE(env.GetEndReason() == EndReason::None);
   }
-  // The horizon ended it, not the failure AggroEnv ignores
   ASSERT_TRUE(env.Step(stay).done);
+  ASSERT_FALSE(env.IsSuccess());
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
 }
 

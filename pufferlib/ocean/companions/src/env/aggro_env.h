@@ -60,12 +60,9 @@ class AggroEnv : public BaseEnv {
   int GetNumCompanions() const { return num_companions_; }
   EnemyType GetEnemyType() const { return enemy_type_; }
 
-  // Utility bounds. The worst return is a killed enemy (AggroLens): the time
-  // penalty of the whole horizon plus the failure penalty, whatever the step
-  // of the kill (timing out returns horizon * kTimePenalty).
-  double MinUtility() const override {
-    return AggroLens::kTimePenalty * horizon_ + AggroLens::kEnemyDeadPenalty;
-  }
+  // Utility bounds. The worst return is timing out (AggroLens): the time
+  // penalty of the whole horizon (a killed enemy returns the same).
+  double MinUtility() const override { return AggroLens::kTimePenalty * horizon_; }
   double MaxUtility() const override { return kWinReward; }
 
   // Vector Observation - adds AggroEnv-specific features:
@@ -91,11 +88,6 @@ class AggroEnv : public BaseEnv {
 
   // Snapshot loading - extract AggroEnv-specific fields from loaded cells
   void LoadSnapshot(const Snapshot& snapshot) override;
-
- protected:
-  bool IsEnvDone() const override;  // Success, horizon, or IsDoneWithoutHorizon
-  // Under the Aggro lens: its latched failure or no living enemy
-  bool IsDoneWithoutHorizon() const override;
 
  private:
   void SetupGrid();

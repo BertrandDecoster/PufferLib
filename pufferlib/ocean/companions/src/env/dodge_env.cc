@@ -45,7 +45,6 @@ DodgeEnv::DodgeEnv(const DodgeEnv& other)
       hazard_interval_(other.hazard_interval_),
       seed_(other.seed_),
       rng_(other.rng_),
-      any_dead_(other.any_dead_),
       hazard_effects_(other.hazard_effects_) {
   RepointFsmRng(&other.rng_, &rng_);  // A copy draws from its own RNG
 }
@@ -58,7 +57,6 @@ DodgeEnv& DodgeEnv::operator=(const DodgeEnv& other) {
     seed_ = other.seed_;
     rng_ = other.rng_;
     RepointFsmRng(&other.rng_, &rng_);
-    any_dead_ = other.any_dead_;
     hazard_effects_ = other.hazard_effects_;
   }
   return *this;
@@ -137,7 +135,6 @@ void DodgeEnv::RegisterDefaultEffects() {
 void DodgeEnv::Reset() {
   // Reset state
   ResetOutcome();
-  any_dead_ = false;
 
   // Clear effects
   ClearEffects();
@@ -238,17 +235,6 @@ void DodgeEnv::SpawnHazard() {
   SpawnEffect(effect_name, EffectTarget::AtCell(spawn_pos), dir);
 }
 
-bool DodgeEnv::IsEnvDone() const {
-  // Done if survived all ticks, or if any companion died
-  return tick_ >= horizon_ || IsDoneWithoutHorizon();
-}
-
-bool DodgeEnv::IsDoneWithoutHorizon() const {
-  // A companion died (seen by PostStep): the episode ends as a failure, even
-  // on the horizon step
-  return any_dead_;
-}
-
 void DodgeEnv::PreStep() {
   // Hazard spawning moved to PostStep — we need the player's post-movement
   // position when picking a centre cell, otherwise a damaging area can land
@@ -256,18 +242,8 @@ void DodgeEnv::PreStep() {
 }
 
 void DodgeEnv::PostStep() {
-  // Check for deaths
-  for (const Agent* agent : object_manager_->GetAllAgents()) {
-    if (agent->IsDead()) {
-      any_dead_ = true;
-      break;
-    }
-  }
-
-  // Check for success
-  if (tick_ >= horizon_ && !any_dead_) {
-    success_ = true;
-  }
+  // The outcome is the lens's (DodgeLens: everyone up at the horizon), latched
+  // by BaseEnv::Step after this hook.
 
   // Spawn hazards at regular intervals, AFTER movement has resolved so the
   // companion-cell exclusion inside SpawnHazard sees their new position.

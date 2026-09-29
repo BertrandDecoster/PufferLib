@@ -111,6 +111,7 @@ TEST(TestDodgeEnvSurvivalWin) {
   // Should be done and successful
   ASSERT_TRUE(env.IsDone());
   ASSERT_TRUE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
 }
 
 TEST(TestDodgeEnvDeath) {
@@ -147,11 +148,11 @@ TEST(TestDodgeEnvDeath) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
 }
 
-// A companion that goes down fails the Dodge task (DodgeLens::IsFailed), even
-// on the horizon step: the episode ends as TaskFailed, not Horizon. The
-// rewards and done are those of any death. Two companions: one down is not
+// A companion that goes down on the horizon step fails nothing: the horizon
+// ends the episode, as Horizon, without the success (a companion is down) and
+// with no reward (0 while someone is down). Two companions: one down is not
 // the team down (TeamDown would name the end).
-TEST(TestDodgeEnvDownOnTheHorizonStepIsATaskFailure) {
+TEST(TestDodgeEnvDownOnTheHorizonStepEndsAsHorizon) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfig lethal;
   lethal.name = "delayed_death";
@@ -176,13 +177,70 @@ TEST(TestDodgeEnvDownOnTheHorizonStepIsATaskFailure) {
   ASSERT_EQ(env.GetTick(), 2);
   ASSERT_TRUE(last.done);
   ASSERT_FALSE(env.IsSuccess());
-  ASSERT_TRUE(env.IsTaskFailed());
-  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
-  ASSERT_EQ(last.rewards[0], DodgeEnv::kDeathPenalty);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  for (double r : last.rewards) ASSERT_EQ(r, 0.0);
   StepResult after = env.Step(stay);  // Playing on changes nothing
   ASSERT_TRUE(after.done);
-  ASSERT_EQ(after.rewards[0], DodgeEnv::kDeathPenalty);
-  ASSERT_TRUE(env.GetEndReason() == EndReason::TaskFailed);
+  for (double r : after.rewards) ASSERT_EQ(r, 0.0);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+}
+
+// Two companions: a down is no failure (only a team down or the horizon
+// fails a task). The episode runs on to the horizon; the steps with someone
+// down pay 0, the others kSurvivalBonus.
+TEST(TestDodgeEnvADownIsNoFailure) {
+  DodgeEnv env(7, 2, 100, 4, 42);  // Horizon 4, no hazards
+  const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
+  Companion* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
+  companion->TakeDamage(companion->GetHealth());
+  ASSERT_TRUE(companion->IsDowned());
+  ASSERT_FALSE(env.IsTeamDown());
+  ASSERT_FALSE(env.IsDone());
+  for (int i = 0; i < 3; ++i) {
+    StepResult result = env.Step(stay);
+    ASSERT_FALSE(result.done);
+    ASSERT_FALSE(env.IsDone());
+    ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+    for (double r : result.rewards) ASSERT_EQ(r, 0.0);
+  }
+  StepResult last = env.Step(stay);
+  ASSERT_TRUE(last.done);
+  ASSERT_FALSE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
+  for (double r : last.rewards) ASSERT_EQ(r, 0.0);
+}
+
+// A down is salvageable: revived before the horizon, the team that is all up
+// at the horizon succeeds (Success, kWinReward paid). The survival bonus
+// comes back with the revive.
+TEST(TestDodgeEnvRevivedBeforeTheHorizonSucceeds) {
+  DodgeEnv env(7, 2, 100, 3, 42);  // Horizon 3, no hazards
+  const std::vector<Action> stay(2, EncodeAction(MovementAction::Stay));
+  Companion* companion = env.GetMutableObjectManager().GetAllCompanions()[0];
+  companion->TakeDamage(companion->GetHealth());
+  ASSERT_TRUE(companion->IsDowned());
+  StepResult first = env.Step(stay);
+  ASSERT_FALSE(first.done);
+  for (double r : first.rewards) ASSERT_EQ(r, 0.0);
+  ASSERT_TRUE(companion->Revive(1));
+  ASSERT_FALSE(companion->IsDowned());
+  StepResult second = env.Step(stay);
+  ASSERT_FALSE(second.done);
+  for (double r : second.rewards) ASSERT_EQ(r, DodgeEnv::kSurvivalBonus);
+  StepResult last = env.Step(stay);
+  ASSERT_TRUE(last.done);
+  ASSERT_TRUE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
+  for (double r : last.rewards) {
+    ASSERT_EQ(r, DodgeEnv::kSurvivalBonus + DodgeEnv::kWinReward);
+  }
+}
+
+// The worst return is 0: someone down from the first step to the horizon
+// (no reward is negative).
+TEST(TestDodgeEnvMinUtility) {
+  DodgeEnv env(7, 2, 100, 3, 42);
+  ASSERT_EQ(env.MinUtility(), 0.0);
 }
 
 TEST(TestDodgeEnvCopy) {
@@ -235,7 +293,9 @@ TEST(TestDodgeEnvRewards) {
 
   // Step again - should win
   result = env.Step(actions);
+  ASSERT_TRUE(result.done);
   ASSERT_TRUE(env.IsSuccess());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
   // Should get survival bonus + win reward
   double expected = DodgeEnv::kSurvivalBonus + DodgeEnv::kWinReward;
   ASSERT_EQ(result.rewards[0], expected);

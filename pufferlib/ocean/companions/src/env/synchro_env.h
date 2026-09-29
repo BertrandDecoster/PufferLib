@@ -72,9 +72,6 @@ class SynchroEnv : public BaseEnv {
   // Snapshot validation - SynchroEnv requires synchro cells
   void ValidateSnapshot(const Snapshot& snapshot) const override;
 
- protected:
-  bool IsEnvDone() const override;  // Success or horizon
-
  private:
   void SetupGrid();
   void PlaceSynchroCells();

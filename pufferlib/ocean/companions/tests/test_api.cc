@@ -89,8 +89,9 @@ TEST(TestVersion) {
   // 1.2 removed the companion cast; 1.2.1 added companions_get_end_reason;
   // 1.2.2 made every timer tick at the end of a step; 1.3 added downs
   // (struct layouts changed); 1.4 added equipped_skills and AgentRevived
-  // (struct layouts changed)
-  ASSERT_EQ(std::string(version), std::string("1.5.0"));
+  // (struct layouts changed); 1.5 the rules as data; 1.6: only a team down
+  // or the horizon fails a task
+  ASSERT_EQ(std::string(version), std::string("1.6.0"));
   std::cout << "  Version: " << version << std::endl;
 }
 
@@ -1605,22 +1606,30 @@ TEST(TestEndReasonHorizon) {
   companions_destroy(env);
 }
 
-// A dead Aggro enemy fails the task: a host that keeps playing (a game layer)
-// can tell it from a time out.
+// A dead Aggro enemy fails nothing (since 1.6, only a team down or the
+// horizon fails a task): the episode runs on to the horizon, which ends it.
 TEST(TestEndReasonAggroEnemyDead) {
-  Companions_Env* env = MakeAggroZombieEnv();
+  Companions_Env* env = MakeAggroZombieEnv(3);
   const int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
   ASSERT_TRUE(zi >= 0);
   Companions_AgentState z = AgentAt(env, zi);
   ASSERT_TRUE(companions_spawn_effect(env, "kill", z.position.row, z.position.col,
                                       Companions_Direction_Up, -1));
+  ASSERT_FALSE(companions_is_done(env));
   const int32_t n = companions_get_agent_count(env);
   std::vector<Companions_Action> stay(n, {Companions_Movement_Stay, Companions_Interact_None});
   Companions_StepResult result = {};
+  for (int i = 0; i < 2; ++i) {
+    companions_step(env, stay.data(), n, &result);
+    ASSERT_FALSE(AgentAt(env, zi).alive);
+    ASSERT_FALSE(companions_is_done(env));
+    ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+    ASSERT_EQ(CountEpisodeEnds(result), 0);
+  }
   companions_step(env, stay.data(), n, &result);
-  ExpectEnd(env, result, Companions_End_TaskFailed);
+  ExpectEnd(env, result, Companions_End_Horizon);
   companions_step(env, stay.data(), n, &result);
-  ASSERT_EQ(companions_get_end_reason(env), Companions_End_TaskFailed);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
   companions_reset(env, 42);
   ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
   ASSERT_EQ(companions_get_end_reason(nullptr), Companions_End_None);
@@ -1699,10 +1708,10 @@ TEST(TestSnapshotLoadedAtTheHorizonIsDone) {
   companions_destroy(env);
 }
 
-// A lens change can end the episode (companions_set_task_lens refreshes done):
-// the reason is set then, and the next step reports EpisodeEnd with it.
-TEST(TestEndReasonSetByALensChange) {
-  Companions_Env* env = MakeAggroZombieEnv();
+// A lens change after a kill ends nothing (no lens fails on a dead enemy):
+// the episode runs on to the horizon, whose step reports EpisodeEnd once.
+TEST(TestALensChangeAfterAKillEndsNothing) {
+  Companions_Env* env = MakeAggroZombieEnv(3);
   const int32_t zi = FindAgentIndex(env, Companions_Faction_Enemy);
   ASSERT_TRUE(zi >= 0);
   ASSERT_TRUE(companions_set_task_lens(env, Companions_Lens_Dodge));
@@ -1718,14 +1727,17 @@ TEST(TestEndReasonSetByALensChange) {
   ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
 
   ASSERT_TRUE(companions_set_task_lens(env, Companions_Lens_Aggro));
-  ASSERT_TRUE(companions_is_done(env));
-  ASSERT_EQ(companions_get_end_reason(env), Companions_End_TaskFailed);
+  ASSERT_FALSE(companions_is_done(env));
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
   companions_step(env, stay.data(), n, &result);
-  ExpectEnd(env, result, Companions_End_TaskFailed);
+  ASSERT_FALSE(companions_is_done(env));
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  companions_step(env, stay.data(), n, &result);
+  ExpectEnd(env, result, Companions_End_Horizon);
   ASSERT_EQ(CountEpisodeEnds(result), 1);
   companions_step(env, stay.data(), n, &result);
   ASSERT_EQ(CountEpisodeEnds(result), 0);
-  ASSERT_EQ(companions_get_end_reason(env), Companions_End_TaskFailed);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
   companions_destroy(env);
 }
 

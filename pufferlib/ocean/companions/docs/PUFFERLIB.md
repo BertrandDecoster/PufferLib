@@ -244,16 +244,15 @@ Because reset happens in C, `PufferEnv.done` returns `False` (no Python-level re
 
 ### Termination Conditions (Companions)
 
-`BaseEnv::IsDone()` is `IsEnvDone() || IsTeamDown()`. SynchroEnv's own rule
-(`synchro_env.cc`, `SynchroEnv::IsEnvDone`):
+`BaseEnv::IsDone()` is the same for every env and lens (`base_env.h`); only a team
+down or the horizon fails a task:
 
 ```cpp
-bool SynchroEnv::IsEnvDone() const {
-    return success_ || tick_ >= horizon_;
-}
+bool IsDone() const { return success_ || tick_ >= horizon_ || IsTeamDown(); }
 ```
 
-- **Success**: All agents reach synchro cells (`success_ = true`)
+- **Success**: the lens's `IsSuccess`, latched by `BaseEnv::Step` (Synchro: all
+  agents reach synchro cells)
 - **Horizon**: Maximum steps reached (`tick_ >= horizon_`)
 - **Team down** (every env): the team's downs reach `max_downs` (3 by default), or
   every companion is down at once (a companion at 0 HP goes down; see `CLAUDE.md`,

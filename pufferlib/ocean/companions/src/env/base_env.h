@@ -59,7 +59,7 @@ enum class EndReason : int {
   None = 0,        // Not done
   Success = 1,     // The latched success
   Horizon = 2,     // The horizon was reached without an outcome
-  TaskFailed = 3,  // The task can no longer succeed (e.g. Aggro's enemy is dead)
+  TaskFailed = 3,  // No longer produced since C API 1.6 (only a team down or the horizon fails a task); kept, the values are append-only
   TeamDown = 4,    // The team is down: max_downs reached, or every companion down at once (the level is lost)
 };
 
@@ -88,9 +88,12 @@ class BaseEnv {
   // lens's rewards and outcome latch) keeps the incremented tick too; only
   // what came after the throw is missing.
   virtual StepResult Step(const std::vector<Action>& actions);
-  // Done: the env's own rule (IsEnvDone: success, horizon, a failure it
-  // honours), or the team is down (whatever the env). The cheap term first.
-  bool IsDone() const { return IsEnvDone() || IsTeamDown(); }
+  // Done, the same for every env and lens: the latched success, the team is
+  // down, or the horizon. Nothing else fails a task (a dead Aggro enemy, a
+  // Dodge companion down: a bad situation stays salvageable). A verdict for
+  // RL episodes, not a stop: the env steps on if the host does. The cheap
+  // terms first.
+  bool IsDone() const { return success_ || tick_ >= horizon_ || IsTeamDown(); }
 
   // Downs. Every companion going down counts (revived or not); the level is
   // lost (EndReason::TeamDown) once the count reaches max_downs, or when every
@@ -111,29 +114,19 @@ class BaseEnv {
   // SetTaskLens). Subclasses normally should not override.
   virtual bool IsSuccess() const { return success_; }
   virtual void ResetSuccess() { success_ = false; }
-  // Latched task failure: BaseEnv::Step sets it once the active TaskLens
-  // reports IsFailed (the task can no longer succeed, e.g. Aggro's enemy is
-  // dead). An outcome, once latched, is final: success and failure exclude
-  // each other. SetTaskLens, LoadSnapshot and Reset clear both (ResetOutcome).
-  bool IsTaskFailed() const { return failed_; }
+  // The latched outcome and end reason. SetTaskLens, LoadSnapshot and Reset
+  // clear them (a new episode).
   void ResetOutcome() {
     ResetSuccess();
-    failed_ = false;
     end_reason_ = EndReason::None;
   }
   // Why the episode is done, i.e. what ended it: None while IsDone() is
   // false, else Success (the latched success), else TeamDown (IsTeamDown),
-  // else TaskFailed when the env is done even without the horizon
-  // (IsDoneWithoutHorizon: a latched failure the env's IsEnvDone honours, as
-  // AggroEnv's under the Aggro lens, or the env's own end rule: a Dodge
-  // companion died, an Aggro enemy killed between steps), else Horizon
-  // (tick >= horizon). A latched failure the env's
-  // IsEnvDone ignores (a Dodge lens on SynchroEnv / AggroEnv) did not end the
-  // episode: it ends at the horizon, as Horizon. Hosts that keep playing
-  // past a task failure tell it from a time out with this.
+  // else Horizon (tick >= horizon). Never TaskFailed (C API 1.6).
   // The reason is fixed when done first becomes true (latched by Step,
-  // SetTaskLens* and LoadSnapshot): a kill after the horizon keeps Horizon.
-  // Between those calls (e.g. a kill between steps) it is evaluated live.
+  // SetTaskLens* and LoadSnapshot): a team down after the horizon keeps
+  // Horizon. Between those calls (e.g. a down between steps) it is evaluated
+  // live.
   virtual EndReason GetEndReason() const;
 
   // Task lens management
@@ -694,25 +687,14 @@ class BaseEnv {
   // weaknesses or immunities (per-agent data).
   void LoadGeneratedLevel(Snapshot snapshot);
 
-  // The env's own end rule (IsDone's other term, besides IsTeamDown): the
-  // latched success, the horizon, a failure it honours
-  virtual bool IsEnvDone() const = 0;
-
-  // IsEnvDone()'s terms other than the latched success and the horizon: true
-  // when the env is done even without the horizon (a latched failure its
-  // IsEnvDone honours, or its own end rule). GetEndReason reports TaskFailed
-  // then. An env whose IsEnvDone is only success || horizon (SynchroEnv) keeps
-  // the default; the others build IsEnvDone on their override so both agree.
-  virtual bool IsDoneWithoutHorizon() const { return false; }
-
   // GetEndReason's rules, for a done env
   EndReason ComputeEndReason() const;
   // Fixes the end reason once done becomes true; None while not done
   void LatchEndReason();
   // Latches the end reason of a state just loaded, afresh: for a derived
   // Reset / LoadSnapshot that changes state after BaseEnv::LoadSnapshot
-  // latched (AggroEnv spawns its enemy then). Not after a Step: the reason
-  // fixed then must stay.
+  // latched (AggroEnv spawns its enemy and companions then). Not after a
+  // Step: the reason fixed then must stay.
   void RelatchEndReasonAfterLoad();
 
   // A copy's FSM agents still point at the copied env's RNG
@@ -940,8 +922,6 @@ class BaseEnv {
   AnnotationStore annotations_;
   // Latched once the active lens reports IsSuccess. Reset via ResetSuccess.
   bool success_ = false;
-  // Latched once the active lens reports IsFailed. Reset via ResetOutcome.
-  bool failed_ = false;
   // Latched when done first becomes true (LatchEndReason). Reset via
   // ResetOutcome.
   EndReason end_reason_ = EndReason::None;
