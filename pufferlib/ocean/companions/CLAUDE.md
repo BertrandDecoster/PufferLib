@@ -151,12 +151,16 @@ while the actors whose motion is in a later layer still stand where they were:
   one) and at the first actor the layer does not move (it stays put the whole layer); a
   teleport's planned candidates but those an actor stands on. Each round, verdicts
   together: a. a motion of the layer that stays on its start is on a destination
-  (backpedal once) or on a path (backpedal past it); b. only then, motions claiming one
-  destination: all but the winner backpedal once; the winner is the one that does not
-  overtake the other (the other's path crosses its start: a line pushed into a wall
-  compresses, its rear behind its front), an exact tie the lower rank (agent index;
-  things, living non-agent actors, after every agent by ObjectId), the only use of the
-  indices. Settled when no destination is taken. The path's other cells never block:
+  (backpedal once) or on a path (backpedal past it); b. only then, head-on: two dashes /
+  forced moves each going through or onto the other's start both backpedal once (as
+  walks never swap: two agents pushed 1 into each other stay, two opposing lines meet in
+  the middle, each packed behind its front; a perpendicular crossing passes, a teleport
+  swap is free); c. only then, motions claiming one destination: all but its ONE winner
+  backpedal once; the winner is the lowest rank among the claimants that overtake no
+  other claimant (its path crosses no other claimant's start: a line pushed into a wall
+  compresses, its rear behind its front), else the lowest rank of all (rank: agent
+  index; things, living non-agent actors, after every agent by ObjectId), the only use
+  of the indices. Settled when no destination is taken. The path's other cells never block:
   a cell left or crossed by a mover of the layer is free (a line pushed together slides
   like a train, crossing dashes pass, a ring pushed round moves). Every round but the
   last backpedals: it ends (bounded by the path lengths)
@@ -362,8 +366,8 @@ it spent). A caster down as the turn begins cannot cast; one going down this tur
 casts. A caster rooted this turn still resolves its skill (the root blocks from the next
 step). The indices order the reports (uses in caster index order; a reaction's credit
 between two casters' landings: the lower index). What still depends on the indices, as
-an outcome: the motion phase's ties (two motions of one layer onto one cell: the lower
-index; its cycle tie-break). Effects no longer do: they are planned with the intents
+an outcome: the motion phase's ties (the one winner of a destination claimed by motions
+of one layer that overtake nobody: the lower index). Effects no longer do: they are planned with the intents
 and applied in the phases (see Effects). Skill landings react in the tag phase with every landing of
 the turn: an agent carrying wet hit by electrified and chilled reacts by the same rule
 whoever casts first (see Reactions).

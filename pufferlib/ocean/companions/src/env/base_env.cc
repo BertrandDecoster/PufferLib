@@ -1052,13 +1052,33 @@ void BaseEnv::SolveLayer() {
     }
     return false;
   };
-  // Of two motions claiming one destination, `j` beats `i`: the one that
-  // would overtake the other (its path crosses the other's start) loses; an
-  // exact tie goes to the lower rank
-  auto beats = [&](size_t j, size_t i) {
-    const bool j_over = passes(j, i), i_over = passes(i, j);
-    if (j_over != i_over) return i_over;
-    return ms[j].rank < ms[i].rank;
+  // `i` goes through or onto the start of `j` (its path or its destination)
+  auto reaches = [&](size_t i, size_t j) {
+    return ms[i].end == ms[j].from || passes(i, j);
+  };
+  // `i` overtakes another claimant of its destination (passes its start)
+  auto overtakes = [&](size_t i) {
+    for (size_t j = 0; j < n; ++j) {
+      if (j != i && moving(j) && ms[j].end == ms[i].end && passes(i, j)) return true;
+    }
+    return false;
+  };
+  // The one winner of the destination `i` claims: the lowest rank among the
+  // claimants that overtake no other claimant; if every one does, the lowest
+  // rank of all
+  auto winner = [&](size_t i) {
+    size_t best = kNoCell;
+    bool best_over = true;
+    for (size_t j = 0; j < n; ++j) {
+      if (!moving(j) || ms[j].end != ms[i].end) continue;
+      const bool over = overtakes(j);
+      if (best == kNoCell || (best_over && !over) ||
+          (best_over == over && ms[j].rank < ms[best].rank)) {
+        best = j;
+        best_over = over;
+      }
+    }
+    return best;
   };
 
   // 0. The static cut: an actor this layer does not move stays where it is
@@ -1112,18 +1132,28 @@ void BaseEnv::SolveLayer() {
       }
       any = any || m.next;
     }
-    // b. Something also moving there: of the motions claiming one
-    // destination, all but the winner backpedal once (judged only once no
-    // stayer is found: a claim a stayer ends is withdrawn first)
+    // b. Head-on: two path motions each going through or onto the other's
+    // start cross head-on; neither may pass the other (as walks never swap):
+    // both backpedal once (judged only once no stayer is found)
     if (!any) {
       for (size_t i = 0; i < n; ++i) {
-        if (!moving(i)) continue;
-        for (size_t j = 0; j < n; ++j) {
-          if (j != i && moving(j) && ms[j].end == ms[i].end && beats(j, i)) {
+        if (!moving(i) || !ms[i].path) continue;
+        for (size_t j = 0; j < n && !ms[i].next; ++j) {
+          if (j != i && moving(j) && ms[j].path && reaches(i, j) && reaches(j, i)) {
             ms[i].next = ms[i].choice + 1;
             any = true;
-            break;
           }
+        }
+      }
+    }
+    // c. Something also moving there: of the motions claiming one
+    // destination, all but its one winner backpedal once (judged only once
+    // a and b found nothing: a claim withdrawn there never beats another)
+    if (!any) {
+      for (size_t i = 0; i < n; ++i) {
+        if (moving(i) && winner(i) != i) {
+          ms[i].next = ms[i].choice + 1;
+          any = true;
         }
       }
     }

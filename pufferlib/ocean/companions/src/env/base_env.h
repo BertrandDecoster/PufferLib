@@ -943,13 +943,20 @@ class BaseEnv {
   //   a. something there: a motion of the layer that stays (it keeps its
   //      start) on its destination (backpedal once), or on its path
   //      (backpedal past it: it is a blocker once it is known to stay);
-  //   b. only when a found nothing: something also moving there: of the
-  //      motions claiming one destination, all but the winner backpedal
-  //      once. The winner: the one that does not overtake the other (the
-  //      other's path crosses its start: the rear of a line pushed into a
-  //      wall gives way to the front); an exact tie, the lower rank (agent
-  //      index; things, living non-agent actors, after every agent by
-  //      ObjectId), the only use of the indices.
+  //   b. only when a found nothing: head-on: two dashes / forced moves each
+  //      going through or onto the other's start cross head-on; neither may
+  //      pass the other (as walks never swap): both backpedal once (so two
+  //      agents pushed 1 into each other stay, and two opposing lines meet
+  //      in the middle, each packed behind its front). A perpendicular
+  //      crossing passes; teleports have no path (a teleport swap is free);
+  //   c. only when a and b found nothing: something also moving there: of
+  //      the motions claiming one destination, all but its ONE winner
+  //      backpedal once. The winner: the lowest rank among the claimants
+  //      that overtake no other claimant (whose path crosses no other
+  //      claimant's start: the rear of a line pushed into a wall gives way
+  //      to the front); if every one overtakes, the lowest rank. The rank:
+  //      the agent index; things, living non-agent actors, after every
+  //      agent by ObjectId (the only use of the indices).
   //   Settled when no destination is taken. Only destinations are judged:
   //   the path's other cells, crossed or left by movers of the same layer,
   //   never block (a line pushed together slides like a train; crossing

@@ -2686,6 +2686,107 @@ TEST(TestATrainWhoseFrontStaysBlocksTheRest) {
     ASSERT_TRUE(rear->GetPosition() == (gust ? Position{4, 3} : Position{4, 4}));
   }
 }
+// One winner per destination (the reviewer's claim cycle): j (4,2) is pushed
+// 2 east (two gales) through k's start, k (4,3) 1 east, i (2,4) 2 south (a
+// gust): all three claim (4,4). j overtakes k; the winner is the lowest
+// index among those that overtake nobody (i, k); the others backpedal once
+// (the cell never stays empty). k the winner: i backpedals to (3,4), j to
+// k's start, which k leaves. i the winner: k stays, so j, onto k's start,
+// stays too. Every index order.
+TEST(TestOneWinnerPerDestination) {
+  const int orders[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+  for (const auto& order : orders) {  // The creation rank of j, i, k
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {1, 4});
+    GivePusher(env, 0, "gust2", 2);  // Its down ring cell (2,4): pushed 2 south
+    const Position starts[3] = {{4, 2}, {2, 4}, {4, 3}};  // j, i, k
+    Agent* agents[3] = {nullptr, nullptr, nullptr};
+    for (int rank = 0; rank < 3; ++rank) {
+      for (int who = 0; who < 3; ++who) {
+        if (order[who] == rank) agents[who] = AddEnemy(env, starts[who]);
+      }
+    }
+    Agent* j = agents[0];
+    Agent* i = agents[1];
+    Agent* k = agents[2];
+    for (const char* name : {"gale_a", "gale_b"}) {
+      EffectConfig gale = LineGale(name, 1);
+      gale.filter = TargetFilter::All;
+      Register(gale);
+    }
+    env.SpawnEffect("gale_a", EffectTarget::AtCell({4, 3}));  // j and k, 1 east
+    env.SpawnEffect("gale_b", EffectTarget::AtCell({4, 1}));  // j, 1 east more
+    env.Step({Use(MovementAction::Stay), kStay, kStay, kStay});
+    const bool k_wins = order[2] < order[1];
+    ASSERT_TRUE((k_wins ? k : i)->GetPosition() == (Position{4, 4}));
+    ASSERT_TRUE(i->GetPosition() == (k_wins ? Position{3, 4} : Position{4, 4}));
+    ASSERT_TRUE(k->GetPosition() == (k_wins ? Position{4, 4} : Position{4, 3}));
+    ASSERT_TRUE(j->GetPosition() == (k_wins ? Position{4, 3} : Position{4, 2}));
+  }
+}
+
+// Head-on crossings cancel, as walk swaps do: two gobs pushed 1 into each
+// other (gusts around (4,2) and (4,5)) both stay, whatever their indices
+TEST(TestTwoAgentsPushedIntoEachOtherStay) {
+  for (bool swapped : {false, true}) {
+    SynchroEnv env(10, 10, 2, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {4, 2});
+    GiveGust(env, 0);
+    Place(env, 1, {4, 5});
+    GiveGust(env, 1);
+    Agent* first = AddEnemy(env, swapped ? Position{4, 4} : Position{4, 3});
+    Agent* second = AddEnemy(env, swapped ? Position{4, 3} : Position{4, 4});
+    env.Step({Use(MovementAction::Stay), Use(MovementAction::Stay), kStay, kStay});
+    ASSERT_TRUE(first->GetPosition() == (swapped ? Position{4, 4} : Position{4, 3}));
+    ASSERT_TRUE(second->GetPosition() == (swapped ? Position{4, 3} : Position{4, 4}));
+  }
+}
+
+// Two opposing lines pushed 2 into each other (a gale east on A1 (4,2), A2
+// (4,3); one west on B1 (4,5), B2 (4,6)) meet in the middle: A2 and B1 cross
+// head-on and both backpedal onto (4,4); there the lower index of the two
+// fronts wins, and each line packs behind its front. Nobody ends on the far
+// side of an opposing agent, and each line keeps its order.
+TEST(TestTwoOpposingLinesMeetInTheMiddle) {
+  for (bool a_first : {true, false}) {
+    ScopedEffectRegistry scoped_registry;
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Place(env, 0, {8, 8});
+    Agent* a1 = nullptr;
+    Agent* a2 = nullptr;
+    Agent* b1 = nullptr;
+    Agent* b2 = nullptr;
+    for (int pass = 0; pass < 2; ++pass) {
+      if ((pass == 0) == a_first) {
+        a1 = AddEnemy(env, {4, 2});
+        a2 = AddEnemy(env, {4, 3});
+      } else {
+        b1 = AddEnemy(env, {4, 5});
+        b2 = AddEnemy(env, {4, 6});
+      }
+    }
+    EffectConfig east = LineGale("east_gale", 2);
+    east.filter = TargetFilter::Enemy;
+    Register(east);
+    EffectConfig west = LineGale("west_gale", 2);
+    west.filter = TargetFilter::Enemy;
+    west.push_dx = -1;
+    Register(west);
+    env.SpawnEffect("east_gale", EffectTarget::AtCell({4, 2}));  // A1, A2
+    env.SpawnEffect("west_gale", EffectTarget::AtCell({4, 6}));  // B1, B2
+    env.Step(Stays(env));
+    const int a1c = a1->GetPosition().col, a2c = a2->GetPosition().col;
+    const int b1c = b1->GetPosition().col, b2c = b2->GetPosition().col;
+    ASSERT_TRUE(a1c < a2c && a2c < b1c && b1c < b2c);  // Order kept, nobody passed
+    ASSERT_TRUE(a_first ? (a1c == 3 && a2c == 4 && b1c == 5 && b2c == 6)
+                        : (a1c == 2 && a2c == 3 && b1c == 4 && b2c == 5));
+  }
+}
+
 // =============================================================================
 // Main
 // =============================================================================
