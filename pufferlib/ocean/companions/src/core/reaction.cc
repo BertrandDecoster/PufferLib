@@ -104,4 +104,37 @@ void ValidateImmunities(const std::vector<std::string>& immune) {
   }
 }
 
+namespace {
+bool IsValidSteps(int n) { return n > 0 || n == kPermanentTag; }  // A step timer, or permanent
+}  // namespace
+
+bool IsValidZoneDef(const ZoneDef& zone) {
+  return IsValidSteps(zone.duration) && IsValidSteps(zone.steps) && zone.damage >= 0 &&
+         IsValidNameLength(zone.then);
+}
+
+void ValidateZoneDef(const std::string& where, const ZoneDef& zone) {
+  auto steps = [&](const char* what, int n) {
+    if (!IsValidSteps(n)) {
+      throw std::runtime_error(where + ": " + what + ": " + std::to_string(n) +
+                               " (positive, or -1: permanent)");
+    }
+  };
+  steps("duration", zone.duration);
+  steps("steps", zone.steps);
+  if (!IsValidNameLength(zone.then)) {
+    throw std::runtime_error(where + ": then: '" + zone.then + "' longer than " +
+                             std::to_string(kMaxNameLength) + " bytes");
+  }
+  if (zone.damage < 0) throw std::runtime_error(where + ": damage: negative");
+}
+
+void ValidateZoneTable(const std::map<std::string, ZoneDef>& zones) {
+  for (const auto& [tag, zone] : zones) {
+    const std::string where = "zones['" + tag + "']";
+    CheckName(where + ": ", "tag", tag);
+    ValidateZoneDef(where, zone);
+  }
+}
+
 }  // namespace companions

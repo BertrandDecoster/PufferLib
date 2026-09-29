@@ -1,5 +1,6 @@
 // Copyright 2024
-// Reactions, weaknesses, immunities and tag statuses: the combo rules as data.
+// Reactions, weaknesses, immunities and tag statuses: the combo rules as data
+// (and the checks of the zones they create).
 // Tags stay opaque names (the env gives them no meaning); these rules say what
 // happens when they meet on an agent. BaseEnv resolves them inside each tag
 // landing (BaseEnv::LandTag: immunity, the tag and its status, weakness,
@@ -8,6 +9,7 @@
 #ifndef COMPANIONS_CORE_REACTION_H_
 #define COMPANIONS_CORE_REACTION_H_
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -80,6 +82,17 @@ void ValidateTagStatuses(const std::vector<TagStatusRule>& rules);
 // Weaknesses: no pair twice. Immunities: no tag twice.
 void ValidateWeaknesses(const std::vector<TagWeakness>& weak_to);
 void ValidateImmunities(const std::vector<std::string>& immune);
+
+// A zone's fields (the zone table's, a cell's, core/types.h): the landing
+// duration and the steps positive or kPermanentTag, damage >= 0, `then` of
+// at most kMaxNameLength bytes ("" = no successor). Cycles are legal: `then`
+// only has to be a valid name (defined in the table or not).
+bool IsValidZoneDef(const ZoneDef& zone);
+// The same, throwing std::runtime_error "<where>: <field>: <what is wrong>"
+void ValidateZoneDef(const std::string& where, const ZoneDef& zone);
+// The zone table: each tag non-empty, at most kMaxNameLength bytes, with valid
+// fields. Messages name the entry: "zones['burning']: steps: ..."
+void ValidateZoneTable(const std::map<std::string, ZoneDef>& zones);
 
 }  // namespace companions
 

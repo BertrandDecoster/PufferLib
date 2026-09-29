@@ -10,6 +10,7 @@
 #define COMPANIONS_CORE_SNAPSHOT_H_
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "cell.h"
 #include "context_skill.h"
 #include "fsm/fsm_state.h"
+#include "reaction.h"
 #include "skill_config.h"
 #include "types.h"
 
@@ -48,12 +50,25 @@ struct TagSnapshot {
 };
 
 // =============================================================================
-// CellTagSnapshot - A zone: a cell's tag, by name (snapshot version 4)
+// CellTagSnapshot - A zone: a cell's tag, by name (snapshot version 4), and
+// its fields (version 7; BaseEnv::CellTag)
 // =============================================================================
+// Each field is the cell's own when present, and the snapshot's zone table's
+// for `tag` when absent (nullopt: Snapshot::CellZone; a tag the table does not
+// define: the ZoneDef defaults). Absent is how a hand-written or generated
+// level says "as the table says" ({row, col, tag} in JSON); files before v7
+// carry the duration only (always present). SaveSnapshot writes every field,
+// resolved, so a per-cell override, a zone mid-life (its remaining steps) and
+// a cell created before its tag was redefined load as they were.
 struct CellTagSnapshot {
   Position cell;
   std::string tag;
-  int duration = kPermanentTag;  // Landed on agents: positive ticks, or kPermanentTag
+  std::optional<int> duration;  // Landed on agents: positive ticks, or kPermanentTag
+  // Steps the zone still lasts, read between two steps (the steps to come),
+  // or kPermanentTag
+  std::optional<int> steps;
+  std::optional<std::string> then;  // Its successor's tag; "" = none
+  std::optional<int> damage;        // Per landing, >= 0
 };
 
 // =============================================================================
@@ -138,6 +153,12 @@ struct AgentSnapshot {
   // reported (BaseEnv::GetLastDowns).
   bool downed = false;
   int times_downed = 0;
+
+  // Snapshot version 7 (any agent type): its weaknesses (P, S) and the tags
+  // it is immune to (BaseEnv::SetWeaknesses / SetImmunities). Older files:
+  // none.
+  std::vector<TagWeakness> weak_to;
+  std::vector<std::string> immune;
 };
 
 // =============================================================================
@@ -212,6 +233,21 @@ struct Snapshot {
   // them.
   std::optional<std::vector<ContextSkillRule>> context_skills;
 
+  // Snapshot version 7: the level's combo rules as data. Older files (and a
+  // JSON level without the keys): none, like a fresh env.
+  // The zone table (BaseEnv::DefineZone), by tag: what a zone created by name
+  // is (a successor, a reaction's zone_becomes, the host's SetCellTag by
+  // name), and what a cell_tags entry's absent fields take. LoadSnapshot
+  // sets it before the cells.
+  std::map<std::string, ZoneDef> zones;
+  std::vector<ReactionRule> reactions;      // BaseEnv::SetReactions, in level order
+  std::vector<TagStatusRule> tag_statuses;  // BaseEnv::SetTagStatuses
+
+  // The fields `zone` loads with: the table's for its tag (`zones`; the
+  // ZoneDef defaults when it does not define it), overridden by those the
+  // cell has.
+  ZoneDef CellZone(const CellTagSnapshot& zone) const;
+
   // ==========================================================================
   // Validation helpers
   // ==========================================================================
@@ -241,9 +277,16 @@ struct Snapshot {
   // >= 0, a downed agent at 0 HP with times_downed >= 1 and no statuses;
   // every agent's max_health >= 1; v6: the context skill rules (absent: the
   // default ones) pass ValidateContextSkills with that same book (so a level
-  // may retune a rule's skill, but not give it a cooldown).
+  // may retune a rule's skill, but not give it a cooldown); v7: the zone
+  // table passes ValidateZoneTable, each zone cell's present fields
+  // ValidateZoneDef (a duration or steps of 0 or below -1, a negative damage,
+  // an overlong then are rejected; any valid name may follow, defined or
+  // not: cycles are legal), the reactions ValidateReactions, the tag
+  // statuses ValidateTagStatuses (an unknown status is rejected), each
+  // agent's weak_to / immune ValidateWeaknesses / ValidateImmunities.
   // Messages name the skill, agent (index and id), zone cell or rule
-  // (context_skills[i]).
+  // (context_skills[i], zones['tag'], reactions[i], tag_statuses[i],
+  // weak_to[i], immune[i]).
   void ValidateSkillsTagsZones() const;
 
   // ==========================================================================

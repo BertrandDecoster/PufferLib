@@ -14,6 +14,7 @@
 #include "../src/core/reaction.h"
 #include "../src/core/skill_config.h"
 #include "../src/core/snapshot.h"
+#include "../src/core/snapshot_json.h"
 #include "../src/env/synchro_env.h"
 
 using namespace companions;
@@ -260,9 +261,9 @@ TEST(TestTagStatusesWeaknessesAndImmunitiesAreValidated) {
 }
 
 // Reactions and tag statuses are level data (like the zone table): copied
-// with the env, kept across a generated Reset, cleared by LoadSnapshot until
-// snapshot v7 carries them. Weaknesses and immunities belong to the agents:
-// copied with them, gone when the agents are re-created.
+// with the env, kept across a generated Reset, replaced by LoadSnapshot with
+// the snapshot's (v7). Weaknesses and immunities belong to the agents: copied
+// with them, saved with them, gone when a generated Reset re-creates them.
 TEST(TestReactionDataIsLevelDataAndAgentData) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -294,7 +295,19 @@ TEST(TestReactionDataIsLevelDataAndAgentData) {
   ASSERT_TRUE(Has(env, b, "stunned"));
   ASSERT_TRUE(b->IsStunned());
 
-  env.LoadSnapshot(env.SaveSnapshot());
+  Require(env.SetWeaknesses(b->GetId(), {{"oil", "burning"}}), "weak_to");
+  Require(env.SetImmunities(b->GetId(), {"wet"}), "immune");
+  Snapshot saved = env.SaveSnapshot();
+  Require(env.SetReactions({}), "no reactions");
+  env.LoadSnapshot(saved);  // The snapshot's, exactly
+  ASSERT_TRUE(env.GetReactions() == CombosRules());
+  ASSERT_EQ(env.GetTagStatuses().size(), static_cast<size_t>(1));
+  Agent* c = env.GetMutableObjectManager().GetAllAgents().at(0);
+  ASSERT_TRUE(env.GetWeaknesses(c->GetId()) == (std::vector<TagWeakness>{{"oil", "burning"}}));
+  ASSERT_TRUE(env.GetImmunities(c->GetId()) == std::vector<std::string>{"wet"});
+  saved.reactions.clear();
+  saved.tag_statuses.clear();
+  env.LoadSnapshot(saved);  // A snapshot without them: none
   ASSERT_TRUE(env.GetReactions().empty());
   ASSERT_TRUE(env.GetTagStatuses().empty());
   ASSERT_EQ(copy->GetReactions().size(), static_cast<size_t>(4));  // Deep copies keep theirs
@@ -1160,6 +1173,132 @@ TEST(TestATagStatusFromTheHostCoversTheNextSteps) {
   ASSERT_TRUE(a->GetPosition() == (Position{3, 3}));
   env.Step(With(env, 0, kRight));
   ASSERT_TRUE(a->GetPosition() == (Position{3, 4}));
+}
+
+// =============================================================================
+// Snapshots (v7): a saved world plays the same
+// =============================================================================
+
+// The agent's index in GetAllAgents() (ids may differ between worlds), -1
+// for none
+static int Idx(const BaseEnv& env, ObjectId id) {
+  const auto agents = env.GetObjectManager().GetAllAgents();
+  for (size_t i = 0; i < agents.size(); ++i) {
+    if (agents[i]->GetId() == id) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+static std::string Name(const BaseEnv& env, TagId tag) {
+  return tag == kInvalidTag ? "-" : env.GetTagTable().Name(tag);
+}
+
+// Everything the last step did and the world it left, by names and agent
+// indices
+static std::string Trace(const BaseEnv& env) {
+  std::ostringstream out;
+  for (const auto& t : env.GetLastTagsApplied()) {
+    out << "tag " << Idx(env, t.agent) << " " << Name(env, t.tag) << " " << t.duration << " "
+        << Idx(env, t.source) << " " << t.cause << " " << t.fresh << " " << t.damage << " "
+        << static_cast<int>(t.kind) << " " << t.reaction << "\n";
+  }
+  for (const auto& r : env.GetLastReactions()) {
+    out << "reaction " << r.rule << " " << Idx(env, r.trigger) << " " << Name(env, r.tag) << " "
+        << Idx(env, r.source) << " " << r.cause << " " << static_cast<int>(r.kind) << " "
+        << r.spread << ":";
+    for (const auto& o : r.affected) {
+      out << " " << Idx(env, o.agent) << "/" << o.result_landed << "/" << o.defeated << "/"
+          << o.damage;
+    }
+    out << "\n";
+  }
+  for (const auto& d : env.GetLastDefeats()) {
+    out << "defeat " << Idx(env, d.agent) << " " << Name(env, d.zone) << " " << Name(env, d.tag)
+        << " " << Idx(env, d.source) << " " << d.cause << " " << static_cast<int>(d.kind) << " "
+        << d.reaction << "\n";
+  }
+  const auto agents = env.GetObjectManager().GetAllAgents();
+  for (size_t i = 0; i < agents.size(); ++i) {
+    const Agent* a = agents[i];
+    out << "agent " << i << " " << a->GetHealth() << " " << a->IsAlive() << " " << a->IsStunned()
+        << " " << a->GetPosition().row << "," << a->GetPosition().col << ":";
+    for (const AgentTag& t : a->GetTags()) out << " " << Name(env, t.id) << "/" << t.duration;
+    out << "\n";
+  }
+  for (int r = 0; r < env.GetRows(); ++r) {
+    for (int c = 0; c < env.GetCols(); ++c) {
+      const BaseEnv::CellTag z = env.GetCellTag({r, c});
+      if (z.tag == kInvalidTag) continue;
+      out << "zone " << r << "," << c << " " << Name(env, z.tag) << " " << z.duration << " "
+          << z.steps << " " << Name(env, z.then) << " " << z.damage << "\n";
+    }
+  }
+  return out.str();
+}
+
+// A world with every piece of the combo data: a fireball on the oil defeats
+// the gob weak to (oil, burning), spreads over the kitchen (the imp is immune
+// to burning, the cook burns) which becomes the table's burning zone, then
+// ash; a chilled imp in the lake is stunned by wet + chilled (a tag status).
+// Saved before the fireball (binary and JSON), each copy plays exactly as the
+// world never saved, step by step.
+TEST(TestASavedWorldPlaysTheSameReactions) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
+  MakeArena(env);
+  Require(env.SetReactions({Rule("oil", "burning", "burning").Hurts(1).Spreads("burning").r,
+                            Rule("wet", "chilled", "stunned").r}),
+          "reactions");
+  Require(env.SetTagStatuses({{"stunned", StatusType::Stunned, 2}}), "statuses");
+  Require(env.DefineZone("burning", Zone().Lasts(3).Then("ash").Hurts(1).def), "burning");
+  Require(env.DefineZone("ash", Zone().Lasts(2).def), "ash");
+  GiveBolt(env, 0, "fireball", "burning");
+  Place(env, 0, {2, 1});
+  Place(env, 1, {2, 6});  // The cook, on the oil
+  Agent* gob = AddEnemy(env, {2, 4});
+  Agent* imp = AddEnemy(env, {2, 5});
+  Agent* frosty = AddEnemy(env, {5, 5}, 6);
+  Require(env.SetWeaknesses(gob->GetId(), {{"oil", "burning"}}), "weak_to");
+  Require(env.SetImmunities(imp->GetId(), {"burning"}), "immune");
+  Require(env.ApplyTagTo(frosty->GetId(), "chilled", kPermanentTag), "chilled");
+  SetZones(env, {{2, 4}, {2, 5}, {2, 6}}, "oil");
+  SetZones(env, {{5, 5}}, "wet");
+
+  const Snapshot saved = env.SaveSnapshot();
+  std::unique_ptr<BaseEnv> never_saved = env.Clone();
+  SynchroEnv from_binary(10, 10, 2, 1, 0, 7);
+  from_binary.GetMutableTagTable().Intern("unrelated");  // Other tag ids
+  from_binary.LoadSnapshot(Snapshot::Deserialize(saved.Serialize()));
+  SynchroEnv from_json(10, 10, 2, 1, 0, 9);
+  from_json.LoadSnapshot(SnapshotFromJson(SnapshotToJson(saved)));
+
+  bool defeated = false, immune = false, stunned = false, burnt_out = false;
+  for (int step = 0; step < 7; ++step) {
+    const std::vector<Action> actions =
+        step == 0 ? With(*never_saved, 0, Use(MovementAction::Right)) : Stays(*never_saved);
+    never_saved->Step(actions);
+    from_binary.Step(actions);
+    from_json.Step(actions);
+    const std::string expected = Trace(*never_saved);
+    for (const BaseEnv* loaded : {static_cast<const BaseEnv*>(&from_binary),
+                                  static_cast<const BaseEnv*>(&from_json)}) {
+      const std::string got = Trace(*loaded);
+      if (got != expected) {
+        throw std::runtime_error("step " + std::to_string(step) + " differs:\n" + got +
+                                 "--- expected ---\n" + expected);
+      }
+    }
+    defeated = defeated || !never_saved->GetLastDefeats().empty();
+    for (const auto& r : never_saved->GetLastReactions()) {
+      for (const auto& o : r.affected) immune = immune || !o.result_landed;
+    }
+    const Agent* f = never_saved->GetObjectManager().GetAllAgents().at(4);
+    stunned = stunned || f->IsStunned();
+    burnt_out = never_saved->GetCellTag({2, 5}).tag == kInvalidTag;
+  }
+  ASSERT_TRUE(defeated);
+  ASSERT_TRUE(immune);
+  ASSERT_TRUE(stunned);
+  ASSERT_TRUE(burnt_out);  // Burning 3 steps, then ash 2: gone
 }
 
 // =============================================================================

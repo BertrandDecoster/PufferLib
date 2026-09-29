@@ -305,7 +305,7 @@ TEST(TestZoneCyclesAdvanceOneZonePerTick) {
 }
 
 // The table is level data: copied with the env, kept across a generated
-// Reset, replaced by LoadSnapshot (by none until snapshot v7 carries it).
+// Reset, replaced by LoadSnapshot with the snapshot's (v7; none in older ones).
 TEST(TestTheZoneTableIsLevelData) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -320,7 +320,12 @@ TEST(TestTheZoneTableIsLevelData) {
   ASSERT_EQ(env.GetZoneDef("burning").steps, 6);
 
   Snapshot saved = env.SaveSnapshot();
-  env.LoadSnapshot(saved);
+  ASSERT_TRUE(env.DefineZone("mud", Zone().def));
+  env.LoadSnapshot(saved);  // The snapshot's table, exactly
+  ASSERT_EQ(env.GetZoneDefs().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetZoneDef("burning").steps, 6);
+  saved.zones.clear();
+  env.LoadSnapshot(saved);  // A snapshot without a table: none
   ASSERT_TRUE(env.GetZoneDefs().empty());
   ASSERT_EQ(copy->GetZoneDef("burning").steps, 6);  // Deep copies keep theirs
 }
@@ -619,7 +624,7 @@ TEST(TestACasterDownedByItsLandingZoneGetsNothingButItsUseGoesOn) {
 }
 
 // =============================================================================
-// Snapshots (the zone table and timers come with snapshot v7)
+// Snapshots (v7: the zone table and each cell's fields)
 // =============================================================================
 
 TEST(TestADefaultZoneRoundTripsThroughASnapshot) {
@@ -635,6 +640,74 @@ TEST(TestADefaultZoneRoundTripsThroughASnapshot) {
   ASSERT_EQ(z.steps, kPermanentTag);
   ASSERT_EQ(z.then, kInvalidTag);
   ASSERT_EQ(z.damage, 0);
+}
+
+static Snapshot BinaryRoundTrip(const Snapshot& s) { return Snapshot::Deserialize(s.Serialize()); }
+
+// A zone cell by names: tag, landing duration, steps, successor, damage
+static std::string Describe(const BaseEnv& env, Position p) {
+  const BaseEnv::CellTag c = env.GetCellTag(p);
+  if (c.tag == kInvalidTag) return "-";
+  std::ostringstream out;
+  out << env.GetTagTable().Name(c.tag) << " " << c.duration << " " << c.steps << " "
+      << (c.then == kInvalidTag ? "" : env.GetTagTable().Name(c.then)) << " " << c.damage;
+  return out.str();
+}
+
+static void RequireSame(const std::string& a, const std::string& b, const char* what) {
+  if (a != b) throw std::runtime_error(std::string(what) + ": '" + a + "' != '" + b + "'");
+}
+
+// A zone mid-life keeps its remaining steps across a save and a load, so it
+// expires on the same step as in the world never saved, and becomes its
+// successor from the loaded table.
+TEST(TestAZoneMidLifeKeepsItsTimerAcrossSaveAndLoad) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.DefineZone("burning", Zone().Lasts(4).Then("smoke").Hurts(1).def));
+  ASSERT_TRUE(env.DefineZone("smoke", Zone().Lasts(2).Lands(1).def));
+  Agent* a = Place(env, 0, {3, 2});
+  a->SetMaxHealth(20);
+  ASSERT_TRUE(env.SetCellTag({3, 2}, "burning"));
+  env.Step({kStay});
+  env.Step({kStay});
+  ASSERT_EQ(env.GetCellTag({3, 2}).steps, 2);  // Mid-life: 2 steps to come
+
+  std::unique_ptr<BaseEnv> never_saved = env.Clone();
+  SynchroEnv loaded(10, 10, 1, 1, 0, 7);
+  loaded.GetMutableTagTable().Intern("unrelated");  // Other ids: names travel
+  loaded.LoadSnapshot(BinaryRoundTrip(env.SaveSnapshot()));
+  RequireSame(Describe(loaded, {3, 2}), "burning -1 2 smoke 1", "loaded");
+  Agent* b = loaded.GetMutableObjectManager().GetAllAgents().at(0);
+  for (int i = 1; i <= 5; ++i) {
+    never_saved->Step({kStay});
+    loaded.Step({kStay});
+    RequireSame(Describe(loaded, {3, 2}), Describe(*never_saved, {3, 2}), "zone");
+    ASSERT_EQ(b->GetHealth(), never_saved->GetMutableObjectManager().GetAllAgents().at(0)->GetHealth());
+    ASSERT_EQ(loaded.GetLastTagsApplied().size(), never_saved->GetLastTagsApplied().size());
+  }
+  // burning expired after 2 more steps, smoke after 2 more: nothing left
+  ASSERT_EQ(loaded.GetCellTag({3, 2}).tag, kInvalidTag);
+  ASSERT_EQ(b->GetHealth(), 20 - 4);  // 2 burning landings before, 2 after the load
+}
+
+// Each cell keeps its own resolved copy through a save and a load: a per-cell
+// override, and a cell created before its tag was redefined. The table loads
+// too, so a zone created by name afterwards takes the new definition.
+TEST(TestCellsKeepTheirOwnFieldsAcrossSaveAndLoad) {
+  SynchroEnv env(10, 10, 1, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_TRUE(env.DefineZone("wet", Zone().Lasts(5).def));
+  ASSERT_TRUE(env.SetCellTag({2, 2}, "wet", Zone().Lands(2).Lasts(3).Then("ice").Hurts(2).def));
+  ASSERT_TRUE(env.SetCellTag({2, 3}, "wet"));  // The table as it is now
+  ASSERT_TRUE(env.DefineZone("wet", Zone().Lasts(9).Hurts(3).def));
+  SynchroEnv loaded(10, 10, 1, 1, 0, 7);
+  loaded.LoadSnapshot(BinaryRoundTrip(env.SaveSnapshot()));
+  RequireSame(Describe(loaded, {2, 2}), "wet 2 3 ice 2", "override");
+  RequireSame(Describe(loaded, {2, 3}), "wet -1 5  0", "created before the redefinition");
+  ASSERT_TRUE(loaded.GetZoneDef("wet") == Zone().Lasts(9).Hurts(3).def);
+  ASSERT_TRUE(loaded.SetCellTag({2, 4}, "wet"));
+  RequireSame(Describe(loaded, {2, 4}), "wet -1 9  3", "created after the load");
 }
 
 // =============================================================================

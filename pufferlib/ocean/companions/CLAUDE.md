@@ -46,6 +46,10 @@ companions/                    # Standalone pure C++ implementation
   (`tests/test_zones.cc`)
 - Reactions, weaknesses, immunities, tag statuses, their reports and the landing order:
   `companions_reactions_test` (`tests/test_reactions.cc`)
+- v7 snapshots (the zone table, the zone cells' fields, reactions, tag statuses,
+  weaknesses, immunities): binary in `tests/test_snapshot.cc`, JSON in
+  `tests/test_snapshot_json.cc`, a zone's timer across a load in `tests/test_zones.cc`, a
+  saved world playing the same reactions in `tests/test_reactions.cc`
 - A test that registers its own effects holds a `ScopedEffectRegistry`
   (`tests/effect_registry_guard.h`), declared before its envs: it clears the global
   `EffectConfigRegistry` back to the builtins on entry and on exit, even when an
@@ -314,12 +318,13 @@ tests: `tests/test_zones.cc`):
   the defaults: permanent, landing a permanent tag, harmless, without successor).
   Anything that creates a zone BY NAME takes its fields from it: `SetCellTag(cell, tag)`,
   `SetCellTag(cell, tag, duration)` (that landing duration, the rest from the table: the
-  C API setter), a successor, a reaction's `zone_becomes` (and, to come, snapshot cells).
+  C API setter), a successor, a reaction's `zone_becomes`, a snapshot zone cell's missing
+  fields.
   `SetCellTag(cell, tag, ZoneDef)` is the explicit per-cell override. A cell keeps its
   resolved copy (no lookup on the hot path): redefining a tag changes later zones only.
-  Like max_downs: copied with the env, kept across a generated `Reset`, replaced by
-  `LoadSnapshot` (by none until snapshot v7 carries it: define zones after a load, and
-  set the snapshot's zone cells again, since they resolved with the defaults as they loaded)
+  Like max_downs: copied with the env, kept across a generated `Reset`, saved in
+  snapshots (v7 `"zones"`) and replaced by `LoadSnapshot` with the snapshot's (none in
+  older ones), set before the snapshot's zone cells load
 - Refused (cell / table unchanged, nothing interned): out of bounds, an empty tag
   (`DefineZone`; `SetCellTag` "" clears the cell), a tag or `then` over 31 bytes, a
   duration or steps of 0 or below -1, a negative damage
@@ -350,9 +355,13 @@ tests: `tests/test_zones.cc`):
   after the step, it lands from the next step and lasts its n next steps), or the cell
   loses its zone. Cycles are legal (`a -> a`, `a -> b -> a`): one zone per tick
 - World state: copied with the env (timers included), saved in snapshots, replaced by
-  `LoadSnapshot` (generated levels have none, so every `Reset` clears them). Snapshots
-  carry the tag and its duration only until snapshot v7 (neither the table nor the
-  remaining steps): a saved zone loads by name with that duration
+  `LoadSnapshot` (generated levels have none, so every `Reset` clears them).
+  `SaveSnapshot` writes each zone with every field as its cell holds it (v7: `steps`,
+  the steps to come, `then`, `damage`, and the landing `duration`), so a zone mid-life
+  expires on the same step after a load, and a per-cell override or a zone created
+  before its tag was redefined loads as it was. A snapshot cell that lacks a field (a
+  hand-written level's `{row, col, tag}`, a file before v7) takes the snapshot's zone
+  table's (`Snapshot::CellZone`; an undefined tag: the defaults)
 
 **Reactions, weaknesses, immunities, tag statuses** (`core/reaction.{h,cc}`,
 `BaseEnv::LandTag` / `ResolveWeakness` / `ResolveReaction`; tests: `tests/test_reactions.cc`).
@@ -406,14 +415,15 @@ a status.
   agent indefinitely (a rooted agent can't walk out)
 - **Level data** (`SetReactions(rules, error)` / `GetReactions()`,
   `SetTagStatuses(rules, error)` / `GetTagStatuses()`): like the zone table, copied with
-  the env, kept across a generated `Reset` (`LoadGeneratedLevel`), replaced by
-  `LoadSnapshot` (by none until snapshot v7 carries them). Tags are interned when set
-  (the table only grows, so the resolved ids stay valid)
+  the env, kept across a generated `Reset` (`LoadGeneratedLevel`), saved in snapshots
+  (v7) and replaced by `LoadSnapshot` with the snapshot's (none in older ones). Tags are
+  interned when set (the table only grows, so the resolved ids stay valid)
 - **Per agent** (`SetWeaknesses(agent, weak_to, error)` / `GetWeaknesses`,
   `SetImmunities(agent, immune, error)` / `GetImmunities`; `Agent::GetWeakTo` /
-  `GetImmune` / `IsImmuneTo`, tag ids): on the agent, copied with it, gone when a load
-  or a generated `Reset` re-creates the agents. An immunity blocks landings only: a tag
-  the agent already carries stays until it expires or a reaction removes it
+  `GetImmune` / `IsImmuneTo`, tag ids): on the agent, copied and saved (v7) with it,
+  gone when a generated `Reset` re-creates the agents (they have none). An immunity
+  blocks landings only: a tag the agent already carries stays until it expires or a
+  reaction removes it
 - **Validation** (each setter: false, nothing changed or interned, the reason in `error`):
   every name non-empty, at most 31 bytes; a reaction: `a` != `b`, a `result`, `keep` a
   subset of {a, b} without repeats, `damage` >= 0, `zone_becomes` only with `spread`, one
@@ -492,12 +502,35 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   (31 + NUL). The context rules themselves are not exposed (a host reads their effect in
   `skills`, or in a preview's `skill`; level tools read them in the snapshot JSON)
 
-**Levels** bring their skills, zones, slots, downs and context skills through snapshot
-JSON v6 (`core/snapshot_json.cc`; versions 2..6 load, binary snapshots follow the same
-number, binary 1..6):
+**Levels** bring their skills, zones, slots, downs, context skills and combo rules
+through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots
+follow the same number, binary 1..7):
 - Top level `"skills"`: SkillConfig objects (keys above; all but `name` optional; v6
   adds `affects_downed` / `revive_percent`, absent = false / 0)
-- Top level `"cell_tags"`: `{row, col, tag, duration}` (duration absent = -1)
+- Top level `"zones"` (v7): the zone table, an object keyed by tag,
+  `{"burning": {"duration": 3, "steps": 4, "then": "smoke", "damage": 1}}`; every
+  field optional (absent: the ZoneDef default: -1, -1, `""`, 0). Absent = no table
+- Top level `"cell_tags"`: `{row, col, tag}` plus the fields the cell has: `duration`
+  (v4), `steps` (the steps to come), `then` (`""` = no successor), `damage` (v7). A
+  field absent is the table's for that tag (the defaults when it does not define it),
+  a field present is the cell's own (a per-cell override); the table loads first,
+  wherever the file lists it. A level tool writes `{row, col, tag}` and the table;
+  `SaveSnapshot` writes every field (resolved)
+- Top level `"reactions"` (v7): `[{a, b, result, keep, damage, spread, zone_becomes}]`
+  (`a`, `b`, `result` required; absent: `[]`, 0, false, `""`), in level order
+- Top level `"tag_statuses"` (v7): `[{tag, status, steps}]` (`status` by name like the
+  agents' statuses, `"stunned" | "marked" | "rooted"`, case-insensitive; `steps` absent
+  = 1)
+- v7 validation (`ValidateSkillsTagsZones`, reusing `core/reaction.h`): the table's
+  tags and every name non-empty, at most 31 bytes; durations and steps positive or -1,
+  damages >= 0 (`ValidateZoneTable` / `ValidateZoneDef`, a cell's present fields
+  too); the reactions and tag statuses as their setters check them (`keep` a subset
+  of {a, b}, an unknown status rejected, ...); each agent's `weak_to` / `immune` (no
+  repeats). A `then` or `zone_becomes` only needs a valid name: defined or not
+  (an undefined tag gets the defaults), cycles (`a -> b -> a`) are legal. Messages
+  name `zones['tag']`, `zone at (r, c)`, `reactions[i]`, `tag_statuses[i]`, the agent
+  and its `weak_to[i]` / `immune[i]`. Older files, and JSON without the keys, load with
+  none of it
 - Top level `"max_downs"` (v5; absent = 3, must be >= 1)
 - Top level `"context_skills"` (v6): `[{condition, slot, skill}]` (all required;
   condition `"adjacent_downed_ally"`). Absent = the default rules (next to a downed
@@ -516,8 +549,11 @@ number, binary 1..6):
 - Per agent: `"tags"` (`{tag, duration}`), `"skills"` (slot names; `""` or missing =
   `attack`), `"cooldowns"`;
   statuses as `"status_type": "stunned" | "marked" | "rooted"`; companions only (v5):
-  `"downed"`, `"times_downed"` (absent = false, 0; see Downs for their rules)
-- Unknown keys in a skill / tag / zone are rejected; `Snapshot::ValidateSkillsTagsZones`
+  `"downed"`, `"times_downed"` (absent = false, 0; see Downs for their rules); any
+  agent (v7, written when it has some): `"weak_to": [{"zone": "wet", "tag":
+  "electrified"}]`, `"immune": ["burning"]` (absent = none)
+- Unknown keys in a skill / tag / zone / zone table entry / reaction / tag status /
+  weakness are rejected; `Snapshot::ValidateSkillsTagsZones`
   runs before any change (and when JSON / binary snapshots are parsed)
 - Slots always hold a real skill: a non-empty slot naming neither a builtin nor one of
   the snapshot's `skills` is rejected (`LoadSnapshot` throws, the C API returns false;

@@ -488,9 +488,10 @@ class BaseEnv {
   //      reaction changed its own cell (zone_becomes) still takes the OLD
   //      zone's damage that step.
   // Level data (reactions, tag statuses): like the zone table, copied with the
-  // env, kept across a generated Reset, replaced by LoadSnapshot (by none
-  // until snapshot v7 carries them). Per-agent data (weaknesses, immunities)
-  // lives on the agents: copied with them, gone when a load re-creates them.
+  // env, kept across a generated Reset, saved in snapshots (v7) and replaced
+  // by LoadSnapshot with the snapshot's (none in older ones). Per-agent data
+  // (weaknesses, immunities) lives on the agents: copied and saved with them
+  // (v7), gone when a generated Reset re-creates them.
   // Each setter validates (core/reaction.h) before any change: false, data
   // unchanged, nothing interned and the reason in `error` (when given).
   bool SetReactions(std::vector<ReactionRule> rules, std::string* error = nullptr);
@@ -530,9 +531,12 @@ class BaseEnv {
   // Cell tags are world state: copied with the env, saved in snapshots (by tag
   // name) and replaced by LoadSnapshot with the snapshot's own (a generated
   // level has none, so every Reset clears them). Like cell annotations, they
-  // follow the snapshot's D4 transform. Snapshots carry the tag and its
-  // duration only (until snapshot v7): a saved zone loads by name, with that
-  // duration.
+  // follow the snapshot's D4 transform. SaveSnapshot writes each zone's
+  // fields as the cell holds them (v7: its remaining steps, successor and
+  // damage too), so an override, a zone mid-life or one created before its
+  // tag was redefined loads as it was; a field a snapshot's cell lacks (a
+  // hand-written level's {row, col, tag}, a file before v7) is the
+  // snapshot's zone table's (Snapshot::CellZone).
   struct CellTag {
     TagId tag = kInvalidTag;
     int duration = kPermanentTag;  // The duration landed on agents
@@ -562,11 +566,10 @@ class BaseEnv {
   // define gets the ZoneDef defaults. DefineZone (re)defines `tag`; false
   // (table unchanged) for an empty tag, a tag or `then` longer than
   // kMaxNameLength, a duration or steps of 0 or below kPermanentTag (as
-  // ApplyTagTo), or a negative damage. Level data like max_downs: copied with
-  // the env, kept across a generated Reset, replaced by LoadSnapshot (by
-  // none until snapshot v7 carries it: define zones after loading a level,
-  // and set the snapshot's zone cells again, since they resolved with the
-  // defaults as they loaded).
+  // ApplyTagTo), or a negative damage (IsValidZoneDef, core/reaction.h).
+  // Level data like max_downs: copied with the env, kept across a generated
+  // Reset, saved in snapshots (v7) and replaced by LoadSnapshot with the
+  // snapshot's (none in older ones), before its zone cells load.
   bool DefineZone(const std::string& tag, const ZoneDef& zone);
   const std::map<std::string, ZoneDef>& GetZoneDefs() const { return zone_defs_; }
   ZoneDef GetZoneDef(const std::string& tag) const;  // The defaults when undefined
@@ -578,14 +581,20 @@ class BaseEnv {
 
   // Save current state to a snapshot (grid, agents, effects, timing, the skill
   // book but the fixed kDefaultSkill, agent tags / skill slots / cooldowns,
-  // zones; tags by name; downs, max_downs; the context skills, always
-  // explicit, but for those the book no longer allows: see GetContextSkills)
+  // zones with every field as their cell holds it; tags by name; downs,
+  // max_downs; the context skills, always explicit, but for those the book
+  // no longer allows: see GetContextSkills; the zone table, the reactions,
+  // the tag statuses and each agent's weaknesses / immunities). Meant
+  // between two steps (a zone's steps are then the steps to come).
   virtual Snapshot SaveSnapshot() const;
 
   // Load state from a snapshot. The skill book is reset to the builtins, then
   // gets the snapshot's skills; the TagTable is kept (ids stay stable). An
   // empty or missing slot loads as kDefaultSkill. max_downs and the context
-  // skills are the snapshot's (absent rules: DefaultContextSkills()).
+  // skills are the snapshot's (absent rules: DefaultContextSkills()), and so
+  // are the zone table (set before the zone cells, which take its fields
+  // for those they lack), the reactions, the tag statuses and each agent's
+  // weaknesses / immunities (none when the snapshot has none).
   // Throws std::runtime_error if snapshot is incompatible (e.g., wrong
   // dimensions) or its skills / tags / zones are invalid, before any change.
   virtual void LoadSnapshot(const Snapshot& snapshot);
@@ -603,9 +612,11 @@ class BaseEnv {
   // Update all agents with FSM AI (called in PreStep)
   void UpdateAgentFSM();
 
-  // A generated Reset's load: LoadSnapshot keeping the env's max_downs and
-  // context skills (level data, kept across Reset) in place of the generated
-  // level's defaults. The rules are not checked against the generated book.
+  // A generated Reset's load: LoadSnapshot keeping the env's level data
+  // (max_downs, context skills, the zone table, reactions and tag statuses)
+  // in place of the generated level's defaults / none. The context rules
+  // are not checked against the generated book. The generated agents have no
+  // weaknesses or immunities (per-agent data).
   void LoadGeneratedLevel(Snapshot snapshot);
 
   // The env's own end rule (IsDone's other term, besides IsTeamDown): the

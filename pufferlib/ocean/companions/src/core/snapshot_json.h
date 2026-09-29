@@ -15,8 +15,9 @@ std::string SnapshotToJson(const Snapshot& snapshot);
 
 // Deserialize snapshot from JSON string. Throws std::runtime_error (never a raw
 // nlohmann exception) on invalid JSON, a missing or mistyped key (grid.cells,
-// annotations, patrol_path, ... must be arrays), an unknown key in a skill /
-// zone / tag object, grid rows / cols <= 0 or more than 2^20 cells, a cell
+// annotations, patrol_path, ... must be arrays; "zones" an object), an unknown
+// key in a skill / zone / tag / zone table entry / reaction / tag status /
+// weakness object, grid rows / cols <= 0 or more than 2^20 cells, a cell
 // entry outside the grid, an unknown enum / status string (enum names are the
 // exact spellings SnapshotToJson writes, case-sensitive except statuses; the
 // only aliases are the legacy v1 cell kinds "Synchro" / "Target", read as

@@ -53,6 +53,11 @@ struct ZoneDef {
   // zone); that zone takes its fields from the table
   std::string then;
   int damage = 0;  // Health each landing takes (Agent::TakeDamage), >= 0
+
+  bool operator==(const ZoneDef& o) const {
+    return duration == o.duration && steps == o.steps && then == o.then && damage == o.damage;
+  }
+  bool operator!=(const ZoneDef& o) const { return !(*this == o); }
 };
 
 // =============================================================================

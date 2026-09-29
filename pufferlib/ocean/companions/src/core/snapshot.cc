@@ -64,6 +64,16 @@ int Snapshot::CountCells(CellKind kind) const {
   return count;
 }
 
+ZoneDef Snapshot::CellZone(const CellTagSnapshot& zone) const {
+  auto it = zones.find(zone.tag);
+  ZoneDef def = it == zones.end() ? ZoneDef{} : it->second;
+  if (zone.duration) def.duration = *zone.duration;
+  if (zone.steps) def.steps = *zone.steps;
+  if (zone.then) def.then = *zone.then;
+  if (zone.damage) def.damage = *zone.damage;
+  return def;
+}
+
 namespace {
 
 bool IsValidTagDuration(int duration) {
@@ -130,6 +140,15 @@ void Snapshot::ValidateSkillsTagsZones() const {
     throw std::runtime_error(std::string("Snapshot: ") + e.what() +
                              (context_skills ? "" : " (the default rules: the snapshot has none)"));
   }
+  // v7: the level's combo rules (names only need to be valid: a successor or
+  // zone_becomes the table does not define gets the defaults, cycles are legal)
+  try {
+    ValidateZoneTable(zones);
+    ValidateReactions(reactions);
+    ValidateTagStatuses(tag_statuses);
+  } catch (const std::runtime_error& e) {
+    throw std::runtime_error(std::string("Snapshot: ") + e.what());
+  }
   for (size_t i = 0; i < agents.size(); ++i) {
     const AgentSnapshot& agent = agents[i];
     const std::string who = "agent #" + std::to_string(i) + " (id " + std::to_string(agent.id) + ")";
@@ -151,6 +170,12 @@ void Snapshot::ValidateSkillsTagsZones() const {
       }
     }
     for (const TagSnapshot& t : agent.tags) CheckTag(t.tag, t.duration, who);
+    try {  // v7, any agent type
+      ValidateWeaknesses(agent.weak_to);
+      ValidateImmunities(agent.immune);
+    } catch (const std::runtime_error& e) {
+      throw std::runtime_error("Snapshot: " + who + ": " + e.what());
+    }
     for (size_t k = 0; k < agent.statuses.size(); ++k) {
       const int type = agent.statuses[k].type;
       if (IsKnownStatus(type)) continue;
@@ -208,7 +233,19 @@ void Snapshot::ValidateSkillsTagsZones() const {
     }
   }
   for (const CellTagSnapshot& z : cell_tags) {
-    CheckTag(z.tag, z.duration, "zone at " + CellText(z.cell));
+    const std::string where = "zone at " + CellText(z.cell);
+    CheckTag(z.tag, z.duration.value_or(kPermanentTag), where);
+    // v7: the fields the cell has (the table's, checked above, fill the others)
+    ZoneDef own;
+    if (z.duration) own.duration = *z.duration;
+    if (z.steps) own.steps = *z.steps;
+    if (z.then) own.then = *z.then;
+    if (z.damage) own.damage = *z.damage;
+    try {
+      ValidateZoneDef(where, own);
+    } catch (const std::runtime_error& e) {
+      throw std::runtime_error(std::string("Snapshot: ") + e.what());
+    }
     if (z.cell.row < 0 || z.cell.row >= rows || z.cell.col < 0 || z.cell.col >= cols) {
       throw std::runtime_error("Snapshot: zone \"" + z.tag + "\" at " + CellText(z.cell) +
                                " is outside the " + std::to_string(rows) + "x" +
@@ -440,6 +477,139 @@ std::vector<ContextSkillRule> ReadContextSkills(const uint8_t*& ptr, const uint8
   return rules;
 }
 
+// v7: names (the reader validates them)
+void WriteStringList(std::vector<uint8_t>& buffer, const std::vector<std::string>& names) {
+  WriteValue(buffer, static_cast<uint32_t>(names.size()));
+  for (const std::string& name : names) WriteString(buffer, name);
+}
+
+std::vector<std::string> ReadStringList(const uint8_t*& ptr, const uint8_t* end, const char* what) {
+  uint32_t count = ReadValue<uint32_t>(ptr, end);
+  CheckCountFits(count, sizeof(uint32_t), ptr, end, what);  // Each: a length
+  std::vector<std::string> names(count);
+  for (std::string& name : names) name = ReadString(ptr, end);
+  return names;
+}
+
+// v7: an agent's weaknesses and immunities, closing its record
+void WriteAgentRules(std::vector<uint8_t>& buffer, const AgentSnapshot& agent) {
+  WriteValue(buffer, static_cast<uint32_t>(agent.weak_to.size()));
+  for (const TagWeakness& w : agent.weak_to) {
+    WriteString(buffer, w.zone);
+    WriteString(buffer, w.tag);
+  }
+  WriteStringList(buffer, agent.immune);
+}
+
+void ReadAgentRules(const uint8_t*& ptr, const uint8_t* end, AgentSnapshot& agent) {
+  uint32_t count = ReadValue<uint32_t>(ptr, end);
+  CheckCountFits(count, 2 * sizeof(uint32_t), ptr, end, "weakness count");  // Two lengths
+  agent.weak_to.resize(count);
+  for (TagWeakness& w : agent.weak_to) {
+    w.zone = ReadString(ptr, end);
+    w.tag = ReadString(ptr, end);
+  }
+  agent.immune = ReadStringList(ptr, end, "immunity count");
+}
+
+// A zone record's fields (v7): a byte of those present, then each present
+// one, in this order. Older records have the duration only.
+constexpr uint8_t kZoneHasDuration = 1;
+constexpr uint8_t kZoneHasSteps = 2;
+constexpr uint8_t kZoneHasThen = 4;
+constexpr uint8_t kZoneHasDamage = 8;
+
+void WriteZoneFields(std::vector<uint8_t>& buffer, const CellTagSnapshot& z) {
+  const uint8_t mask = static_cast<uint8_t>((z.duration ? kZoneHasDuration : 0) |
+                                            (z.steps ? kZoneHasSteps : 0) |
+                                            (z.then ? kZoneHasThen : 0) |
+                                            (z.damage ? kZoneHasDamage : 0));
+  WriteValue(buffer, mask);
+  if (z.duration) WriteValue(buffer, *z.duration);
+  if (z.steps) WriteValue(buffer, *z.steps);
+  if (z.then) WriteString(buffer, *z.then);
+  if (z.damage) WriteValue(buffer, *z.damage);
+}
+
+void ReadZoneFields(const uint8_t*& ptr, const uint8_t* end, CellTagSnapshot& z) {
+  const uint8_t mask = ReadValue<uint8_t>(ptr, end);
+  if (mask & ~(kZoneHasDuration | kZoneHasSteps | kZoneHasThen | kZoneHasDamage)) {
+    throw std::runtime_error("Snapshot buffer corrupt: unknown zone fields " +
+                             std::to_string(mask));
+  }
+  if (mask & kZoneHasDuration) z.duration = ReadValue<int>(ptr, end);
+  if (mask & kZoneHasSteps) z.steps = ReadValue<int>(ptr, end);
+  if (mask & kZoneHasThen) z.then = ReadString(ptr, end);
+  if (mask & kZoneHasDamage) z.damage = ReadValue<int>(ptr, end);
+}
+
+// v7: the level's zone table, reactions and tag statuses, last in the file
+void WriteLevelRules(std::vector<uint8_t>& buffer, const Snapshot& snap) {
+  WriteValue(buffer, static_cast<uint32_t>(snap.zones.size()));
+  for (const auto& [tag, zone] : snap.zones) {
+    WriteString(buffer, tag);
+    WriteValue(buffer, zone.duration);
+    WriteValue(buffer, zone.steps);
+    WriteString(buffer, zone.then);
+    WriteValue(buffer, zone.damage);
+  }
+  WriteValue(buffer, static_cast<uint32_t>(snap.reactions.size()));
+  for (const ReactionRule& r : snap.reactions) {
+    WriteString(buffer, r.a);
+    WriteString(buffer, r.b);
+    WriteString(buffer, r.result);
+    WriteStringList(buffer, r.keep);
+    WriteValue(buffer, r.damage);
+    WriteValue(buffer, static_cast<uint8_t>(r.spread));  // Read as a byte
+    WriteString(buffer, r.zone_becomes);
+  }
+  WriteValue(buffer, static_cast<uint32_t>(snap.tag_statuses.size()));
+  for (const TagStatusRule& r : snap.tag_statuses) {
+    WriteString(buffer, r.tag);
+    WriteValue(buffer, static_cast<int>(r.status));
+    WriteValue(buffer, r.steps);
+  }
+}
+
+void ReadLevelRules(const uint8_t*& ptr, const uint8_t* end, Snapshot& snap) {
+  uint32_t count = ReadValue<uint32_t>(ptr, end);
+  // tag length, duration, steps, then length, damage
+  CheckCountFits(count, 5 * sizeof(int), ptr, end, "zone table count");
+  for (uint32_t i = 0; i < count; ++i) {
+    std::string tag = ReadString(ptr, end);
+    ZoneDef zone;
+    zone.duration = ReadValue<int>(ptr, end);
+    zone.steps = ReadValue<int>(ptr, end);
+    zone.then = ReadString(ptr, end);
+    zone.damage = ReadValue<int>(ptr, end);
+    if (!snap.zones.emplace(std::move(tag), std::move(zone)).second) {
+      throw std::runtime_error("Snapshot buffer corrupt: a zone table tag twice");
+    }
+  }
+  count = ReadValue<uint32_t>(ptr, end);
+  // a, b, result lengths, keep count, damage, zone_becomes length, spread (a byte)
+  CheckCountFits(count, 6 * sizeof(uint32_t) + 1, ptr, end, "reaction count");
+  snap.reactions.resize(count);
+  for (ReactionRule& r : snap.reactions) {
+    r.a = ReadString(ptr, end);
+    r.b = ReadString(ptr, end);
+    r.result = ReadString(ptr, end);
+    r.keep = ReadStringList(ptr, end, "reaction keep count");
+    r.damage = ReadValue<int>(ptr, end);
+    r.spread = ReadValue<uint8_t>(ptr, end) != 0;  // A byte: any value read is a valid one
+    r.zone_becomes = ReadString(ptr, end);
+  }
+  count = ReadValue<uint32_t>(ptr, end);
+  // tag length, status, steps
+  CheckCountFits(count, 3 * sizeof(int), ptr, end, "tag status count");
+  snap.tag_statuses.resize(count);
+  for (TagStatusRule& r : snap.tag_statuses) {
+    r.tag = ReadString(ptr, end);
+    r.status = static_cast<StatusType>(ReadValue<int>(ptr, end));  // Validated with the rest
+    r.steps = ReadValue<int>(ptr, end);
+  }
+}
+
 }  // namespace
 
 // =============================================================================
@@ -454,8 +624,10 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   // Version 2 added annotations; version 3 agent kind + attack config;
   // version 4 skills, agent tags / skill slots / cooldowns and zones;
   // version 5 downs (agent downed / times_downed, max_downs); version 6
-  // skills' affects_downed / revive_percent and the context skill rules.
-  WriteValue(buffer, static_cast<uint32_t>(6));
+  // skills' affects_downed / revive_percent and the context skill rules;
+  // version 7 the zone table, each zone's fields, reactions, tag statuses and
+  // each agent's weaknesses / immunities.
+  WriteValue(buffer, static_cast<uint32_t>(7));
 
   // Grid dimensions
   WriteValue(buffer, rows);
@@ -534,6 +706,9 @@ std::vector<uint8_t> Snapshot::Serialize() const {
     // v5: downs
     WriteValue(buffer, static_cast<uint8_t>(agent.downed));  // Read as a byte
     WriteValue(buffer, agent.times_downed);
+
+    // v7: weaknesses, immunities
+    WriteAgentRules(buffer, agent);
   }
 
   // Effects
@@ -583,7 +758,7 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   for (const CellTagSnapshot& z : cell_tags) {
     WritePosition(buffer, z.cell);
     WriteString(buffer, z.tag);
-    WriteValue(buffer, z.duration);
+    WriteZoneFields(buffer, z);  // v7: those present (v4-v6: the duration)
   }
 
   // v5: the level's max downs
@@ -592,6 +767,9 @@ std::vector<uint8_t> Snapshot::Serialize() const {
   // v6: the context skill rules, when present (a byte: has them, then the list)
   WriteValue(buffer, static_cast<uint8_t>(context_skills.has_value()));
   if (context_skills) WriteContextSkills(buffer, *context_skills);
+
+  // v7: the zone table, the reactions and the tag statuses
+  WriteLevelRules(buffer, *this);
 
   return buffer;
 }
@@ -610,7 +788,7 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     throw std::runtime_error("Invalid snapshot magic number");
   }
   uint32_t version = ReadValue<uint32_t>(ptr, end);
-  if (version < 1 || version > 6) {
+  if (version < 1 || version > 7) {
     throw std::runtime_error("Unsupported snapshot version");
   }
 
@@ -758,6 +936,8 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
       agent.downed = ReadValue<uint8_t>(ptr, end) != 0;
       agent.times_downed = ReadValue<int>(ptr, end);
     }
+
+    if (version >= 7) ReadAgentRules(ptr, end, agent);
   }
 
   // Effects
@@ -839,14 +1019,19 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
     if (num_zones > 10000000) {
       throw std::runtime_error("Snapshot buffer corrupt: unreasonable zone count");
     }
-    // cell, tag name length, duration
-    CheckCountFits(num_zones, 2 * sizeof(int) + sizeof(uint32_t) + sizeof(int), ptr, end,
-                   "zone count");
+    // cell, tag name length, then the duration (v4-v6) or the fields' byte (v7)
+    CheckCountFits(num_zones,
+                   2 * sizeof(int) + sizeof(uint32_t) + (version >= 7 ? 1 : sizeof(int)), ptr,
+                   end, "zone count");
     snap.cell_tags.resize(num_zones);
     for (CellTagSnapshot& z : snap.cell_tags) {
       z.cell = ReadPosition(ptr, end);
       z.tag = ReadString(ptr, end);
-      z.duration = ReadValue<int>(ptr, end);
+      if (version >= 7) {
+        ReadZoneFields(ptr, end, z);
+      } else {
+        z.duration = ReadValue<int>(ptr, end);  // The other fields: the table (none)
+      }
     }
   }
 
@@ -858,6 +1043,9 @@ Snapshot Snapshot::Deserialize(const std::vector<uint8_t>& data) {
   if (version >= 6 && ReadValue<uint8_t>(ptr, end) != 0) {
     snap.context_skills = ReadContextSkills(ptr, end);
   }
+
+  // The level's combo rules (v7+); older snapshots have none.
+  if (version >= 7) ReadLevelRules(ptr, end, snap);
 
   snap.ValidateSkillsTagsZones();
   return snap;

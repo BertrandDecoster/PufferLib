@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -428,9 +429,9 @@ TEST(TestJsonSnapshotVersionRejection) {
 
   // Tamper the version field.
   std::string tampered = json_str;
-  size_t pos = tampered.find("\"version\": 6");
+  size_t pos = tampered.find("\"version\": 7");
   ASSERT_TRUE(pos != std::string::npos);
-  tampered.replace(pos, 12, "\"version\": 7");  // One above current
+  tampered.replace(pos, 12, "\"version\": 8");  // One above current
 
   bool threw = false;
   try {
@@ -618,7 +619,7 @@ TEST(TestJsonSnapshotKeys) {
   ASSERT_TRUE(env.ApplyTagTo(a->GetId(), "burning", 3));
   ASSERT_TRUE(env.SetCellTag({2, 3}, "wet", 4));
   json j = json::parse(SnapshotToJson(env.SaveSnapshot()));
-  ASSERT_EQ(j.at("version").get<int>(), 6);
+  ASSERT_EQ(j.at("version").get<int>(), 7);
   // v6: the env's context rules, always written
   ASSERT_EQ(j.at("context_skills"),
             json::array({json{{"condition", "adjacent_downed_ally"}, {"slot", 0},
@@ -1474,6 +1475,306 @@ TEST(TestJsonEmptySkillNameSaysWhichSkill) {
   j.at("skills").at(1)["name"] = "";
   AssertJsonErrorMentions(j, {"skills[1]", "without a name"});
 }
+// =============================================================================
+// Snapshot v7: the zone table and the cells' zone fields, reactions, tag
+// statuses, weaknesses and immunities
+// =============================================================================
+
+namespace {
+
+ZoneDef MakeZone(int duration, int steps, const std::string& then, int damage) {
+  ZoneDef z;
+  z.duration = duration;
+  z.steps = steps;
+  z.then = then;
+  z.damage = damage;
+  return z;
+}
+
+const std::nullopt_t kAbsent = std::nullopt;
+
+CellTagSnapshot MakeCell(Position cell, const std::string& tag, std::optional<int> duration,
+                         std::optional<int> steps, std::optional<std::string> then,
+                         std::optional<int> damage) {
+  CellTagSnapshot z;
+  z.cell = cell;
+  z.tag = tag;
+  z.duration = duration;
+  z.steps = steps;
+  z.then = then;
+  z.damage = damage;
+  return z;
+}
+
+ReactionRule MakeReaction(const std::string& a, const std::string& b, const std::string& result,
+                          std::vector<std::string> keep, int damage, bool spread,
+                          const std::string& zone_becomes) {
+  ReactionRule r;
+  r.a = a;
+  r.b = b;
+  r.result = result;
+  r.keep = std::move(keep);
+  r.damage = damage;
+  r.spread = spread;
+  r.zone_becomes = zone_becomes;
+  return r;
+}
+
+// A 2x2 world with one companion and every v7 field off its default; cells
+// with every mix of present and absent fields.
+Snapshot V7Snapshot() {
+  Snapshot s;
+  s.rows = 2;
+  s.cols = 2;
+  s.cells.resize(4);
+  AgentSnapshot a;
+  a.type = static_cast<int>(ObjectType::Companion);
+  a.position = {1, 1};
+  a.prev_position = {1, 1};
+  a.weak_to = {{"wet", "electrified"}, {"oil", "burning"}};
+  a.immune = {"burning", "stunned"};
+  s.agents.push_back(a);
+  AgentSnapshot enemy;  // Any agent type carries them
+  enemy.id = 1;
+  enemy.type = static_cast<int>(ObjectType::Agent);
+  enemy.faction = static_cast<int>(Faction::ENEMY);
+  enemy.position = {0, 0};
+  enemy.prev_position = {0, 0};
+  enemy.weak_to = {{"wet", "chilled"}};
+  s.agents.push_back(enemy);
+  s.zones = {{"burning", MakeZone(2, 4, "smoke", 1)},
+             {"smoke", MakeZone(kPermanentTag, 2, "burning", 0)},
+             {"wet", ZoneDef{}}};
+  s.reactions = {MakeReaction("wet", "electrified", "shocked", {"wet"}, 1, true, "wet"),
+                 MakeReaction("wet", "chilled", "stunned", {}, 0, false, "")};
+  s.tag_statuses = {{"stunned", StatusType::Stunned, 3}, {"rooted", StatusType::Rooted, 1}};
+  s.cell_tags = {MakeCell({0, 1}, "burning", 3, 2, std::string("smoke"), 1),
+                 MakeCell({1, 0}, "wet", kAbsent, kAbsent, kAbsent, kAbsent),
+                 MakeCell({0, 0}, "oil", kAbsent, 7, std::string(), kAbsent)};
+  return s;
+}
+
+void AssertV7Eq(const Snapshot& a, const Snapshot& b) {
+  ASSERT_TRUE(a.zones == b.zones);
+  ASSERT_TRUE(a.reactions == b.reactions);
+  ASSERT_TRUE(a.tag_statuses == b.tag_statuses);
+  ASSERT_EQ(a.agents.size(), b.agents.size());
+  for (size_t i = 0; i < a.agents.size(); ++i) {
+    ASSERT_TRUE(a.agents[i].weak_to == b.agents[i].weak_to);
+    ASSERT_TRUE(a.agents[i].immune == b.agents[i].immune);
+  }
+  ASSERT_EQ(a.cell_tags.size(), b.cell_tags.size());
+  for (size_t i = 0; i < a.cell_tags.size(); ++i) {
+    const CellTagSnapshot& x = a.cell_tags[i];
+    const CellTagSnapshot& y = b.cell_tags[i];
+    ASSERT_TRUE(x.cell == y.cell);
+    ASSERT_EQ(x.tag, y.tag);
+    ASSERT_TRUE(x.duration == y.duration);
+    ASSERT_TRUE(x.steps == y.steps);
+    ASSERT_TRUE(x.then == y.then);
+    ASSERT_TRUE(x.damage == y.damage);
+  }
+}
+
+// A zone cell of `env` by names: "tag duration steps then damage"
+std::string Describe(const BaseEnv& env, Position p) {
+  const BaseEnv::CellTag c = env.GetCellTag(p);
+  if (c.tag == kInvalidTag) return "-";
+  return env.GetTagTable().Name(c.tag) + " " + std::to_string(c.duration) + " " +
+         std::to_string(c.steps) + " " +
+         (c.then == kInvalidTag ? std::string() : env.GetTagTable().Name(c.then)) + " " +
+         std::to_string(c.damage);
+}
+
+}  // namespace
+
+TEST(TestJsonV7FieldsRoundTrip) {
+  const Snapshot s = V7Snapshot();
+  const Snapshot back = JsonRoundTrip(s);
+  AssertV7Eq(s, back);
+  // Binary and JSON agree
+  AssertV7Eq(s, Snapshot::Deserialize(back.Serialize()));
+}
+
+// The shapes a level tool writes: the table keyed by tag, the rules as
+// objects, statuses by name, the cells' fields only when present.
+TEST(TestJsonV7Keys) {
+  json j = json::parse(SnapshotToJson(V7Snapshot()));
+  ASSERT_EQ(j.at("version").get<int>(), 7);
+  ASSERT_EQ(j.at("zones").at("burning"),
+            (json{{"duration", 2}, {"steps", 4}, {"then", "smoke"}, {"damage", 1}}));
+  ASSERT_EQ(j.at("zones").at("wet"),
+            (json{{"duration", -1}, {"steps", -1}, {"then", ""}, {"damage", 0}}));
+  ASSERT_EQ(j.at("reactions").at(0),
+            (json{{"a", "wet"}, {"b", "electrified"}, {"result", "shocked"}, {"keep", {"wet"}},
+                  {"damage", 1}, {"spread", true}, {"zone_becomes", "wet"}}));
+  ASSERT_EQ(j.at("tag_statuses").at(1),
+            (json{{"tag", "rooted"}, {"status", "rooted"}, {"steps", 1}}));
+  const json& agent = j.at("agents").at(0);
+  ASSERT_EQ(agent.at("weak_to"),
+            json::array({json{{"zone", "wet"}, {"tag", "electrified"}},
+                         json{{"zone", "oil"}, {"tag", "burning"}}}));
+  ASSERT_EQ(agent.at("immune"), json({"burning", "stunned"}));
+  ASSERT_FALSE(j.at("agents").at(1).contains("immune"));  // Written when there are some
+  ASSERT_EQ(j.at("cell_tags").at(0),
+            (json{{"row", 0}, {"col", 1}, {"tag", "burning"}, {"duration", 3}, {"steps", 2},
+                  {"then", "smoke"}, {"damage", 1}}));
+  ASSERT_EQ(j.at("cell_tags").at(1), (json{{"row", 1}, {"col", 0}, {"tag", "wet"}}));
+  ASSERT_EQ(j.at("cell_tags").at(2),
+            (json{{"row", 0}, {"col", 0}, {"tag", "oil"}, {"steps", 7}, {"then", ""}}));
+
+  // A saved env writes every cell field, resolved
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  ASSERT_TRUE(env.DefineZone("burning", MakeZone(2, 4, "smoke", 1)));
+  ASSERT_TRUE(env.SetCellTag({2, 3}, "burning"));
+  j = json::parse(SnapshotToJson(env.SaveSnapshot()));
+  ASSERT_EQ(j.at("cell_tags").at(0),
+            (json{{"row", 2}, {"col", 3}, {"tag", "burning"}, {"duration", 2}, {"steps", 4},
+                  {"then", "smoke"}, {"damage", 1}}));
+  ASSERT_EQ(j.at("reactions"), json::array());
+  ASSERT_EQ(j.at("tag_statuses"), json::array());
+  ASSERT_FALSE(j.at("agents").at(0).contains("weak_to"));
+}
+
+// What a level tool writes: a zone table and bare cells. A cell without
+// fields takes the table's for its tag (the defaults for a tag it does not
+// define); a field present is the cell's own. Omitted table fields are the
+// ZoneDef defaults.
+TEST(TestJsonCellsTakeTheTablesFieldsTheyOmit) {
+  json j = LevelJson();
+  j["zones"] = json{{"burning", json{{"duration", 2}, {"steps", 4}, {"then", "smoke"},
+                                     {"damage", 1}}},
+                    {"smoke", json{{"steps", 2}}}};
+  j["cell_tags"] = json::array(
+      {json{{"row", 1}, {"col", 1}, {"tag", "burning"}},
+       json{{"row", 1}, {"col", 2}, {"tag", "burning"}, {"steps", 2}, {"damage", 0}},
+       json{{"row", 1}, {"col", 3}, {"tag", "burning"}, {"then", ""}, {"duration", -1}},
+       json{{"row", 1}, {"col", 4}, {"tag", "smoke"}},
+       json{{"row", 1}, {"col", 5}, {"tag", "wet"}}});
+  SynchroEnv env(8, 8, 1, 1, 0, 7);
+  env.LoadSnapshot(SnapshotFromJson(j.dump()));
+  ASSERT_EQ(Describe(env, {1, 1}), std::string("burning 2 4 smoke 1"));
+  ASSERT_EQ(Describe(env, {1, 2}), std::string("burning 2 2 smoke 0"));
+  ASSERT_EQ(Describe(env, {1, 3}), std::string("burning -1 4  1"));
+  ASSERT_EQ(Describe(env, {1, 4}), std::string("smoke -1 2  0"));
+  ASSERT_EQ(Describe(env, {1, 5}), std::string("wet -1 -1  0"));
+  ASSERT_TRUE(env.GetZoneDef("smoke") == MakeZone(kPermanentTag, 2, "", 0));
+}
+
+// The table loads before the cells, wherever the file lists them: here the
+// cells come first in the text.
+TEST(TestJsonTheTableLoadsBeforeTheCells) {
+  json j = LevelJson();
+  j.erase("cell_tags");
+  j.erase("zones");
+  std::string text = j.dump();
+  const std::string head = "{\"cell_tags\":[{\"row\":2,\"col\":2,\"tag\":\"burning\"}],";
+  const std::string tail = ",\"zones\":{\"burning\":{\"steps\":3,\"damage\":2}}}";
+  text = head + text.substr(1, text.size() - 2) + tail;
+  ASSERT_TRUE(text.find("cell_tags") < text.find("\"zones\""));
+  SynchroEnv env(8, 8, 1, 1, 0, 7);
+  env.LoadSnapshot(SnapshotFromJson(text));
+  ASSERT_EQ(Describe(env, {2, 2}), std::string("burning -1 3  2"));
+}
+
+// A JSON level without the v7 keys has none of it; bare cells get the
+// defaults (their duration kept).
+TEST(TestJsonWithoutV7KeysLoadsWithNone) {
+  SynchroEnv src(8, 8, 1, 1, 0, 42);
+  ASSERT_TRUE(src.DefineZone("wet", MakeZone(5, 3, "ice", 2)));
+  ASSERT_TRUE(src.SetReactions({MakeReaction("wet", "chilled", "stunned", {}, 0, false, "")}));
+  ASSERT_TRUE(src.SetTagStatuses({{"stunned", StatusType::Stunned, 2}}));
+  Agent* a = src.GetMutableObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(src.SetWeaknesses(a->GetId(), {{"wet", "electrified"}}));
+  ASSERT_TRUE(src.SetImmunities(a->GetId(), {"wet"}));
+  ASSERT_TRUE(src.SetCellTag({2, 3}, "wet", 2));
+  json j = json::parse(SnapshotToJson(src.SaveSnapshot()));
+  j["version"] = 6;
+  j.erase("zones");
+  j.erase("reactions");
+  j.erase("tag_statuses");
+  for (json& agent : j.at("agents")) {
+    agent.erase("weak_to");
+    agent.erase("immune");
+  }
+  for (json& zone : j.at("cell_tags")) {  // What a v6 file has: the duration
+    zone.erase("steps");
+    zone.erase("then");
+    zone.erase("damage");
+  }
+  SynchroEnv env(8, 8, 1, 1, 0, 7);
+  env.LoadSnapshot(src.SaveSnapshot());  // It had them all
+  env.LoadSnapshot(SnapshotFromJson(j.dump()));
+  ASSERT_TRUE(env.GetZoneDefs().empty());
+  ASSERT_TRUE(env.GetReactions().empty());
+  ASSERT_TRUE(env.GetTagStatuses().empty());
+  Agent* b = env.GetMutableObjectManager().GetAllAgents()[0];
+  ASSERT_TRUE(env.GetWeaknesses(b->GetId()).empty());
+  ASSERT_TRUE(env.GetImmunities(b->GetId()).empty());
+  ASSERT_EQ(Describe(env, {2, 3}), std::string("wet 2 -1  0"));
+}
+
+TEST(TestJsonRejectsBadV7Data) {
+  json j = LevelJson();
+  j["zones"] = json{{"burning", json{{"stepz", 3}}}};
+  AssertJsonErrorMentions(j, {"zones['burning']", "unknown key 'stepz'"});
+  j["zones"] = json::array();
+  AssertJsonErrorMentions(j, {"zones", "object"});
+  j["zones"] = json{{"burning", json{{"steps", "three"}}}};
+  AssertJsonErrorMentions(j, {"zones['burning']: steps"});
+  j["zones"] = json{{"burning", json{{"steps", 0}}}};
+  AssertJsonErrorMentions(j, {"zones['burning']: steps"});
+  j.erase("zones");
+
+  j.at("cell_tags").at(0)["steps"] = 0;
+  AssertJsonErrorMentions(j, {"zone at (2, 2): steps"});
+  j.at("cell_tags").at(0)["steps"] = 2;
+  j.at("cell_tags").at(0)["dammage"] = 1;
+  AssertJsonErrorMentions(j, {"cell_tags[0]", "unknown key 'dammage'"});
+  j.at("cell_tags").at(0).erase("dammage");
+
+  j["reactions"] = json::array({json{{"a", "wet"}, {"b", "ice"}}});
+  AssertJsonErrorMentions(j, {"reactions[0]", "key 'result' not found"});
+  j["reactions"] = json::array({json{{"a", "wet"}, {"b", "ice"}, {"result", "x"}, {"keeps", {}}}});
+  AssertJsonErrorMentions(j, {"reactions[0]", "unknown key 'keeps'"});
+  j["reactions"] = json::array({json{{"a", "wet"}, {"b", "ice"}, {"result", "x"}, {"keep", {"fire"}}}});
+  AssertJsonErrorMentions(j, {"reactions[0] ('wet' + 'ice'): keep: 'fire' is neither a nor b"});
+  j["reactions"] = json::array({json{{"a", "wet"}, {"b", "ice"}, {"result", "x"}, {"damage", -1}}});
+  AssertJsonErrorMentions(j, {"reactions[0]", "damage: negative"});
+  j.erase("reactions");
+
+  j["tag_statuses"] = json::array({json{{"tag", "stunned"}, {"status", "slowed"}}});
+  AssertJsonErrorMentions(j, {"tag_statuses[0]", "unknown status 'slowed'"});
+  j["tag_statuses"] = json::array({json{{"tag", "stunned"}, {"status", "none"}}});
+  AssertJsonErrorMentions(j, {"tag_statuses[0]", "status"});
+  j["tag_statuses"] = json::array({json{{"tag", "stunned"}, {"status", "Stunned"}, {"steps", 0}}});
+  AssertJsonErrorMentions(j, {"tag_statuses[0] ('stunned'): steps"});
+  j["tag_statuses"] = json::array({json{{"tag", "stunned"}}});
+  AssertJsonErrorMentions(j, {"tag_statuses[0]", "key 'status' not found"});
+  j.erase("tag_statuses");
+
+  json& agent = j.at("agents").at(0);
+  agent["weak_to"] = json::array({json{{"zone", "wet"}, {"tags", "electrified"}}});
+  AssertJsonErrorMentions(j, {"agents[0].weak_to[0]", "unknown key 'tags'"});
+  agent["weak_to"] = json::array({json{{"zone", "wet"}, {"tag", "x"}}, json{{"zone", "wet"}, {"tag", "x"}}});
+  AssertJsonErrorMentions(j, {"agent #0", "weak_to[1] ('wet', 'x'): twice"});
+  agent.erase("weak_to");
+  agent["immune"] = json::array({"burning", 3});
+  AssertJsonErrorMentions(j, {"agents[0]: immune"});
+  agent["immune"] = json::array({"burning", ""});
+  AssertJsonErrorMentions(j, {"agent #0", "immune[1] (''): tag: empty"});
+  agent.erase("immune");
+  SnapshotFromJson(j.dump());  // Back to a valid level
+
+  // Statuses by name, case-insensitive like the agents'; steps default to 1,
+  // the optional reaction fields to their defaults
+  j["tag_statuses"] = json::array({json{{"tag", "stunned"}, {"status", "Stunned"}}});
+  j["reactions"] = json::array({json{{"a", "wet"}, {"b", "ice"}, {"result", "x"}}});
+  Snapshot s = SnapshotFromJson(j.dump());
+  ASSERT_TRUE(s.tag_statuses == (std::vector<TagStatusRule>{{"stunned", StatusType::Stunned, 1}}));
+  ASSERT_TRUE(s.reactions == (std::vector<ReactionRule>{MakeReaction("wet", "ice", "x", {}, 0, false, "")}));
+}
+
 
 int main() {
   int passed = 0;

@@ -1319,15 +1319,6 @@ void BaseEnv::MoveActor(Actor& actor, Position to) {
   if (agent && agent->IsAffectable()) ApplyZoneTag(*agent);
 }
 
-namespace {
-// A zone's fields, as DefineZone and SetCellTag accept them
-bool IsValidZoneDef(const ZoneDef& zone) {
-  auto valid_steps = [](int n) { return n > 0 || n == kPermanentTag; };  // Or permanent
-  return valid_steps(zone.duration) && valid_steps(zone.steps) && zone.damage >= 0 &&
-         IsValidNameLength(zone.then);
-}
-}  // namespace
-
 bool BaseEnv::DefineZone(const std::string& tag, const ZoneDef& zone) {
   if (tag.empty() || !IsValidNameLength(tag) || !IsValidZoneDef(zone)) return false;
   zone_defs_[tag] = zone;
@@ -1825,6 +1816,11 @@ Snapshot BaseEnv::SaveSnapshot() const {
     for (const AgentTag& t : agent->GetTags()) {
       as.tags.push_back({tags_.Name(t.id), t.duration});
     }
+    // Its weaknesses and immunities (any agent), by name
+    for (const Agent::WeakTo& w : agent->GetWeakTo()) {
+      as.weak_to.push_back({tags_.Name(w.zone), tags_.Name(w.tag)});
+    }
+    for (TagId t : agent->GetImmune()) as.immune.push_back(tags_.Name(t));
 
     // Direction, skill slots, cooldowns and downs for Companions
     if (const Companion* comp = dynamic_cast<const Companion*>(agent)) {
@@ -1916,15 +1912,29 @@ Snapshot BaseEnv::SaveSnapshot() const {
     if (skill.name != kDefaultSkill) snap.skills.push_back(skill);
   }
 
-  // Zones, by name, in current coordinates (as the cells and annotations above):
-  // tag and duration only until snapshot v7 (neither the zone table nor the
-  // cells' remaining steps are saved yet)
+  // Zones, by name, in current coordinates (as the cells and annotations
+  // above), each with every field as the cell holds it (its own resolved
+  // copy: an override, or the table as it was when the zone was created),
+  // its remaining steps included (read between two steps: the steps to come)
   for (int r = 0; r < rows_ && !cell_tags_.empty(); ++r) {
     for (int c = 0; c < cols_; ++c) {
       const CellTag& z = cell_tags_[static_cast<size_t>(r * cols_ + c)];
-      if (z.tag != kInvalidTag) snap.cell_tags.push_back({Position{r, c}, tags_.Name(z.tag), z.duration});
+      if (z.tag == kInvalidTag) continue;
+      CellTagSnapshot zone;
+      zone.cell = Position{r, c};
+      zone.tag = tags_.Name(z.tag);
+      zone.duration = z.duration;
+      zone.steps = z.steps;
+      zone.then = z.then == kInvalidTag ? std::string() : tags_.Name(z.then);
+      zone.damage = z.damage;
+      snap.cell_tags.push_back(std::move(zone));
     }
   }
+
+  // The level's combo rules: the zone table, the reactions, the tag statuses
+  snap.zones = zone_defs_;
+  snap.reactions = reactions_;
+  snap.tag_statuses = tag_statuses_;
 
   return snap;
 }
@@ -1955,12 +1965,19 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   effect_system_->Clear();
   ClearStepReports();  // They name the old world's ObjectIds
   ClearCellTags();     // World state: replaced by the snapshot's zones below
-  ClearZoneDefs();     // Level data: the snapshot's (none until v7)
-  reactions_.clear();  // Level data too (reactions, tag statuses): none until v7
-  resolved_reactions_.clear();
-  tag_statuses_.clear();
-  tag_status_ids_.clear();
   in_step_ = false;    // Between two steps, even after a Step that threw
+
+  // The level's combo rules (validated above; none in a snapshot before v7).
+  // The zone table first: the zone cells below resolve against it.
+  ClearZoneDefs();
+  for (const auto& [tag, zone] : snapshot.zones) {
+    const bool defined = DefineZone(tag, zone);
+    assert(defined && "validated zone definition rejected");
+    (void)defined;
+  }
+  const bool rules_set = SetReactions(snapshot.reactions) && SetTagStatuses(snapshot.tag_statuses);
+  assert(rules_set && "validated reactions or tag statuses rejected");
+  (void)rules_set;
 
   // The level's skill book: builtins, then the snapshot's skills (which may
   // retune builtins). A snapshot without skills leaves the builtins only, so
@@ -2035,6 +2052,11 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
     for (const TagSnapshot& t : as.tags) {
       agent->ApplyTag(tags_.Intern(t.tag), t.duration);
     }
+    // Its weaknesses and immunities (validated above)
+    const bool agent_rules_set = SetWeaknesses(agent->GetId(), as.weak_to) &&
+                                 SetImmunities(agent->GetId(), as.immune);
+    assert(agent_rules_set && "validated weaknesses or immunities rejected");
+    (void)agent_rules_set;
 
     // Restore Companion-specific state
     if (Companion* comp = dynamic_cast<Companion*>(agent)) {
@@ -2168,9 +2190,13 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   annotations_.Deserialize(annotations);
 
   // Restore zones (v4+), in the snapshot's frame like the cells and cell
-  // annotations: ApplyD4Transform below moves all three together.
+  // annotations: ApplyD4Transform below moves all three together. Each with
+  // its own fields, the table's for those it lacks (CellZone: v7 files saved
+  // by SaveSnapshot have them all; older ones the duration only, and no
+  // table: the defaults). Set between two steps (in_step_ is false), so its
+  // steps are stored as given: the steps to come.
   for (const CellTagSnapshot& z : snapshot.cell_tags) {
-    const bool set = SetCellTag(z.cell, z.tag, z.duration);  // Validated above
+    const bool set = SetCellTag(z.cell, z.tag, snapshot.CellZone(z));  // Validated above
     assert(set && "validated zone rejected");
     (void)set;
   }
@@ -2205,8 +2231,10 @@ void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
   std::vector<ContextSkillRule> rules = context_skills_;
   snapshot.context_skills = std::vector<ContextSkillRule>{};
   // The zone table, the reactions and the tag statuses as well (level data;
-  // a generated level has none). Their resolved tag ids stay valid: the
-  // TagTable is kept.
+  // a generated level has none, and LoadSnapshot would set its none). Their
+  // resolved tag ids stay valid: the TagTable is kept. Per-agent data
+  // (weaknesses, immunities) belongs to the agents: the generated ones have
+  // none.
   std::map<std::string, ZoneDef> zone_defs = zone_defs_;
   std::vector<ReactionRule> reactions = reactions_;
   std::vector<ResolvedReaction> resolved_reactions = resolved_reactions_;

@@ -15,6 +15,7 @@
 #include "cell.h"
 #include "context_skill.h"
 #include "object.h"
+#include "reaction.h"
 #include "skill_config.h"
 #include "types.h"
 
@@ -230,9 +231,8 @@ json StatusSnapshotToJson(const StatusSnapshot& status) {
 
 // Status names are case-insensitive; one StatusTypeFromString does not know
 // (anything but "none") is an error.
-StatusSnapshot JsonToStatusSnapshot(const json& j, const std::string& section) {
-  StatusSnapshot status;
-  const std::string name = Get<std::string>(j, "status_type", section);
+StatusType JsonToStatusType(const json& j, const char* key, const std::string& section) {
+  const std::string name = Get<std::string>(j, key, section);
   const StatusType type = StatusTypeFromString(name);
   std::string lower = name;
   std::transform(lower.begin(), lower.end(), lower.begin(),
@@ -240,7 +240,12 @@ StatusSnapshot JsonToStatusSnapshot(const json& j, const std::string& section) {
   if (type == StatusType::None && lower != "none") {
     throw std::runtime_error(section + ": unknown status '" + name + "'");
   }
-  status.type = static_cast<int>(type);
+  return type;
+}
+
+StatusSnapshot JsonToStatusSnapshot(const json& j, const std::string& section) {
+  StatusSnapshot status;
+  status.type = static_cast<int>(JsonToStatusType(j, "status_type", section));
   status.duration = Get<int>(j, "duration", section);
   return status;
 }
@@ -464,6 +469,108 @@ ContextSkillRule JsonToContextSkillRule(const json& j, const std::string& sectio
   return r;
 }
 
+// v7. The zone table: an object keyed by tag, each {duration, steps, then,
+// damage}, all optional (absent: the ZoneDef default). Values are checked by
+// ValidateZoneTable (Snapshot::ValidateSkillsTagsZones).
+json ZoneDefToJson(const ZoneDef& zone) {
+  return json{{"duration", zone.duration},
+              {"steps", zone.steps},
+              {"then", zone.then},
+              {"damage", zone.damage}};
+}
+
+// `section` is "zones['tag']".
+ZoneDef JsonToZoneDef(const json& j, const std::string& section) {
+  RequireObject(j, section);
+  CheckKeys(j, {"duration", "steps", "then", "damage"}, section);
+  ZoneDef zone;
+  zone.duration = GetOr<int>(j, "duration", zone.duration, section);
+  zone.steps = GetOr<int>(j, "steps", zone.steps, section);
+  zone.then = GetOr<std::string>(j, "then", zone.then, section);
+  zone.damage = GetOr<int>(j, "damage", zone.damage, section);
+  return zone;
+}
+
+// A zone cell: {row, col, tag} and the fields the cell has (v7: steps, then,
+// damage; duration since v4). An absent field is the zone table's
+// (Snapshot::CellZone), so SnapshotToJson writes only those present.
+json CellTagToJson(const CellTagSnapshot& z) {
+  json j{{"row", z.cell.row}, {"col", z.cell.col}, {"tag", z.tag}};
+  if (z.duration) j["duration"] = *z.duration;
+  if (z.steps) j["steps"] = *z.steps;
+  if (z.then) j["then"] = *z.then;
+  if (z.damage) j["damage"] = *z.damage;
+  return j;
+}
+
+// `section` is "cell_tags[i]".
+CellTagSnapshot JsonToCellTag(const json& j, const std::string& section) {
+  RequireObject(j, section);
+  CheckKeys(j, {"row", "col", "tag", "duration", "steps", "then", "damage"}, section);
+  CellTagSnapshot zone;
+  zone.cell = Position{Get<int>(j, "row", section), Get<int>(j, "col", section)};
+  zone.tag = Get<std::string>(j, "tag", section);
+  if (j.contains("duration")) zone.duration = Get<int>(j, "duration", section);
+  if (j.contains("steps")) zone.steps = Get<int>(j, "steps", section);
+  if (j.contains("then")) zone.then = Get<std::string>(j, "then", section);
+  if (j.contains("damage")) zone.damage = Get<int>(j, "damage", section);
+  return zone;
+}
+
+// A reaction: {a, b, result} required, {keep, damage, spread, zone_becomes}
+// optional (absent: none, 0, false, ""). Values are checked by
+// ValidateReactions.
+json ReactionRuleToJson(const ReactionRule& r) {
+  return json{{"a", r.a},
+              {"b", r.b},
+              {"result", r.result},
+              {"keep", r.keep},
+              {"damage", r.damage},
+              {"spread", r.spread},
+              {"zone_becomes", r.zone_becomes}};
+}
+
+// `section` is "reactions[i]".
+ReactionRule JsonToReactionRule(const json& j, const std::string& section) {
+  RequireObject(j, section);
+  CheckKeys(j, {"a", "b", "result", "keep", "damage", "spread", "zone_becomes"}, section);
+  ReactionRule r;
+  r.a = Get<std::string>(j, "a", section);
+  r.b = Get<std::string>(j, "b", section);
+  r.result = Get<std::string>(j, "result", section);
+  r.keep = GetOr<std::vector<std::string>>(j, "keep", {}, section);
+  r.damage = GetOr<int>(j, "damage", r.damage, section);
+  r.spread = GetOr<bool>(j, "spread", r.spread, section);
+  r.zone_becomes = GetOr<std::string>(j, "zone_becomes", r.zone_becomes, section);
+  return r;
+}
+
+// A tag status: {tag, status} required (the status by name, as the agents'
+// statuses: "stunned", "marked", "rooted", case-insensitive), steps optional
+// (absent: 1). Values are checked by ValidateTagStatuses.
+json TagStatusRuleToJson(const TagStatusRule& r) {
+  return json{{"tag", r.tag}, {"status", StatusTypeToString(r.status)}, {"steps", r.steps}};
+}
+
+// `section` is "tag_statuses[i]".
+TagStatusRule JsonToTagStatusRule(const json& j, const std::string& section) {
+  RequireObject(j, section);
+  CheckKeys(j, {"tag", "status", "steps"}, section);
+  TagStatusRule r;
+  r.tag = Get<std::string>(j, "tag", section);
+  r.status = JsonToStatusType(j, "status", section);
+  r.steps = GetOr<int>(j, "steps", r.steps, section);
+  return r;
+}
+
+// An agent's weakness: {zone, tag}, both required. `section` is
+// "agents[i].weak_to[k]".
+TagWeakness JsonToWeakness(const json& j, const std::string& section) {
+  RequireObject(j, section);
+  CheckKeys(j, {"zone", "tag"}, section);
+  return {Get<std::string>(j, "zone", section), Get<std::string>(j, "tag", section)};
+}
+
 // AgentSnapshot serialization
 json AgentSnapshotToJson(const AgentSnapshot& agent) {
   json j{
@@ -513,6 +620,14 @@ json AgentSnapshotToJson(const AgentSnapshot& agent) {
     j["downed"] = agent.downed;
     j["times_downed"] = agent.times_downed;
   }
+
+  // Weaknesses and immunities (v7; any agent, when it has some)
+  if (!agent.weak_to.empty()) {
+    json weak_to = json::array();
+    for (const TagWeakness& w : agent.weak_to) weak_to.push_back(json{{"zone", w.zone}, {"tag", w.tag}});
+    j["weak_to"] = weak_to;
+  }
+  if (!agent.immune.empty()) j["immune"] = agent.immune;
 
   return j;
 }
@@ -567,6 +682,15 @@ AgentSnapshot JsonToAgentSnapshot(const json& j, const std::string& section) {
   // Downs (v5; absent = standing, never down). Validated with the rest.
   agent.downed = GetOr<bool>(j, "downed", false, section);
   agent.times_downed = GetOr<int>(j, "times_downed", 0, section);
+
+  // Weaknesses and immunities (v7; absent = none). Validated with the rest.
+  if (j.contains("weak_to")) {
+    const json& weak_to = GetArray(j, "weak_to", section);
+    for (size_t i = 0; i < weak_to.size(); ++i) {
+      agent.weak_to.push_back(JsonToWeakness(weak_to[i], Indexed(section + ".weak_to", i)));
+    }
+  }
+  if (j.contains("immune")) agent.immune = Get<std::vector<std::string>>(j, "immune", section);
 
   return agent;
 }
@@ -655,9 +779,11 @@ AnnotationSnapshot JsonToAnnotationSnapshot(const json& j, const std::string& se
 // 2: annotations (agent kind / attack config are optional keys); 4: skills,
 // agent tags / skill slots / cooldowns, cell_tags (zones); 5: downs (agent
 // downed / times_downed, max_downs); 6: skills' affects_downed /
-// revive_percent, context_skills. There never was a JSON 3: the number
-// follows the binary format. Versions 2..6 load.
-static constexpr int kJsonSnapshotVersion = 6;
+// revive_percent, context_skills; 7: zones (the zone table), cell_tags'
+// steps / then / damage (and an optional duration: absent fields are the
+// table's), reactions, tag_statuses, agent weak_to / immune. There never was
+// a JSON 3: the number follows the binary format. Versions 2..7 load.
+static constexpr int kJsonSnapshotVersion = 7;
 static constexpr int kMinJsonSnapshotVersion = 2;
 static constexpr const char* kJsonSnapshotMagic = "SNAP";
 // rows * cols cap, so a hand-authored level can not make us allocate gigabytes.
@@ -728,10 +854,7 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
   for (const SkillConfig& skill : snapshot.skills) skills.push_back(SkillConfigToJson(skill));
   j["skills"] = skills;
   json cell_tags = json::array();
-  for (const CellTagSnapshot& z : snapshot.cell_tags) {
-    cell_tags.push_back(json{{"row", z.cell.row}, {"col", z.cell.col},
-                             {"tag", z.tag}, {"duration", z.duration}});
-  }
+  for (const CellTagSnapshot& z : snapshot.cell_tags) cell_tags.push_back(CellTagToJson(z));
   j["cell_tags"] = cell_tags;
 
   // The level's max downs (v5)
@@ -746,6 +869,20 @@ std::string SnapshotToJson(const Snapshot& snapshot) {
     }
     j["context_skills"] = rules;
   }
+
+  // The level's combo rules (v7): the zone table (keyed by tag), the
+  // reactions, the tag statuses
+  json zones = json::object();
+  for (const auto& [tag, zone] : snapshot.zones) zones[tag] = ZoneDefToJson(zone);
+  j["zones"] = zones;
+  json reactions = json::array();
+  for (const ReactionRule& r : snapshot.reactions) reactions.push_back(ReactionRuleToJson(r));
+  j["reactions"] = reactions;
+  json tag_statuses = json::array();
+  for (const TagStatusRule& r : snapshot.tag_statuses) {
+    tag_statuses.push_back(TagStatusRuleToJson(r));
+  }
+  j["tag_statuses"] = tag_statuses;
 
   return j.dump(2);  // Pretty-print with 2-space indent
 }
@@ -860,15 +997,7 @@ Snapshot ReadSnapshot(const json& j) {
   if (j.contains("cell_tags")) {
     const json& zones = GetArray(j, "cell_tags", "snapshot");
     for (size_t i = 0; i < zones.size(); ++i) {
-      const std::string section = Indexed("cell_tags", i);
-      const json& z = zones[i];
-      RequireObject(z, section);
-      CheckKeys(z, {"row", "col", "tag", "duration"}, section);
-      CellTagSnapshot zone;
-      zone.cell = Position{Get<int>(z, "row", section), Get<int>(z, "col", section)};
-      zone.tag = Get<std::string>(z, "tag", section);
-      zone.duration = GetOr<int>(z, "duration", kPermanentTag, section);
-      snapshot.cell_tags.push_back(zone);
+      snapshot.cell_tags.push_back(JsonToCellTag(zones[i], Indexed("cell_tags", i)));
     }
   }
 
@@ -883,6 +1012,29 @@ Snapshot ReadSnapshot(const json& j) {
       parsed.push_back(JsonToContextSkillRule(rules[i], Indexed("context_skills", i)));
     }
     snapshot.context_skills = std::move(parsed);
+  }
+
+  // The level's combo rules (v7; absent = none). The cells resolve against
+  // the table when they load (BaseEnv::LoadSnapshot), wherever the file lists
+  // them.
+  if (j.contains("zones")) {
+    const json& zones = Key(j, "zones", "snapshot");
+    RequireObject(zones, "zones");
+    for (auto it = zones.begin(); it != zones.end(); ++it) {
+      snapshot.zones[it.key()] = JsonToZoneDef(it.value(), "zones['" + it.key() + "']");
+    }
+  }
+  if (j.contains("reactions")) {
+    const json& rules = GetArray(j, "reactions", "snapshot");
+    for (size_t i = 0; i < rules.size(); ++i) {
+      snapshot.reactions.push_back(JsonToReactionRule(rules[i], Indexed("reactions", i)));
+    }
+  }
+  if (j.contains("tag_statuses")) {
+    const json& rules = GetArray(j, "tag_statuses", "snapshot");
+    for (size_t i = 0; i < rules.size(); ++i) {
+      snapshot.tag_statuses.push_back(JsonToTagStatusRule(rules[i], Indexed("tag_statuses", i)));
+    }
   }
 
   snapshot.ValidateSkillsTagsZones();

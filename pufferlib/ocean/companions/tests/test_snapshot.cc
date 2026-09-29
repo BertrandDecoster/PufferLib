@@ -1,10 +1,12 @@
 // Copyright 2024
 // Test suite for Snapshot system
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -754,13 +756,13 @@ TEST(TestSnapshotV1MigrationRoundTripsAsV2) {
   Snapshot migrated = Snapshot::Deserialize(buf_v1);
 
   std::vector<uint8_t> buf_v2 = migrated.Serialize();
-  // Serialize always writes the current version (6: v5 + context skills and
-  // revive fields).
+  // Serialize always writes the current version (7: v6 + zone table and
+  // cell fields, reactions, tag statuses, weaknesses and immunities).
   uint32_t magic = 0, version = 0;
   std::memcpy(&magic, buf_v2.data(), sizeof(magic));
   std::memcpy(&version, buf_v2.data() + sizeof(magic), sizeof(version));
   ASSERT_EQ(magic, (uint32_t)0x534E4150);
-  ASSERT_EQ(version, (uint32_t)6);
+  ASSERT_EQ(version, (uint32_t)7);
 
   Snapshot round = Snapshot::Deserialize(buf_v2);
   ASSERT_EQ(round.cells.size(), migrated.cells.size());
@@ -884,6 +886,10 @@ std::vector<SkillConfig> EverySkillShape() {
   return out;
 }
 
+// The v7 block of a snapshot without v7 level data: three empty counts (zone
+// table, reactions, tag statuses), last in the buffer.
+constexpr size_t kV7Tail = 4 + 4 + 4;
+
 // 2x2 snapshot, one companion, nothing v4-specific in it.
 Snapshot MinimalSnapshot() {
   Snapshot s;
@@ -992,9 +998,9 @@ TEST(TestBinarySkillRecordLayout) {
   std::vector<uint8_t> bytes = s.Serialize();
   ASSERT_EQ(bytes.size(), without + 55 + frost.name.size());
   // affects_downed and revive_percent close the record, just before the zone
-  // count, max_downs (v5) and the context skills flag (v6, absent here); the
-  // five flags and the damage come right before them.
-  const size_t revive_at = bytes.size() - 1 - 4 - 4 - 4;
+  // count, max_downs (v5), the context skills flag (v6, absent here) and the
+  // empty v7 block; the five flags and the damage come right before them.
+  const size_t revive_at = bytes.size() - kV7Tail - 1 - 4 - 4 - 4;
   const size_t affects_at = revive_at - 1;
   const size_t flags_at = affects_at - 5;
   int damage = 0;
@@ -1028,6 +1034,39 @@ namespace {
 // patrol count, annotations count, skills count, cell tags count, max_downs.
 constexpr size_t kV5Tail = 4 + 4 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 4;
 
+// The v7 bytes of `s`, without zones nor any v7 data, as version 6: without
+// each agent's two empty v7 counts (weak_to, immune), closing its record, nor
+// the trailing v7 block.
+std::vector<uint8_t> AsV6(const Snapshot& s) {
+  if (!s.cell_tags.empty() || !s.zones.empty() || !s.reactions.empty() ||
+      !s.tag_statuses.empty()) {
+    throw std::runtime_error("AsV6: a snapshot with zones or v7 data");
+  }
+  const std::vector<uint8_t> v7 = s.Serialize();
+  // magic, version, rows, cols, cell count, the cells, agent count
+  const size_t header = 4 + 4 + 4 + 4 + 4 + 8 * s.cells.size() + 4;
+  Snapshot prefix = s;
+  prefix.agents.clear();
+  const size_t tail = prefix.Serialize().size() - header;  // After the agents
+  std::vector<uint8_t> v6(v7.begin(), v7.begin() + static_cast<std::ptrdiff_t>(header));
+  size_t start = header;
+  for (size_t k = 0; k < s.agents.size(); ++k) {
+    if (!s.agents[k].weak_to.empty() || !s.agents[k].immune.empty()) {
+      throw std::runtime_error("AsV6: an agent with v7 data");
+    }
+    prefix.agents.push_back(s.agents[k]);
+    const size_t end = prefix.Serialize().size() - tail;  // Of agent k's record
+    v6.insert(v6.end(), v7.begin() + static_cast<std::ptrdiff_t>(start),
+              v7.begin() + static_cast<std::ptrdiff_t>(end - 8));
+    start = end;
+  }
+  v6.insert(v6.end(), v7.begin() + static_cast<std::ptrdiff_t>(start),
+            v7.end() - static_cast<std::ptrdiff_t>(kV7Tail));
+  uint32_t six = 6;
+  std::memcpy(v6.data() + 4, &six, sizeof(six));
+  return v6;
+}
+
 // A v6 buffer of a snapshot without skills nor context skills (nullopt) as
 // version 5: without the trailing context skills flag.
 std::vector<uint8_t> AsV5(const std::vector<uint8_t>& v6) {
@@ -1060,15 +1099,17 @@ TEST(TestBinaryDownsRoundTrip) {
   ASSERT_EQ(back.max_downs, 7);
   ASSERT_TRUE(back.agents[0].downed);
   ASSERT_EQ(back.agents[0].times_downed, 2);
-  // The v5 record: downed (1 byte) and times_downed close the agent's record,
-  // max_downs comes last but the v6 context skills flag.
+  // The v5 record: downed (1 byte) and times_downed close the agent's record
+  // (but the v7 fields), max_downs comes last but the v6 context skills flag
+  // and the v7 block.
+  std::vector<uint8_t> v5 = AsV5(AsV6(s));
+  ASSERT_EQ(v5.size(), AsV4(v5).size() + 1 + 4 + 4);
   std::vector<uint8_t> bytes = s.Serialize();
-  ASSERT_EQ(AsV5(bytes).size(), AsV4(AsV5(bytes)).size() + 1 + 4 + 4);
   int max_downs = 0;
-  std::memcpy(&max_downs, bytes.data() + bytes.size() - 1 - 4, sizeof(int));
+  std::memcpy(&max_downs, bytes.data() + bytes.size() - kV7Tail - 1 - 4, sizeof(int));
   ASSERT_EQ(max_downs, 7);
   // Truncated before max_downs: an underflow, not a default
-  bytes.resize(bytes.size() - 1 - 4);
+  bytes.resize(bytes.size() - kV7Tail - 1 - 4);
   ASSERT_THROW(Snapshot::Deserialize(bytes), std::runtime_error);
 }
 
@@ -1078,7 +1119,7 @@ TEST(TestBinaryV4SnapshotLoadsWithoutDowns) {
   s.agents[0].health = 0;
   s.agents[0].downed = true;
   s.agents[0].times_downed = 2;
-  Snapshot back = Snapshot::Deserialize(AsV4(AsV5(s.Serialize())));
+  Snapshot back = Snapshot::Deserialize(AsV4(AsV5(AsV6(s))));
   ASSERT_EQ(back.max_downs, 3);
   ASSERT_FALSE(back.agents[0].downed);
   ASSERT_EQ(back.agents[0].times_downed, 0);
@@ -1090,7 +1131,7 @@ TEST(TestBinaryV3SnapshotStillLoads) {
   // Everything v4 adds is empty here, so a v3 buffer is the v4 one minus the
   // agent's three empty counts (tags, skills, cooldowns) and the two trailing
   // empty counts (skills, cell tags), with version 3.
-  std::vector<uint8_t> v4 = AsV4(AsV5(MinimalSnapshot().Serialize()));
+  std::vector<uint8_t> v4 = AsV4(AsV5(AsV6(MinimalSnapshot())));
   // After the agent: effects count, tick, horizon, rng x2, d4, patrol count,
   // annotations count, skills count, cell tags count.
   const size_t tail = 4 + 4 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4;
@@ -1455,12 +1496,12 @@ TEST(TestSnapshotRejectsRemovedOrUnknownStatus) {
 
 TEST(TestDeserializeRejectsOversizedV4Counts) {
   // Nothing in the snapshot after the skill book: the buffer ends with the
-  // skill count, the zone count, max_downs (v5), then the context skills flag
-  // (v6; absent).
+  // skill count, the zone count, max_downs (v5), the context skills flag
+  // (v6; absent), then the empty v7 block.
   Snapshot s = MinimalSnapshot();
   std::vector<uint8_t> bytes = s.Serialize();
-  const size_t zones_at = bytes.size() - 9;
-  const size_t skills_at = bytes.size() - 13;
+  const size_t zones_at = bytes.size() - kV7Tail - 9;
+  const size_t skills_at = bytes.size() - kV7Tail - 13;
 
   std::vector<uint8_t> bad = bytes;
   uint32_t huge = 9000000;  // Under the sanity cap, far over the bytes left
@@ -1515,7 +1556,7 @@ TEST(TestBinaryContextSkillsRoundTrip) {
   Snapshot s = MinimalSnapshot();
   const size_t absent = s.Serialize().size();
   ASSERT_FALSE(BinaryRoundTrip(s).context_skills.has_value());
-  ASSERT_EQ(s.Serialize().back(), 0);  // The flag: none
+  ASSERT_EQ(s.Serialize()[absent - kV7Tail - 1], 0);  // The flag (before the v7 block): none
 
   s.context_skills = std::vector<ContextSkillRule>{};  // Present, empty: no override
   std::vector<uint8_t> bytes = s.Serialize();
@@ -1537,7 +1578,7 @@ TEST(TestBinaryContextSkillsRoundTrip) {
   // A corrupt rule count fails on the bytes left, not on an allocation
   std::vector<uint8_t> bad = bytes;
   const uint32_t huge = 9000000;
-  std::memcpy(bad.data() + absent, &huge, sizeof(huge));
+  std::memcpy(bad.data() + absent - kV7Tail, &huge, sizeof(huge));
   AssertThrowsMentioning([&] { Snapshot::Deserialize(bad); }, "context skill count");
   // Truncated: an underflow
   bad = bytes;
@@ -1552,7 +1593,7 @@ TEST(TestBinaryV5SnapshotLoadsWithTheDefaultRules) {
   Snapshot saved = env.SaveSnapshot();
   saved.skills.clear();  // Builtins only, as AsV5 needs
   saved.context_skills.reset();
-  Snapshot back = Snapshot::Deserialize(AsV5(saved.Serialize()));
+  Snapshot back = Snapshot::Deserialize(AsV5(AsV6(saved)));
   ASSERT_FALSE(back.context_skills.has_value());
   ASSERT_TRUE(env.SetContextSkills({}));
   env.LoadSnapshot(back);
@@ -1566,7 +1607,7 @@ TEST(TestBinaryV5SnapshotLoadsWithTheDefaultRules) {
   frost.name = "frost";
   frost.range = 4;
   s.skills = {frost};
-  std::vector<uint8_t> v6 = s.Serialize();
+  std::vector<uint8_t> v6 = AsV6(s);
   std::vector<uint8_t> v5(v6.begin(), v6.end() - 1 - 4 - 4 - 5);
   v5.insert(v5.end(), v6.end() - 1 - 4 - 4, v6.end() - 1);
   uint32_t five = 5;
@@ -1751,6 +1792,379 @@ TEST(TestZoneRestoredByLoadLandsOnNextStep) {
   third.Step({kStay});  // The tag ticks 2 -> 1, then the zone re-lands it
   ASSERT_EQ(third.GetLastTagsApplied().size(), 1u);
   ASSERT_FALSE(third.GetLastTagsApplied()[0].fresh);
+}
+
+// =============================================================================
+// Snapshot v7: the zone table and the cells' zone fields, reactions, tag
+// statuses, weaknesses and immunities
+// =============================================================================
+
+namespace {
+
+ZoneDef MakeZone(int duration, int steps, const std::string& then, int damage) {
+  ZoneDef z;
+  z.duration = duration;
+  z.steps = steps;
+  z.then = then;
+  z.damage = damage;
+  return z;
+}
+
+CellTagSnapshot MakeCell(Position cell, const std::string& tag, std::optional<int> duration,
+                         std::optional<int> steps, std::optional<std::string> then,
+                         std::optional<int> damage) {
+  CellTagSnapshot z;
+  z.cell = cell;
+  z.tag = tag;
+  z.duration = duration;
+  z.steps = steps;
+  z.then = then;
+  z.damage = damage;
+  return z;
+}
+
+ReactionRule MakeReaction(const std::string& a, const std::string& b, const std::string& result,
+                          std::vector<std::string> keep, int damage, bool spread,
+                          const std::string& zone_becomes) {
+  ReactionRule r;
+  r.a = a;
+  r.b = b;
+  r.result = result;
+  r.keep = std::move(keep);
+  r.damage = damage;
+  r.spread = spread;
+  r.zone_becomes = zone_becomes;
+  return r;
+}
+
+const std::nullopt_t kAbsent = std::nullopt;
+
+// Every v7 field, off its default, and cells with every mix of present and
+// absent fields. The zone table has a cycle (burning -> smoke -> burning) and
+// a successor it does not define (ash): both legal.
+Snapshot V7Snapshot() {
+  Snapshot s = MinimalSnapshot();
+  s.zones = {{"burning", MakeZone(2, 4, "smoke", 1)},
+             {"smoke", MakeZone(kPermanentTag, 2, "burning", 0)},
+             {"oil", MakeZone(3, kPermanentTag, "ash", 0)},
+             {"wet", ZoneDef{}}};
+  s.reactions = {MakeReaction("wet", "electrified", "shocked", {"wet"}, 1, true, "wet"),
+                 MakeReaction("oil", "burning", "burning", {}, 0, true, ""),
+                 MakeReaction("wet", "chilled", "stunned", {"chilled", "wet"}, 2, false, "")};
+  s.tag_statuses = {{"stunned", StatusType::Stunned, 3},
+                    {"marked", StatusType::Marked, 1},
+                    {"rooted", StatusType::Rooted, 2}};
+  s.agents[0].weak_to = {{"wet", "electrified"}, {"oil", "burning"}};
+  s.agents[0].immune = {"burning", "stunned"};
+  s.cell_tags = {MakeCell({0, 1}, "burning", 3, 2, std::string("smoke"), 1),
+                 MakeCell({1, 0}, "wet", kAbsent, kAbsent, kAbsent, kAbsent),
+                 MakeCell({1, 1}, "smoke", 5, kAbsent, kAbsent, kAbsent),
+                 MakeCell({0, 0}, "oil", kAbsent, 7, std::string(), kAbsent)};
+  return s;
+}
+
+void AssertCellTagEq(const CellTagSnapshot& a, const CellTagSnapshot& b) {
+  ASSERT_TRUE(a.cell == b.cell);
+  ASSERT_EQ(a.tag, b.tag);
+  ASSERT_TRUE(a.duration == b.duration);
+  ASSERT_TRUE(a.steps == b.steps);
+  ASSERT_TRUE(a.then == b.then);
+  ASSERT_TRUE(a.damage == b.damage);
+}
+
+void AssertV7Eq(const Snapshot& a, const Snapshot& b) {
+  ASSERT_TRUE(a.zones == b.zones);
+  ASSERT_TRUE(a.reactions == b.reactions);
+  ASSERT_TRUE(a.tag_statuses == b.tag_statuses);
+  ASSERT_EQ(a.agents.size(), b.agents.size());
+  for (size_t i = 0; i < a.agents.size(); ++i) {
+    ASSERT_TRUE(a.agents[i].weak_to == b.agents[i].weak_to);
+    ASSERT_TRUE(a.agents[i].immune == b.agents[i].immune);
+  }
+  ASSERT_EQ(a.cell_tags.size(), b.cell_tags.size());
+  for (size_t i = 0; i < a.cell_tags.size(); ++i) AssertCellTagEq(a.cell_tags[i], b.cell_tags[i]);
+}
+
+// A zone cell of `env`, by names
+struct ZoneAt {
+  std::string tag;
+  int duration = 0;
+  int steps = 0;
+  std::string then;
+  int damage = 0;
+  bool operator==(const ZoneAt& o) const {
+    return tag == o.tag && duration == o.duration && steps == o.steps && then == o.then &&
+           damage == o.damage;
+  }
+};
+ZoneAt ZoneOf(const BaseEnv& env, Position p) {
+  const BaseEnv::CellTag c = env.GetCellTag(p);
+  ZoneAt z;
+  if (c.tag == kInvalidTag) return z;
+  z.tag = env.GetTagTable().Name(c.tag);
+  z.duration = c.duration;
+  z.steps = c.steps;
+  z.then = c.then == kInvalidTag ? "" : env.GetTagTable().Name(c.then);
+  z.damage = c.damage;
+  return z;
+}
+ZoneAt Zone(const std::string& tag, int duration, int steps, const std::string& then, int damage) {
+  ZoneAt z;
+  z.tag = tag;
+  z.duration = duration;
+  z.steps = steps;
+  z.then = then;
+  z.damage = damage;
+  return z;
+}
+
+}  // namespace
+
+TEST(TestBinaryV7FieldsRoundTrip) {
+  const Snapshot s = V7Snapshot();
+  const Snapshot back = BinaryRoundTrip(s);
+  AssertV7Eq(s, back);
+  // Absent stays absent: the cell still follows the table
+  ASSERT_FALSE(back.cell_tags[1].duration.has_value());
+  ASSERT_TRUE(back.cell_tags[3].then == std::string());  // Present: no successor
+  // CellZone: the table's fields, overridden by the cell's own
+  ASSERT_TRUE(back.CellZone(back.cell_tags[0]) == MakeZone(3, 2, "smoke", 1));
+  ASSERT_TRUE(back.CellZone(back.cell_tags[1]) == ZoneDef{});
+  ASSERT_TRUE(back.CellZone(back.cell_tags[2]) == MakeZone(5, 2, "burning", 0));
+  ASSERT_TRUE(back.CellZone(back.cell_tags[3]) == MakeZone(3, 7, "", 0));
+}
+
+// A zone record (v7): cell, tag, a byte of the fields present (duration 1,
+// steps 2, then 4, damage 8), then those fields. Another bit is corrupt.
+TEST(TestBinaryV7ZoneRecord) {
+  Snapshot s = MinimalSnapshot();
+  const size_t without = s.Serialize().size();
+  s.cell_tags = {MakeCell({0, 1}, "wet", kAbsent, 6, kAbsent, 2)};
+  std::vector<uint8_t> bytes = s.Serialize();
+  ASSERT_EQ(bytes.size(), without + 8 + 4 + 3 + 1 + 4 + 4);
+  // It closes the v4 block: before max_downs, the v6 flag and the v7 block
+  const size_t mask_at = bytes.size() - kV7Tail - 1 - 4 - 4 - 4 - 1;
+  ASSERT_EQ(bytes[mask_at], 2 | 8);
+  int steps = 0;
+  std::memcpy(&steps, bytes.data() + mask_at + 1, sizeof(int));
+  ASSERT_EQ(steps, 6);
+  bytes[mask_at] |= 16;
+  AssertThrowsMentioning([&] { Snapshot::Deserialize(bytes); }, "zone fields");
+
+  // A corrupt count fails on the bytes left, not on an allocation (the v7
+  // block starts with the zone table's count)
+  std::vector<uint8_t> plain = MinimalSnapshot().Serialize();
+  const uint32_t huge = 9000000;
+  std::memcpy(plain.data() + plain.size() - kV7Tail, &huge, sizeof(huge));
+  AssertThrowsMentioning([&] { Snapshot::Deserialize(plain); }, "zone table count");
+  bytes = V7Snapshot().Serialize();
+  bytes.resize(bytes.size() - 2);  // Truncated: an underflow
+  ASSERT_THROW(Snapshot::Deserialize(bytes), std::runtime_error);
+}
+
+// The env saves the whole of it (the table, the reactions, the tag statuses,
+// each agent's weaknesses and immunities, each zone's resolved fields) and a
+// load replaces what the env had.
+TEST(TestSaveLoadKeepsTheV7Data) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  env.Reset();
+  ASSERT_TRUE(env.DefineZone("burning", MakeZone(2, 4, "smoke", 1)));
+  ASSERT_TRUE(env.DefineZone("smoke", MakeZone(kPermanentTag, 2, "", 0)));
+  ASSERT_TRUE(env.SetReactions({MakeReaction("oil", "burning", "burning", {}, 1, true, "burning"),
+                                MakeReaction("wet", "chilled", "stunned", {"wet"}, 0, false, "")}));
+  ASSERT_TRUE(env.SetTagStatuses({{"stunned", StatusType::Stunned, 2}}));
+  Agent* a = FirstAgent(env);
+  ASSERT_TRUE(env.SetWeaknesses(a->GetId(), {{"wet", "electrified"}}));
+  ASSERT_TRUE(env.SetImmunities(a->GetId(), {"burning", "chilled"}));
+  ASSERT_TRUE(env.SetCellTag({2, 2}, "burning"));                        // By name
+  ASSERT_TRUE(env.SetCellTag({2, 3}, "wet", MakeZone(3, 5, "ice", 2)));  // An override
+  ASSERT_TRUE(env.SetCellTag({2, 4}, "smoke", 4));                       // Name + duration
+  const Snapshot saved = env.SaveSnapshot();
+  ASSERT_TRUE(saved.zones == env.GetZoneDefs());
+  for (const CellTagSnapshot& z : saved.cell_tags) {  // Always every field, resolved
+    ASSERT_TRUE(z.duration && z.steps && z.then && z.damage);
+  }
+
+  for (const Snapshot& s : {saved, BinaryRoundTrip(saved)}) {
+    SynchroEnv other(8, 8, 1, 1, 0, 7);
+    other.GetMutableTagTable().Intern("unrelated");  // Ids differ: names travel
+    ASSERT_TRUE(other.DefineZone("burning", MakeZone(9, 9, "", 9)));
+    ASSERT_TRUE(other.DefineZone("mud", ZoneDef{}));
+    ASSERT_TRUE(other.SetReactions({MakeReaction("a", "b", "c", {}, 0, false, "")}));
+    other.LoadSnapshot(s);
+    ASSERT_TRUE(other.GetZoneDefs() == env.GetZoneDefs());
+    ASSERT_TRUE(other.GetReactions() == env.GetReactions());
+    ASSERT_TRUE(other.GetTagStatuses() == env.GetTagStatuses());
+    const ObjectId b = FirstAgent(other)->GetId();
+    ASSERT_TRUE(other.GetWeaknesses(b) == env.GetWeaknesses(a->GetId()));
+    ASSERT_TRUE(other.GetImmunities(b) == env.GetImmunities(a->GetId()));
+    ASSERT_TRUE(ZoneOf(other, {2, 2}) == Zone("burning", 2, 4, "smoke", 1));
+    ASSERT_TRUE(ZoneOf(other, {2, 3}) == Zone("wet", 3, 5, "ice", 2));
+    ASSERT_TRUE(ZoneOf(other, {2, 4}) == Zone("smoke", 4, 2, "", 0));
+    ASSERT_EQ(CountZones(other), 3);
+  }
+}
+
+// A v6 file has none of it: an empty table, no reactions, no tag statuses, no
+// weaknesses or immunities, and its zones keep their duration with the
+// default fields (permanent, no successor, harmless).
+TEST(TestBinaryV6SnapshotLoadsWithNone) {
+  SynchroEnv src(8, 8, 1, 1, 0, 42);
+  Snapshot s = src.SaveSnapshot();
+  s.context_skills.reset();  // The zone count is then 4 + 1 bytes from the end
+  std::vector<uint8_t> v6 = AsV6(s);
+  // One v6 zone record: cell, tag, duration
+  std::vector<uint8_t> zone;
+  AppendBytes<int>(zone, 2);
+  AppendBytes<int>(zone, 3);
+  AppendBytes<uint32_t>(zone, 3);
+  zone.push_back('w');
+  zone.push_back('e');
+  zone.push_back('t');
+  AppendBytes<int>(zone, 2);
+  const size_t count_at = v6.size() - 1 - 4 - 4;
+  const uint32_t one = 1;
+  std::memcpy(v6.data() + count_at, &one, sizeof(one));
+  v6.insert(v6.begin() + static_cast<std::ptrdiff_t>(count_at + 4), zone.begin(), zone.end());
+  const Snapshot back = Snapshot::Deserialize(v6);
+  ASSERT_EQ(back.cell_tags.size(), 1u);
+  ASSERT_TRUE(back.cell_tags[0].duration == 2);  // Every v4-v6 zone has its duration
+  ASSERT_FALSE(back.cell_tags[0].steps.has_value());
+  ASSERT_FALSE(back.cell_tags[0].then.has_value());
+  ASSERT_FALSE(back.cell_tags[0].damage.has_value());
+
+  SynchroEnv env(8, 8, 1, 1, 0, 7);
+  ASSERT_TRUE(env.DefineZone("wet", MakeZone(5, 3, "ice", 2)));
+  ASSERT_TRUE(env.SetReactions({MakeReaction("wet", "chilled", "stunned", {}, 0, false, "")}));
+  ASSERT_TRUE(env.SetTagStatuses({{"stunned", StatusType::Stunned, 2}}));
+  ASSERT_TRUE(env.SetWeaknesses(FirstAgent(env)->GetId(), {{"wet", "electrified"}}));
+  ASSERT_TRUE(env.SetImmunities(FirstAgent(env)->GetId(), {"wet"}));
+  env.LoadSnapshot(back);
+  ASSERT_TRUE(env.GetZoneDefs().empty());
+  ASSERT_TRUE(env.GetReactions().empty());
+  ASSERT_TRUE(env.GetTagStatuses().empty());
+  ASSERT_TRUE(env.GetWeaknesses(FirstAgent(env)->GetId()).empty());
+  ASSERT_TRUE(env.GetImmunities(FirstAgent(env)->GetId()).empty());
+  ASSERT_TRUE(ZoneOf(env, {2, 3}) == Zone("wet", 2, kPermanentTag, "", 0));
+}
+
+// Each v7 rule, before any change; messages say where and what.
+TEST(TestSnapshotRejectsBadV7Data) {
+  const Snapshot good = SynchroEnv(8, 8, 1, 1, 0, 42).SaveSnapshot();
+  const std::string overlong(kMaxNameLength + 1, 'x');
+  auto with_zone = [&](const std::string& tag, const ZoneDef& def) {
+    Snapshot s = good;
+    s.zones[tag] = def;
+    return s;
+  };
+  AssertSnapshotRejected(with_zone("", ZoneDef{}), "zones['']: tag: empty");
+  AssertSnapshotRejected(with_zone(overlong, ZoneDef{}), "tag: longer than");
+  AssertSnapshotRejected(with_zone("burning", MakeZone(0, 2, "", 0)), "zones['burning']: duration");
+  AssertSnapshotRejected(with_zone("burning", MakeZone(-2, 2, "", 0)), "zones['burning']: duration");
+  AssertSnapshotRejected(with_zone("burning", MakeZone(2, 0, "", 0)), "zones['burning']: steps");
+  AssertSnapshotRejected(with_zone("burning", MakeZone(2, -3, "", 0)), "zones['burning']: steps");
+  AssertSnapshotRejected(with_zone("burning", MakeZone(2, 2, "", -1)), "zones['burning']: damage");
+  AssertSnapshotRejected(with_zone("burning", MakeZone(2, 2, overlong, 0)),
+                         "zones['burning']: then");
+
+  auto with_cell = [&](const CellTagSnapshot& z) {
+    Snapshot s = good;
+    s.cell_tags = {z};
+    return s;
+  };
+  AssertSnapshotRejected(with_cell(MakeCell({1, 2}, "wet", 0, kAbsent, kAbsent, kAbsent)),
+                         "zone at (1, 2)");
+  AssertSnapshotRejected(with_cell(MakeCell({1, 2}, "wet", kAbsent, 0, kAbsent, kAbsent)),
+                         "zone at (1, 2): steps");
+  AssertSnapshotRejected(with_cell(MakeCell({1, 2}, "wet", kAbsent, kAbsent, overlong, kAbsent)),
+                         "zone at (1, 2): then");
+  AssertSnapshotRejected(with_cell(MakeCell({1, 2}, "wet", kAbsent, kAbsent, kAbsent, -1)),
+                         "zone at (1, 2): damage");
+
+  auto with_reaction = [&](const ReactionRule& r) {
+    Snapshot s = good;
+    s.reactions = {MakeReaction("oil", "burning", "burning", {}, 0, false, ""), r};
+    return s;
+  };
+  AssertSnapshotRejected(with_reaction(MakeReaction("wet", "ice", "x", {"fire"}, 0, false, "")),
+                         "reactions[1] ('wet' + 'ice'): keep: 'fire' is neither a nor b");
+  AssertSnapshotRejected(with_reaction(MakeReaction("wet", "ice", "x", {}, -1, false, "")),
+                         "reactions[1] ('wet' + 'ice'): damage: negative");
+  AssertSnapshotRejected(with_reaction(MakeReaction("wet", "wet", "x", {}, 0, false, "")),
+                         "the same tag");
+  AssertSnapshotRejected(with_reaction(MakeReaction("wet", "ice", "", {}, 0, false, "")),
+                         "result: empty");
+  AssertSnapshotRejected(with_reaction(MakeReaction("wet", "ice", "x", {}, 0, false, "wet")),
+                         "zone_becomes: needs spread");
+  AssertSnapshotRejected(with_reaction(MakeReaction("burning", "oil", "x", {}, 0, false, "")),
+                         "already reacts in reactions[0]");
+
+  auto with_status = [&](int status, int steps) {
+    Snapshot s = good;
+    s.tag_statuses = {{"stunned", static_cast<StatusType>(status), steps}};
+    return s;
+  };
+  AssertSnapshotRejected(with_status(2, 1), "tag_statuses[0] ('stunned'): status: unknown value 2");
+  AssertSnapshotRejected(with_status(0, 1), "status: unknown value 0");
+  AssertSnapshotRejected(with_status(9, 1), "status: unknown value 9");
+  AssertSnapshotRejected(with_status(1, 0), "tag_statuses[0] ('stunned'): steps");
+
+  const std::string who = "agent #0 (id " + std::to_string(good.agents[0].id) + "): ";
+  Snapshot s = good;
+  s.agents[0].weak_to = {{"wet", "electrified"}, {"wet", "electrified"}};
+  AssertSnapshotRejected(s, who + "weak_to[1] ('wet', 'electrified'): twice");
+  s = good;
+  s.agents[0].weak_to = {{"", "electrified"}};
+  AssertSnapshotRejected(s, who + "weak_to[0] ('', 'electrified'): zone: empty");
+  s = good;
+  s.agents[0].immune = {"burning", overlong};
+  AssertSnapshotRejected(s, who + "immune[1]");
+  s = good;
+  s.agents[0].immune = {"burning", "burning"};
+  AssertSnapshotRejected(s, who + "immune[1] ('burning'): twice");
+}
+
+// Names only need to be valid: a cycle of finite zones, a successor or a
+// zone_becomes the table does not define all load.
+TEST(TestSnapshotAcceptsZoneCyclesAndUndefinedNames) {
+  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  Snapshot s = env.SaveSnapshot();
+  s.zones = {{"tide", MakeZone(kPermanentTag, 1, "ebb", 0)},
+             {"ebb", MakeZone(kPermanentTag, 1, "tide", 0)},
+             {"flicker", MakeZone(kPermanentTag, 2, "flicker", 0)},
+             {"fire", MakeZone(kPermanentTag, 2, "ash", 0)}};
+  s.reactions = {MakeReaction("oil", "burning", "burning", {}, 0, true, "lava")};
+  s.cell_tags = {MakeCell({2, 2}, "tide", kAbsent, kAbsent, kAbsent, kAbsent),
+                 MakeCell({2, 3}, "mist", kAbsent, 1, std::string("fog"), kAbsent)};
+  env.LoadSnapshot(BinaryRoundTrip(s));
+  ASSERT_TRUE(ZoneOf(env, {2, 2}) == Zone("tide", kPermanentTag, 1, "ebb", 0));
+  ASSERT_TRUE(ZoneOf(env, {2, 3}) == Zone("mist", kPermanentTag, 1, "fog", 0));
+  env.Step({EncodeAction(MovementAction::Stay)});
+  ASSERT_TRUE(ZoneOf(env, {2, 2}) == Zone("ebb", kPermanentTag, 1, "tide", 0));
+  ASSERT_TRUE(ZoneOf(env, {2, 3}) == Zone("fog", kPermanentTag, kPermanentTag, "", 0));
+}
+
+// The d4 transform moves each zone cell with its fields (they are not
+// positional); the table is not positional either.
+TEST(TestD4MovesZoneCellsWithTheirFields) {
+  const int kRows = 6, kCols = 9;
+  const Position a{1, 2}, b{4, 6};
+  for (int t = 0; t < 8; ++t) {
+    SynchroEnv src(kRows, kCols, 1, 1, 0, 42, 0);
+    Snapshot snap = src.SaveSnapshot();
+    snap.zones = {{"burning", MakeZone(2, 4, "smoke", 1)}};
+    snap.cell_tags = {MakeCell(a, "burning", kAbsent, kAbsent, kAbsent, kAbsent),
+                      MakeCell(b, "wet", 3, 5, std::string("ice"), 2)};
+    snap.d4_transform = t;
+    SynchroEnv dst(kRows, kCols, 1, 1, 0, 42, 0);
+    dst.LoadSnapshot(BinaryRoundTrip(snap));
+    const D4Transform tr = static_cast<D4Transform>(t);
+    ASSERT_EQ(CountZones(dst), 2);
+    ASSERT_TRUE(ZoneOf(dst, TransformPosition(a, kRows, kCols, tr)) ==
+                Zone("burning", 2, 4, "smoke", 1));
+    ASSERT_TRUE(ZoneOf(dst, TransformPosition(b, kRows, kCols, tr)) == Zone("wet", 3, 5, "ice", 2));
+    ASSERT_TRUE(dst.GetZoneDefs() == snap.zones);
+  }
 }
 
 // =============================================================================
