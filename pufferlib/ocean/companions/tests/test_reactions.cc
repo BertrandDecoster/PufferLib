@@ -674,7 +674,8 @@ TEST(TestAReactionChangingItsOwnCellStillTakesTheOldZonesDamage) {
 
 // (wet, electrified): a wet imp on dry land is not defeated by a spark (it
 // reacts, alone); in the lake, the same spark defeats it (the env's kill: an
-// enemy dies), and a defeated agent reacts to nothing.
+// enemy dies). A defeated agent gets nothing more, but its reaction still
+// spreads over the lake (here with nobody else in it).
 TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
   for (bool in_lake : {false, true}) {
     SynchroEnv env(10, 10, 1, 1, 0, 42);
@@ -700,7 +701,11 @@ TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
       ASSERT_FALSE(Has(env, imp, "wet"));
     } else {
       ASSERT_FALSE(imp->IsAlive());
-      ASSERT_TRUE(env.GetLastReactions().empty());  // Defeated: no reaction
+      ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+      const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+      ASSERT_EQ(r.trigger, imp->GetId());
+      ASSERT_TRUE(r.spread);
+      ASSERT_TRUE(r.affected.empty());  // Not the defeated imp
       ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
       const BaseEnv::Defeat& d = env.GetLastDefeats().at(0);
       ASSERT_EQ(d.agent, imp->GetId());
@@ -710,12 +715,40 @@ TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
       ASSERT_EQ(d.cause, std::string("spark"));
       ASSERT_TRUE(d.kind == TagSource::Skill);
       ASSERT_TRUE(Has(env, imp, "wet"));  // It keeps what it carried
+      ASSERT_EQ(imp->GetHealth(), 0);
       ASSERT_TRUE(Has(env, imp, "electrified"));
       ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
       ASSERT_EQ(env.GetLastSkillUses().at(0).affected.size(), static_cast<size_t>(1));
       ASSERT_EQ(env.GetLastSkillUses().at(0).affected.at(0).effects,
                 static_cast<unsigned>(BaseEnv::kSkillEffectTags));
     }
+  }
+}
+
+// A defeated trigger gets nothing more, so a reaction that does not spread
+// (the rule does not, or the zone under it provides neither tag) has nobody
+// left to affect: nothing fires, nothing is reported.
+TEST(TestADefeatedTriggerAloneReactsToNothing) {
+  for (bool spreading_rule : {false, true}) {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Rule rule = Rule("wet", "electrified", "shocked").Hurts(1);
+    if (spreading_rule) rule.Spreads("steam");
+    Require(env.SetReactions({rule.r}), "reactions");
+    GiveBolt(env, 0, "spark", "electrified");
+    Place(env, 0, {5, 2});
+    Agent* imp = AddEnemy(env, {5, 5});
+    const char* floor = spreading_rule ? "metal" : "wet";  // Metal provides neither tag
+    Require(env.SetCellTag({5, 5}, floor), floor);
+    Require(env.SetWeaknesses(imp->GetId(), {{floor, "electrified"}}), "weak_to");
+    Require(env.ApplyTagTo(imp->GetId(), "wet", kPermanentTag), "wet");
+    env.Step(With(env, 0, Use(MovementAction::Right)));
+    ASSERT_FALSE(imp->IsAlive());
+    ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+    ASSERT_TRUE(env.GetLastReactions().empty());
+    ASSERT_TRUE(Has(env, imp, "wet"));  // Kept: nothing more reaches it
+    ASSERT_FALSE(Has(env, imp, "shocked"));
+    ASSERT_EQ(env.GetCellTag({5, 5}).tag, Id(env, floor));
   }
 }
 
@@ -773,20 +806,69 @@ TEST(TestADefeatIgnoresHealth) {
 }
 
 // The landing report says no zone damage when a reaction's damage left the
-// agent unaffectable
-TEST(TestTheZoneDamageIsZeroWhenTheReactionKilled) {
+// agent unaffectable: an enemy killed, a companion downed
+TEST(TestTheZoneDamageIsZeroWhenTheReactionDownedOrKilled) {
+  for (bool companion : {false, true}) {
+    SynchroEnv env(10, 10, 1, 1, 0, 42);
+    MakeArena(env);
+    Require(env.SetReactions({Rule("oil", "burning", "burning").Hurts(10).r}), "reactions");
+    Require(env.DefineZone("oil", Zone().Hurts(2).def), "oil");
+    Agent* a = companion ? Place(env, 0, {3, 3}) : AddEnemy(env, {3, 3}, 3);
+    Require(env.ApplyTagTo(a->GetId(), "burning", kPermanentTag), "burning");
+    Require(env.SetCellTag({3, 4}, "oil"), "oil cell");
+    env.Step(With(env, companion ? 0 : 1, kRight));
+    ASSERT_FALSE(a->IsAffectable());
+    ASSERT_EQ(a->IsAlive(), companion);  // A companion goes down
+    ASSERT_EQ(env.GetLastTagsApplied().at(0).tag, Id(env, "oil"));
+    ASSERT_EQ(env.GetLastTagsApplied().at(0).damage, 0);
+    ASSERT_EQ(env.GetLastReactions().at(0).affected.at(0).damage, 10);
+  }
+}
+
+// A zone's landing that defeats (weak to (oil, oil)) deals no zone damage
+// (reported 0), but the reaction it starts still spreads: the companion on
+// the same hot oil (landed before it, 2 damage) gets the outcome, and the oil
+// becomes ash.
+TEST(TestAZoneLandingDefeatStillSpreadsItsReaction) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
-  Require(env.SetReactions({Rule("oil", "burning", "burning").Hurts(5).r}), "reactions");
-  Require(env.DefineZone("oil", Zone().Hurts(2).def), "oil");
-  Agent* gob = AddEnemy(env, {3, 3}, 3);
+  Require(env.SetReactions({Rule("oil", "burning", "burning").Hurts(1).Spreads("ash").r}),
+          "reactions");
+  Require(env.DefineZone("oil", Zone().Hurts(2).def), "hot oil");
+  Agent* cook = Place(env, 0, {3, 5});  // Index 0: its zone lands first
+  Agent* gob = AddEnemy(env, {3, 3});
+  Require(env.SetWeaknesses(gob->GetId(), {{"oil", "oil"}}), "weak_to");
   Require(env.ApplyTagTo(gob->GetId(), "burning", kPermanentTag), "burning");
-  Require(env.SetCellTag({3, 4}, "oil"), "oil cell");
+  SetZones(env, {{3, 4}, {3, 5}}, "oil");
   env.Step(With(env, 1, kRight));
+  ASSERT_TRUE(gob->GetPosition() == (Position{3, 4}));
   ASSERT_FALSE(gob->IsAlive());
-  ASSERT_EQ(env.GetLastTagsApplied().at(0).tag, Id(env, "oil"));
-  ASSERT_EQ(env.GetLastTagsApplied().at(0).damage, 0);
-  ASSERT_EQ(env.GetLastReactions().at(0).affected.at(0).damage, 5);
+  ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastDefeats().at(0).kind == TagSource::Zone);
+
+  const auto& landed = env.GetLastTagsApplied();
+  ASSERT_EQ(landed.size(), static_cast<size_t>(3));
+  ASSERT_EQ(landed.at(0).agent, cook->GetId());
+  ASSERT_EQ(landed.at(0).damage, 2);
+  ASSERT_EQ(landed.at(1).agent, gob->GetId());
+  ASSERT_EQ(landed.at(1).damage, 0);  // Defeated: none dealt
+  ASSERT_EQ(landed.at(2).agent, cook->GetId());
+  ASSERT_TRUE(landed.at(2).kind == TagSource::Reaction);
+
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  ASSERT_EQ(r.trigger, gob->GetId());
+  ASSERT_TRUE(r.kind == TagSource::Zone);
+  ASSERT_TRUE(r.spread);
+  ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
+  ASSERT_EQ(r.affected.at(0).agent, cook->GetId());
+  ASSERT_EQ(r.affected.at(0).damage, 1);
+  ASSERT_FALSE(Has(env, cook, "oil"));
+  ASSERT_TRUE(Has(env, cook, "burning"));
+  ASSERT_EQ(cook->GetHealth(), 7);
+  ASSERT_EQ(gob->GetHealth(), 0);
+  ASSERT_EQ(env.GetCellTag({3, 4}).tag, Id(env, "ash"));
+  ASSERT_EQ(env.GetCellTag({3, 5}).tag, Id(env, "ash"));
 }
 
 // A spark through the lake: the gob it hits reacts, the reaction spreads,
@@ -831,23 +913,45 @@ TEST(TestAResultSpreadingThroughTheLakeDefeatsTheImp) {
   for (Position p : lake) ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "wet"));  // Becomes wet
 }
 
-// The gob on the oil, hit by the fireball itself, is defeated there: it
-// reacts to nothing, so the oil does not catch fire.
-TEST(TestAGobDefeatedOnTheOilSetsNothingAblaze) {
-  SynchroEnv env(10, 10, 1, 1, 0, 42);
+// The gob on the oil, hit by the fireball itself, is defeated there (weak to
+// (oil, burning)) and gets nothing more, but its reaction still spreads (as
+// in the HTN rules): the cook on the same oil gets the outcome, and the oil
+// catches fire.
+TEST(TestAGobDefeatedOnTheOilStillSetsItAblaze) {
+  SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   Require(env.SetReactions(CombosRules()), "reactions");
   Require(env.DefineZone("burning", Zone().Lasts(6).Hurts(1).def), "burning zone");
   GiveBolt(env, 0, "fireball", "burning");
-  Place(env, 0, {2, 1});
+  Agent* caster = Place(env, 0, {2, 1});
+  Agent* cook = Place(env, 1, {2, 6});
   Agent* gob = AddEnemy(env, {2, 4});
   Require(env.SetWeaknesses(gob->GetId(), {{"oil", "burning"}}), "weak_to");
-  SetZones(env, {{2, 4}, {2, 5}}, "oil");
+  const std::vector<Position> oil = {{2, 4}, {2, 5}, {2, 6}};
+  SetZones(env, oil, "oil");
   env.Step(With(env, 0, Use(MovementAction::Right)));
+
   ASSERT_FALSE(gob->IsAlive());
-  ASSERT_TRUE(env.GetLastReactions().empty());
-  ASSERT_EQ(env.GetCellTag({2, 4}).tag, Id(env, "oil"));
-  ASSERT_EQ(env.GetCellTag({2, 5}).tag, Id(env, "oil"));
+  ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
+  ASSERT_EQ(env.GetLastDefeats().at(0).agent, gob->GetId());
+  ASSERT_TRUE(env.GetLastDefeats().at(0).kind == TagSource::Skill);
+  ASSERT_TRUE(Has(env, gob, "oil"));  // Nothing more: its originals stay
+
+  ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+  const BaseEnv::Reaction& r = env.GetLastReactions().at(0);
+  ASSERT_EQ(r.rule, 1);
+  ASSERT_EQ(r.trigger, gob->GetId());
+  ASSERT_EQ(r.source, caster->GetId());
+  ASSERT_EQ(r.cause, std::string("fireball"));
+  ASSERT_TRUE(r.spread);
+  ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));  // The cook, not the gob
+  ASSERT_EQ(r.affected.at(0).agent, cook->GetId());
+  ASSERT_TRUE(r.affected.at(0).result_landed);
+  ASSERT_EQ(r.affected.at(0).damage, 1);
+  ASSERT_FALSE(Has(env, cook, "oil"));
+  ASSERT_TRUE(Has(env, cook, "burning"));
+  ASSERT_EQ(cook->GetHealth(), 9);
+  for (Position p : oil) ASSERT_EQ(env.GetCellTag(p).tag, Id(env, "burning"));
 }
 
 // An oiled gob walking into the fire burns (the zone's damage) and reacts

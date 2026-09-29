@@ -327,8 +327,9 @@ tests: `tests/test_zones.cc`):
   movement (before casts and skills), and on any agent a skill motion lands there
   (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
 - **One landing, in order** (see Reactions): immunity (nothing lands, no damage), the
-  tag and its tag status (`LandTag`), weakness (a defeated agent stops there), reaction,
-  then the zone's own `damage` (`ApplyZoneTag`), only if the agent is still affectable:
+  tag and its tag status (`LandTag`), weakness (a defeated agent gets nothing more, but
+  its reaction may still spread), reaction, then the zone's own `damage`
+  (`ApplyZoneTag`), only if the agent is still affectable:
   through `Agent::TakeDamage` (Marked applies, a companion goes down and keeps the tag).
   Reported as the landing's `damage` (the zone's, before Marked; 0 when none was dealt:
   a weakness defeated it, a reaction's damage downed or killed it).
@@ -366,17 +367,22 @@ a status.
      to it applies (`Agent::ApplyStatus`, a step timer: n + 1 during a step);
   3. weakness: for one of the agent's `(P, S)` with S = the tag, the zone of the cell it
      stands on NOW provides P: defeated (`Agent::Defeat`, the env's `kill`: 0 HP whatever
-     its health or Marked, an agent dies, a companion goes down), reported, and it stops
-     there (no reaction, no zone damage). P is asked of the map, never of the tags it
-     carries: a wet imp on dry land is not defeated by a spark; an oiled gob walking into
-     fire is not defeated by (oil, burning) (fire is not oil)
+     its health or Marked, an agent dies, a companion goes down), reported, and it gets
+     nothing more (no reaction outcome, no zone damage). P is asked of the map, never of
+     the tags it carries: a wet imp on dry land is not defeated by a spark; an oiled gob
+     walking into fire is not defeated by (oil, burning) (fire is not oil)
   4. reaction (never for a reaction's result: no chains): the FIRST rule, in level
      order, with the tag as `a` and `b` carried, or the reverse (unordered). One reaction
      per landing. Who is affected: when the rule `spread`s and the agent stands on a cell
      whose zone provides `a` or `b`, every affectable agent on that zone's connected
      region (4-neighbour flood fill over the cells carrying that zone tag, from the
      agent's cell), in agent-index order, the trigger included; otherwise the agent
-     alone. Each affected agent, in turn: loses `a` and `b` but those in `keep`, gets
+     alone. A trigger step 3 defeated still starts it (it keeps its tags; like the HTN
+     rules, which spread AND defeat the vulnerable): spreading, it fires without the
+     trigger (its `affected` may be empty) and the region still becomes `zone_becomes`
+     (a gob weak to (oil, burning) burnt on the oil: it is defeated, the others on the
+     oil burn, the oil catches fire); alone, nobody is left: nothing fires, nothing is
+     reported. Each affected agent, in turn: loses `a` and `b` but those in `keep`, gets
      `result` (a permanent tag, through steps 1-3: an immune agent does not get it, a
      weakness defeats it), then takes `damage` (`TakeDamage`, if still affectable).
      Every outcome reads the map as it was: the spread region becomes `zone_becomes`

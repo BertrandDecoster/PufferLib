@@ -434,7 +434,8 @@ class BaseEnv {
     std::string cause;
     TagSource kind = TagSource::Skill;
     bool spread = false;  // Over the trigger's zone region (else the trigger alone)
-    // Every agent it affected, in agent-index order (the trigger included)
+    // Every agent it affected, in agent-index order (the trigger included,
+    // unless a weakness defeated it: then possibly none)
     std::vector<ReactionOutcome> affected;
   };
   const std::vector<Reaction>& GetLastReactions() const { return last_reactions_; }
@@ -461,13 +462,16 @@ class BaseEnv {
   //   2. the tag lands (reported), with the status tag_statuses binds to it;
   //   3. weakness: S landing while the agent stands on a zone providing P,
   //      for one of its (P, S): defeated (Agent::Defeat, reported), and it
-  //      stops there (no reaction, no zone damage);
+  //      gets nothing more (no reaction outcome, no zone damage);
   //   4. reaction (not for a result: results never trigger one): the first
-  //      rule, in level order, pairing the tag with one the agent carries.
-  //      Its affected agents (the region's when it spreads, in agent-index
-  //      order, else the agent alone) each lose the originals not kept, get
-  //      the result (a permanent tag, through steps 1-3) and the damage (if
-  //      still affectable); then a spread region becomes zone_becomes;
+  //      rule, in level order, pairing the tag with one the agent carries
+  //      (a defeated agent keeps its tags, so it still triggers one). Its
+  //      affected agents (the region's affectable ones when it spreads, in
+  //      agent-index order, else the agent alone) each lose the originals not
+  //      kept, get the result (a permanent tag, through steps 1-3) and the
+  //      damage (if still affectable); then a spread region becomes
+  //      zone_becomes. A defeated agent alone affects nobody: nothing fires
+  //      (not reported); spreading, it fires without it;
   //   5. a zone's landing then deals the zone's damage, if the agent is still
   //      affectable (ApplyZoneTag). It is the zone that landed: an agent whose
   //      reaction changed its own cell (zone_becomes) still takes the OLD
@@ -713,10 +717,12 @@ class BaseEnv {
   bool LandTag(Agent& agent, const std::string& tag, int duration, ObjectId source,
                const std::string& cause, TagSource kind);  // Interns, forwards
   // Step 3: `tag` just landed on `agent`; defeats it on a matching weakness
-  // (reported). True when defeated.
-  bool ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
+  // (reported).
+  void ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind);
-  // Step 4: the reaction `tag`, just landed on `agent`, triggers (if any)
+  // Step 4: the reaction `tag`, just landed on `agent`, triggers (if any).
+  // A defeated `agent` still triggers it, but only a spread one fires (it
+  // reaches the others): alone, nobody is left to affect.
   void ResolveReaction(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind);
   // The connected region (4 neighbours) of the zone on `start`: the cells

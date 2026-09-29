@@ -1077,10 +1077,11 @@ bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
       break;
     }
   }
-  // 3. Weakness: a defeated agent stops here (no reaction, and no zone
-  //    damage: ApplyZoneTag finds it no longer affectable).
-  if (ResolveWeakness(agent, tag, source, cause, kind)) return true;
-  // 4. Reaction: results never trigger one.
+  // 3. Weakness: a defeated agent gets nothing more (no reaction outcome, and
+  //    no zone damage: ApplyZoneTag finds it no longer affectable).
+  ResolveWeakness(agent, tag, source, cause, kind);
+  // 4. Reaction: results never trigger one. A defeated trigger still starts
+  //    it (its tags stay): a spread reaches the others and changes the zone.
   if (kind != TagSource::Reaction) ResolveReaction(agent, tag, source, cause, kind);
   return true;
 }
@@ -1094,13 +1095,13 @@ bool BaseEnv::LandTag(Agent& agent, const std::string& tag, int duration, Object
   return LandTag(agent, tags_.Intern(tag), duration, source, cause, kind);
 }
 
-bool BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
+void BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                               TagSource kind) {
   const std::vector<Agent::WeakTo>& weak_to = agent.GetWeakTo();
-  if (weak_to.empty()) return false;
+  if (weak_to.empty()) return;
   // P is asked of the map (the zone it stands on now), never of its tags
   const TagId here = GetCellTag(agent.GetPosition()).tag;
-  if (here == kInvalidTag) return false;
+  if (here == kInvalidTag) return;
   for (const Agent::WeakTo& w : weak_to) {
     if (w.tag != tag || w.zone != here) continue;
     agent.Defeat();
@@ -1112,9 +1113,8 @@ bool BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const st
     d.cause = cause;
     d.kind = kind;
     last_defeats_.push_back(std::move(d));
-    return true;
+    return;
   }
-  return false;
 }
 
 std::vector<char> BaseEnv::ZoneRegion(Position start) const {
@@ -1157,6 +1157,8 @@ void BaseEnv::ResolveReaction(Agent& agent, TagId tag, ObjectId source, const st
   // (asked of the map), else the agent alone
   const TagId here = GetCellTag(agent.GetPosition()).tag;
   const bool spread = spec.spread && here != kInvalidTag && (here == r.a || here == r.b);
+  // A defeated trigger alone: nobody left to affect, nothing fires
+  if (!spread && !agent.IsAffectable()) return;
   std::vector<char> region;
   std::vector<Agent*> affected;
   if (spread) {
