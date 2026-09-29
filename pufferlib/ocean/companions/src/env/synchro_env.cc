@@ -51,9 +51,6 @@ SynchroEnv::SynchroEnv(const SynchroEnv& other)
       rng_(other.rng_),
       synchro_positions_(other.synchro_positions_) {
   RepointFsmRng(&other.rng_, &rng_);  // A copy draws from its own RNG
-  if (other.GetTaskLens()) {
-    SetTaskLens(std::make_unique<SynchroLens>());
-  }
 }
 
 SynchroEnv& SynchroEnv::operator=(const SynchroEnv& other) {

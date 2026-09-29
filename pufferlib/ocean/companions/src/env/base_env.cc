@@ -43,6 +43,9 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       tick_(other.tick_),
       horizon_(other.horizon_),
       d4_transform_(other.d4_transform_),
+      // The source's exact lens, not activated: its stamped cells and
+      // annotations are copied with the grid
+      task_lens_(other.task_lens_ ? other.task_lens_->Clone() : nullptr),
       annotations_(other.annotations_),
       success_(other.success_),
       failed_(other.failed_),
@@ -81,6 +84,9 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     tick_ = other.tick_;
     horizon_ = other.horizon_;
     d4_transform_ = other.d4_transform_;
+    // Replaces this env's lens (no Deactivate: the grid and annotations are
+    // replaced too)
+    task_lens_ = other.task_lens_ ? other.task_lens_->Clone() : nullptr;
     annotations_ = other.annotations_;
     success_ = other.success_;
     failed_ = other.failed_;

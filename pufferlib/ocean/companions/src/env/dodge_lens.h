@@ -14,6 +14,7 @@ class DodgeLens : public TaskLens {
   static constexpr double kWinReward = 10.0;
   static constexpr double kDeathPenalty = -10.0;
 
+  std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<DodgeLens>(*this); }
   Kind GetKind() const override { return kDodge; }
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;

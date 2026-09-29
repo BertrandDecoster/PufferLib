@@ -18,6 +18,7 @@ class SynchroLens : public TaskLens {
   // new SynchroLens via SetTaskLens removes tags from the previous owner.
   static constexpr int32_t kOwnerId = 1;
 
+  std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<SynchroLens>(*this); }
   Kind GetKind() const override { return kSynchro; }
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;

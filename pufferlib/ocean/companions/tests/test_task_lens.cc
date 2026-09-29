@@ -2,6 +2,7 @@
 // Test suite for TaskLens interface
 
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -14,6 +15,7 @@
 #include "../src/env/synchro_lens.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/aggro_lens.h"
+#include "../src/env/dodge_env.h"
 #include "../src/env/dodge_lens.h"
 
 using namespace companions;
@@ -78,6 +80,7 @@ TEST(TestTaskLensInterface) {
       (void)env;
       return false;
     }
+    std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<MockLens>(*this); }
     Kind GetKind() const override { return kUnknown; }
     double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env;
@@ -109,6 +112,7 @@ TEST(TestTaskLensVirtualDestructor) {
     bool CanOperateOn(const BaseEnv& env) const override { (void)env; return true; }
     bool IsDone(const BaseEnv& env) const override { (void)env; return false; }
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
+    std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<MockLens>(*this); }
     Kind GetKind() const override { return kUnknown; }
     double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
@@ -133,6 +137,7 @@ TEST(TestTaskLensOptionalMethods) {
     bool CanOperateOn(const BaseEnv& env) const override { (void)env; return true; }
     bool IsDone(const BaseEnv& env) const override { (void)env; return false; }
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
+    std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<MinimalLens>(*this); }
     Kind GetKind() const override { return kUnknown; }
     double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.0f;
@@ -163,6 +168,7 @@ TEST(TestBaseEnvSetTaskLens) {
     bool CanOperateOn(const BaseEnv& env) const override { (void)env; return can_operate; }
     bool IsDone(const BaseEnv& env) const override { (void)env; return false; }
     bool IsSuccess(const BaseEnv& env) const override { (void)env; return false; }
+    std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<MockLens>(*this); }
     Kind GetKind() const override { return kUnknown; }
     double ComputeReward(const BaseEnv& env, int agent_id) const override {
       (void)env; (void)agent_id; return 0.5f;
@@ -575,6 +581,71 @@ TEST(TestFullTaskSwitchingWorkflow) {
 
   ASSERT_EQ(result.rewards.size(), 2);
   ASSERT_EQ(env.GetTick(), 6);
+}
+
+// =============================================================================
+// Env copies keep their exact lens
+// =============================================================================
+
+// A copy runs the source's lens, not the env's default one.
+TEST(TestACopyKeepsItsLens) {
+  SynchroEnv env(6, 6, 1, 1, 0, 42);
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
+  SynchroEnv copy(env);
+  ASSERT_TRUE(copy.GetTaskLens() != nullptr);
+  ASSERT_TRUE(copy.GetTaskLens() != env.GetTaskLens());
+  ASSERT_TRUE(copy.GetTaskLens()->GetKind() == TaskLens::kDodge);
+  std::unique_ptr<BaseEnv> clone = env.Clone();
+  ASSERT_TRUE(clone->GetTaskLens() != nullptr);
+  ASSERT_TRUE(clone->GetTaskLens()->GetKind() == TaskLens::kDodge);
+}
+
+// A DodgeEnv copy runs the Dodge lens too (its copy constructor set none).
+TEST(TestADodgeEnvCopyKeepsItsLens) {
+  DodgeEnv dodge;
+  DodgeEnv dodge_copy(dodge);
+  ASSERT_TRUE(dodge_copy.GetTaskLens() != nullptr);
+  ASSERT_TRUE(dodge_copy.GetTaskLens()->GetKind() == TaskLens::kDodge);
+  ASSERT_TRUE(dodge.Clone()->GetTaskLens() != nullptr);
+}
+
+// A copy and an assignment keep the latched outcome, even once the world no
+// longer shows it (the companion left the goal after the win).
+TEST(TestACopyKeepsItsLatchedOutcome) {
+  const Action stay = EncodeAction(MovementAction::Stay);
+  SynchroEnv win(6, 6, 1, 1, 0, 42, 0, 10);
+  ObjectManager& om = win.GetMutableObjectManager();
+  const Position goal = win.GetSynchroPositions()[0];
+  const int id = om.GetAllCompanions()[0]->GetId();
+  om.UpdatePosition(id, goal);
+  win.Step({stay});
+  ASSERT_TRUE(win.IsSuccess());
+  const Position off_goal{goal.row, goal.col == 1 ? 2 : 1};
+  om.UpdatePosition(id, off_goal);
+  ASSERT_FALSE(win.GetTaskLens()->IsSuccess(win));
+
+  SynchroEnv copy(win);
+  ASSERT_TRUE(copy.IsSuccess());
+  ASSERT_TRUE(copy.GetEndReason() == EndReason::Success);
+  ASSERT_TRUE(copy.GetTaskLens()->GetKind() == TaskLens::kSynchro);
+
+  SynchroEnv assigned(6, 6, 1, 1, 0, 42, 0, 10);
+  assigned = win;
+  ASSERT_TRUE(assigned.IsSuccess());
+  ASSERT_TRUE(assigned.GetEndReason() == EndReason::Success);
+  ASSERT_TRUE(assigned.GetTaskLens()->GetKind() == TaskLens::kSynchro);
+}
+
+// Assignment replaces the target's lens with a copy of the source's.
+TEST(TestAssignmentReplacesTheLens) {
+  SynchroEnv source(6, 6, 1, 1, 0, 42);
+  ASSERT_TRUE(source.SetTaskLens(std::make_unique<DodgeLens>()));
+  SynchroEnv target(6, 6, 1, 1, 0, 7);
+  ASSERT_TRUE(target.GetTaskLens()->GetKind() == TaskLens::kSynchro);
+  target = source;
+  ASSERT_TRUE(target.GetTaskLens() != nullptr);
+  ASSERT_TRUE(target.GetTaskLens() != source.GetTaskLens());
+  ASSERT_TRUE(target.GetTaskLens()->GetKind() == TaskLens::kDodge);
 }
 
 // =============================================================================

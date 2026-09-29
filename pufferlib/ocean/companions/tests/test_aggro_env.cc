@@ -934,11 +934,17 @@ TEST(TestAKillAfterTheHorizonKeepsTheHorizonEndReason) {
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
   env.Step({stay, stay});
   ASSERT_TRUE(env.GetEndReason() == EndReason::Horizon);
-  // Copies keep the latched reason (the kill alone would now say TaskFailed)
+  // Copies keep the lens and the latched reason (the kill alone would now say
+  // TaskFailed; a new AggroLens would refuse this env: the goblin's FSM is off)
   AggroEnv copy(env);
+  ASSERT_TRUE(copy.GetTaskLens() != nullptr);
+  ASSERT_TRUE(copy.GetTaskLens()->GetKind() == TaskLens::kAggro);
   ASSERT_TRUE(copy.GetEndReason() == EndReason::Horizon);
   AggroEnv assigned(12, 1, EnemyType::Goblin, 7777, 0, 3);
+  ASSERT_TRUE(assigned.SetTaskLens(std::make_unique<DodgeLens>()));
   assigned = env;
+  ASSERT_TRUE(assigned.GetTaskLens() != nullptr);
+  ASSERT_TRUE(assigned.GetTaskLens()->GetKind() == TaskLens::kAggro);
   ASSERT_TRUE(assigned.GetEndReason() == EndReason::Horizon);
   // A new episode starts over
   env.Reset();

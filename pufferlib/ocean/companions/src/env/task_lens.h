@@ -4,6 +4,7 @@
 #ifndef COMPANIONS_ENV_TASK_LENS_H_
 #define COMPANIONS_ENV_TASK_LENS_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 #include "../core/cell.h"
@@ -44,6 +45,15 @@ struct LensParams {
 class TaskLens {
  public:
   virtual ~TaskLens() = default;
+
+  // ===========================================================================
+  // Clone - an exact copy of this lens, parameters and state included
+  // ===========================================================================
+  // Used by BaseEnv's copy constructor and assignment: a copied env runs the
+  // same lens as its source. The copy is not activated (the env copy already
+  // holds the grid and annotations the source lens stamped), so Clone must
+  // not touch any env.
+  virtual std::unique_ptr<TaskLens> Clone() const = 0;
 
   // ===========================================================================
   // Validation - can this lens operate on the given env state?

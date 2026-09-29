@@ -74,7 +74,8 @@ class BaseEnv {
 
   // Copyable (for OpenSpiel State::Clone()). Assignment replaces the TagTable
   // (ids may change): the C API relies on its env's table only growing, so it
-  // never assigns over an env it wraps.
+  // never assigns over an env it wraps. A copy runs the source's exact lens
+  // (TaskLens::Clone, not activated) and keeps its latched outcome.
   BaseEnv(const BaseEnv& other);
   BaseEnv& operator=(const BaseEnv& other);
 

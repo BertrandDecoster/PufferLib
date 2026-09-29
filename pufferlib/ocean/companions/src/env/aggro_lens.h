@@ -51,6 +51,7 @@ class AggroLens : public TaskLens {
     return kTimePenalty * (steps_left > 0 ? steps_left : 0) + kEnemyDeadPenalty;
   }
 
+  std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<AggroLens>(*this); }
   Kind GetKind() const override { return kAggro; }
   bool CanOperateOn(const BaseEnv& env) const override;
   bool IsDone(const BaseEnv& env) const override;

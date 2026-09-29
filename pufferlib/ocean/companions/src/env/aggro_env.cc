@@ -45,9 +45,6 @@ AggroEnv::AggroEnv(const AggroEnv& other)
       enemy_spawn_pos_(other.enemy_spawn_pos_),
       patrol_path_(other.patrol_path_) {
   RepointFsmRng(&other.rng_, &rng_);  // A copy draws from its own RNG
-  if (other.GetTaskLens()) {
-    SetTaskLens(std::make_unique<AggroLens>());
-  }
 }
 
 AggroEnv& AggroEnv::operator=(const AggroEnv& other) {
