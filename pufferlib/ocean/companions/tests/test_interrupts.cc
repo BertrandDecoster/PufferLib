@@ -284,9 +284,11 @@ TEST(TestAReviveResumesTheTaskFromTheNextStep) {
 // Upgrades: Success > TeamDown > Horizon > Interrupted
 // =============================================================================
 
-// Interrupted, then the team goes down while paused: TeamDown (live between
-// steps, latched as the next step starts). The final verdict ends the pause:
-// that step pays again (the lens's reward and the 3rd down's cost).
+// Interrupted, then the host downs the team between steps while paused:
+// TeamDown (live between steps, latched as the next step starts). The final
+// verdict ends the pause, but that step was paused when it started: the 3rd
+// down pays nothing, like any down while paused. The steps played on after it
+// pay again.
 TEST(TestATeamDownWhilePausedIsTeamDown) {
   ScopedEffectRegistry scoped_registry;
   SynchroEnv env(10, 10, 4, 1, 0, 42);
@@ -311,9 +313,32 @@ TEST(TestATeamDownWhilePausedIsTeamDown) {
   ASSERT_TRUE(last.done);
   ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
   ASSERT_FALSE(env.IsInterrupted());
+  for (double reward : last.rewards) ASSERT_TRUE(reward == 0.0);
+  StepResult after = env.Step(Stays(env));
   for (int i = 0; i < 4; ++i) {
-    ASSERT_TRUE(last.rewards[static_cast<size_t>(i)] == LensReward(env, i) + kCost);
+    ASSERT_TRUE(after.rewards[static_cast<size_t>(i)] == LensReward(env, i));
   }
+}
+
+// The same, the 3rd down during a paused step (a kill effect): TeamDown, the
+// step pays nothing.
+TEST(TestATeamDownDuringAPausedStepPaysNothing) {
+  ScopedEffectRegistry scoped_registry;
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  const int r = Row(env);
+  for (int i = 0; i < 4; ++i) Place(env, i, {r, 1 + 2 * i});
+  DownCompanion(env, 1);
+  DownCompanion(env, 2);
+  env.Step(Stays(env));
+  ASSERT_TRUE(env.IsInterrupted());  // 2 downs of 3
+  SpawnKillNextStep(env, {r, 7});   // Companion 3, while paused
+  StepResult last = env.Step(Stays(env));
+  ASSERT_TRUE(AgentAt(env, 3)->IsDowned());
+  ASSERT_TRUE(last.done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::TeamDown);
+  ASSERT_FALSE(env.IsInterrupted());
+  for (double reward : last.rewards) ASSERT_TRUE(reward == 0.0);
 }
 
 // Interrupted, then the pause reaches the horizon: Horizon, which ends the

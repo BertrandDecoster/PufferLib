@@ -135,6 +135,12 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
     return result;
   }
 
+  // Paused for this whole step (IsInterrupted), read before the latch below
+  // can end the pause: downs while paused pay nothing, whether they came
+  // during the step or from the host between steps. The step that clears the
+  // pause is still paused.
+  const bool paused = interrupted_;
+
   // The verdict as the step starts, before it changes anything: a team the
   // host downed between steps is lost (TeamDown latched, so this step latches
   // no success and pays no win reward: SuccessCounts); an episode the host
@@ -211,9 +217,6 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // steps), read from the state
   const int downs = GetDowns();
   const int new_downs = std::max(0, downs - downs_seen_);
-  // Paused for this whole step (IsInterrupted): the step that clears the
-  // pause is still paused
-  const bool paused = interrupted_;
 
   // Calculate rewards via the active TaskLens (the single source of truth).
   // Envs without a lens get zeros; BaseEnv::Step never falls back to env-side

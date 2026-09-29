@@ -883,7 +883,10 @@ on the horizon step ends as `Horizon`; a Dodge companion revived on the horizon 
 after the episode ended pauses nothing. Every step latches the verdict as it starts, so
 a team the host downed between steps is not turned into a success by the next step (no
 win reward either), and a host raising max_downs after a `TeamDown` reopens the episode
-before the step. A lens opts out with `TaskLens::IsInterruptible()` (default true):
+before the step. A host reopening the episode that way (or reviving between steps
+after an all-down) with someone still down does not pause it: that down was already
+seen. A step paused as it starts pays nothing, even if its start latch ends the pause
+(a team the host downed while paused). A lens opts out with `TaskLens::IsInterruptible()` (default true):
 its downs pay the cost, nothing pauses. Without a lens the rewards are all 0 (no cost,
 no pause). **Down cost**: `kDefaultDownCost` = -0.5, `SetDownCost(c)` (false for a
 non-finite or positive `c`, the cost unchanged; 0 allowed) / `GetDownCost()`; runtime,

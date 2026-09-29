@@ -112,6 +112,9 @@ class BaseEnv {
   // the horizon) clears the pause (the steps played on after it pay again).
   // Nor for a lens that opts out (TaskLens::IsInterruptible: its downs pay
   // the cost, nothing pauses). Without a lens the rewards are all 0: no cost.
+  // A host reopening the episode (raising max_downs after a TeamDown, or a
+  // revive between steps after an all-down) with someone still down does not
+  // pause it: that down was already seen.
   // True exactly when GetEndReason() is Interrupted (a final reason the host
   // caused between steps, e.g. a team down, is live at once).
   bool IsInterrupted() const {
