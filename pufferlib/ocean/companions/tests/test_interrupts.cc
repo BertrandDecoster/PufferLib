@@ -667,9 +667,8 @@ TEST(TestRaisingMaxDownsAfterATeamDownReopensTheEpisode) {
 }
 
 // A down the host caused between steps and a revive on the next step: that
-// step pays the cost, but nothing is down at its end, so nothing pauses and
-// it is not done. Pins the current behaviour of a down and a revive inside
-// one step: may change when the turn resolution is phased.
+// step pays the cost, but nothing is down at its end (the revive applies at
+// the end of the turn), so nothing pauses and it is not done.
 TEST(TestAHostDownRevivedOnTheNextStepPaysButDoesNotPause) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);

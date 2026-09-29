@@ -22,6 +22,7 @@
 #include "../core/snapshot.h"
 #include "../core/tag_table.h"
 #include "../core/types.h"
+#include "effect_system.h"
 #include "task_lens.h"
 
 namespace companions {
@@ -342,12 +343,12 @@ class BaseEnv {
   // the area motion (Motion: it really changes cell; a push against a wall
   // moves nothing). The caster, affected with friendly fire, gets only what
   // its self_* flags allow.
-  // In a SkillPreview the flags are what the use would do now, predicted
-  // before its damage. In a SkillUse they are what the use DID: an agent its
-  // own damage downed or killed is neither rooted nor moved (no Root, no
-  // Motion), and a pull that then took the next thing of its ring reports
-  // that one with Motion. Tags and Damage are the same in both, and Revive
-  // too unless the ally got up before (an earlier caster).
+  // In a SkillPreview the flags are what the use would do now. In a SkillUse
+  // they are what the use DID. Its damage downs and kills only at the end of
+  // the turn (see GetLastTurnHealth), so an agent it takes to 0 is still
+  // rooted and moved; Damage is the hit recorded into the turn's ledger (a
+  // weakness-defeated agent included). Two revivers of one ally: Revive stays
+  // on the use credited only (the highest HP, then the lowest agent index).
   enum SkillEffect : unsigned {
     kSkillEffectTags = 1u << 0,
     kSkillEffectDamage = 1u << 1,
@@ -400,13 +401,14 @@ class BaseEnv {
   // around the use (in_step_, Agent::BeginStep), so what the use sets (a
   // zone_becomes zone, a tag status, a root) is stored as the step stores it;
   // the zones its reactions set (their reports' cells) are committed after
-  // the use, as the end of the step would (their timers not ticked).
+  // the use, then the turn's end applies its health (downs, deaths, defeats,
+  // revives), as the end of the step would (the timers not ticked).
   // The clone's reports are the use's: GetLastSkillUses (the use, or none when
   // it is not usable), GetLastTagsApplied, GetLastReactions, GetLastDefeats,
-  // GetLastRevives and GetLastDowns (the downs the use caused, not those
-  // between steps still to report). Tag ids in them are the clone's (a skill's
-  // tags may not be interned in this env yet): read their names in the
-  // clone's GetTagTable().
+  // GetLastRevives, GetLastTurnHealth and GetLastDowns (the downs the use
+  // caused, not those between steps still to report). Tag ids in them are
+  // the clone's (a skill's tags may not be interned in this env yet): read
+  // their names in the clone's GetTagTable().
   // Each call returns its own world (the C API keeps one: its last
   // preview's). Costs a copy of the env: meant for a UI, not the RL hot
   // path. The real
@@ -474,11 +476,12 @@ class BaseEnv {
     // The agent did not have the tag before (a result: before its reaction
     // removed the originals, so a result that is one of them is not fresh)
     bool fresh = false;
-    // The zone damage this landing dealt (CellTag::damage as given, before
-    // Marked, like SkillConfig::damage), after the tag. 0 when none was
-    // dealt: a skill's landing (a skill's damage is its SkillUse's Damage
-    // effect), a harmless zone, an agent no longer affectable once the tag
-    // landed (a weakness defeated it, a reaction's damage downed or killed it).
+    // The zone damage this landing dealt into the turn's ledger (its raw
+    // share: CellTag::damage as given, before Marked, like
+    // SkillConfig::damage), after the tag, whatever the turn's outcome (a
+    // weakness-defeated agent included). 0 when none was dealt: a skill's
+    // landing (a skill's damage is its SkillUse's Damage effect), a harmless
+    // zone.
     int damage = 0;
     TagSource kind;
     int reaction = -1;  // A result: its reaction's index in GetLastReactions(); else -1
@@ -486,7 +489,7 @@ class BaseEnv {
   struct Revival {
     ObjectId reviver = kInvalidObjectId;  // The skill's caster
     ObjectId revived = kInvalidObjectId;
-    int health = 0;  // The HP it got up with (it may lose them later in the step)
+    int health = 0;  // The HP it got up with (at the end of the turn)
   };
   // What the last Step did (cleared at the start of every Step, and by
   // LoadSnapshot, hence by every Reset).
@@ -503,9 +506,10 @@ class BaseEnv {
   // Companions that went down since the last report, one entry per down:
   // this step's, and any between steps (a host effect), reported once.
   const std::vector<ObjectId>& GetLastDowns() const { return last_downs_; }
-  // Downed companions a skill revived this step, in resolution order (each
-  // revive is also one of the step's skill uses). Revived and downed again in
-  // the same step: a revive here, then a down in GetLastDowns.
+  // Downed companions a skill revived this step, at the end of the turn (see
+  // GetLastTurnHealth), in the revived's agent-index order (each revive is also
+  // one of the step's skill uses: the credited one). A companion revived in a
+  // step cannot be downed in it (it is down all turn).
   const std::vector<Revival>& GetLastRevives() const { return last_revives_; }
 
   // What a reaction did to one agent it affected
@@ -513,7 +517,7 @@ class BaseEnv {
     ObjectId agent = kInvalidObjectId;
     bool result_landed = false;  // False: immune to the result
     bool defeated = false;       // The result landed on one of its weaknesses
-    int damage = 0;  // The rule's damage it dealt (before Marked); 0 when none: a defeated agent
+    int damage = 0;  // The rule's damage it dealt into the turn's ledger (raw: before Marked)
   };
   // One reaction that fired (in the order they fired)
   struct ReactionReport {
@@ -559,6 +563,54 @@ class BaseEnv {
   const std::vector<DefeatReport>& GetLastDefeats() const { return last_defeats_; }
 
   // ==========================================================================
+  // The turn's health (a Step is a turn)
+  // ==========================================================================
+  // Nothing changes HP, alive or down DURING a Step: every hit and heal of
+  // the turn (zones, reactions, skills, effects, the enemies' strikes
+  // included), every weakness defeat and every revive goes into the agent's
+  // ledger, applied ONCE at the end of the turn (after the effects tick and
+  // the pending zones commit, before the timers tick):
+  //   - the turn's damage total, times Marked's x1.5 rounded down once, only
+  //     if the agent was Marked as the turn BEGAN (a Marked landed during the
+  //     turn acts from the next one); then the heals come off; clamped to
+  //     [0, max]: at 0, a companion goes down, another agent dies;
+  //   - a weakness defeat: 0, whatever the heals (a companion goes down,
+  //     another agent dies);
+  //   - a revive (of an ally down as the turn began): up with the HP it
+  //     planned; two revivers on one ally revive it once, with the highest
+  //     HP, credited to the lowest agent index giving it.
+  // So during the turn everyone stays as it began: an agent the turn takes to
+  // 0 (or defeats) still acts, is still affectable (tagged, hit, pushed,
+  // rooted) and still triggers reactions; a heal the same turn can save it;
+  // an enemy dying this turn still lands this turn's strike (its strikes
+  // still winding up at the end of the turn are cancelled); a revived ally
+  // cannot be downed the turn it gets up. The reports keep each hit's raw
+  // share (TagApplication::damage, ReactionOutcome::damage, the Damage
+  // effect), before Marked and whatever the outcome.
+  // Between two steps the host's primitives stay immediate (Agent::TakeDamage
+  // with Marked per hit, Heal, Defeat, Revive, an effect the host spawns).
+  enum class TurnOutcome : int {
+    None = 0,
+    Downed = 1,    // A companion the turn's damage took to 0
+    Died = 2,      // Another agent the turn's damage took to 0
+    Defeated = 3,  // A weakness defeat (a companion down, another agent dead)
+    Revived = 4,   // A downed companion up
+  };
+  // One agent's turn: an entry per agent with any ledger activity (a hit, a
+  // heal, a defeat, a revive), in agent-index order
+  struct TurnHealth {
+    ObjectId agent = kInvalidObjectId;
+    int damage = 0;        // The turn's raw total (before Marked)
+    int marked_bonus = 0;  // What Marked added (0 unless Marked as the turn began)
+    int heal = 0;          // The turn's heal total
+    int change = 0;        // health - the HP before the turn's end
+    int health = 0;        // The HP after the turn
+    TurnOutcome outcome = TurnOutcome::None;
+  };
+  // The last Step's (cleared at the start of every Step, and by LoadSnapshot)
+  const std::vector<TurnHealth>& GetLastTurnHealth() const { return last_turn_health_; }
+
+  // ==========================================================================
   // Reactions, weaknesses, immunities, tag statuses (core/reaction.h)
   // ==========================================================================
   // Every tag landing (a skill's, a zone's, a reaction's result, the host's)
@@ -567,20 +619,21 @@ class BaseEnv {
   //      zone damage for a zone's landing);
   //   2. the tag lands (reported), with the status tag_statuses binds to it;
   //   3. weakness: S landing while the agent stands on a zone providing P,
-  //      for one of its (P, S): defeated (Agent::Defeat, reported), and it
-  //      gets nothing more (no reaction outcome, no zone damage);
+  //      for one of its (P, S): defeated (reported). During a step it is 0
+  //      at the end of the turn (see GetLastTurnHealth) and stays in play
+  //      until then (the next steps still reach it; defeated once per turn);
+  //      between two steps Agent::Defeat at once, and it gets nothing more;
   //   4. reaction (not for a result: results never trigger one): the first
   //      rule, in level order, pairing the tag with one the agent carries
   //      (a defeated agent keeps its tags, so it still triggers one). Its
   //      affected agents (the region's affectable ones when it spreads, in
   //      agent-index order, else the agent alone) each lose the originals not
   //      kept, get the result (a permanent tag, through steps 1-3) and the
-  //      damage (if still affectable); then a spread region becomes
-  //      zone_becomes (at the end of the step, see below). A defeated agent
-  //      alone affects nobody: nothing fires (not reported); spreading, it
-  //      fires without it;
-  //   5. a zone's landing then deals the zone's damage, if the agent is still
-  //      affectable.
+  //      damage (the turn's ledger); then a spread region becomes
+  //      zone_becomes (at the end of the step, see below). Between two steps
+  //      an agent defeated at once alone affects nobody: nothing fires (not
+  //      reported); spreading, it fires without it;
+  //   5. a zone's landing then deals the zone's damage (the turn's ledger).
   // A step reads ONE zone map, the map as it began: a reaction's
   // zone_becomes during a step waits (pending_zones_) and the map changes at
   // the end of the step (CommitPendingZones, before the timers tick), so a
@@ -596,8 +649,7 @@ class BaseEnv {
   // wins at the end of the step. Report-only effects of the order: a
   // result's DefeatReport::reaction names the first firing whose result
   // defeated, only the first of identical result landings on an agent is
-  // `fresh`, and the damage an agent downed by an earlier firing's damage no
-  // longer takes is reported 0 by the later firings.
+  // `fresh`.
   // The skill phase resolves each landing at once, casters in agent-index
   // order. Between two steps (the host's ApplyTagTo) there is no phase: a
   // landing resolves at once and its zone_becomes applies at once.
@@ -631,10 +683,10 @@ class BaseEnv {
   // zone still carries its tag (it ticks at the END of Step, after the
   // landing), so it is re-landed not fresh, and so is one already carrying
   // the tag from any source when it arrives.
-  // Each landing then deals the zone's `damage` (Agent::TakeDamage: Marked
-  // applies, a companion goes down), if the agent is still affectable once
-  // the tag landed and the weaknesses and reactions resolved; reported in
-  // the landing's TagApplication::damage. A step reads one map (see
+  // Each landing then deals the zone's `damage` (the turn's ledger: Marked
+  // applies to the turn's total, a companion taken to 0 goes down at the end
+  // of the turn) once the tag landed and the weaknesses and reactions
+  // resolved; reported in the landing's TagApplication::damage. A step reads one map (see
   // SetReactions): a zone a reaction sets during it first lands next step.
   // A zone lives `steps` steps (a step timer, like tags: set between two
   // steps it lands during the n next steps; set by a host call during a step
@@ -742,9 +794,11 @@ class BaseEnv {
   // A loose lower bound on the total the down cost can add to an episode's
   // return: every down paid, up to the team down (max_downs - 1 downs, then
   // every companion at once on the last step). Loose: with one companion the
-  // first down is the team down, and downs while paused pay nothing; but a
-  // companion downed, revived and downed again within one step could in
-  // theory exceed it. For MinUtility.
+  // first down is the team down, and downs while paused pay nothing. A step
+  // downs a companion at most once (downs come at the end of the turn, and a
+  // companion revived in a step is down all of it); only a host downing,
+  // reviving and downing again between two steps could exceed it. For
+  // MinUtility.
   double WorstDownCost() const;
 
   // GetEndReason's rules, for a done env
@@ -882,8 +936,11 @@ class BaseEnv {
   // map, which a step never changes before its end (see pending_zones_).
   void ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const std::string& cause,
                        TagSource kind, int reaction);
-  // Defeats `agent` (Agent::Defeat) by `weakness`, reported (DefeatReport,
-  // the landing of S: source / cause / kind / reaction)
+  // Defeats `agent` by `weakness`, reported (DefeatReport, the landing of S:
+  // source / cause / kind / reaction). During a step, in the turn's ledger
+  // (it stays in play until the end of the turn), once per turn: an agent
+  // already defeated this turn is not defeated or reported again. Between
+  // two steps, at once (Agent::Defeat).
   void DefeatBy(Agent& agent, const Agent::WeakTo& weakness, ObjectId source,
                 const std::string& cause, TagSource kind, int reaction);
   // Step 4 at once: FindReaction, then FireReaction.
@@ -902,8 +959,10 @@ class BaseEnv {
   // agent-index order, when the rule spreads and that zone provides a or b;
   // else the agent alone), its report (outcomes empty; `cells` = the region
   // when it has a zone_becomes). Returns the report's index, or -1 when
-  // nothing fires: a trigger no longer affectable (a weakness defeated it)
-  // still fires a spread one (it reaches the others); alone, nobody is left.
+  // nothing fires: a trigger no longer affectable (a weakness defeated it
+  // at once, between two steps) still fires a spread one (it reaches the
+  // others); alone, nobody is left. During a step a defeated trigger is
+  // still affectable (in play until the end of the turn).
   int StartReaction(Agent& agent, TagId tag, int rule, ObjectId source, const std::string& cause,
                     TagSource kind, std::vector<Agent*>& affected);
   // The zone_becomes of fired reaction `index` over its report's cells:
@@ -914,9 +973,10 @@ class BaseEnv {
   // affected agents, computed before any applies), applied agent by agent:
   // every firing's removals, then every result (immunity, tag, tag status;
   // firing order), then ONE weakness check over the results that landed,
-  // then each firing's damage (one TakeDamage each, firing order) while still
-  // affectable. All agent-local, so the final state of the agents does not
-  // depend on the order (reports: see SetReactions).
+  // (an agent a weakness already defeated this turn is not defeated again),
+  // then each firing's damage into the turn's ledger (firing order). All
+  // agent-local, so the final state of the agents does not depend on the
+  // order (reports: see SetReactions).
   void ApplyReactionHits();
   // The connected region (4 neighbours) of the zone on `start`: the cells
   // carrying that zone's tag, reachable from `start` through such cells, as a
@@ -961,8 +1021,25 @@ class BaseEnv {
   // Agent::AbortStep), its timers not ticked, so a later SaveSnapshot or
   // timer set is not taken for one inside a step. It keeps what the step did,
   // its pending zone changes committed (dropped, without allocating, when the
-  // map was cleared during the step: it runs while the throw unwinds).
+  // map was cleared during the step: it runs while the throw unwinds), and
+  // its turn's ledger and planned revives applied (agent-local, without the
+  // reports: GetLastTurnHealth and GetLastRevives stay as they were).
   void AbortStep();
+
+  // The turn's health (see GetLastTurnHealth). During a step (in_step_) a
+  // hit / heal on an affectable agent goes into its ledger; between two steps
+  // it applies at once (Agent::TakeDamage, Marked per hit / Agent::Heal).
+  // Amounts <= 0 do nothing.
+  void HurtInStep(Agent& agent, int amount);
+  void HealInStep(Agent& agent, int amount);
+  // The start of a turn (after the agents' BeginStep): one ledger entry per
+  // agent, in agent-index order, with whether it is Marked now
+  void BeginTurn();
+  // The end of a turn (after CommitPendingZones, before the timers tick):
+  // applies the ledger (health, downs, deaths, defeats, revives), reported in
+  // GetLastTurnHealth and GetLastRevives, then cancels the pending strikes of
+  // the agents that died (EffectSystem::CancelDeadSources).
+  void ApplyTurnOutcomes();
   // `def` for `tag` on a cell: its steps as a step timer (n + 1 in a step),
   // its successor interned. Validated by the caller.
   CellTag ResolveZone(TagId tag, const ZoneDef& def);
@@ -1056,6 +1133,7 @@ class BaseEnv {
   std::vector<TagId> tag_status_ids_;  // Parallel to tag_statuses_
   std::vector<ReactionReport> last_reactions_;
   std::vector<DefeatReport> last_defeats_;
+  std::vector<TurnHealth> last_turn_health_;
 
   // Scratch of one zone phase (ResolveZoneLandings): each zone landing, with
   // the zone that landed (a copy), its report entry and the reaction it
@@ -1078,6 +1156,51 @@ class BaseEnv {
   std::vector<ReactionHit> reaction_hits_;
   std::vector<Agent*> reaction_affected_;  // StartReaction's output, per firing
   std::vector<Agent*> hit_agents_;         // The distinct agents of reaction_hits_
+
+  // The turn's ledger (see GetLastTurnHealth): scratch of one Step, never
+  // copied (it points at this env's agents), cleared by operator=, AbortStep
+  // and LoadSnapshot; reused (no allocation once grown).
+  struct LedgerEntry {
+    Agent* agent = nullptr;
+    int damage = 0;         // The raw hits (before Marked)
+    int heal = 0;
+    bool defeated = false;  // A weakness: 0 at the end, whatever the heals
+    bool marked = false;    // Marked as the turn began
+    bool touched = false;   // Any activity (a hit, a heal, a defeat, a revive)
+    int revive_health = 0;  // The HP it gets up with (the highest planned)
+    ObjectId reviver = kInvalidObjectId;  // kInvalidObjectId: no revive
+  };
+  struct Turn {
+    // Per agent, in agent-index order as the turn began (BeginTurn); an agent
+    // created during the turn is appended when first touched
+    std::vector<LedgerEntry> ledger;
+    void Clear() { ledger.clear(); }  // Keeps the capacity
+  };
+  Turn turn_;
+  // Its entry (appended for an agent the turn began without)
+  LedgerEntry& LedgerOf(Agent& agent);
+  const LedgerEntry* FindLedger(const Agent& agent) const;
+  // During a step: a weakness already defeated it this turn
+  bool IsDefeatedThisTurn(const Agent& agent) const;
+  // `caster`'s revive of `ally` (down as the turn began) with `health`: kept
+  // unless an earlier caster (a lower agent index) planned as much; a better
+  // one takes over, dropping the Revive effect of the earlier use's report.
+  // True when this caster is now the one credited.
+  bool PlanRevive(Companion& ally, int health, const Companion& caster);
+  // Applies the ledger's entries (each once: an applied entry is emptied);
+  // `report` fills last_turn_health_ and last_revives_ (allocating), else
+  // agent-local only (AbortStep)
+  void ApplyTurnLedger(bool report);
+
+  // The effect system's HealthSink: HurtInStep / HealInStep. Points at this
+  // env (a copy gets its own: the default member initializer)
+  struct EffectHealth final : EffectSystem::HealthSink {
+    explicit EffectHealth(BaseEnv* owner) : env(owner) {}
+    void Hurt(Agent& agent, int amount) override { env->HurtInStep(agent, amount); }
+    void Heal(Agent& agent, int amount) override { env->HealInStep(agent, amount); }
+    BaseEnv* env;
+  };
+  EffectHealth effect_health_{this};
 };
 
 }  // namespace companions

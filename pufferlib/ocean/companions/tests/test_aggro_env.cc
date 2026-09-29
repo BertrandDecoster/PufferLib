@@ -1113,14 +1113,16 @@ TEST(TestLoadSnapshotMapsAgentAnnotationsThroughSavedIds) {
 // =============================================================================
 
 // A 1-HP goblin next to the companion winds up (FSM telegraph, then its strike
-// effect's own 2-tick telegraph). Once the strike is pending, the companion
-// kills the goblin or not. True when the strike hurt the companion.
-static bool GoblinStrikeLands(bool kill_during_wind_up) {
+// effect's own `wind_up`-tick telegraph). Once the strike is pending, the
+// companion kills the goblin or not. Deaths come at the end of the turn: a
+// strike that activates the turn the goblin is killed still lands; one still
+// winding up at its end never does. True when the strike hurt the companion.
+static bool GoblinStrikeLands(bool kill_during_wind_up, int wind_up = 3) {
   ScopedEffectRegistry scoped_registry;  // Builtins only, until it goes
   EffectConfigRegistry& registry = EffectConfigRegistry::Instance();
   EffectConfig strike;
   strike.name = "goblin_wind_up";
-  strike.telegraph_ticks = 2;
+  strike.telegraph_ticks = wind_up;
   strike.active_ticks = 1;
   strike.damage = 1;
   strike.area = {1};
@@ -1158,6 +1160,11 @@ static bool GoblinStrikeLands(bool kill_during_wind_up) {
 
 TEST(TestKilledGoblinsPendingStrikeNeverLands) {
   ASSERT_FALSE(GoblinStrikeLands(true));
+}
+
+// Its strike's wind-up ends the very turn it is killed: it lands
+TEST(TestAGoblinKilledAsItsStrikeLandsStillLandsIt) {
+  ASSERT_TRUE(GoblinStrikeLands(true, 2));
 }
 
 TEST(TestLivingGoblinsPendingStrikeLands) {

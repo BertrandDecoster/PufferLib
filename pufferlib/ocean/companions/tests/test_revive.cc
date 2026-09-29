@@ -381,8 +381,10 @@ TEST(TestSkillsPassOverWhomTheyDoNotAffect) {
   ASSERT_EQ(env.GetLastRevives()[0].revived, down->GetId());
 }
 
-// Two revivers on the same downed ally in one step: the first by agent index
-// revives it, the other affects nothing (it no longer is downed).
+// Two revivers on the same downed ally in one step: it gets up once, at the
+// end of the turn, with the highest HP planned (here the same), credited to
+// the lowest agent index giving it; the other use keeps the ally in its
+// affected, without Revive.
 TEST(TestTwoReviversReviveOnce) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);
@@ -399,11 +401,19 @@ TEST(TestTwoReviversReviveOnce) {
   ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastRevives()[0].reviver, first->GetId());
   ASSERT_EQ(env.GetLastRevives()[0].revived, down->GetId());
+  const auto& uses = env.GetLastSkillUses();
+  ASSERT_EQ(uses[0].affected.size(), static_cast<size_t>(1));
+  ASSERT_EQ(uses[0].affected[0].effects, static_cast<unsigned>(BaseEnv::kSkillEffectRevive));
+  ASSERT_EQ(uses[1].affected.size(), static_cast<size_t>(1));
+  ASSERT_EQ(uses[1].affected[0].id, down->GetId());
+  ASSERT_EQ(uses[1].affected[0].effects, 0u);
 }
 
-// Revived, then downed again in the same step: a revive, then a down, both
-// reported; the counter counts every down.
-TEST(TestRevivedAndDownedAgainInOneStep) {
+// A revive gets its ally up at the end of the turn: a lethal strike landing
+// on it during that step finds it still down (untouched), so it gets up; it
+// can be downed again from the next step on, and the counter counts every
+// down.
+TEST(TestARevivedAllyIsDownedAgainOnlyFromTheNextStep) {
   ScopedEffectRegistry scoped_registry;
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -414,8 +424,14 @@ TEST(TestRevivedAndDownedAgainInOneStep) {
   ASSERT_TRUE(env.SetCompanionSkill(a->GetId(), 0, "revive"));
   SpawnKillNextStep(env, {3, 2});
   env.Step({Use(MovementAction::Right), kStay});
-  ASSERT_TRUE(b->IsDowned());
+  ASSERT_FALSE(b->IsDowned());
   ASSERT_EQ(env.GetLastRevives().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastDowns().empty());
+  ASSERT_EQ(env.GetDowns(), 1);
+  SpawnKillNextStep(env, {3, 2});
+  env.Step({kStay, kStay});
+  ASSERT_TRUE(b->IsDowned());
+  ASSERT_TRUE(env.GetLastRevives().empty());
   ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastDowns()[0], b->GetId());
   ASSERT_EQ(env.GetDowns(), 2);

@@ -44,6 +44,9 @@ companions/                    # Standalone pure C++ implementation
   `tests/test_api.cc`
 - Zones' lifetime, successor, damage per landing and the zone table: `companions_zones_test`
   (`tests/test_zones.cc`)
+- The turn's health (the ledger, Marked on the total, heals, downs / deaths / defeats /
+  revives at the end of the turn, `GetLastTurnHealth`): `companions_turn_test`
+  (`tests/test_turn.cc`)
 - Reactions, weaknesses, immunities, tag statuses, their reports and the landing order,
   outcome previews (`PreviewSkillOutcome`), a step that throws:
   `companions_reactions_test` (`tests/test_reactions.cc`); their C API side (1.5: report
@@ -148,10 +151,36 @@ cooldowns, revives, reactions. Code: `core/skill_config.{h,cc}`, `core/tag_table
 4. `ResolveInteractions` → `ResolveSkills` (one `UseSkill` per caster, in agent-index
    order: `ResolveSkillTargets`, then the effects, see "Resolution of one skill")
 5. Effects tick, `CommitPendingZones` (the step's reaction zones, in the order they were
-   recorded: a later write to the same cell wins), `EndStep` on every agent (tags,
+   recorded: a later write to the same cell wins), `ApplyTurnOutcomes` (the turn's
+   health, see below), `EndStep` on every agent (tags,
    statuses, cooldowns tick), `TickZones` (zone lifetimes tick, expired zones become
    their successor), the downs since the last report (`GetLastDowns`, after `EndStep`),
    `tick_++`, `PostStep`, rewards (TaskLens)
+
+**The turn's health** (`BaseEnv::GetLastTurnHealth`, `turn_`; tests: `tests/test_turn.cc`):
+nothing changes HP, alive or down DURING a step. Every hit and heal (zones, reactions,
+skills, effects, the enemies' strikes: `HurtInStep` / `HealInStep`, the effect system
+through its `HealthSink`), every weakness defeat and every revive goes into a per-agent
+ledger (seeded after `BeginStep`: Marked as the turn began), applied once at the end of
+the turn (`ApplyTurnOutcomes`, after `CommitPendingZones`): the damage total, x1.5
+rounded down once if Marked as the turn BEGAN (a Marked landed this turn acts next
+turn), minus the heals, clamped (`Agent::ApplyTurnHealth`: at 0 a companion goes down,
+another agent dies); a defeat: 0 whatever the heals; a revive (an ally down as the turn
+began): up with the planned HP (two revivers: once, the highest HP, credited to the
+lowest agent index giving it; the other use keeps the ally without `Revive`); then the
+dead's strikes still winding up are cancelled (`EffectSystem::CancelDeadSources`). So
+during the turn everyone stays as it began: an agent the turn takes to 0 (or defeats)
+still acts, is still tagged / hit / pushed / rooted and still triggers reactions (one
+defeat per agent per turn); a heal can save it; an enemy killed this turn still lands
+this turn's strike; a revived ally cannot be downed the turn it gets up. The reports keep
+each hit's raw share (a landing's `damage`, a reaction outcome's `damage`, the `Damage`
+effect). `TurnHealth {agent, damage, marked_bonus, heal, change, health, outcome}`
+(`TurnOutcome`: None, Downed, Died, Defeated, Revived), one per agent with ledger
+activity, in agent-index order; copied with the env, cleared by the next step and
+`LoadSnapshot` (not in the C API yet). Between steps the host's primitives stay
+immediate (`TakeDamage` with Marked per hit, `Heal`, `Defeat`, `Revive`, a `kill` / `hit`
+it spawns). A step that throws applies its ledger and planned revives (`AbortStep`,
+agent-local, no report). `PreviewSkillOutcome` applies them on its clone.
 
 **A step reads one zone map** (`BaseEnv::pending_zones_`): the map as the step began
 (after `PreStep`) is the map every read of the step sees: zone landings (the zone phase
@@ -163,8 +192,7 @@ phase, only the order of the reports, with one exception: two firings writing di
 `zone_becomes` to the same cells, the later one (firing order: trigger agent index)
 wins. Report-only effects of the order: a result's `DefeatReport::reaction` names the
 first firing whose result defeated, only the first of identical result landings on an
-agent is `fresh`, and a later firing reports 0 damage on an agent an earlier firing's
-damage downed. And it cannot cascade within a step: a spread fires
+agent is `fresh`. And it cannot cascade within a step: a spread fires
 once per trigger (N triggers in one region = N firings, each reaching everyone), and
 waits a step before its zone lands. Between two steps (a host's `ApplyTagTo`) there is
 no phase: a landing resolves at once and its `zone_becomes` applies at once. A host
@@ -235,7 +263,7 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
 | `motion_distance` (`distance`) | 0 | Dash / teleport / push distance (pull is always 1) |
 | `tag_path` | false | Dash: agents crossed on the way are affected too |
 | `tags` | [] | `{tag, duration}` landed on every affected agent |
-| `damage` | 0 | Health every affected agent (area and dash path) loses, via `Agent::TakeDamage` (Marked ×1.5, truncated: 1 stays 1, 2 → 3; 0 HP = dead, a companion down, as with effects) |
+| `damage` | 0 | Health every affected agent (area and dash path) loses, into the turn's ledger (see The turn's health: Marked ×1.5 on the turn's total; 0 HP at the end of the turn = dead, a companion down, as with effects) |
 | `root_steps` | 0 | Affected agents on the area are rooted for this many next steps |
 | `cooldown` | 0 | See above |
 | `friendly_fire` | true | Off: only agents NOT of the caster's faction are affected (allies and caster get no tag, damage, push/pull or root; a projectile flies past them) |
@@ -250,9 +278,9 @@ n - 1, ...; `LegalActions` and `GatherIntentions` read the same value.
   `PreviewSkill`: the caster's landing, the centre, the affected agents (area in cell
   order, then a `tag_path` dash's path) and what the use will do to each, read with the
   caster already on its landing cell) → caster motion → tags → damage → revive → root
-  (area only, before anything moves) → push / pull. An agent the damage kills or downs
-  keeps the tags (reported) but is neither rooted nor moved, and is no longer affected by
-  anything
+  (area only, before anything moves) → push / pull. The damage goes into the turn's
+  ledger: an agent it takes to 0 is still rooted and moved, and still affected by
+  anything else this turn (down or dead at its end)
 - Damage is not reported as events yet (`Companions_Event_AgentDamaged` is declared,
   not implemented): read it from the agents' health
 - `ValidateSkillConfig`: non-empty name ≤ 31 bytes; range, distance, damage, root_steps,
@@ -274,9 +302,11 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
   team's counter never goes back). It acts from the next step, and its cell's zone lands
   on it from the next step (zones apply before skills)
 - A revive is a skill use: a `SkillUse` (the revived agent with the `Revive` effect) plus
-  a `GetLastRevives()` entry (reviver, revived, health). Several revivers of one ally in
-  a step: the first in agent-index order gets it up, the later ones find it standing and
-  affect nobody. Revived then downed again in the same step: a revive, then a down
+  a `GetLastRevives()` entry (reviver, revived, health). It applies at the end of the turn
+  (see The turn's health): the ally is down all turn, so nothing downs it again that
+  turn. Several revivers of one ally in a step: one revive, the highest HP, credited to
+  the lowest agent index giving it; the other uses keep it in `affected` without
+  `Revive`
 
 **Context skills** (`core/context_skill.{h,cc}`; `BaseEnv::EffectiveSkill`,
 `IsContextSkill`, `GetContextSkills` / `SetContextSkills`):
@@ -335,13 +365,12 @@ rooted earlier in the pass still resolves its skill this step (usability is deci
 - `AffectedAgent { id, effects }`, `SkillEffect` bit flags: `Tags` 1, `Damage` 2,
   `Root` 4, `Motion` 8 (it really changes cell: a push against a wall is no Motion),
   `Revive` 16; 0 = affected, nothing applies (the caster gets only what its `self_*`
-  flags allow). In a preview they are a prediction made before the damage; in a
-  `SkillUse` they are what the use DID: an agent its own damage downed or killed has no
-  Root / Motion, a pull that then took the next ring thing reports that one with Motion,
-  and an ally an earlier caster got up first is not revived again (standing, it is not
-  affected at all). Tags and Damage agree. Tags means at least one of the skill's tags
-  lands: an agent immune to all of them gets no Tags (preview and use); a use whose tag
-  defeated an agent (a weakness) keeps Tags and loses Damage
+  flags allow). In a preview they are a prediction; in a `SkillUse` they are what the
+  use DID (damage downs and kills only at the end of the turn, so an agent the use takes
+  to 0 keeps its Root / Motion; an ally another caster also revives keeps `Revive` on
+  the credited use only). Tags and Damage agree. Tags means at least one of the skill's
+  tags lands: an agent immune to all of them gets no Tags (preview and use); a use whose
+  tag defeated an agent (a weakness) keeps Tags and Damage (its raw share)
 
 **Tags** (`TagTable`, `Agent::ApplyTag`):
 - Opaque names interned per env; ids stay stable (the table only grows, never cleared
@@ -383,30 +412,27 @@ tests: `tests/test_zones.cc`):
   movement (before casts and skills), and on any agent a skill motion lands there
   (landing cell only: cells a dash crosses do not apply). Effect pushes do not apply zones
 - **One landing, in order** (see Reactions): immunity (nothing lands, no damage), the
-  tag and its tag status (`PutTag`), weakness (a defeated agent gets nothing more, but
-  its reaction may still spread), reaction, then the zone's own `damage`, only if the
-  agent is still affectable:
-  through `Agent::TakeDamage` (Marked applies, a companion goes down and keeps the tag).
-  Reported as the landing's `damage` (the zone's, before Marked; 0 when none was dealt:
-  a weakness defeated it, a reaction's damage downed or killed it).
+  tag and its tag status (`PutTag`), weakness (a defeated agent stays in play until the
+  end of the turn), reaction, then the zone's own `damage`, into the turn's ledger
+  (Marked on the turn's total; a companion taken to 0 goes down at the end of the turn
+  and keeps the tag). Reported as the landing's `damage` (the zone's raw share, before
+  Marked; 0 for a harmless zone).
   The downed and the dead get no landing at all
 - **The zone phase** (`ApplyZoneTags` → `CollectZoneLanding` per agent, then
   `ResolveZoneLandings`) runs those steps as sub-phases, each over every landing (agent
   order only orders the reports): a. every agent's landing (immunity, tag, status);
   b. the weaknesses; c. the reactions, gathered then applied: c1 every landing's
   trigger (the first rule pairing the landed tag with one the agent carries, on the
-  state after a and b); every trigger fires, but a weakness-defeated one alone
-  (nobody to affect; spreading, it fires without itself); c2 every firing's affected
+  state after a and b); every trigger fires, a weakness-defeated one included (it
+  stays in play until the end of the turn); c2 every firing's affected
   agents (the phase-start region's affectable agents, or the trigger alone) and its
   report, nothing applied (`StartReaction`); c3 the outcomes, agent-local
   (`ApplyReactionHits`): per agent, every firing's removals (originals not kept), then
   every result landing (immunity, tag, tag status; firing order: trigger agent index),
   then ONE weakness check over the results that landed (its first `(P, S)` with P under
   it and S among them: defeated, every firing whose result is S reports `defeated`),
-  then each firing's damage, one `TakeDamage` per firing in firing order (Marked
-  truncates each hit, as in the skill phase) while the agent is still affectable, each
-  firing reporting what it dealt (0 once a result defeated it or an earlier firing's
-  damage downed it); then the zones, in firing order. No firing's outcome cancels
+  then each firing's damage into the turn's ledger, each firing reporting its raw
+  share; then the zones, in firing order. No firing's outcome cancels
   another's (a firing that would down B does not stop B's own reaction), so the
   agents' final state does not depend on the order (the zones and the reports: see
   "A step reads one zone map"); d. each zone's damage. A skill
@@ -416,9 +442,9 @@ tests: `tests/test_zones.cc`):
   (`zone_becomes`) is written at the end of the step and first lands next step, tag and
   damage; everything in the step (the zone phase, a skill motion landing on the cell,
   weaknesses, spread regions) reads the zone as the step began
-- A caster its landing zone downs or kills gets nothing from its own skill (its
-  `SkillUse` reports no Tags / Damage on it), but the rest of the use still runs: the
-  others it affects are tagged, hurt, rooted, pushed
+- A caster its landing zone takes to 0 still gets its own use (tags, damage: reported)
+  and the others it affects are tagged, hurt, rooted, pushed; it goes down at the end of
+  the turn
 - Lifetime: `steps` is a step timer (see Step timers): set between two steps, the zone
   lands during the n next steps; set by a host call during a step (e.g. a `PreStep`
   hook), it also covers the rest of that step (kept as n + 1, `BaseEnv::in_step_`) and
@@ -450,9 +476,11 @@ a status.
   2. the tag lands (reported, with its `TagSource`) and the status `tag_statuses` binds
      to it applies (`Agent::ApplyStatus`, a step timer: n + 1 during a step);
   3. weakness: for one of the agent's `(P, S)` with S = the tag, the zone of the cell it
-     stands on NOW provides P: defeated (`Agent::Defeat`, the env's `kill`: 0 HP whatever
-     its health or Marked, an agent dies, a companion goes down), reported, and it gets
-     nothing more (no reaction outcome, no zone damage). P is asked of the map, never of
+     stands on NOW provides P: defeated (the env's `kill`: 0 HP at the end of the turn
+     whatever its health, heals or Marked, an agent dies, a companion goes down;
+     between two steps `Agent::Defeat` at once), reported once per turn; during a step it
+     stays in play until the end of the turn (reaction outcomes, zone damage, pushes).
+     P is asked of the map, never of
      the tags it carries: a wet imp on dry land is not defeated by a spark; an oiled gob
      walking into fire is not defeated by (oil, burning) (fire is not oil)
   4. reaction (never for a reaction's result: no chains): the FIRST rule, in level
@@ -461,14 +489,14 @@ a status.
      whose zone provides `a` or `b`, every affectable agent on that zone's connected
      region (4-neighbour flood fill over the cells carrying that zone tag, from the
      agent's cell), in agent-index order, the trigger included; otherwise the agent
-     alone. A trigger step 3 defeated still starts it (it keeps its tags; like the HTN
-     rules, which spread AND defeat the vulnerable): spreading, it fires without the
-     trigger (its `affected` may be empty) and the region still becomes `zone_becomes`
-     (a gob weak to (oil, burning) burnt on the oil: it is defeated, the others on the
-     oil burn, the oil catches fire); alone, nobody is left: nothing fires, nothing is
-     reported. Each affected agent, in turn: loses `a` and `b` but those in `keep`, gets
-     `result` (a permanent tag, through steps 1-3: an immune agent does not get it, a
-     weakness defeats it), then takes `damage` (`TakeDamage`, if still affectable).
+     alone. A trigger step 3 defeated still starts it (like the HTN rules, which
+     spread AND defeat the vulnerable) and, during a step, is still affected by it (a
+     gob weak to (oil, burning) burnt on the oil: it is defeated, it and the others on
+     the oil burn, the oil catches fire). Between two steps (a host landing) the defeat
+     is at once: spreading, it fires without the trigger; alone, nothing fires, nothing
+     is reported. Each affected agent, in turn: loses `a` and `b` but those in `keep`,
+     gets `result` (a permanent tag, through steps 1-3: an immune agent does not get it,
+     a weakness defeats it), then takes `damage` (the turn's ledger).
      Every outcome reads the map as the step began: the spread region becomes
      `zone_becomes` (a zone by name: the table's fields, a step timer) at the END of the
      step (recorded after every outcome; `ReactionReport::cells` lists the cells); a
@@ -531,7 +559,8 @@ a status.
   C API: 1.5 (see Per-step reports)
 
 **Statuses** (`StatusType`, `core/object.h`): `Stunned`(1) forces Stay, `Marked`(3)
-(damage ×1.5 in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
+(damage ×1.5: on a step's damage total, rounded down once, if Marked as the step began;
+per hit between steps, in `Agent::TakeDamage`, truncated toward zero: 1 damage stays 1),
 `Rooted`(4). `Slowed` was removed: value 2 is reserved (never reused, a snapshot carrying
 it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 - Rooted: can't move by itself (walking becomes Stay, dash / teleport skills are
@@ -545,11 +574,11 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
 | BaseEnv | Content | C API event |
 |---------|---------|-------------|
 | `GetLastSkillUses()` | caster, skill (the effective one), target (centre; landing cell for a self skill), slot, `affected` (the agents it affected, in processing order, with what it did to each: see Previews) | `Companions_Event_SkillUsed` (effect_id = slot, effect_name = skill); the whole use, `affected` included: `companions_get_last_skill_use_count` / `companions_get_last_skill_use` (not an event: never cut by the event cap) |
-| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"` / `"host"`; a result: its trigger's), `fresh`, `damage` (the zone damage it dealt; 0 when none: a skill's landing, a harmless zone, an agent no longer affectable), `kind` (`TagSource`), `reaction` (a result: its index in `GetLastReactions()`, else -1) | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh; 1.5: tag_kind, tag_reaction, health_amount = damage, report_index); the whole report: `companions_get_tag_landing*` |
+| `GetLastTagsApplied()` | agent, tag id, duration, source (caster / -1), cause (skill / `"zone"` / `"host"`; a result: its trigger's), `fresh`, `damage` (the zone damage's raw share, into the turn's ledger; 0 for a skill's landing or a harmless zone), `kind` (`TagSource`), `reaction` (a result: its index in `GetLastReactions()`, else -1) | `Companions_Event_TagApplied` (effect_id = tag id, status_duration, health_source_id = source, tag_fresh; 1.5: tag_kind, tag_reaction, health_amount = damage, report_index); the whole report: `companions_get_tag_landing*` |
 | `GetLastReactions()` | `ReactionReport`: rule, trigger, tag, source / cause / kind of the triggering landing, `spread`, `affected` (agent, `result_landed`, `defeated`, `damage`), `cells` (what became `zone_becomes`), in the order they fired | `Companions_Event_ReactionFired` (1.5: subject = trigger, effect_id = rule, effect_name = result, health_source_id / tag_kind, report_index); `companions_get_reaction*` |
 | `GetLastDefeats()` | `DefeatReport`: agent, zone (P), tag (S), source / cause / kind / `reaction` of the landing of S | `Companions_Event_AgentDefeated` (1.5: effect_id / effect_name = S, health_source_id / tag_kind / tag_reaction, report_index); `companions_get_defeat*` |
 | `GetLastDowns()` | one companion id per down (a down between steps: the next step's) | `Companions_Event_AgentDowned` (subject_id, position = its cell) |
-| `GetLastRevives()` | reviver, revived, health (the HP it got up with), in resolution order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
+| `GetLastRevives()` | reviver, revived, health (the HP it got up with), at the end of the turn, in the revived's agent-index order | `Companions_Event_AgentRevived` (subject_id = revived, health_source_id = reviver, health_new = health_amount = health, position = its cell after the step) |
 
 - `fresh` = the agent did not carry the tag just before this landing (an agent standing on
   a duration-1 zone still carries its tag when the zone lands it again: not fresh)
@@ -560,8 +589,9 @@ it is rejected); the C API `Companions_Status_*` keeps the same numbers.
   landing inside its use). The C API reads the same vectors (its
   `report_index` fields and event order follow them)
 - Event order in a step: movement events (AgentMoved / AgentBlocked, per agent), then
-  AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a companion revived then
-  downed again in one step has its second AgentDowned before its AgentRevived); at most
+  AgentDowned, AgentRevived, AgentDefeated, SkillUsed, TagApplied, ReactionFired, EpisodeEnd (grouped by kind, not in time order: a down from between the
+  steps comes before the step's AgentRevived; a companion revived in a step cannot be
+  downed in it); at most
   `Companions_MAX_EVENTS` (64), EpisodeEnd always kept, `events_dropped` counts the rest.
   The state changes (movement, down, revive) come first, so SkillUsed / TagApplied are cut
   first. They always fit when no companion is revived twice in the step (per agent: one
@@ -703,11 +733,13 @@ A companion at 0 HP goes DOWN instead of dying; the team's downs can lose the le
 Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/test_downs.cc`
 (revive: `tests/test_revive.cc`).
 
-- **Going down** (`Agent::TakeDamage` → `OnZeroHealth`: an agent dies, a `Companion`
-  goes down): alive (`IsAlive()`), 0 HP, `IsDowned()`, `times_downed + 1`; its statuses
-  are cleared, its tags and skills kept; its timers keep running (`EndStep` ticks it: tags
-  expire, cooldowns recover). Skill damage, effects (enemy strikes, the host's `kill` /
-  `hit`) all go through it. It stays down until a skill revives it (see Revive: by
+- **Going down** (`OnZeroHealth`: an agent dies, a `Companion` goes down): alive
+  (`IsAlive()`), 0 HP, `IsDowned()`, `times_downed + 1`; its statuses are cleared, its
+  tags and skills kept; its timers keep running (`EndStep` ticks it: tags expire,
+  cooldowns recover). During a step only at the end of the turn (`ApplyTurnOutcomes` →
+  `Agent::ApplyTurnHealth` / `Defeat`: skill damage, zones, reactions, effects and enemy
+  strikes all go through the turn's ledger, see The turn's health); between steps at
+  once (`Agent::TakeDamage`, the host's `kill` / `hit`). It stays down until a skill revives it (see Revive: by
   default, an ally beside it finds its slot 0 is `revive`, a context skill) or
   `Reset` / `LoadSnapshot`
 - **Inert and untouched.** `Agent::IsAffectable()` = alive and not downed: the check
@@ -787,7 +819,8 @@ Location: `companions/src/core/fsm/`
 - A dead (or stunned) agent's FSM does not run, so a wind-up in `TelegraphState`
   never reaches `AttackState`, which is what spawns the strike effect
 - `EffectSystem::Tick` removes an effect still in its telegraph phase whose source
-  agent exists and is dead, before it can activate. An effect already active when its
+  agent exists and is dead, before it can activate; the end of a turn
+  (`EffectSystem::CancelDeadSources`) removes those of the agents that died in it. An effect already active when its
   source dies runs its course, but a looping one stops at its next restart, with or
   without a wind-up (`telegraph_ticks = 0` loops too).
   Effects without a source (`kInvalidObjectId`, host-spawned) are never cancelled
@@ -798,8 +831,9 @@ Location: `companions/src/core/fsm/`
   `kInvalidObjectId`, and an ActorList entry or agent annotation naming none is
   dropped), so gaps from removed objects or hand-authored ids never misattribute an
   effect or a tag
-- A companion that kills the attacker during step t cancels a strike due at the end
-  of step t: skills resolve before effects tick
+- Deaths come at the end of the turn: an attacker a companion kills during step t
+  still lands a strike activating in step t; its strikes still winding up at the end
+  of step t never land
 
 ### Environments & TaskLens
 

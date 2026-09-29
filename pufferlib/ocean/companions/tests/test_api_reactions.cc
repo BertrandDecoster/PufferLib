@@ -715,20 +715,26 @@ TEST(TestAReactionSaysWhichCellsChanged) {
       ASSERT_EQ(std::string(info.tag), std::string("burning"));
       ASSERT_EQ(info.kind, Companions_TagSource_Skill);
       ASSERT_EQ(std::string(info.cause), std::string("fireball"));
-      // The cook (defeated by the result), the imp (immune), the pal: not the gob
-      ASSERT_EQ(info.affected_count, 3);
-      ASSERT_EQ(info.affected_total, 3);
+      // The cook (defeated by the result), the gob (defeated by the fireball,
+      // in play until the end of the turn), the imp (immune), the pal; each
+      // with its raw damage share
+      ASSERT_EQ(info.affected_count, 4);
+      ASSERT_EQ(info.affected_total, 4);
       ASSERT_EQ(info.affected[0], IdAt(env, kCook));
       ASSERT_TRUE(info.affected_result_landed[0]);
       ASSERT_TRUE(info.affected_defeated[0]);
-      ASSERT_EQ(info.affected_damage[0], 0);
-      ASSERT_EQ(info.affected[1], IdAt(env, kImp));
-      ASSERT_FALSE(info.affected_result_landed[1]);
-      ASSERT_FALSE(info.affected_defeated[1]);
+      ASSERT_EQ(info.affected_damage[0], 1);
+      ASSERT_EQ(info.affected[1], IdAt(env, kGob));
+      ASSERT_TRUE(info.affected_result_landed[1]);
+      ASSERT_FALSE(info.affected_defeated[1]);  // Defeated already: once per turn
       ASSERT_EQ(info.affected_damage[1], 1);
-      ASSERT_EQ(info.affected[2], IdAt(env, kPal));
-      ASSERT_TRUE(info.affected_result_landed[2]);
+      ASSERT_EQ(info.affected[2], IdAt(env, kImp));
+      ASSERT_FALSE(info.affected_result_landed[2]);
+      ASSERT_FALSE(info.affected_defeated[2]);
       ASSERT_EQ(info.affected_damage[2], 1);
+      ASSERT_EQ(info.affected[3], IdAt(env, kPal));
+      ASSERT_TRUE(info.affected_result_landed[3]);
+      ASSERT_EQ(info.affected_damage[3], 1);
     } else {
       ASSERT_EQ(info.cell_count, 0);
       ASSERT_EQ(std::string(info.zone_becomes), std::string(""));

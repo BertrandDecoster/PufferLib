@@ -203,8 +203,15 @@ class Agent : public Actor {
   int GetHealth() const { return health_; }
   int GetMaxHealth() const { return max_health_; }
   void SetMaxHealth(int hp) { max_health_ = hp; health_ = hp; }
+  // The immediate path (the host between two steps): Marked multiplies each
+  // hit, 0 HP has its consequence at once. A Step goes through its turn's
+  // ledger instead (BaseEnv::GetLastTurnHealth), applied by ApplyTurnHealth.
   void TakeDamage(int amount);
   void Heal(int amount);
+  // The end of a turn: `health` (the turn's outcome, clamped to [0, max]) at
+  // once; reaching 0 from above has its consequence (OnZeroHealth: an agent
+  // dies, a companion goes down). Nothing for an agent that is not affectable.
+  void ApplyTurnHealth(int health);
   bool IsDead() const { return health_ <= 0; }
   // Snapshot loads: the health as saved, clamped to [0, max], without the
   // consequences of damage (no death, no down)

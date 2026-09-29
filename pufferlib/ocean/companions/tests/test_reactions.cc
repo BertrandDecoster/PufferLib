@@ -614,8 +614,8 @@ TEST(TestASpreadNeedsTheZoneUnderTheAgent) {
 }
 
 // Oil + burning, spreading over the kitchen oil: everyone on it gets the
-// result (the gob, weak to (oil, burning), is defeated: it still stood on
-// oil), then the region becomes the table's burning zone (a step timer: 3
+// result and the damage (the gob, weak to (oil, burning), is defeated: it
+// still stood on oil; it ends the turn at 0), then the region becomes the table's burning zone (a step timer: 3
 // steps, 1 damage per landing), which then burns out and leaves nothing. A
 // disconnected oil cell stays oil.
 TEST(TestZoneBecomesTakesTheTablesFieldsAndBurnsOut) {
@@ -645,7 +645,7 @@ TEST(TestZoneBecomesTakesTheTablesFieldsAndBurnsOut) {
   ASSERT_EQ(r.affected.at(1).agent, gob->GetId());
   ASSERT_TRUE(r.affected.at(1).result_landed);
   ASSERT_TRUE(r.affected.at(1).defeated);
-  ASSERT_EQ(r.affected.at(1).damage, 0);  // Defeated: no damage after
+  ASSERT_EQ(r.affected.at(1).damage, 1);  // Its raw share: defeated, it ends at 0 anyway
   ASSERT_FALSE(gob->IsAlive());
   ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastDefeats().at(0).agent, gob->GetId());
@@ -724,11 +724,8 @@ static std::string Name(const BaseEnv& env, TagId tag);  // Below
 
 // The last step's reports and the world it left, by ROLE (ids and agent
 // indices dropped), the report lines sorted: two worlds that differ only in
-// their agents' order must give the same text. Without `outcome_damage`, a
-// reaction's outcomes leave out the damage each firing reports (which firing
-// reports 0 on an agent an earlier firing downed follows the firing order).
-static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles,
-                             bool outcome_damage = true) {
+// their agents' order must give the same text.
+static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::string>& roles) {
   auto role = [&roles](ObjectId id) {
     auto it = roles.find(id);
     return it == roles.end() ? std::string("-") : it->second;
@@ -749,8 +746,7 @@ static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::s
     std::vector<std::string> outcomes;
     for (const auto& o : r.affected) {
       outcomes.push_back(role(o.agent) + "/" + std::to_string(o.result_landed) + "/" +
-                         std::to_string(o.defeated) +
-                         (outcome_damage ? "/" + std::to_string(o.damage) : std::string()));
+                         std::to_string(o.defeated) + "/" + std::to_string(o.damage));
     }
     std::sort(outcomes.begin(), outcomes.end());
     for (const std::string& o : outcomes) out << " " << o;
@@ -860,8 +856,9 @@ TEST(TestAResultThatIsATriggerReFiresOncePerAgentInTheZone) {
 
 // (wet, electrified): a wet imp on dry land is not defeated by a spark (it
 // reacts, alone); in the lake, the same spark defeats it (the env's kill: an
-// enemy dies). A defeated agent gets nothing more, but its reaction still
-// spreads over the lake (here with nobody else in it).
+// enemy dies). A defeated agent stays in play until the end of the turn: its
+// reaction spreads over the lake and reaches it (the result, the damage; the
+// result electrified defeats it no second time: once per turn).
 TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
   for (bool in_lake : {false, true}) {
     SynchroEnv env(10, 10, 1, 1, 0, 42);
@@ -891,7 +888,11 @@ TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
       const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
       ASSERT_EQ(r.trigger, imp->GetId());
       ASSERT_TRUE(r.spread);
-      ASSERT_TRUE(r.affected.empty());  // Not the defeated imp
+      ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));  // The defeated imp, still in play
+      ASSERT_EQ(r.affected.at(0).agent, imp->GetId());
+      ASSERT_TRUE(r.affected.at(0).result_landed);
+      ASSERT_FALSE(r.affected.at(0).defeated);  // Defeated already
+      ASSERT_EQ(r.affected.at(0).damage, 1);
       ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
       const BaseEnv::DefeatReport& d = env.GetLastDefeats().at(0);
       ASSERT_EQ(d.agent, imp->GetId());
@@ -901,7 +902,7 @@ TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
       ASSERT_EQ(d.cause, std::string("spark"));
       ASSERT_TRUE(d.kind == TagSource::Skill);
       ASSERT_EQ(d.reaction, -1);  // Not a result
-      ASSERT_TRUE(Has(env, imp, "wet"));  // It keeps what it carried
+      ASSERT_FALSE(Has(env, imp, "wet"));  // Taken by its reaction
       ASSERT_EQ(imp->GetHealth(), 0);
       ASSERT_TRUE(Has(env, imp, "electrified"));
       ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
@@ -912,10 +913,11 @@ TEST(TestAWeaknessIsReadFromTheMapNotFromTheTags) {
   }
 }
 
-// A defeated trigger gets nothing more, so a reaction that does not spread
-// (the rule does not, or the zone under it provides neither tag) has nobody
-// left to affect: nothing fires, nothing is reported.
-TEST(TestADefeatedTriggerAloneReactsToNothing) {
+// A defeated trigger stays in play until the end of the turn: a reaction that
+// does not spread (the rule does not, or the zone under it provides neither
+// tag) still fires on it alone (the result, the damage), and it ends the turn
+// at 0.
+TEST(TestADefeatedTriggerAloneStillReacts) {
   for (bool spreading_rule : {false, true}) {
     SynchroEnv env(10, 10, 1, 1, 0, 42);
     MakeArena(env);
@@ -932,9 +934,15 @@ TEST(TestADefeatedTriggerAloneReactsToNothing) {
     env.Step(With(env, 0, Use(MovementAction::Right)));
     ASSERT_FALSE(imp->IsAlive());
     ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
-    ASSERT_TRUE(env.GetLastReactions().empty());
-    ASSERT_TRUE(Has(env, imp, "wet"));  // Kept: nothing more reaches it
-    ASSERT_FALSE(Has(env, imp, "shocked"));
+    ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
+    const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
+    ASSERT_FALSE(r.spread);
+    ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
+    ASSERT_EQ(r.affected.at(0).agent, imp->GetId());
+    ASSERT_EQ(r.affected.at(0).damage, 1);
+    ASSERT_FALSE(Has(env, imp, "wet"));  // Taken by its reaction
+    ASSERT_TRUE(Has(env, imp, "shocked"));
+    ASSERT_EQ(imp->GetHealth(), 0);
     ASSERT_EQ(env.GetCellTag({5, 5}).tag, Id(env, floor));
   }
 }
@@ -957,9 +965,10 @@ TEST(TestAWeaknessIsAnOrderedPair) {
   ASSERT_EQ(env.GetLastDefeats().at(0).cause, std::string("host"));
 }
 
-// A zone's own landing can defeat: a companion goes down (the env's kill),
-// and the landing reports no zone damage (none was dealt: it stopped there).
-TEST(TestAZoneLandingDefeatsACompanionDownWithoutZoneDamage) {
+// A zone's own landing can defeat: a companion goes down at the end of the
+// turn (the env's kill). It stays in play until then, so the zone's damage is
+// still dealt into its turn (reported: the raw share); it ends at 0 anyway.
+TEST(TestAZoneLandingDefeatsACompanionDown) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   Require(env.DefineZone("burning", Zone().Hurts(2).def), "burning");
@@ -973,10 +982,14 @@ TEST(TestAZoneLandingDefeatsACompanionDownWithoutZoneDamage) {
   ASSERT_EQ(comp->GetTimesDowned(), 1);
   ASSERT_EQ(env.GetLastDowns().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(1));
-  ASSERT_EQ(env.GetLastTagsApplied().at(0).damage, 0);
+  ASSERT_EQ(env.GetLastTagsApplied().at(0).damage, 2);
   ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
   ASSERT_TRUE(env.GetLastDefeats().at(0).kind == TagSource::Zone);
   ASSERT_EQ(env.GetLastDefeats().at(0).cause, std::string("zone"));
+  ASSERT_EQ(env.GetLastTurnHealth().size(), static_cast<size_t>(1));
+  ASSERT_TRUE(env.GetLastTurnHealth().at(0).outcome == BaseEnv::TurnOutcome::Defeated);
+  ASSERT_EQ(env.GetLastTurnHealth().at(0).damage, 2);
+  ASSERT_EQ(env.GetLastTurnHealth().at(0).health, 0);
 }
 
 // A weakness defeats whatever the health (Marked or not)
@@ -992,9 +1005,10 @@ TEST(TestADefeatIgnoresHealth) {
   ASSERT_EQ(imp->GetHealth(), 0);
 }
 
-// The landing report says no zone damage when a reaction's damage left the
-// agent unaffectable: an enemy killed, a companion downed
-TEST(TestTheZoneDamageIsZeroWhenTheReactionDownedOrKilled) {
+// A reaction's lethal damage and the zone's own add up in the turn's total:
+// the zone's is still dealt (the agent is down or dead only at the end of
+// the turn), then an enemy dies, a companion goes down
+TEST(TestTheZoneDamageAddsToALethalReactionInTheTurn) {
   for (bool companion : {false, true}) {
     SynchroEnv env(10, 10, 1, 1, 0, 42);
     MakeArena(env);
@@ -1007,16 +1021,23 @@ TEST(TestTheZoneDamageIsZeroWhenTheReactionDownedOrKilled) {
     ASSERT_FALSE(a->IsAffectable());
     ASSERT_EQ(a->IsAlive(), companion);  // A companion goes down
     ASSERT_EQ(env.GetLastTagsApplied().at(0).tag, Id(env, "oil"));
-    ASSERT_EQ(env.GetLastTagsApplied().at(0).damage, 0);
+    ASSERT_EQ(env.GetLastTagsApplied().at(0).damage, 2);
     ASSERT_EQ(env.GetLastReactions().at(0).affected.at(0).damage, 10);
+    ASSERT_EQ(env.GetLastTurnHealth().size(), static_cast<size_t>(1));
+    const BaseEnv::TurnHealth& t = env.GetLastTurnHealth().at(0);
+    ASSERT_EQ(t.damage, 12);
+    ASSERT_EQ(t.health, 0);
+    ASSERT_TRUE(t.outcome ==
+                (companion ? BaseEnv::TurnOutcome::Downed : BaseEnv::TurnOutcome::Died));
   }
 }
 
-// A zone's landing that defeats (weak to (oil, oil)) deals no zone damage
-// (reported 0), but the reaction it starts still spreads: the companion on
-// the same hot oil gets the outcome (1 damage) and, in sub-phase d, the oil's
-// own (2 damage), and the oil becomes ash at the end of the step. The reports
-// keep the zone phase's order: both zone landings, then the result.
+// A zone's landing that defeats (weak to (oil, oil)) leaves the gob in play
+// until the end of the turn: the reaction it starts spreads over both (the
+// result and 1 damage each), each takes the oil's own 2 in sub-phase d (the
+// gob's raw share, reported; it ends at 0 anyway), and the oil becomes ash at
+// the end of the step. The reports keep the zone phase's order: both zone
+// landings, then the results.
 TEST(TestAZoneLandingDefeatStillSpreadsItsReaction) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -1035,24 +1056,29 @@ TEST(TestAZoneLandingDefeatStillSpreadsItsReaction) {
   ASSERT_TRUE(env.GetLastDefeats().at(0).kind == TagSource::Zone);
 
   const auto& landed = env.GetLastTagsApplied();
-  ASSERT_EQ(landed.size(), static_cast<size_t>(3));
+  ASSERT_EQ(landed.size(), static_cast<size_t>(4));
   ASSERT_EQ(landed.at(0).agent, cook->GetId());
   ASSERT_EQ(landed.at(0).damage, 2);
   ASSERT_EQ(landed.at(1).agent, gob->GetId());
-  ASSERT_EQ(landed.at(1).damage, 0);  // Defeated: none dealt
+  ASSERT_EQ(landed.at(1).damage, 2);  // Its raw share
   ASSERT_EQ(landed.at(2).agent, cook->GetId());
   ASSERT_TRUE(landed.at(2).kind == TagSource::Reaction);
+  ASSERT_EQ(landed.at(3).agent, gob->GetId());
+  ASSERT_TRUE(landed.at(3).kind == TagSource::Reaction);
 
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
   const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
   ASSERT_EQ(r.trigger, gob->GetId());
   ASSERT_TRUE(r.kind == TagSource::Zone);
   ASSERT_TRUE(r.spread);
-  ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
+  ASSERT_EQ(r.affected.size(), static_cast<size_t>(2));
   ASSERT_EQ(r.affected.at(0).agent, cook->GetId());
   ASSERT_EQ(r.affected.at(0).damage, 1);
+  ASSERT_EQ(r.affected.at(1).agent, gob->GetId());
+  ASSERT_EQ(r.affected.at(1).damage, 1);
   ASSERT_FALSE(Has(env, cook, "oil"));
   ASSERT_TRUE(Has(env, cook, "burning"));
+  ASSERT_TRUE(Has(env, gob, "burning"));
   ASSERT_EQ(cook->GetHealth(), 7);
   ASSERT_EQ(gob->GetHealth(), 0);
   ASSERT_EQ(env.GetCellTag({3, 4}).tag, Id(env, "ash"));
@@ -1103,9 +1129,9 @@ TEST(TestAResultSpreadingThroughTheLakeDefeatsTheImp) {
 }
 
 // The gob on the oil, hit by the fireball itself, is defeated there (weak to
-// (oil, burning)) and gets nothing more, but its reaction still spreads (as
-// in the HTN rules): the cook on the same oil gets the outcome, and the oil
-// catches fire.
+// (oil, burning)), in play until the end of the turn: its reaction spreads
+// (as in the HTN rules) over the cook on the same oil and over the gob
+// itself, and the oil catches fire.
 TEST(TestAGobDefeatedOnTheOilStillSetsItAblaze) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
@@ -1124,7 +1150,7 @@ TEST(TestAGobDefeatedOnTheOilStillSetsItAblaze) {
   ASSERT_EQ(env.GetLastDefeats().size(), static_cast<size_t>(1));
   ASSERT_EQ(env.GetLastDefeats().at(0).agent, gob->GetId());
   ASSERT_TRUE(env.GetLastDefeats().at(0).kind == TagSource::Skill);
-  ASSERT_TRUE(Has(env, gob, "oil"));  // Nothing more: its originals stay
+  ASSERT_FALSE(Has(env, gob, "oil"));  // Still in play: its reaction took it
 
   ASSERT_EQ(env.GetLastReactions().size(), static_cast<size_t>(1));
   const BaseEnv::ReactionReport& r = env.GetLastReactions().at(0);
@@ -1133,10 +1159,13 @@ TEST(TestAGobDefeatedOnTheOilStillSetsItAblaze) {
   ASSERT_EQ(r.source, caster->GetId());
   ASSERT_EQ(r.cause, std::string("fireball"));
   ASSERT_TRUE(r.spread);
-  ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));  // The cook, not the gob
+  ASSERT_EQ(r.affected.size(), static_cast<size_t>(2));  // The cook, then the gob
   ASSERT_EQ(r.affected.at(0).agent, cook->GetId());
   ASSERT_TRUE(r.affected.at(0).result_landed);
   ASSERT_EQ(r.affected.at(0).damage, 1);
+  ASSERT_EQ(r.affected.at(1).agent, gob->GetId());
+  ASSERT_FALSE(r.affected.at(1).defeated);  // Defeated already, once per turn
+  ASSERT_EQ(r.affected.at(1).damage, 1);
   ASSERT_FALSE(Has(env, cook, "oil"));
   ASSERT_TRUE(Has(env, cook, "burning"));
   ASSERT_EQ(cook->GetHealth(), 9);
@@ -1823,10 +1852,9 @@ TEST(TestTheZonePhaseFixesItsTriggersBeforeAnyOutcome) {
   }
 }
 
-// Per-firing damage in the zone phase: a Marked agent hit by two firings of
-// 1 damage takes 2 (Marked truncates each hit: 1 stays 1, as in the skill
-// phase), not 3, in both orders.
-TEST(TestAMarkedAgentTakesEachFiringsDamageApart) {
+// Two firings of 1 damage in the zone phase on a Marked agent: the turn's
+// total (2) is Marked once: 3, in both orders (each firing reports its raw 1).
+TEST(TestAMarkedAgentTakesTheTurnsTotalOfTheFirings) {
   std::string traces[2];
   for (bool swapped : {false, true}) {
     SynchroEnv env(10, 10, 2, 1, 0, 42);
@@ -1846,8 +1874,8 @@ TEST(TestAMarkedAgentTakesEachFiringsDamageApart) {
     for (const auto& r : env.GetLastReactions()) {
       for (const auto& o : r.affected) ASSERT_EQ(o.damage, 1);
     }
-    ASSERT_EQ(a->GetHealth(), 8);
-    ASSERT_EQ(b->GetHealth(), 8);
+    ASSERT_EQ(a->GetHealth(), 7);
+    ASSERT_EQ(b->GetHealth(), 7);
     traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}});
   }
   if (traces[0] != traces[1]) {
@@ -1856,11 +1884,10 @@ TEST(TestAMarkedAgentTakesEachFiringsDamageApart) {
 }
 
 // The zone phase computes every firing before applying any: A's firing (a
-// spreading jolt, 3 damage) would down B, but B's own reaction (alone, 1
-// damage) still fires, whatever the agents' order. B ends down in both, its
-// tags the same. Each firing deals its damage in firing order and reports
-// what it dealt: A first, its 3 downs B and B's own firing deals 0; B first,
-// its 1 then A's 3. So the traces agree but for that attribution.
+// spreading jolt, 3 damage) takes B to 0, but B's own reaction (alone, 1
+// damage) still fires, whatever the agents' order. Both firings' damage goes
+// into B's turn (reported: 3 and 1, in both orders); B ends down in both, its
+// tags the same.
 TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
   std::string traces[2];
   for (bool swapped : {false, true}) {
@@ -1887,7 +1914,7 @@ TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
         ASSERT_FALSE(r.spread);
         ASSERT_EQ(r.affected.size(), static_cast<size_t>(1));
         ASSERT_TRUE(r.affected.at(0).result_landed);
-        ASSERT_EQ(r.affected.at(0).damage, swapped ? 1 : 0);  // B first: dealt; A first: B was down
+        ASSERT_EQ(r.affected.at(0).damage, 1);  // Dealt in both orders: B is down at the end
       }
     }
     ASSERT_EQ(a->GetHealth(), 7);
@@ -1895,7 +1922,7 @@ TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
     ASSERT_TRUE(Has(env, b, "shocked"));
     ASSERT_TRUE(Has(env, b, "steamed"));
     ASSERT_FALSE(Has(env, b, "burning"));
-    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}}, false);
+    traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {b->GetId(), "b"}});
   }
   if (traces[0] != traces[1]) {
     throw std::runtime_error("the order matters:\n" + traces[0] + "--- swapped ---\n" + traces[1]);
@@ -1905,8 +1932,9 @@ TEST(TestAZonePhaseFiringNeverCancelsAnotherTrigger) {
 // A result defeating an agent through its weakness while another firing
 // reaches it: per agent, every result lands, then the weaknesses, then the
 // damage, so the outcome is the same in both orders. X, weak to (wet,
-// shocked), gets A's spreading shocked and its own steamed, is defeated (down,
-// no damage from either firing).
+// shocked), gets A's spreading shocked and its own steamed, is defeated (down
+// at the end of the turn, whatever the damage both firings still deal: their
+// raw shares reported).
 TEST(TestAZonePhaseWeaknessDefeatDoesNotDependOnTheOrder) {
   std::string traces[2];
   for (bool swapped : {false, true}) {
@@ -1936,7 +1964,7 @@ TEST(TestAZonePhaseWeaknessDefeatDoesNotDependOnTheOrder) {
         if (o.agent != x->GetId()) continue;
         ASSERT_TRUE(o.result_landed);
         ASSERT_EQ(o.defeated, r.rule == 0);  // Its shocked defeated it
-        ASSERT_EQ(o.damage, 0);              // Defeated: no damage
+        ASSERT_EQ(o.damage, 1);              // Its raw share: defeated, it ends at 0
       }
     }
     traces[swapped] = RoleTrace(env, {{a->GetId(), "a"}, {x->GetId(), "x"}});

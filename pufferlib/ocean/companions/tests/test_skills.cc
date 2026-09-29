@@ -1793,9 +1793,10 @@ TEST(TestSelfDamage) {
   ASSERT_EQ(ally->GetHealth(), 1);
 }
 
-// Order inside a skill: tags, then damage, then root and area motion. An agent
-// the damage kills still got the tags, but is neither rooted nor moved.
-TEST(TestDamageAfterTagsBeforeRootAndMotion) {
+// Order inside a skill: tags, then damage, then root and area motion. The
+// damage goes into the turn's ledger: an agent it kills dies at the end of
+// the turn, so it still got the tags, and is still rooted and moved.
+TEST(TestAnAgentKilledThisTurnIsStillRootedAndMoved) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   SkillConfig blast = DefineCopy(env, "fireball", "blast");  // cross, push_out 1
@@ -1810,8 +1811,8 @@ TEST(TestDamageAfterTagsBeforeRootAndMotion) {
   env.Step({Use(MovementAction::Right), kStay, kStay});
   ASSERT_FALSE(doomed->IsAlive());
   ASSERT_TRUE(Has(env, doomed, "burning"));
-  ASSERT_TRUE(doomed->GetPosition() == (Position{2, 4}));  // not pushed
-  ASSERT_FALSE(doomed->IsRooted());
+  ASSERT_TRUE(doomed->GetPosition() == (Position{1, 4}));  // pushed
+  ASSERT_TRUE(doomed->IsRooted());
   ASSERT_EQ(tough->GetHealth(), 2);
   ASSERT_TRUE(Has(env, tough, "burning"));
   ASSERT_TRUE(tough->GetPosition() == (Position{3, 6}));   // pushed
@@ -2318,10 +2319,10 @@ TEST(TestPreviewCasterEffectsFollowItsSelfFlags) {
   ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
 }
 
-// A use reports what it DID; the preview, what it would do. An agent the
-// use's own damage kills or downs is neither rooted nor moved: the preview
-// predicted Root and Motion, the use reports neither.
-TEST(TestAUseReportsThatItsDamageStoppedRootAndPush) {
+// A use reports what it DID; the preview, what it would do. Its own damage
+// kills or downs at the end of the turn: an agent it takes to 0 is still
+// rooted and moved, as the preview predicted.
+TEST(TestAUseRootsAndPushesWhomItsDamageKillsThisTurn) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   SkillConfig blast = DefineCopy(env, "fireball", "blast");  // cross, push_out 1
@@ -2342,16 +2343,16 @@ TEST(TestAUseReportsThatItsDamageStoppedRootAndPush) {
   env.Step({Use(MovementAction::Right), kStay, kStay, kStay});
   ASSERT_FALSE(doomed->IsAlive());
   ASSERT_TRUE(ally->IsDowned());
+  ASSERT_TRUE(doomed->GetPosition() == (Position{1, 4}));
   ASSERT_TRUE(tough->GetPosition() == (Position{3, 6}));
-  ASSERT_TRUE(env.GetLastSkillUses()[0].affected ==
-              (Affected{{doomed->GetId(), kTagsFx | kDamageFx},
-                        {tough->GetId(), all},
-                        {ally->GetId(), kTagsFx | kDamageFx}}));
+  ASSERT_TRUE(ally->GetPosition() == (Position{5, 4}));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].affected == p.affected);
 }
 
-// A pull whose first ring thing the use's damage kills takes the next one:
-// the use reports that one moved.
-TEST(TestAUseReportsThePullThatTookTheNextThing) {
+// A pull takes its first ring thing by priority even when the use's damage
+// kills it: it dies at the end of the turn, in the centre. The use reports
+// what the preview predicted.
+TEST(TestAUsePullsTheThingItsDamageKillsThisTurn) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
   SkillConfig drag = DefineCopy(env, "vortex", "drag");  // cross, pull_in, root 1
@@ -2359,7 +2360,7 @@ TEST(TestAUseReportsThePullThatTookTheNextThing) {
   env.GetMutableSkillBook().Define(drag);
   Agent* caster = Place(env, 0, {3, 1});                  // centre (3,4)
   Agent* doomed = AddAgent(env, {2, 4}, Faction::ENEMY);  // up: first by priority, killed
-  Agent* tough = AddAgent(env, {3, 5}, Faction::ENEMY);   // right: pulled instead
+  Agent* tough = AddAgent(env, {3, 5}, Faction::ENEMY);   // right: stays
   tough->SetMaxHealth(5);
   env.SetCompanionSkill(caster->GetId(), 0, "drag");
   BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(caster), 0, Direction::Right);
@@ -2367,10 +2368,9 @@ TEST(TestAUseReportsThePullThatTookTheNextThing) {
                                       {tough->GetId(), kDamageFx | kRootFx}}));
   env.Step({Use(MovementAction::Right), kStay, kStay});
   ASSERT_FALSE(doomed->IsAlive());
-  ASSERT_TRUE(tough->GetPosition() == (Position{3, 4}));
-  ASSERT_TRUE(env.GetLastSkillUses()[0].affected ==
-              (Affected{{doomed->GetId(), kDamageFx},
-                        {tough->GetId(), kDamageFx | kRootFx | kMotionFx}}));
+  ASSERT_TRUE(doomed->GetPosition() == (Position{3, 4}));
+  ASSERT_TRUE(tough->GetPosition() == (Position{3, 5}));
+  ASSERT_TRUE(env.GetLastSkillUses()[0].affected == p.affected);
 }
 
 // A push against a wall moves nothing: no Motion, predicted or done.

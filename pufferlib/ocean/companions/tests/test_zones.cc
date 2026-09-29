@@ -443,8 +443,8 @@ TEST(TestZoneDamagesEveryLanding) {
   ASSERT_EQ(a->GetHealth(), 2);
 }
 
-// The damage goes through Agent::TakeDamage: Marked applies (the report keeps
-// the zone's own damage, as SkillConfig::damage is before Marked).
+// The damage goes into the turn's total: Marked applies to it (the report
+// keeps the zone's own damage, as SkillConfig::damage is before Marked).
 TEST(TestZoneDamageIsMarked) {
   SynchroEnv env(10, 10, 1, 1, 0, 42);
   MakeArena(env);
@@ -585,10 +585,10 @@ TEST(TestLoadSnapshotEndsAStepThatThrew) {
   ASSERT_EQ(env.GetCellTag({3, 2}).steps, 2);
 }
 
-// A caster its landing zone downs gets nothing from its own skill (the use
-// reports neither Tags nor Damage on it), but the rest of the use still runs:
-// the others are hit.
-TEST(TestACasterDownedByItsLandingZoneGetsNothingButItsUseGoesOn) {
+// A caster its landing zone takes to 0 goes down at the end of the turn, so
+// it still gets its own use (tags and damage, reported), and the others are
+// hit too.
+TEST(TestACasterItsLandingZoneDownsStillGetsItsOwnUse) {
   SynchroEnv env(10, 10, 2, 1, 0, 42);
   MakeArena(env);
   SkillConfig blaze;
@@ -609,18 +609,25 @@ TEST(TestACasterDownedByItsLandingZoneGetsNothingButItsUseGoesOn) {
   env.Step({Use(MovementAction::Right), kStay});
   ASSERT_TRUE(caster->GetPosition() == (Position{3, 5}));
   ASSERT_TRUE(caster->IsDowned());
-  ASSERT_FALSE(Has(env, caster, "hot"));
+  ASSERT_TRUE(Has(env, caster, "hot"));  // Tags stay through a down
   ASSERT_TRUE(Has(env, other, "hot"));
   ASSERT_EQ(other->GetHealth(), 2);
-  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(2));  // The zone's, then other's
-  ASSERT_EQ(env.GetLastTagsApplied()[1].agent, other->GetId());
+  // The zone's, then the use's: the caster (the centre), then other
+  ASSERT_EQ(env.GetLastTagsApplied().size(), static_cast<size_t>(3));
+  ASSERT_EQ(env.GetLastTagsApplied()[1].agent, caster->GetId());
+  ASSERT_EQ(env.GetLastTagsApplied()[2].agent, other->GetId());
   ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(1));
   const auto& affected = env.GetLastSkillUses()[0].affected;
+  const unsigned hit = BaseEnv::kSkillEffectTags | BaseEnv::kSkillEffectDamage;
   ASSERT_EQ(affected.size(), static_cast<size_t>(2));
   ASSERT_EQ(affected[0].id, caster->GetId());
-  ASSERT_EQ(affected[0].effects, 0u);
+  ASSERT_EQ(affected[0].effects, hit);
   ASSERT_EQ(affected[1].id, other->GetId());
-  ASSERT_EQ(affected[1].effects, BaseEnv::kSkillEffectTags | BaseEnv::kSkillEffectDamage);
+  ASSERT_EQ(affected[1].effects, hit);
+  ASSERT_EQ(env.GetLastTurnHealth().size(), static_cast<size_t>(2));
+  ASSERT_EQ(env.GetLastTurnHealth()[0].agent, caster->GetId());
+  ASSERT_EQ(env.GetLastTurnHealth()[0].damage, 2);  // Its zone's and its own
+  ASSERT_TRUE(env.GetLastTurnHealth()[0].outcome == BaseEnv::TurnOutcome::Downed);
 }
 
 // =============================================================================

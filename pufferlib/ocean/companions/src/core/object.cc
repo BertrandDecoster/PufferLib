@@ -50,6 +50,13 @@ void Agent::Heal(int amount) {
   if (health_ > max_health_) health_ = max_health_;
 }
 
+void Agent::ApplyTurnHealth(int health) {
+  if (!IsAffectable()) return;
+  const bool was_up = health_ > 0;
+  health_ = std::max(0, std::min(health, max_health_));
+  if (was_up && health_ == 0) OnZeroHealth();
+}
+
 void Agent::EndStep() {
   in_step_ = false;
   if (IsAlive()) TickTimers();

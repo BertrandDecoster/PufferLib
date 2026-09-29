@@ -3,6 +3,8 @@
 
 #include "effect_system.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 
@@ -17,12 +19,14 @@ EffectSystem::EffectSystem(ObjectManager* object_manager, Grid* grid)
 EffectSystem::EffectSystem(const EffectSystem& other)
     : object_manager_(other.object_manager_),
       grid_(other.grid_),
+      health_sink_(other.health_sink_),
       active_effects_(other.active_effects_) {}
 
 EffectSystem& EffectSystem::operator=(const EffectSystem& other) {
   if (this != &other) {
     object_manager_ = other.object_manager_;
     grid_ = other.grid_;
+    health_sink_ = other.health_sink_;
     active_effects_ = other.active_effects_;
   }
   return *this;
@@ -191,6 +195,19 @@ void EffectSystem::Tick() {
   }
 }
 
+void EffectSystem::CancelDeadSources() {
+  active_effects_.erase(
+      std::remove_if(active_effects_.begin(), active_effects_.end(),
+                     [this](const ActiveEffect& effect) {
+                       if (!effect.in_telegraph || !IsSourceDead(effect)) return false;
+                       LOG_EFFECT("'" << (effect.config ? effect.config->name : std::string("?"))
+                                      << "': Cancelled (source " << effect.source_id
+                                      << " died this turn)");
+                       return true;
+                     }),
+      active_effects_.end());
+}
+
 bool EffectSystem::IsSourceDead(const ActiveEffect& effect) const {
   if (effect.source_id == kInvalidObjectId) return false;
   const Actor* source = object_manager_->GetActor(effect.source_id);
@@ -307,12 +324,20 @@ void EffectSystem::ApplyEffectModifiers(
     int old_health = agent->GetHealth();
     Position old_pos = agent->GetPosition();
 
-    // Apply damage
+    // Apply damage (through the sink: during a Step, the turn's ledger)
     if (cfg.damage != 0) {
       if (cfg.damage > 0) {
-        agent->TakeDamage(cfg.damage);
+        if (health_sink_) {
+          health_sink_->Hurt(*agent, cfg.damage);
+        } else {
+          agent->TakeDamage(cfg.damage);
+        }
       } else {
-        agent->Heal(-cfg.damage);
+        if (health_sink_) {
+          health_sink_->Heal(*agent, -cfg.damage);
+        } else {
+          agent->Heal(-cfg.damage);
+        }
       }
       applied_damage = true;
     }
@@ -343,8 +368,13 @@ void EffectSystem::ApplyEffectModifiers(
       if (applied_damage) {
         int new_health = agent->GetHealth();
         int change = new_health - old_health;
-        log_msg << ": " << (change >= 0 ? "+" : "") << change << " HP ("
-                << new_health << "/" << agent->GetMaxHealth() << " remaining)";
+        if (change == 0) {  // Into the turn's ledger (a Step), or none dealt
+          log_msg << ": " << (cfg.damage > 0 ? "-" : "+") << std::abs(cfg.damage)
+                  << " HP at the end of the turn";
+        } else {
+          log_msg << ": " << (change >= 0 ? "+" : "") << change << " HP ("
+                  << new_health << "/" << agent->GetMaxHealth() << " remaining)";
+        }
         if (!agent->IsAlive()) {
           log_msg << " [KILLED]";
         }

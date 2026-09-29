@@ -31,6 +31,7 @@ BaseEnv::BaseEnv(int rows, int cols, int d4_transform)
       effect_system_(std::make_unique<EffectSystem>(object_manager_.get(), grid_.get())),
       d4_transform_(d4_transform) {
   assert(IsValidD4Transform(d4_transform) && "Invalid D4 transform (must be 0-7)");
+  effect_system_->SetHealthSink(&effect_health_);
 }
 
 BaseEnv::~BaseEnv() = default;
@@ -71,9 +72,11 @@ BaseEnv::BaseEnv(const BaseEnv& other)
       tag_statuses_(other.tag_statuses_),
       tag_status_ids_(other.tag_status_ids_),
       last_reactions_(other.last_reactions_),
-      last_defeats_(other.last_defeats_) {
+      last_defeats_(other.last_defeats_),
+      last_turn_health_(other.last_turn_health_) {
   // Update EffectSystem pointers to point to our new copies
   effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
+  effect_system_->SetHealthSink(&effect_health_);
 }
 
 BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
@@ -84,6 +87,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     object_manager_ = std::make_unique<ObjectManager>(*other.object_manager_);
     effect_system_ = std::make_unique<EffectSystem>(*other.effect_system_);
     effect_system_->UpdatePointers(object_manager_.get(), grid_.get());
+    effect_system_->SetHealthSink(&effect_health_);
     tick_ = other.tick_;
     horizon_ = other.horizon_;
     d4_transform_ = other.d4_transform_;
@@ -111,6 +115,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     reaction_hits_.clear();
     reaction_affected_.clear();
     hit_agents_.clear();
+    turn_.Clear();
     intended_skills_ = other.intended_skills_;
     max_downs_ = other.max_downs_;
     context_skills_ = other.context_skills_;
@@ -120,6 +125,7 @@ BaseEnv& BaseEnv::operator=(const BaseEnv& other) {
     tag_status_ids_ = other.tag_status_ids_;
     last_reactions_ = other.last_reactions_;
     last_defeats_ = other.last_defeats_;
+    last_turn_health_ = other.last_turn_health_;
   }
   return *this;
 }
@@ -162,6 +168,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
       if (env.in_step_) env.AbortStep();
     }
   } step_scope{*this};
+  // Nothing changes HP, alive or down during the turn: its ledger, applied
+  // at its end (ApplyTurnOutcomes)
+  BeginTurn();
 
   // Pre-step hook
   PreStep();
@@ -196,6 +205,9 @@ StepResult BaseEnv::Step(const std::vector<Action>& actions) {
   // The zones the step's reactions set: the map changes here, once (they
   // first land next step)
   CommitPendingZones();
+
+  // The turn's end: its health totals, downs, deaths and revives, at once
+  ApplyTurnOutcomes();
 
   // Every timer (tags, statuses, cooldowns, then the zones') ticks here, at
   // the end of the step
@@ -1024,6 +1036,7 @@ void BaseEnv::ClearStepReports() {
   last_defeats_.clear();
   last_downs_.clear();
   last_revives_.clear();
+  last_turn_health_.clear();
 }
 
 bool BaseEnv::CanMoveItself(const Agent& agent) const { return !agent.IsRooted(); }
@@ -1139,8 +1152,9 @@ bool BaseEnv::LandTag(Agent& agent, TagId tag, int duration, ObjectId source,
                       const std::string& cause, TagSource kind, int reaction) {
   // 1-2. Immunity, the tag and its status
   if (!PutTag(agent, tag, duration, source, cause, kind, reaction)) return false;
-  // 3. Weakness: a defeated agent gets nothing more (no reaction outcome, and
-  //    no zone damage: ResolveZoneLandings finds it no longer affectable).
+  // 3. Weakness: during a step a defeated agent stays in play until the end
+  //    of the turn (reaction outcomes, zone damage); between two steps it is
+  //    defeated at once and gets nothing more.
   ResolveWeakness(agent, tag, source, cause, kind, reaction);
   // 4. Reaction: results never trigger one. A defeated trigger still starts
   //    it (its tags stay): a spread reaches the others and changes the zone.
@@ -1197,7 +1211,14 @@ void BaseEnv::ResolveWeakness(Agent& agent, TagId tag, ObjectId source, const st
 
 void BaseEnv::DefeatBy(Agent& agent, const Agent::WeakTo& weakness, ObjectId source,
                        const std::string& cause, TagSource kind, int reaction) {
-  agent.Defeat();
+  if (in_step_) {
+    // In play until the end of the turn, which leaves it at 0
+    LedgerEntry& e = LedgerOf(agent);
+    if (e.defeated) return;  // Once per turn
+    e.defeated = e.touched = true;
+  } else {
+    agent.Defeat();
+  }
   DefeatReport d(kind);
   d.agent = agent.GetId();
   d.zone = weakness.zone;
@@ -1272,7 +1293,7 @@ void BaseEnv::FireReaction(Agent& agent, TagId tag, int rule, ObjectId source,
     outcome.defeated = last_defeats_.size() > defeats;
     if (spec.damage > 0 && a->IsAffectable()) {
       outcome.damage = spec.damage;
-      a->TakeDamage(spec.damage);
+      HurtInStep(*a, spec.damage);
     }
     last_reactions_[static_cast<size_t>(index)].affected.push_back(outcome);
   }
@@ -1288,7 +1309,8 @@ int BaseEnv::StartReaction(Agent& agent, TagId tag, int rule, ObjectId source,
   // (asked of the map, as the step began), else the agent alone
   const TagId here = GetCellTag(agent.GetPosition()).tag;
   const bool spread = spec.spread && here != kInvalidTag && (here == r.a || here == r.b);
-  // A defeated trigger alone: nobody left to affect, nothing fires
+  // A trigger defeated at once (between two steps) alone: nobody left to
+  // affect, nothing fires (during a step it is still in play)
   if (!spread && !agent.IsAffectable()) return -1;
   affected.clear();
   std::vector<char> region;
@@ -1375,7 +1397,7 @@ void BaseEnv::ApplyReactionHits() {
   // 3. One weakness check per agent over the results that landed on it: its
   //    first (P, S) (its own order) with P under it and S among them
   for (Agent* x : hit_agents_) {
-    if (!x->IsAffectable() || x->GetWeakTo().empty()) continue;
+    if (!x->IsAffectable() || x->GetWeakTo().empty() || IsDefeatedThisTurn(*x)) continue;
     const TagId here = GetCellTag(x->GetPosition()).tag;
     if (here == kInvalidTag) continue;
     for (const Agent::WeakTo& w : x->GetWeakTo()) {
@@ -1401,16 +1423,15 @@ void BaseEnv::ApplyReactionHits() {
       break;
     }
   }
-  // 4. The damage: one TakeDamage per firing, in firing order (Marked
-  //    truncates each hit, as in the skill phase), on an agent still
-  //    affectable; each firing reports what it dealt (0 once the agent was
-  //    defeated or went down). An unaffectable agent takes nothing, so the
-  //    final state does not depend on the order.
+  // 4. The damage: each firing's, in firing order, into the turn's ledger
+  //    (a defeated agent included: it stays in play until the end of the
+  //    turn); each firing reports its raw share. The ledger sums them, so
+  //    the final state does not depend on the order.
   for (const ReactionHit& h : reaction_hits_) {
     const int damage = reactions_[rule_of(h)].damage;
     if (damage <= 0 || !h.agent->IsAffectable()) continue;
     last_reactions_[h.firing].affected[h.outcome].damage = damage;
-    h.agent->TakeDamage(damage);
+    HurtInStep(*h.agent, damage);
   }
 }
 
@@ -1635,12 +1656,12 @@ void BaseEnv::ResolveZoneLandings() {
   //    c3: the outcomes, per agent; then the zones, in firing order (pending)
   if (!reaction_hits_.empty()) ApplyReactionHits();
   for (size_t i = first_firing; i < last_reactions_.size(); ++i) ApplyZoneBecomes(i);
-  // d. The zone's own damage, last: only on an agent still affectable (not
-  //    defeated, not downed or killed by a reaction's damage)
+  // d. The zone's own damage, last, into the turn's ledger (a defeated agent
+  //    included: it stays in play until the end of the turn)
   for (const ZoneLanding& l : zone_landings_) {
     if (l.zone.damage > 0 && l.agent->IsAffectable()) {
       last_tags_applied_[l.report].damage = l.zone.damage;
-      l.agent->TakeDamage(l.zone.damage);
+      HurtInStep(*l.agent, l.zone.damage);
     }
   }
   // No Agent* outlives the phase (a LoadSnapshot re-creates the agents)
@@ -1681,6 +1702,10 @@ void BaseEnv::AbortStep() {
   reaction_hits_.clear();
   reaction_affected_.clear();
   hit_agents_.clear();
+  // The turn's ledger: what the step did to health, downs, deaths and
+  // revives, agent-local (no report, no allocation)
+  ApplyTurnLedger(false);
+  turn_.Clear();
   in_step_ = false;
   for (Agent* agent : object_manager_->GetAllAgents()) agent->AbortStep();
 }
@@ -1695,6 +1720,150 @@ void BaseEnv::TickZones() {
     // (each cell is visited once, so a cycle advances one zone per tick)
     z = z.then == kInvalidTag ? CellTag{} : ResolveZone(z.then, GetZoneDef(tags_.Name(z.then)));
   }
+}
+
+// =============================================================================
+// The turn's health
+// =============================================================================
+
+void BaseEnv::BeginTurn() {
+  turn_.Clear();
+  for (Agent* agent : object_manager_->GetAllAgents()) {
+    LedgerEntry e;
+    e.agent = agent;
+    e.marked = agent->IsMarked();
+    turn_.ledger.push_back(e);
+  }
+}
+
+BaseEnv::LedgerEntry& BaseEnv::LedgerOf(Agent& agent) {
+  std::vector<LedgerEntry>& ledger = turn_.ledger;
+  const int index = agent.GetAgentIndex();  // Its entry when the indices are dense
+  if (index >= 0 && static_cast<size_t>(index) < ledger.size() &&
+      ledger[static_cast<size_t>(index)].agent == &agent) {
+    return ledger[static_cast<size_t>(index)];
+  }
+  for (LedgerEntry& e : ledger) {
+    if (e.agent == &agent) return e;
+  }
+  LedgerEntry e;  // An agent the turn began without
+  e.agent = &agent;
+  e.marked = agent.IsMarked();
+  ledger.push_back(e);
+  return ledger.back();
+}
+
+const BaseEnv::LedgerEntry* BaseEnv::FindLedger(const Agent& agent) const {
+  for (const LedgerEntry& e : turn_.ledger) {
+    if (e.agent == &agent) return &e;
+  }
+  return nullptr;
+}
+
+bool BaseEnv::IsDefeatedThisTurn(const Agent& agent) const {
+  if (!in_step_) return false;
+  const LedgerEntry* e = FindLedger(agent);
+  return e && e->defeated;
+}
+
+void BaseEnv::HurtInStep(Agent& agent, int amount) {
+  if (amount <= 0) return;
+  if (!in_step_) {
+    agent.TakeDamage(amount);
+    return;
+  }
+  if (!agent.IsAffectable()) return;  // As TakeDamage
+  LedgerEntry& e = LedgerOf(agent);
+  e.damage += amount;
+  e.touched = true;
+}
+
+void BaseEnv::HealInStep(Agent& agent, int amount) {
+  if (amount <= 0) return;
+  if (!in_step_) {
+    agent.Heal(amount);
+    return;
+  }
+  if (!agent.IsAffectable()) return;  // As Heal (reviving is not healing)
+  LedgerEntry& e = LedgerOf(agent);
+  e.heal += amount;
+  e.touched = true;
+}
+
+bool BaseEnv::PlanRevive(Companion& ally, int health, const Companion& caster) {
+  LedgerEntry& e = LedgerOf(ally);
+  assert(!e.defeated && "a defeat and a revive on one agent in one turn");
+  // As Companion::Revive will clamp it
+  health = std::max(1, std::min(health, ally.GetMaxHealth()));
+  e.touched = true;
+  // Casters resolve in agent-index order: an earlier one giving as much keeps it
+  if (e.reviver != kInvalidObjectId && health <= e.revive_health) return false;
+  if (e.reviver != kInvalidObjectId) {
+    // The earlier use keeps the ally in its affected, without Revive
+    for (SkillUse& use : last_skill_uses_) {
+      if (use.caster != e.reviver) continue;
+      for (AffectedAgent& a : use.affected) {
+        if (a.id == ally.GetId()) a.effects &= ~kSkillEffectRevive;
+      }
+    }
+  }
+  e.revive_health = health;
+  e.reviver = caster.GetId();
+  return true;
+}
+
+void BaseEnv::ApplyTurnLedger(bool report) {
+  for (LedgerEntry& e : turn_.ledger) {
+    if (!e.touched || !e.agent) continue;
+    Agent& agent = *e.agent;
+    assert(!(e.defeated && e.reviver != kInvalidObjectId) &&
+           "a defeat and a revive on one agent in one turn");
+    TurnHealth t;
+    t.agent = agent.GetId();
+    t.damage = e.damage;
+    t.heal = e.heal;
+    const int before = agent.GetHealth();
+    ObjectId reviver = kInvalidObjectId;
+    if (e.reviver != kInvalidObjectId) {
+      auto* comp = dynamic_cast<Companion*>(&agent);
+      if (comp && comp->Revive(e.revive_health)) {
+        t.outcome = TurnOutcome::Revived;
+        reviver = e.reviver;
+      }
+    } else if (e.defeated) {
+      agent.Defeat();  // 0 whatever the heals
+      t.outcome = TurnOutcome::Defeated;
+    } else {
+      // Marked on the total, rounded down once, only if Marked as the turn
+      // began; then the heals
+      if (e.marked) {
+        t.marked_bonus = static_cast<int>(e.damage * Agent::kMarkedDamageMultiplier) - e.damage;
+      }
+      agent.ApplyTurnHealth(before - e.damage - t.marked_bonus + e.heal);
+      if (before > 0 && agent.GetHealth() == 0 && !agent.IsAffectable()) {
+        t.outcome = dynamic_cast<Companion*>(&agent) ? TurnOutcome::Downed : TurnOutcome::Died;
+      }
+    }
+    t.health = agent.GetHealth();
+    t.change = t.health - before;
+    // Emptied before the reports allocate: a throw there (AbortStep) never
+    // applies it twice
+    Agent* const kept = e.agent;
+    const bool marked = e.marked;
+    e = LedgerEntry{};
+    e.agent = kept;
+    e.marked = marked;
+    if (!report) continue;
+    if (reviver != kInvalidObjectId) last_revives_.push_back({reviver, t.agent, t.health});
+    last_turn_health_.push_back(t);
+  }
+}
+
+void BaseEnv::ApplyTurnOutcomes() {
+  ApplyTurnLedger(true);
+  turn_.Clear();
+  // The turn's dead: their strikes still winding up never land
+  effect_system_->CancelDeadSources();
 }
 
 std::vector<Position> BaseEnv::AreaCells(Position centre, SkillArea area) const {
@@ -1778,6 +1947,7 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
   // As the step, around its skills: timers set from here on are step timers
   for (Agent* agent : world->object_manager_->GetAllAgents()) agent->BeginStep();
   world->in_step_ = true;
+  world->BeginTurn();
   // As GatherIntentions decides: the stunned (and the downed) stay, then a
   // use CanUseSkill allows, with the context read now
   const ContextSkillRule* rule = nullptr;
@@ -1788,8 +1958,10 @@ BaseEnv::SkillOutcome BaseEnv::PreviewSkillOutcome(ObjectId caster, int slot,
         *comp, slot, rule ? static_cast<int>(rule - world->context_skills_.data()) : -1);
   }
   // The zones the use sets at the end of the step (its reactions' cells),
-  // committed as the step's end would, the timers not ticked
+  // committed as the step's end would, then the turn's end (health, downs,
+  // deaths, revives), the timers not ticked
   world->CommitPendingZones();
+  world->ApplyTurnOutcomes();
   for (Companion* c : world->object_manager_->GetAllCompanions()) {
     for (int n = c->TakeUnreportedDowns(); n > 0; --n) world->last_downs_.push_back(c->GetId());
   }
@@ -1976,10 +2148,11 @@ BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& sk
   auto has = [&](size_t i, unsigned e) { return agents[i] && (targets.affected[i].effects & e); };
   auto drop = [&](size_t i, unsigned e) { targets.affected[i].effects &= ~e; };
 
-  // 3. Tags land on who was there at impact (area and path).
-  // An agent no longer affectable by then (a caster its landing zone's
-  // damage downed or killed) gets nothing, and the use reports nothing on it;
-  // the rest of the use still runs (the others are hit, pushed, rooted).
+  // 3. Tags land on who was there at impact (area and path). Nobody becomes
+  // unaffectable during a step (downs and deaths wait for the end of the
+  // turn: a caster its landing zone takes to 0 still gets its own use); an
+  // agent that is not (a host call in a hook) gets nothing, and the use
+  // reports nothing on it.
   for (size_t i = 0; i < agents.size(); ++i) {
     if (!has(i, kSkillEffectTags)) continue;
     if (!agents[i]->IsAffectable()) {
@@ -1994,33 +2167,41 @@ BaseEnv::SkillTargets BaseEnv::UseSkill(Companion& caster, const SkillConfig& sk
     if (!landed) drop(i, kSkillEffectTags);
   }
 
-  // 4. Damage, on the same agents (after the tags: an agent it kills still got
-  // them). Deaths are the health system's (Agent::TakeDamage), as for effects.
+  // 4. Damage, on the same agents (after the tags), into the turn's ledger:
+  // an agent it takes to 0 goes down or dies at the end of the turn, so it is
+  // still rooted and moved below.
   for (size_t i = 0; i < agents.size(); ++i) {
     if (!has(i, kSkillEffectDamage)) continue;
     if (agents[i]->IsAffectable()) {
-      agents[i]->TakeDamage(skill.damage);
+      HurtInStep(*agents[i], skill.damage);
     } else {
       drop(i, kSkillEffectDamage);
     }
   }
 
-  // 5. Revive: the downed it affects get up where they lie (an affects_downed
-  // skill has no tags, damage, root or motion).
+  // 5. Revive: the downed it affects get up where they lie at the end of the
+  // turn (an affects_downed skill has no tags, damage, root or motion). Two
+  // revivers on one ally: the Revive effect stays on the use credited
+  // (PlanRevive).
   for (size_t i = 0; i < agents.size(); ++i) {
     if (!has(i, kSkillEffectRevive)) continue;
     auto* comp = dynamic_cast<Companion*>(agents[i]);
     const int health = comp ? (comp->GetMaxHealth() * skill.revive_percent + 99) / 100 : 0;
-    if (comp && comp->IsDowned() && comp->Revive(health)) {
-      last_revives_.push_back({caster.GetId(), comp->GetId(), comp->GetHealth()});
-    } else {
-      drop(i, kSkillEffectRevive);
+    bool revived = false;
+    if (comp && comp->IsAlive() && comp->IsDowned()) {
+      if (in_step_) {
+        revived = PlanRevive(*comp, health, caster);
+      } else if (comp->Revive(health)) {
+        revived = true;
+        last_revives_.push_back({caster.GetId(), comp->GetId(), comp->GetHealth()});
+      }
     }
+    if (!revived) drop(i, kSkillEffectRevive);
   }
 
   // 6. Root, before anything moves (Rooted for the next root_steps steps, a
-  // step timer, see Agent::BeginStep); not an agent the damage downed or
-  // killed. Then the area motion; Motion is what it really moved.
+  // step timer, see Agent::BeginStep). Then the area motion; Motion is what
+  // it really moved.
   for (size_t i = 0; i < agents.size(); ++i) {
     if (!has(i, kSkillEffectRoot)) continue;
     if (agents[i]->IsAffectable()) {
@@ -2302,6 +2483,7 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   ClearCellTags();     // World state: replaced by the snapshot's zones below
   in_step_ = false;    // Between two steps, even after a Step that threw
   pending_zones_.clear();  // The old world's: the snapshot's zones replace them
+  turn_.Clear();           // It points at the old world's agents
 
   // The level's combo rules (validated above; none in a snapshot before v7).
   // The zone table first: the zone cells below resolve against it.

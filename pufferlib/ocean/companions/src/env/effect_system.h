@@ -29,6 +29,18 @@ namespace companions {
 // =============================================================================
 class EffectSystem {
  public:
+  // Where an effect's damage and heals go. BaseEnv's: the turn's ledger
+  // during a Step (the turn's end applies it), at once between two steps.
+  // Without a sink: at once (Agent::TakeDamage / Heal).
+  class HealthSink {
+   public:
+    virtual void Hurt(Agent& agent, int amount) = 0;
+    virtual void Heal(Agent& agent, int amount) = 0;
+
+   protected:
+    ~HealthSink() = default;
+  };
+
   // Non-owning pointers to ObjectManager and Grid (owned by BaseEnv)
   EffectSystem(ObjectManager* object_manager, Grid* grid);
 
@@ -38,6 +50,8 @@ class EffectSystem {
 
   // Update pointers after BaseEnv copy (pointers change during copy)
   void UpdatePointers(ObjectManager* object_manager, Grid* grid);
+  // Non-owning; copied like the pointers above (a copy's owner re-points it)
+  void SetHealthSink(HealthSink* sink) { health_sink_ = sink; }
 
   // Spawn a new effect at a target location
   void SpawnEffect(const std::string& effect_name, EffectTarget target,
@@ -50,13 +64,22 @@ class EffectSystem {
   // never land. Phases already active when the source dies run their course,
   // but a looping effect stops at its next restart, with or without a
   // wind-up. Effects without a source (kInvalidObjectId) or whose source no
-  // longer exists are kept.
+  // longer exists are kept. During a Step deaths wait for the end of the
+  // turn: an attacker killed this turn is not dead yet, so its strike
+  // activating this turn still lands (CancelDeadSources then removes the
+  // rest).
   //
   // source_id is an ObjectId of this env. LoadSnapshot re-creates agents with
   // new ids and maps a snapshot effect's source_id (and its actor targets,
   // and FSM target_id) through the snapshot's agent ids; an id naming no
   // snapshot agent loads as kInvalidObjectId (a source-less effect).
   void Tick();
+
+  // The end of a turn: removes every effect still in its telegraph phase
+  // whose source is now dead (the turn's deaths), so a dead attacker's
+  // pending strikes never land; its active loops stop at their next restart
+  // (Tick). No allocation.
+  void CancelDeadSources();
 
   // Accessors
   const std::vector<ActiveEffect>& GetActiveEffects() const {
@@ -89,6 +112,7 @@ class EffectSystem {
 
   ObjectManager* object_manager_;  // Non-owning
   Grid* grid_;                     // Non-owning
+  HealthSink* health_sink_ = nullptr;  // Non-owning; null: at once
   std::vector<ActiveEffect> active_effects_;
 };
 

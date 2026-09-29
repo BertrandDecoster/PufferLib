@@ -1462,7 +1462,9 @@ TEST(TestDeadAttackersTelegraphedEffectIsCancelled) {
   Agent* enemy = PendingStrikeScene(env, 2, 1);
   Agent* companion = env.GetMutableObjectManager().GetAllAgents()[0];
   const int hp = companion->GetHealth();
-  env.Step({kStrikeRight, kIdle});  // Kills it while its strike winds up
+  // Kills it while its strike winds up: it dies at the end of the turn, its
+  // strike still winding up then is cancelled
+  env.Step({kStrikeRight, kIdle});
   ASSERT_FALSE(enemy->IsAlive());
   ASSERT_TRUE(env.GetActiveEffects().empty());
   env.Step({kIdle, kIdle});

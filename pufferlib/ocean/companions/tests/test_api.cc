@@ -2024,11 +2024,12 @@ TEST(TestADownedCompanionShowsItsEquippedSkill) {
   companions_destroy(env);
 }
 
-// Revived and downed again in the same step (two strikes wound up before the
-// step land in its effect tick, after the revive): the step reports both
-// downs, grouped before the AgentRevived (events are grouped by kind); the
-// state has it down with both downs counted.
-TEST(TestRevivedAndDownedAgainInOneStepThroughTheApi) {
+// A revive gets its ally up at the end of the turn: two strikes wound up
+// before the step land in its effect tick on an ally still down (nothing
+// touches it), so it gets up; the step reports its down (from between the
+// steps) before the AgentRevived (events are grouped by kind). It can be
+// downed again from the next step on: two more strikes take its 2 HP.
+TEST(TestARevivedAllyIsDownedAgainOnlyFromTheNextStepThroughTheApi) {
   Companions_Env* env = LoadLevel({{3, 3, ""}, {3, 4, ""}});
   const Companions_AgentState a = AgentAt(env, 0);
   const Companions_AgentState b = AgentAt(env, 1);
@@ -2043,20 +2044,29 @@ TEST(TestRevivedAndDownedAgainInOneStepThroughTheApi) {
   Companions_StepResult result = {};
   companions_step(env, act, 2, &result);
 
-  ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 2);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 1);
   ASSERT_EQ(CountEvents(result, Companions_Event_AgentRevived), 1);
   const int revived = EventIndex(result, Companions_Event_AgentRevived, b.id);
   ASSERT_TRUE(revived >= 0);
   ASSERT_EQ(result.events[revived].health_source_id, a.id);
   ASSERT_EQ(result.events[revived].health_new, 2);
-  for (int32_t i = 0; i < result.event_count; ++i) {
-    if (result.events[i].type != Companions_Event_AgentDowned) continue;
-    ASSERT_EQ(result.events[i].subject_id, b.id);
-    ASSERT_TRUE(i < revived);  // The second down too
-  }
+  const int downed = EventIndex(result, Companions_Event_AgentDowned, b.id);
+  ASSERT_TRUE(downed >= 0 && downed < revived);
   const Companions_AgentState& rb = result.state.agents[1];
-  ASSERT_TRUE(rb.downed);
-  ASSERT_EQ(rb.health, 0);
+  ASSERT_FALSE(rb.downed);
+  ASSERT_EQ(rb.health, 2);
+  ASSERT_EQ(result.state.downs, 1);
+
+  // Up: the next step's strikes down it again
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(companions_spawn_effect(env, "goblin_attack", 3, 4, Companions_Direction_Up, -1));
+  }
+  Companions_Action stay[2] = {{Companions_Movement_Stay, Companions_Interact_None},
+                               {Companions_Movement_Stay, Companions_Interact_None}};
+  companions_step(env, stay, 2, &result);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentDowned), 1);
+  ASSERT_EQ(CountEvents(result, Companions_Event_AgentRevived), 0);
+  ASSERT_TRUE(result.state.agents[1].downed);
   ASSERT_EQ(result.state.downs, 2);
   companions_destroy(env);
 }
