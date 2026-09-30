@@ -240,6 +240,59 @@ TEST(TestARefusedReviveKeepsThePreviousLensWorking) {
       env.Step({Walk(MovementAction::Right), kStay, Walk(MovementAction::Left)});
   ASSERT_TRUE(result.done);
   ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
+
+  // A refused set keeps a done env's outcome: Horizon stays Horizon
+  SynchroEnv ended(10, 10, 3, 1, 0, 42, 0, 1);
+  MakeArena(ended);
+  Place(ended, 0, {3, 2});
+  Place(ended, 1, {5, 5});
+  Place(ended, 2, {3, 7});
+  ended.Step(Stays(ended));
+  ASSERT_TRUE(ended.GetEndReason() == EndReason::Horizon);
+  ASSERT_FALSE(SetRevive(ended, {{5, 5}}));  // Nobody down
+  DownCompanion(ended, 1);
+  ASSERT_FALSE(SetRevive(ended, {{4, 4}}));  // No body there
+  ASSERT_TRUE(ended.GetTaskLens()->GetKind() == TaskLens::kSynchro);
+  ASSERT_TRUE(ended.IsDone());
+  ASSERT_TRUE(ended.GetEndReason() == EndReason::Horizon);
+}
+
+// A lens whose Activate throws (a bug): the swap is undone (the previous
+// lens and its stamps back), and the exception goes on.
+class ThrowingLens : public TaskLens {
+ public:
+  std::unique_ptr<TaskLens> Clone() const override { return std::make_unique<ThrowingLens>(*this); }
+  Kind GetKind() const override { return kUnknown; }
+  bool CanOperateOn(const BaseEnv&) const override { return true; }
+  bool IsDone(const BaseEnv&) const override { return false; }
+  bool IsSuccess(const BaseEnv&) const override { return false; }
+  double ComputeReward(const BaseEnv&, int) const override { return 0.0; }
+  std::string GetObjectiveString(const BaseEnv&) const override { return "throws"; }
+  void Activate(BaseEnv& env, const LensParams&) override {
+    env.GetMutableAnnotations().Add(AnnotationKey{AnnotationTarget::Cell, {4, 4}, kInvalidObjectId},
+                                    Annotation{SemanticTag::SynchroGoal, {}, 99});
+    throw std::runtime_error("activate");
+  }
+};
+
+TEST(TestAThrowingActivateKeepsThePreviousLens) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  LensParams synchro;
+  synchro.positions = {{3, 3}};
+  ASSERT_TRUE(env.SetTaskLensWithParams(std::make_unique<SynchroLens>(), synchro));
+  const std::vector<Position> before = GoalCells(env);
+  ASSERT_TRUE(std::find(before.begin(), before.end(), Position{3, 3}) != before.end());
+  bool threw = false;
+  try {
+    env.SetTaskLensWithParams(std::make_unique<ThrowingLens>(), {});
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+  ASSERT_TRUE(env.GetTaskLens() != nullptr);
+  ASSERT_TRUE(env.GetTaskLens()->GetKind() == TaskLens::kSynchro);
+  ASSERT_TRUE(GoalCells(env) == before);
 }
 
 // With params: the targets are the bodies on the cells, the other downed
@@ -450,13 +503,17 @@ TEST(TestGoalCellsExcludeWallsHazardsAndBodies) {
 
   std::vector<float> tensor;
   env.ObservationTensor(tensor, 3);
+  std::vector<float> written(tensor.size(), -1.0f);  // The zero-copy path too
+  env.WriteObservationTensor(written.data(), 3);
   const int rows = env.GetRows();
   const int cols = env.GetCols();
   for (int r = 0; r < rows; ++r) {
     for (int c = 0; c < cols; ++c) {
       const bool goal = std::find(expected.begin(), expected.end(), Position{r, c}) != expected.end();
+      const size_t at = static_cast<size_t>(2 * rows * cols + r * cols + c);
       ASSERT_EQ(env.GetTaskLens()->IsGoalCell(env, {r, c}), goal);
-      ASSERT_EQ(tensor[static_cast<size_t>(2 * rows * cols + r * cols + c)], goal ? 1.0f : 0.0f);
+      ASSERT_EQ(tensor[at], goal ? 1.0f : 0.0f);
+      ASSERT_EQ(written[at], goal ? 1.0f : 0.0f);
     }
   }
 }
@@ -478,6 +535,96 @@ TEST(TestTheGoalDistanceFeature) {
   env.WriteVectorObservation(obs.data(), 2);
   // (1, 8) to (4, 5): 6
   ASSERT_NEAR(obs[BaseEnv::kVectorObsGoalDistance], 6.0f / 20.0f);
+}
+
+// =============================================================================
+// A new episode (Reset, LoadSnapshot) with the lens kept
+// =============================================================================
+
+// A Reset with nobody down is no free success: the lens succeeds only once
+// someone has been down during its episode (the episode runs to the
+// horizon). A down, then a revive, still succeeds.
+TEST(TestAResetIsNoFreeSuccess) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {3, 2});
+  Place(env, 1, {3, 5});
+  Place(env, 2, {3, 8});
+  DownCompanion(env, 1);
+  ASSERT_TRUE(SetRevive(env, {{3, 5}}));
+  MakeArena(env);  // Reset: nobody down
+  ASSERT_TRUE(env.GetTaskLens()->GetKind() == TaskLens::kRevive);
+  ASSERT_FALSE(env.GetTaskLens()->IsSuccess(env));
+  ASSERT_FALSE(env.GetTaskLens()->Clone()->IsSuccess(env));  // Clone copies it
+  for (int i = 0; i < 3; ++i) {
+    StepResult result = env.Step(Stays(env));
+    ASSERT_FALSE(result.done);
+    ASSERT_FALSE(env.IsSuccess());
+    for (double reward : result.rewards) ASSERT_NEAR(reward, ReviveLens::kTimePenalty);
+  }
+  // A host down revived by the very next step: seen, a success
+  Place(env, 0, {3, 3});
+  Agent* downed = Place(env, 1, {3, 4});
+  DownCompanion(env, 1);
+  StepResult revive = env.Step({Use(MovementAction::Right), kStay, kStay});
+  ASSERT_FALSE(downed->IsDowned());
+  ASSERT_TRUE(revive.done);
+  ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
+  for (double reward : revive.rewards) {
+    ASSERT_NEAR(reward, ReviveLens::kTimePenalty + ReviveLens::kSuccessBonus + kCost);
+  }
+}
+
+// A Reset forgets the targets: the goal is every downed ally (the old
+// targets and downs mean nothing in a new episode).
+TEST(TestAResetForgetsTheTargets) {
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {2, 2});
+  Place(env, 1, {4, 4});
+  Place(env, 2, {6, 6});
+  Place(env, 3, {2, 7});
+  DownCompanion(env, 1);
+  DownCompanion(env, 2);
+  ASSERT_TRUE(SetRevive(env, {{4, 4}}));
+  MakeArena(env);
+  DownCompanion(env, 1);
+  DownCompanion(env, 2);
+  const auto* lens = static_cast<const ReviveLens*>(env.GetTaskLens());
+  ASSERT_TRUE(lens->GetTargets().empty());
+  ASSERT_TRUE(lens->GetGoalBodies(env) ==
+              (std::vector<ObjectId>{AgentAt(env, 1)->GetId(), AgentAt(env, 2)->GetId()}));
+}
+
+// The same after a LoadSnapshot: nobody down loaded, no free success; two
+// down loaded, both are goals.
+TEST(TestALoadSnapshotStartsANewEpisode) {
+  SynchroEnv env(10, 10, 4, 1, 0, 42);
+  MakeArena(env);
+  Place(env, 0, {2, 2});
+  Place(env, 1, {4, 4});
+  Place(env, 2, {6, 6});
+  Place(env, 3, {2, 7});
+  const Snapshot clean = env.SaveSnapshot();
+  DownCompanion(env, 1);
+  DownCompanion(env, 2);
+  const Snapshot two_down = env.SaveSnapshot();
+
+  ASSERT_TRUE(SetRevive(env, {{4, 4}}));
+  env.LoadSnapshot(clean);
+  ASSERT_TRUE(env.GetTaskLens()->GetKind() == TaskLens::kRevive);
+  StepResult result = env.Step(Stays(env));
+  ASSERT_FALSE(result.done);
+  ASSERT_FALSE(env.IsSuccess());
+
+  DownCompanion(env, 1);
+  DownCompanion(env, 2);
+  ASSERT_TRUE(SetRevive(env, {{4, 4}}));
+  env.LoadSnapshot(two_down);
+  const auto* lens = static_cast<const ReviveLens*>(env.GetTaskLens());
+  ASSERT_TRUE(lens->GetGoalBodies(env) ==
+              (std::vector<ObjectId>{AgentAt(env, 1)->GetId(), AgentAt(env, 2)->GetId()}));
+  ASSERT_TRUE(GoalCells(env) == Union(Around({4, 4}), Around({6, 6})));
 }
 
 // =============================================================================
@@ -519,7 +666,7 @@ TEST(TestCloneKeepsTheTargets) {
 
 // A 10x10 arena with 3 companions at `positions`, loaded through the C API.
 // The level's persistent goal replaced by one at `goal`.
-static Companions_Env* LoadArena(const std::vector<Position>& positions, Position goal) {
+static std::string ArenaJson(const std::vector<Position>& positions, Position goal) {
   SynchroEnv cpp(10, 10, 3, 1, 0, 42);
   MakeArena(cpp);
   AnnotationStore& annotations = cpp.GetMutableAnnotations();
@@ -530,8 +677,11 @@ static Companions_Env* LoadArena(const std::vector<Position>& positions, Positio
   annotations.Add(AnnotationKey{AnnotationTarget::Cell, goal, kInvalidObjectId},
                   Annotation{SemanticTag::SynchroGoal, {}, -1});
   for (size_t i = 0; i < positions.size(); ++i) Place(cpp, static_cast<int>(i), positions[i]);
-  const std::string json = SnapshotToJson(cpp.SaveSnapshot());
+  return SnapshotToJson(cpp.SaveSnapshot());
+}
 
+static Companions_Env* LoadArena(const std::vector<Position>& positions, Position goal) {
+  const std::string json = ArenaJson(positions, goal);
   Companions_EnvConfig config = {};
   config.rows = 10;
   config.cols = 10;
@@ -631,6 +781,37 @@ TEST(TestApiARefusedCellKeepsThePreviousLens) {
   companions_destroy(env);
 }
 
+// Through the C API: a snapshot load or a reset with nobody down is no free
+// success (the lens kept, the episode runs on).
+TEST(TestApiALoadOrResetIsNoFreeSuccess) {
+  const std::vector<Position> positions = {{3, 2}, {3, 5}, {3, 8}};
+  Companions_Env* env = LoadArena(positions, {6, 6});
+  const std::string clean = ArenaJson(positions, {6, 6});
+  const Companions_Position body = {3, 5};
+  std::vector<Companions_Action> stays(3, {Companions_Movement_Stay, Companions_Interact_None});
+  for (int round = 0; round < 2; ++round) {
+    if (round == 1) ASSERT_TRUE(companions_load_snapshot_json(env, clean.c_str()));
+    ApiKill(env, {3, 5});
+    ASSERT_TRUE(companions_set_task_lens_with_params(env, Companions_Lens_Revive, &body, 1));
+    if (round == 0) {
+      ASSERT_TRUE(companions_load_snapshot_json(env, clean.c_str()));
+    } else {
+      ASSERT_TRUE(companions_reset(env, 42));
+    }
+    ASSERT_TRUE(companions_get_task_lens(env) == Companions_Lens_Revive);
+    Companions_StepResult result = {};
+    ASSERT_TRUE(companions_step(env, stays.data(), 3, &result));
+    ASSERT_FALSE(result.state.done);
+    ASSERT_FALSE(result.state.success);
+    ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+    ASSERT_EQ(CountEpisodeEnds(result), 0);
+    for (int i = 0; i < 3; ++i) {
+      ASSERT_NEAR(result.state.rewards[i], static_cast<float>(ReviveLens::kTimePenalty));
+    }
+  }
+  companions_destroy(env);
+}
+
 // A whole episode: one companion down, the two others walk to it, one
 // revives it (slot 0 is revive next to a downed ally), Success with the bonus,
 // and EpisodeEnd(Success).
@@ -705,6 +886,8 @@ int main() {
       passed++;
     } catch (const std::exception& e) {
       std::cout << "[  FAILED  ] " << test.name << ": " << e.what() << "\n";
+    } catch (...) {
+      std::cout << "[  FAILED  ] " << test.name << ": unknown exception\n";
     }
   }
 

@@ -367,6 +367,9 @@ void BaseEnv::RelatchEndReasonAfterLoad() {
   end_reason_ = EndReason::None;
   downs_seen_ = GetDowns();  // The state as it now is: its downs are not new
   LatchEndReason();
+  // The state is complete now (AggroEnv spawns its agents after the base
+  // load): the lens starts its episode on it
+  if (task_lens_) task_lens_->OnNewEpisode(*this);
 }
 
 void BaseEnv::PreStep() {
@@ -504,11 +507,6 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
         set_plane(1, r, c, 1.0f);
       }
 
-      // Plane 2: Goal cells (lens decides via annotations)
-      if (task_lens_ && task_lens_->IsGoalCell(*this, pos)) {
-        set_plane(2, r, c, 1.0f);
-      }
-
       // Plane 3 & 4: Agent positions
       const Actor* actor = object_manager_->GetActorAt(pos);
       if (actor && actor->IsAlive()) {
@@ -522,6 +520,9 @@ void BaseEnv::ObservationTensor(std::vector<float>& values, int player) const {
       }
     }
   }
+
+  // Plane 2: Goal cells (the lens decides), in one call
+  if (task_lens_) task_lens_->WriteGoalPlane(*this, &values[static_cast<size_t>(2 * rows_ * cols_)]);
 }
 
 std::vector<int> BaseEnv::ObservationShape() const {
@@ -586,11 +587,6 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
         set_plane(1, r, c, 1.0f);
       }
 
-      // Plane 2: Goal cells (lens decides via annotations)
-      if (task_lens_ && task_lens_->IsGoalCell(*this, pos)) {
-        set_plane(2, r, c, 1.0f);
-      }
-
       // Plane 3 & 4: Agent positions
       const Actor* actor = object_manager_->GetActorAt(pos);
       if (actor && actor->IsAlive()) {
@@ -602,6 +598,19 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
           set_plane(4, r, c, 1.0f);
         }
       }
+    }
+  }
+
+  // Plane 2: Goal cells (the lens decides), in one call
+  if (task_lens_) task_lens_->WriteGoalPlane(*this, buffer + 2 * rows_ * cols_);
+}
+
+void TaskLens::WriteGoalPlane(const BaseEnv& env, float* plane) const {
+  const int rows = env.GetRows();
+  const int cols = env.GetCols();
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < cols; ++c) {
+      if (IsGoalCell(env, Position{r, c})) plane[r * cols + c] = 1.0f;
     }
   }
 }
@@ -640,6 +649,8 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   // Feature 4: Distance to nearest goal cell. Lens answers what counts as a
   // goal; lenses with no geometric goal (DodgeLens) return empty and the
   // feature is forced to 0.0 rather than a misleading 1.0 from an empty scan.
+  // So 0.0 also reads when a lens has goals but no goal cell now (ReviveLens:
+  // every body boxed in, no free neighbour), the same as standing on a goal.
   if (task_lens_) {
     std::vector<Position> goals = task_lens_->GetGoalCells(*this);
     if (!goals.empty()) {
@@ -3206,6 +3217,11 @@ void BaseEnv::LoadSnapshot(const Snapshot& snapshot) {
   // finish its own state first, then latch again (RelatchEndReasonAfterLoad:
   // AggroEnv's Reset spawns its enemy and companions after this).
   LatchEndReason();
+
+  // A new episode for the lens kept (every Reset loads a generated level
+  // here; a derived load that changes the state after this tells the lens
+  // again through RelatchEndReasonAfterLoad)
+  if (task_lens_) task_lens_->OnNewEpisode(*this);
 }
 
 void BaseEnv::LoadGeneratedLevel(Snapshot snapshot) {
@@ -3281,25 +3297,35 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
   // the env lens-less.
   std::unique_ptr<TaskLens> previous = std::move(task_lens_);
   // What the lenses stamp (Activate / Deactivate touch the annotations
-  // alone): a refused lens puts back the previous lens's stamps exactly, which
-  // re-Activating it could not (its params are not stored)
+  // alone, TaskLens's rule): a refused lens puts back the previous lens's
+  // stamps exactly, which re-Activating it could not (its params are not
+  // stored)
   const AnnotationStore annotations_before = annotations_;
-  if (previous) {
-    previous->Deactivate(*this);
-  }
-
-  if (lens) {
-    // Activate BEFORE CanOperateOn so lenses that materialize their own
-    // objective cells (SynchroLens, TagApplyLens) can satisfy the check.
-    lens->Activate(*this, params);
-    if (!lens->CanOperateOn(*this)) {
-      lens->Deactivate(*this);
-      // Restore the previous lens and its stamps, as they were (the outcome
-      // untouched: no new episode)
-      annotations_ = annotations_before;
-      task_lens_ = std::move(previous);
-      return false;
+  // The previous lens and its stamps, as they were (the outcome untouched:
+  // no new episode)
+  auto restore = [&]() {
+    annotations_ = annotations_before;
+    task_lens_ = std::move(previous);
+  };
+  try {
+    if (previous) {
+      previous->Deactivate(*this);
     }
+
+    if (lens) {
+      // Activate BEFORE CanOperateOn so lenses that materialize their own
+      // objective cells (SynchroLens, TagApplyLens) can satisfy the check.
+      lens->Activate(*this, params);
+      if (!lens->CanOperateOn(*this)) {
+        lens->Deactivate(*this);
+        restore();
+        return false;
+      }
+    }
+  } catch (...) {
+    // A throwing Deactivate / Activate / CanOperateOn: undone the same way
+    restore();
+    throw;
   }
   task_lens_ = std::move(lens);
   ResetOutcome();

@@ -46,7 +46,7 @@ bool ReviveLens::IsDone(const BaseEnv& env) const {
 }
 
 bool ReviveLens::IsSuccess(const BaseEnv& env) const {
-  return !env.AnyCompanionDowned();
+  return (saw_down_ || AnyoneWentDownSince(env)) && !env.AnyCompanionDowned();
 }
 
 double ReviveLens::ComputeReward(const BaseEnv& env, int agent_id) const {
@@ -77,6 +77,22 @@ bool ReviveLens::WentDownSince(ObjectId id, int times_downed) const {
   return true;  // Unknown at the activation: new
 }
 
+bool ReviveLens::AnyoneWentDownSince(const BaseEnv& env) const {
+  for (const Companion* c : env.GetObjectManager().GetAllCompanions()) {
+    for (const DownsAtActivation& d : downs_at_activation_) {
+      if (d.id == c->GetId() && c->GetTimesDowned() > d.times_downed) return true;
+    }
+  }
+  return false;
+}
+
+void ReviveLens::RecordDowns(const BaseEnv& env) {
+  downs_at_activation_.clear();
+  for (const Companion* c : env.GetObjectManager().GetAllCompanions()) {
+    downs_at_activation_.push_back({c->GetId(), c->GetTimesDowned()});
+  }
+}
+
 std::vector<ObjectId> ReviveLens::GetGoalBodies(const BaseEnv& env) const {
   std::vector<ObjectId> goal;
   std::vector<ObjectId> every_downed;
@@ -102,6 +118,11 @@ bool ReviveLens::IsGoalCell(const BaseEnv& env, Position pos) const {
   return false;
 }
 
+void ReviveLens::WriteGoalPlane(const BaseEnv& env, float* plane) const {
+  const int cols = env.GetCols();
+  for (const Position& cell : GetGoalCells(env)) plane[cell.row * cols + cell.col] = 1.0f;
+}
+
 std::vector<Position> ReviveLens::GetGoalCells(const BaseEnv& env) const {
   std::vector<Position> cells;
   const ObjectManager& om = env.GetObjectManager();
@@ -118,12 +139,10 @@ std::vector<Position> ReviveLens::GetGoalCells(const BaseEnv& env) const {
 
 void ReviveLens::Activate(BaseEnv& env, const LensParams& params) {
   targets_.clear();
-  downs_at_activation_.clear();
   params_valid_ = true;
+  RecordDowns(env);
+  saw_down_ = env.AnyCompanionDowned();
   const auto companions = env.GetObjectManager().GetAllCompanions();
-  for (const Companion* c : companions) {
-    downs_at_activation_.push_back({c->GetId(), c->GetTimesDowned()});
-  }
   for (const Position& pos : params.positions) {
     const Companion* body = nullptr;
     for (const Companion* c : companions) {
@@ -140,6 +159,13 @@ void ReviveLens::Activate(BaseEnv& env, const LensParams& params) {
       targets_.push_back(body->GetId());
     }
   }
+}
+
+void ReviveLens::OnNewEpisode(BaseEnv& env) {
+  targets_.clear();
+  params_valid_ = true;
+  RecordDowns(env);
+  saw_down_ = env.AnyCompanionDowned();
 }
 
 }  // namespace companions

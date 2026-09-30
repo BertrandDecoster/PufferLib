@@ -296,9 +296,6 @@ void DodgeEnv::ObservationTensor(std::vector<float>& values, int player) const {
       if (kind == CellKind::Wall) {
         set_plane(1, r, c, 1.0f);
       }
-      if (task_lens_ && task_lens_->IsGoalCell(*this, pos)) {
-        set_plane(2, r, c, 1.0f);
-      }
 
       const Actor* actor = object_manager_->GetActorAt(pos);
       if (actor && actor->IsAlive()) {
@@ -310,6 +307,9 @@ void DodgeEnv::ObservationTensor(std::vector<float>& values, int player) const {
       }
     }
   }
+
+  // Plane 2: Goal cells (the lens decides), in one call
+  if (task_lens_) task_lens_->WriteGoalPlane(*this, &values[static_cast<size_t>(2 * rows_ * cols_)]);
 
   // Planes 5-6: Effect zones
   for (const auto& effect : GetActiveEffects()) {

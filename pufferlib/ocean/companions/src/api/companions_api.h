@@ -821,7 +821,10 @@ typedef enum {
     Companions_Lens_Aggro = 1,
     Companions_Lens_Dodge = 2,
     Companions_Lens_TagApply = 3,
-    // Get the downed allies up. Success once no companion is down; it fails
+    // Get the downed allies up. Success once no companion is down, after
+    // someone was down in its episode (a reset or snapshot load keeping the
+    // lens starts a new one: every downed ally, and with nobody down no
+    // success, the episode runs to the horizon); it fails
     // only by the team down or the horizon, and a down never interrupts it
     // (the down pays the down cost and joins its goal). Rewards: -0.01 per
     // step, +1.0 on success. Refused while nobody is down. Positions (with

@@ -132,6 +132,12 @@ class TaskLens {
     return false;
   }
 
+  // Writes plane 2 (one rows x cols plane, zeroed by the caller): 1.0 on every
+  // goal cell. The tensor writers call it once per tensor. Default: IsGoalCell
+  // per cell (base_env.cc); a lens whose IsGoalCell is costly per cell
+  // overrides it with the same cells.
+  virtual void WriteGoalPlane(const BaseEnv& env, float* plane) const;
+
   // ===========================================================================
   // Goal cells for "distance to goal" features (observation feature 3)
   // ===========================================================================
@@ -168,7 +174,7 @@ class TaskLens {
   virtual int AdditionalVectorObsSize() const { return 0; }
 
   // ===========================================================================
-  // Activation / Deactivation - materialize objective cells on the grid
+  // Activation / Deactivation - materialize objective cells (annotations)
   // ===========================================================================
   // Activate: called when the lens is set on an env. Lens may stamp objective
   // cells (Synchro, Target) at positions specified in params. Default: no-op.
@@ -177,11 +183,29 @@ class TaskLens {
   // it placed so the next lens sees a clean slate. Default: no-op.
   //
   // Subclasses that stamp cells MUST override both and pair them symmetrically.
+  //
+  // The rule BaseEnv::SetTaskLensWithParams relies on: Activate and Deactivate
+  // touch only the env's annotations and the lens's own state (never the grid,
+  // the agents or anything else), so a refused or throwing swap is undone by
+  // restoring the annotations and the previous lens.
   virtual void Activate(BaseEnv& env, const LensParams& params) {
     (void)env;
     (void)params;
   }
   virtual void Deactivate(BaseEnv& env) {
+    (void)env;
+  }
+
+  // ===========================================================================
+  // A new episode with the lens kept
+  // ===========================================================================
+  // Called once the env has loaded a new state with this lens still set: a
+  // Reset or a LoadSnapshot (the C API's reset and snapshot loads included),
+  // after the state is complete (possibly more than once per load: AggroEnv
+  // spawns its agents after the base load). Not on a lens change (Activate
+  // does that). A lens with per-episode state (ReviveLens's targets) starts
+  // over. Default: no-op.
+  virtual void OnNewEpisode(BaseEnv& env) {
     (void)env;
   }
 };
