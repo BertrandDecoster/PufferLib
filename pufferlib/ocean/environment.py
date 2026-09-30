@@ -167,6 +167,7 @@ MAKE_FUNCTIONS = {
     'multiagent': make_multiagent,
     'slimevolley': 'SlimeVolley',
     'synchro': make_synchro,
+    'revive': make_synchro,  # task='revive' via revive.ini
 }
 
 def env_creator(name='squared', *args, **kwargs):

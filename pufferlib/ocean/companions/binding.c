@@ -4,6 +4,8 @@
 #include "synchro.h"
 
 #define Env Synchro
+// Synchro has a truncations buffer (an interrupted task: see synchro.h)
+#define ENV_HAS_TRUNCATIONS
 
 // Custom method: render environment and return ASCII string
 static PyObject* env_render_string(PyObject* self, PyObject* args) {
@@ -82,8 +84,15 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     UNPACK_INT(env->d4_transform, "d4_transform");
     UNPACK_INT(env->overfit, "overfit");
     UNPACK_INT(env->seed, "seed");
+    UNPACK_INT(env->task, "task");
+    env->down_cost = (float)unpack(kwargs, "down_cost");
+    if (PyErr_Occurred()) return -1;
 
-    synchro_init(env);
+    // A config it refuses (a bad task or down_cost, ...): a ValueError
+    if (synchro_init(env) != 0) {
+        PyErr_SetString(PyExc_ValueError, env->error);
+        return -1;
+    }
     return 0;
 }
 

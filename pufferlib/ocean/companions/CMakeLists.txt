@@ -279,6 +279,11 @@ add_executable(companions_npc_panel_test tests/test_npc_panel.cc)
 target_link_libraries(companions_npc_panel_test companions_viz companions_env companions_core)
 target_include_directories(companions_npc_panel_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# The RL binding's C wrapper, driven through its C struct (synchro.h)
+add_executable(companions_synchro_wrapper_test tests/test_synchro_wrapper.cc)
+target_link_libraries(companions_synchro_wrapper_test companions_wrapper companions_viz companions_env companions_core)
+target_include_directories(companions_synchro_wrapper_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # =============================================================================
 # Demo executable (cross-platform)
 # =============================================================================
@@ -325,6 +330,7 @@ add_test(NAME companions_task_lens_test COMMAND companions_task_lens_test)
 add_test(NAME companions_annotations_test COMMAND companions_annotations_test)
 add_test(NAME companions_viz_test COMMAND companions_viz_test)
 add_test(NAME companions_npc_panel_test COMMAND companions_npc_panel_test)
+add_test(NAME companions_synchro_wrapper_test COMMAND companions_synchro_wrapper_test)
 
 # =============================================================================
 # DLL (Dynamic library for external integration)

@@ -25,11 +25,23 @@ NUM_CHANNELS = 5
 # [11] Steps left / 100 (absolute, not ratio)
 VECTOR_OBS_SIZE = 12
 
+# The RL tasks (synchro.h SYNCHRO_TASK_*)
+# synchro: put every companion on a synchro cell (SynchroLens)
+# revive: each episode starts with one companion down; get it up (ReviveLens)
+TASKS = {'synchro': 0, 'revive': 1}
+
 
 class Synchro(pufferlib.PufferEnv):
     """Companions SynchroEnv - cooperative goal-reaching task.
 
-    Agents must coordinate to reach synchro cells simultaneously.
+    Agents must coordinate to reach synchro cells simultaneously
+    (task='synchro'), or get a downed ally up (task='revive': one random
+    companion starts each episode down; needs num_agents >= 2).
+
+    Episodes end as terminals (success, horizon, the team down) or as
+    truncations: a companion going down interrupts the synchro task
+    (EndReason::Interrupted), which pays down_cost (finite, in [-1e6, 0]) per
+    new down. The revive task is never interrupted (its downs pay the cost).
     """
 
     def __init__(
@@ -43,11 +55,18 @@ class Synchro(pufferlib.PufferEnv):
         horizon: int = 100,
         d4_transform: int = 0,  # D4 symmetry (0-7), CCW convention
         overfit: bool = False,  # If True, always reset to same seed (for equivariance testing)
+        task: str = 'synchro',  # 'synchro' or 'revive' (TASKS)
+        down_cost: float = -0.5,  # Reward added to every agent per new down
         report_interval: int = 128,
         render_mode: str = None,
         buf=None,
         seed: int = 0,
     ):
+        if task not in TASKS:
+            raise ValueError(f"task must be one of {sorted(TASKS)}, got {task!r}")
+        if task == 'revive' and num_agents < 2:
+            raise ValueError(f"task='revive' needs num_agents >= 2, got {num_agents}")
+        self.task = task
         self.report_interval = report_interval
         self.render_mode = render_mode
         self.agents_per_env = num_agents
@@ -95,6 +114,8 @@ class Synchro(pufferlib.PufferEnv):
                 horizon=horizon,
                 d4_transform=d4_transform,
                 overfit=int(overfit if isinstance(overfit, bool) else str(overfit).lower() in ('true', '1', 'yes')),
+                task=TASKS[task],
+                down_cost=float(down_cost),
             )
             c_envs.append(env_id)
 

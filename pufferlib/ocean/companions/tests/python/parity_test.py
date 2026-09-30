@@ -172,6 +172,9 @@ def test_parity(reference_path: Path, verbose: bool = False):
         map_complexity=header.map_complexity,
         horizon=header.horizon,
         d4_transform=0,
+        overfit=0,
+        task=0,  # synchro
+        down_cost=-0.5,
     )
 
     # Initial reset with seed
