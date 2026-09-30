@@ -119,8 +119,7 @@ bool ReviveLens::IsGoalCell(const BaseEnv& env, Position pos) const {
 }
 
 void ReviveLens::WriteGoalPlane(const BaseEnv& env, float* plane) const {
-  const int cols = env.GetCols();
-  for (const Position& cell : GetGoalCells(env)) plane[cell.row * cols + cell.col] = 1.0f;
+  MarkGoalCells(env, GetGoalCells(env), plane);
 }
 
 std::vector<Position> ReviveLens::GetGoalCells(const BaseEnv& env) const {

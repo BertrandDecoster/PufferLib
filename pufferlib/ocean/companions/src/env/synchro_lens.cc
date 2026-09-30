@@ -62,6 +62,10 @@ bool SynchroLens::IsGoalCell(const BaseEnv& env, Position pos) const {
       SemanticTag::SynchroGoal);
 }
 
+void SynchroLens::WriteGoalPlane(const BaseEnv& env, float* plane) const {
+  MarkGoalCells(env, GetGoalCells(env), plane);
+}
+
 std::vector<Position> SynchroLens::GetGoalCells(const BaseEnv& env) const {
   return env.GetAnnotations().FindCellsWithTag(SemanticTag::SynchroGoal);
 }

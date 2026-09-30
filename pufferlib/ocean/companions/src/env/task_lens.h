@@ -29,8 +29,9 @@ struct LensParams {
 // Lenses compute their results on demand from BaseEnv (a lens may keep
 // state of its own: ReviveLens keeps its targets and bookkeeping (the downs
 // at activation, whether someone went down, the params' validity); Clone
-// copies it, snapshots carry no lens). This enables runtime task switching without snapshot
-// serialization. One lens at a time: no lens stack (push / pop) yet.
+// copies it, snapshots carry no lens). This enables runtime task switching
+// without snapshot serialization. One lens at a time: no lens stack (push /
+// pop) yet.
 //
 // Architecture:
 //   BaseEnv holds physical world state (grid, agents, effects, tick).
@@ -137,8 +138,8 @@ class TaskLens {
 
   // Writes plane 2 (one rows x cols plane, zeroed by the caller): 1.0 on every
   // goal cell. The tensor writers call it once per tensor. Default: IsGoalCell
-  // per cell (base_env.cc); a lens whose IsGoalCell is costly per cell
-  // overrides it with the same cells.
+  // per cell (base_env.cc); a lens whose goals it can list overrides it with
+  // one MarkGoalCells over the same cells (Synchro, Aggro, Revive).
   virtual void WriteGoalPlane(const BaseEnv& env, float* plane) const;
 
   // ===========================================================================
@@ -211,6 +212,13 @@ class TaskLens {
   virtual void OnNewEpisode(BaseEnv& env) {
     (void)env;
   }
+
+ protected:
+  // Sets 1.0 on plane 2 at each of `cells` (a WriteGoalPlane override's one
+  // scan). A cell off the grid is skipped, as the default's per-cell scan
+  // never visits one (a host may annotate any position).
+  static void MarkGoalCells(const BaseEnv& env, const std::vector<Position>& cells,
+                            float* plane);
 };
 
 }  // namespace companions

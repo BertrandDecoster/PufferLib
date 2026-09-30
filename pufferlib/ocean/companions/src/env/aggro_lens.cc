@@ -97,6 +97,10 @@ bool AggroLens::IsGoalCell(const BaseEnv& env, Position pos) const {
       SemanticTag::AggroTarget);
 }
 
+void AggroLens::WriteGoalPlane(const BaseEnv& env, float* plane) const {
+  MarkGoalCells(env, GetGoalCells(env), plane);
+}
+
 std::vector<Position> AggroLens::GetGoalCells(const BaseEnv& env) const {
   return env.GetAnnotations().FindCellsWithTag(SemanticTag::AggroTarget);
 }

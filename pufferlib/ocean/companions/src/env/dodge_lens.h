@@ -27,6 +27,11 @@ class DodgeLens : public TaskLens {
   bool IsSuccess(const BaseEnv& env) const override;
   double ComputeReward(const BaseEnv& env, int agent_id) const override;
   std::string GetObjectiveString(const BaseEnv& env) const override;
+  // No goal cells (survival): plane 2 stays zero, without a per-cell scan
+  void WriteGoalPlane(const BaseEnv& env, float* plane) const override {
+    (void)env;
+    (void)plane;
+  }
 
  private:
   // A companion down (or dead): not affectable

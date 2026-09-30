@@ -114,8 +114,9 @@ class BaseEnv {
   // LoadSnapshot (a state loaded with someone down loads not interrupted: its
   // downs are not new). Only while the episode goes on: a down on a step
   // that ends it (a success, the horizon, the team down) pauses nothing, nor
-  // does one after it ended; and a final verdict reached while paused (the team down,
-  // the horizon) clears the pause (the steps played on after it pay again).
+  // does one after it ended; and a final verdict reached while paused (the
+  // team down, the horizon) clears the pause (the steps played on after it
+  // pay again).
   // Nor for a lens that opts out (TaskLens::IsInterruptible: its downs pay
   // the cost, nothing pauses). Without a lens the rewards are all 0: no cost.
   // A host reopening the episode (raising max_downs after a TeamDown, or a

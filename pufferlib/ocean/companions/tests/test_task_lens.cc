@@ -697,6 +697,88 @@ TEST(TestAssignmentReplacesTheLens) {
 }
 
 // =============================================================================
+// Plane 2: the lens's WriteGoalPlane marks exactly its IsGoalCell cells
+// =============================================================================
+
+// Plane 2 from the per-cell predicate (the default WriteGoalPlane's rule)
+static std::vector<float> GoalPlaneFromPredicate(const BaseEnv& env) {
+  std::vector<float> plane(static_cast<size_t>(env.GetRows() * env.GetCols()), 0.0f);
+  for (int r = 0; r < env.GetRows(); ++r) {
+    for (int c = 0; c < env.GetCols(); ++c) {
+      if (env.GetTaskLens()->IsGoalCell(env, Position{r, c})) plane[r * env.GetCols() + c] = 1.0f;
+    }
+  }
+  return plane;
+}
+
+// WriteGoalPlane (whatever the lens's override) and both tensor writers'
+// plane 2 match the per-cell predicate, and write nothing outside the plane.
+static void AssertGoalPlaneMatchesPredicate(const BaseEnv& env, int min_goals) {
+  const int area = env.GetRows() * env.GetCols();
+  const std::vector<float> expected = GoalPlaneFromPredicate(env);
+  int goals = 0;
+  for (float v : expected) goals += v == 1.0f;
+  ASSERT_TRUE(goals >= min_goals);
+  // Guard cells around the plane: an out-of-range goal would land in them
+  std::vector<float> guarded(static_cast<size_t>(3 * area), 0.0f);
+  env.GetTaskLens()->WriteGoalPlane(env, &guarded[area]);
+  for (int i = 0; i < area; ++i) ASSERT_EQ(guarded[i], 0.0f);
+  for (int i = 0; i < area; ++i) ASSERT_EQ(guarded[area + i], expected[i]);
+  for (int i = 0; i < area; ++i) ASSERT_EQ(guarded[2 * area + i], 0.0f);
+  std::vector<float> tensor(static_cast<size_t>(5 * area), 3.0f);
+  env.WriteObservationTensor(tensor.data(), 0);
+  std::vector<float> values;
+  env.ObservationTensor(values, 0);
+  for (int i = 0; i < area; ++i) {
+    ASSERT_EQ(tensor[2 * area + i], expected[i]);
+    ASSERT_EQ(values[2 * area + i], expected[i]);
+  }
+}
+
+TEST(TestSynchroGoalPlaneMatchesItsGoalCells) {
+  for (unsigned seed = 0; seed < 20; ++seed) {
+    SynchroEnv env(8 + seed % 5, 9, 3, 1 + seed % 3, seed % 3, seed, seed % 8);
+    AssertGoalPlaneMatchesPredicate(env, 1);
+  }
+  // Param-stamped goals, some out of the grid (skipped) or duplicated
+  SynchroEnv env(8, 10, 2, 2, 0, 42);
+  LensParams params;
+  params.positions = {{1, 1}, {7, 9}, {-1, 3}, {8, 0}, {2, 10}, {1, 1}, {0, 9}};
+  ASSERT_TRUE(env.SetTaskLensWithParams(std::make_unique<SynchroLens>(), params));
+  AssertGoalPlaneMatchesPredicate(env, 3);
+  // Host annotations out of the grid (a row past the end, a column past the
+  // end that a flat index would wrap into the next row): never on the plane
+  AnnotationStore& annotations = env.GetMutableAnnotations();
+  for (Position pos : {Position{-1, 0}, Position{8, 0}, Position{2, 10}, Position{0, -1}}) {
+    annotations.Add(AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+                    Annotation{SemanticTag::SynchroGoal, {}, -1});
+  }
+  AssertGoalPlaneMatchesPredicate(env, 3);
+}
+
+TEST(TestAggroGoalPlaneMatchesItsGoalCells) {
+  for (unsigned seed = 0; seed < 20; ++seed) {
+    AggroEnv env(8 + seed % 5, 1 + seed % 3, EnemyType::Zombie, seed, seed % 8);
+    AssertGoalPlaneMatchesPredicate(env, 1);
+  }
+  AggroEnv env(10, 1, EnemyType::Zombie, 42);
+  AnnotationStore& annotations = env.GetMutableAnnotations();
+  for (Position pos : {Position{-1, 0}, Position{10, 0}, Position{2, 10}, Position{0, -1}, Position{3, 3}}) {
+    annotations.Add(AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
+                    Annotation{SemanticTag::AggroTarget, {}, -1});
+  }
+  AssertGoalPlaneMatchesPredicate(env, 2);
+}
+
+TEST(TestDodgeGoalPlaneIsEmpty) {
+  DodgeEnv dodge(8, 2, 3, 50, 42);
+  AssertGoalPlaneMatchesPredicate(dodge, 0);
+  SynchroEnv env(8, 8, 2, 2, 0, 42);
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<DodgeLens>()));
+  AssertGoalPlaneMatchesPredicate(env, 0);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 int main() {

@@ -615,6 +615,16 @@ void TaskLens::WriteGoalPlane(const BaseEnv& env, float* plane) const {
   }
 }
 
+void TaskLens::MarkGoalCells(const BaseEnv& env, const std::vector<Position>& cells,
+                             float* plane) {
+  const int rows = env.GetRows();
+  const int cols = env.GetCols();
+  for (const Position& cell : cells) {
+    if (cell.row < 0 || cell.row >= rows || cell.col < 0 || cell.col >= cols) continue;
+    plane[cell.row * cols + cell.col] = 1.0f;
+  }
+}
+
 void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   // The base features only (kVectorObsBaseSize floats, whatever the env's
   // VectorObservationSize): the buffer past them is left untouched

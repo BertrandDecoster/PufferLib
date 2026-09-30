@@ -38,6 +38,8 @@ class AggroLens : public TaskLens {
   std::string GetObjectiveString(const BaseEnv& env) const override;
   bool IsGoalCell(const BaseEnv& env, Position pos) const override;
   std::vector<Position> GetGoalCells(const BaseEnv& env) const override;
+  // Plane 2 from one GetGoalCells (IsGoalCell looks up one cell's tags)
+  void WriteGoalPlane(const BaseEnv& env, float* plane) const override;
 
   void AppendVectorObs(const BaseEnv& env, int agent_id,
                        std::vector<float>& obs) const override;
