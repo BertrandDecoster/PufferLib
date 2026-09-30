@@ -1596,8 +1596,9 @@ COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_E
 // it; it survives companions_reset and snapshot loads, and an env's copy (the
 // outcome preview's clone) keeps it. companions_set_down_cost accepts a
 // finite cost between -1e6 and 0 and refuses any other (false, the error
-// set, the cost unchanged); 0 makes downs free (they still interrupt). companions_get_down_cost returns 0
-// for a null env (the error set: "Invalid environment").
+// set, the cost unchanged); 0 makes downs free (they still interrupt).
+// companions_get_down_cost returns 0 for a null env (the error set:
+// "Invalid environment").
 COMPANIONS_API bool companions_set_down_cost(Companions_Env* env, double cost);
 COMPANIONS_API double companions_get_down_cost(const Companions_Env* env);
 

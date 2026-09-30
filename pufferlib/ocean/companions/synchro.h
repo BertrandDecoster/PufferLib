@@ -20,8 +20,8 @@ typedef struct {
 // C-compatible environment struct
 typedef struct {
     Log log;                       // Required first field
-    float* observations;           // [num_agents, tensor_size + 9] flattened observations
-                                   // tensor: 5 * rows * cols, vector: 9 features
+    float* observations;           // [num_agents, tensor_size + 12] flattened observations
+                                   // tensor: 5 * rows * cols, vector: 12 features
     int* actions;                  // [num_agents, 2] MultiDiscrete actions
     float* rewards;                // [num_agents]
     unsigned char* terminals;      // [num_agents]

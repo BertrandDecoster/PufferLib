@@ -333,11 +333,17 @@ TEST(TestDodgeEnvRewards) {
 // =============================================================================
 // Vector Observation Tests
 // =============================================================================
+// DodgeEnv's features follow the base layout (BaseEnv::kVectorObsBaseSize):
+// survival progress (+0), active effects (+1), active danger up / down /
+// left / right (+2..+5), telegraph danger up / down / left / right (+6..+9)
+static constexpr int kDodgeObs = BaseEnv::kVectorObsBaseSize;
+
 TEST(TestDodgeEnvVectorObservationSize) {
   DodgeEnv env(7, 1, 3, 50, 42);
 
-  // DodgeEnv adds 10 features to base (9): total = 19
-  ASSERT_EQ(env.VectorObservationSize(), 19);
+  // DodgeEnv adds 10 features to base (12): total = 22
+  ASSERT_EQ(env.VectorObservationSize(), 22);
+  ASSERT_EQ(env.VectorObservationSize(), kDodgeObs + 10);
 }
 
 TEST(TestDodgeEnvVectorObservationValues) {
@@ -353,12 +359,16 @@ TEST(TestDodgeEnvVectorObservationValues) {
     ASSERT_TRUE(obs[i] >= 0.0f && obs[i] <= 1.0f);
   }
 
-  // Feature 8: steps_left (base env)
-  // Feature 9: Survival progress (should be close to 1.0 at start)
-  ASSERT_TRUE(obs[9] > 0.9f);  // 50/50 = 1.0 at tick 0
+  // Feature 11: steps_left (base env); not downed (feature 3)
+  ASSERT_EQ(obs[BaseEnv::kVectorObsDowned], 0.0f);
+  ASSERT_EQ(obs[BaseEnv::kVectorObsStepsLeft], 0.5f);  // 50 / 100
 
-  // Feature 10: Number of effects (should be 0 at start)
-  ASSERT_EQ(obs[10], 0.0f);
+  // Feature 12: Survival progress (should be close to 1.0 at start)
+  static_assert(kDodgeObs == 12);
+  ASSERT_TRUE(obs[12] > 0.9f);  // 50/50 = 1.0 at tick 0
+
+  // Feature 13: Number of effects (should be 0 at start)
+  ASSERT_EQ(obs[13], 0.0f);
 }
 
 TEST(TestDodgeEnvVectorObservationDanger) {
@@ -381,8 +391,8 @@ TEST(TestDodgeEnvVectorObservationDanger) {
   std::vector<float> obs_no_effect;
   env.VectorObservation(obs_no_effect, 0);
 
-  // Danger features (indices 10-17) should all be 0 (no danger)
-  for (int i = 10; i < 18; ++i) {
+  // Effect count and danger features (indices 13-21) should all be 0
+  for (int i = kDodgeObs + 1; i < kDodgeObs + 10; ++i) {
     ASSERT_EQ(obs_no_effect[i], 0.0f);
   }
 
@@ -395,12 +405,12 @@ TEST(TestDodgeEnvVectorObservationDanger) {
   std::vector<float> obs_with_effect;
   env.VectorObservation(obs_with_effect, 0);
 
-  // Feature 9 should now show 1 effect
-  ASSERT_TRUE(obs_with_effect[9] > 0.0f);
+  // Feature 13 should now show 1 effect
+  ASSERT_TRUE(obs_with_effect[kDodgeObs + 1] > 0.0f);
 
   // Danger in "up" direction should be non-zero
-  // Features 10-13 are active danger (up, down, left, right)
-  ASSERT_TRUE(obs_with_effect[10] > 0.0f);  // Danger up
+  // Features 14-17 are active danger (up, down, left, right)
+  ASSERT_TRUE(obs_with_effect[kDodgeObs + 2] > 0.0f);  // Danger up
 }
 
 TEST(TestDodgeEnvHazardDamage) {

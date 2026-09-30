@@ -310,7 +310,7 @@ void AggroEnv::SpawnCompanions() {
 // =============================================================================
 
 int AggroEnv::VectorObservationSize() const {
-  // Base features (8) + AggroEnv-specific (8)
+  // Base features (12) + AggroEnv-specific (8) = 20
   return BaseEnv::VectorObservationSize() + 8;
 }
 

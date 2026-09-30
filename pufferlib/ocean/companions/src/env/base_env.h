@@ -217,12 +217,38 @@ class BaseEnv {
 
   // Vector Observation - flat feature vector alternative to tensor
   // Returns a 1D vector with hand-crafted features suitable for MLP-based RL.
-  // Base features (per player view):
-  //   - Own position (row, col) normalized to [0,1]
-  //   - Own health / max_health
-  //   - Distance to nearest goal cell (normalized)
-  //   - Relative positions of other companions (dx, dy per companion)
-  // Subclasses may extend with environment-specific features.
+  // Base features (per player view), kVectorObsBaseSize floats:
+  //   0-1   own position (row, col) / max(rows, cols)
+  //   2     own health / max_health
+  //   3     own downed flag (1 while down)
+  //   4     distance to the nearest goal cell (normalized; 0 without one)
+  //   5-7   other 1: row delta, col delta (/ max(rows, cols)), downed flag
+  //   8-10  other 2: the same
+  //   11    steps left / 100
+  // The layout is fixed whatever the agent count: 5 + 3 * kVectorObsMaxOthers
+  // + 1. The others are the first kVectorObsMaxOthers agents in agent order,
+  // the player skipped, companions and enemies alike; a missing one reads 0
+  // throughout, and anyone not down (an enemy, anyone standing) has flag 0.
+  // Subclasses append environment-specific features after the base.
+  static constexpr int kVectorObsMaxOthers = 2;
+  static constexpr int kVectorObsRow = 0;
+  static constexpr int kVectorObsCol = 1;
+  static constexpr int kVectorObsHealth = 2;
+  static constexpr int kVectorObsDowned = 3;
+  static constexpr int kVectorObsGoalDistance = 4;
+  static constexpr int kVectorObsFirstOther = 5;
+  // An other's slot: kVectorObsOtherStride floats, at these offsets
+  static constexpr int kVectorObsOtherStride = 3;
+  static constexpr int kVectorObsOtherDRow = 0;
+  static constexpr int kVectorObsOtherDCol = 1;
+  static constexpr int kVectorObsOtherDowned = 2;
+  static constexpr int kVectorObsStepsLeft =
+      kVectorObsFirstOther + kVectorObsMaxOthers * kVectorObsOtherStride;
+  static constexpr int kVectorObsBaseSize = kVectorObsStepsLeft + 1;
+  // The index of other k's (0-based) field (kVectorObsOtherDRow / DCol / Downed)
+  static constexpr int VectorObsOther(int k, int field) {
+    return kVectorObsFirstOther + k * kVectorObsOtherStride + field;
+  }
   virtual void VectorObservation(std::vector<float>& values, int player = 0) const;
   virtual int VectorObservationSize() const;
 

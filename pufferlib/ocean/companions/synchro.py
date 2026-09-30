@@ -14,13 +14,16 @@ from pufferlib.ocean.companions import binding
 # Plane 4: Other agents positions (1.0 at teammate positions)
 NUM_CHANNELS = 5
 
-# Vector observation: 9 features appended after tensor
+# Vector observation: 12 features appended after tensor (BaseEnv::kVectorObs*
+# in src/env/base_env.h)
 # [0-1] Position (row, col) normalized to [0,1]
 # [2] Health ratio
-# [3] Distance to goal (normalized)
-# [4-7] Relative positions to 2 other companions
-# [8] Steps left / 100 (absolute, not ratio)
-VECTOR_OBS_SIZE = 9
+# [3] Self downed (1 while down)
+# [4] Distance to goal (normalized)
+# [5-7] Other 1: relative row, relative col, downed
+# [8-10] Other 2: relative row, relative col, downed
+# [11] Steps left / 100 (absolute, not ratio)
+VECTOR_OBS_SIZE = 12
 
 
 class Synchro(pufferlib.PufferEnv):
@@ -57,7 +60,7 @@ class Synchro(pufferlib.PufferEnv):
         self.vector_size = VECTOR_OBS_SIZE
 
         # Flattened observation: tensor + vector (like MOBA)
-        # Layout: [5*rows*cols tensor floats] + [9 vector floats]
+        # Layout: [5*rows*cols tensor floats] + [12 vector floats]
         obs_size = self.tensor_size + self.vector_size
         self.single_observation_space = gymnasium.spaces.Box(
             low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32  # -1 for relative positions

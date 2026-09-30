@@ -1661,10 +1661,26 @@ TEST(TestObservationTensorConsistencyAfterMovement) {
 // Vector Observation Tests
 // =============================================================================
 TEST(TestVectorObservationSize) {
-  SynchroEnv env(8, 8, 1, 1, 0, 42);
+  // The base layout: own position (2), health, downed, goal distance, two
+  // others (dx, dy, downed each), steps left: 12, whatever the agent count
+  static_assert(BaseEnv::kVectorObsRow == 0);
+  static_assert(BaseEnv::kVectorObsCol == 1);
+  static_assert(BaseEnv::kVectorObsHealth == 2);
+  static_assert(BaseEnv::kVectorObsDowned == 3);
+  static_assert(BaseEnv::kVectorObsGoalDistance == 4);
+  static_assert(BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow) == 5);
+  static_assert(BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol) == 6);
+  static_assert(BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDowned) == 7);
+  static_assert(BaseEnv::VectorObsOther(1, BaseEnv::kVectorObsOtherDRow) == 8);
+  static_assert(BaseEnv::VectorObsOther(1, BaseEnv::kVectorObsOtherDCol) == 9);
+  static_assert(BaseEnv::VectorObsOther(1, BaseEnv::kVectorObsOtherDowned) == 10);
+  static_assert(BaseEnv::kVectorObsStepsLeft == 11);
+  static_assert(BaseEnv::kVectorObsBaseSize == 12);
 
-  // Base vector observation size should be 9 (8 base + 1 steps_left)
-  ASSERT_EQ(env.VectorObservationSize(), 9);
+  SynchroEnv one(8, 8, 1, 1, 0, 42);
+  ASSERT_EQ(one.VectorObservationSize(), 12);
+  SynchroEnv three(8, 8, 3, 3, 0, 42);
+  ASSERT_EQ(three.VectorObservationSize(), 12);
 }
 
 TEST(TestVectorObservationValues) {
@@ -1675,20 +1691,29 @@ TEST(TestVectorObservationValues) {
 
   ASSERT_EQ(obs.size(), static_cast<size_t>(env.VectorObservationSize()));
 
-  // First two values are position (normalized to [0,1])
-  ASSERT_TRUE(obs[0] >= 0.0f && obs[0] <= 1.0f);  // row
-  ASSERT_TRUE(obs[1] >= 0.0f && obs[1] <= 1.0f);  // col
+  // Own position (normalized to [0,1])
+  ASSERT_TRUE(obs[BaseEnv::kVectorObsRow] >= 0.0f && obs[BaseEnv::kVectorObsRow] <= 1.0f);
+  ASSERT_TRUE(obs[BaseEnv::kVectorObsCol] >= 0.0f && obs[BaseEnv::kVectorObsCol] <= 1.0f);
 
-  // Third value is health ratio
-  ASSERT_TRUE(obs[2] >= 0.0f && obs[2] <= 1.0f);
+  // Health ratio: full at the start
+  ASSERT_EQ(obs[BaseEnv::kVectorObsHealth], 1.0f);
 
-  // Fourth value is distance to goal (normalized)
-  ASSERT_TRUE(obs[3] >= 0.0f && obs[3] <= 1.0f);
+  // Not downed
+  ASSERT_EQ(obs[BaseEnv::kVectorObsDowned], 0.0f);
 
-  // Ninth value (index 8) is steps_left / 100
-  // At start of episode with default horizon 100, should be 100/100 = 1.0
-  // (or horizon/100 if horizon is different)
-  ASSERT_TRUE(obs[8] >= 0.0f);  // Should be positive at start
+  // Distance to goal (normalized)
+  ASSERT_TRUE(obs[BaseEnv::kVectorObsGoalDistance] >= 0.0f &&
+              obs[BaseEnv::kVectorObsGoalDistance] <= 1.0f);
+
+  // Alone: both other slots read 0
+  for (int k = 0; k < BaseEnv::kVectorObsMaxOthers; ++k) {
+    ASSERT_EQ(obs[BaseEnv::VectorObsOther(k, BaseEnv::kVectorObsOtherDRow)], 0.0f);
+    ASSERT_EQ(obs[BaseEnv::VectorObsOther(k, BaseEnv::kVectorObsOtherDCol)], 0.0f);
+    ASSERT_EQ(obs[BaseEnv::VectorObsOther(k, BaseEnv::kVectorObsOtherDowned)], 0.0f);
+  }
+
+  // Steps left / 100: the default horizon 100 gives 1.0 at the start
+  ASSERT_EQ(obs[BaseEnv::kVectorObsStepsLeft], 1.0f);
 }
 
 TEST(TestVectorObservationMultipleAgents) {
@@ -1707,6 +1732,66 @@ TEST(TestVectorObservationMultipleAgents) {
   // Positions should be different (different agents)
   bool pos_different = (obs0[0] != obs1[0] || obs0[1] != obs1[1]);
   ASSERT_TRUE(pos_different);
+
+  // Player 0's first other is agent 1: its deltas are agent 1's position
+  // minus player 0's
+  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow)],
+            obs1[BaseEnv::kVectorObsRow] - obs0[BaseEnv::kVectorObsRow]);
+  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol)],
+            obs1[BaseEnv::kVectorObsCol] - obs0[BaseEnv::kVectorObsCol]);
+}
+
+// The downed flags: the player's own (index 3) and each other's, next to its
+// deltas. The body still counts as an other (its deltas stay).
+TEST(TestVectorObservationDownedFlags) {
+  SynchroEnv env(8, 8, 3, 3, 0, 42);
+  auto agents = env.GetMutableObjectManager().GetAllAgents();
+
+  const int down0 = BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDowned);
+  const int down1 = BaseEnv::VectorObsOther(1, BaseEnv::kVectorObsOtherDowned);
+
+  std::vector<float> obs0, obs1, obs2;
+  for (int p = 0; p < 3; ++p) {
+    std::vector<float> obs;
+    env.VectorObservation(obs, p);
+    ASSERT_EQ(obs[BaseEnv::kVectorObsDowned], 0.0f);
+    ASSERT_EQ(obs[down0], 0.0f);
+    ASSERT_EQ(obs[down1], 0.0f);
+  }
+
+  // Agent 1 goes down
+  agents[1]->TakeDamage(agents[1]->GetHealth());
+  ASSERT_TRUE(agents[1]->IsDowned());
+
+  env.VectorObservation(obs0, 0);
+  env.VectorObservation(obs1, 1);
+  env.VectorObservation(obs2, 2);
+
+  // Its own flag
+  ASSERT_EQ(obs1[BaseEnv::kVectorObsDowned], 1.0f);
+  ASSERT_EQ(obs1[down0], 0.0f);  // Agent 0
+  ASSERT_EQ(obs1[down1], 0.0f);  // Agent 2
+
+  // Player 0: others are agents 1 then 2
+  ASSERT_EQ(obs0[BaseEnv::kVectorObsDowned], 0.0f);
+  ASSERT_EQ(obs0[down0], 1.0f);
+  ASSERT_EQ(obs0[down1], 0.0f);
+
+  // Player 2: others are agents 0 then 1
+  ASSERT_EQ(obs2[BaseEnv::kVectorObsDowned], 0.0f);
+  ASSERT_EQ(obs2[down0], 0.0f);
+  ASSERT_EQ(obs2[down1], 1.0f);
+
+  // The downed body keeps its deltas
+  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow)],
+            obs1[BaseEnv::kVectorObsRow] - obs0[BaseEnv::kVectorObsRow]);
+  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol)],
+            obs1[BaseEnv::kVectorObsCol] - obs0[BaseEnv::kVectorObsCol]);
+
+  // The write path (the RL binding's) agrees
+  std::vector<float> written(static_cast<size_t>(env.VectorObservationSize()), -1.0f);
+  env.WriteVectorObservation(written.data(), 0);
+  ASSERT_TRUE(written == obs0);
 }
 
 TEST(TestVectorObservationUpdatesAfterMove) {
@@ -1725,22 +1810,22 @@ TEST(TestVectorObservationUpdatesAfterMove) {
   env.VectorObservation(obs_after, 0);
 
   // Position should have changed (specifically col should increase)
-  // Original col was obs_before[1], after moving right it should be higher
-  ASSERT_TRUE(obs_after[1] > obs_before[1]);
+  ASSERT_TRUE(obs_after[BaseEnv::kVectorObsCol] > obs_before[BaseEnv::kVectorObsCol]);
 
-  // Steps left (index 8) should have decreased by 1/100 = 0.01
-  ASSERT_TRUE(obs_after[8] < obs_before[8]);
+  // Steps left should have decreased by 1/100 = 0.01
+  ASSERT_TRUE(obs_after[BaseEnv::kVectorObsStepsLeft] < obs_before[BaseEnv::kVectorObsStepsLeft]);
 }
 
 TEST(TestVectorObservationStepsLeft) {
   // Test that steps_left decreases correctly over multiple steps
   SynchroEnv env(8, 8, 1, 1, 0, 42, 0, 50);  // horizon = 50
+  const int steps_left = BaseEnv::kVectorObsStepsLeft;
 
   std::vector<float> obs;
   env.VectorObservation(obs, 0);
 
-  // At start: steps_left = 50, so obs[8] = 50/100 = 0.5
-  ASSERT_TRUE(std::abs(obs[8] - 0.5f) < 0.01f);
+  // At start: steps_left = 50, so 50/100 = 0.5
+  ASSERT_TRUE(std::abs(obs[steps_left] - 0.5f) < 0.01f);
 
   // Take 10 steps
   std::vector<Action> actions = {EncodeAction(MovementAction::Stay)};
@@ -1749,8 +1834,8 @@ TEST(TestVectorObservationStepsLeft) {
   }
 
   env.VectorObservation(obs, 0);
-  // After 10 steps: steps_left = 40, so obs[8] = 40/100 = 0.4
-  ASSERT_TRUE(std::abs(obs[8] - 0.4f) < 0.01f);
+  // After 10 steps: steps_left = 40, so 40/100 = 0.4
+  ASSERT_TRUE(std::abs(obs[steps_left] - 0.4f) < 0.01f);
 }
 
 // =============================================================================

@@ -533,15 +533,9 @@ std::vector<int> BaseEnv::ObservationShape() const {
 // =============================================================================
 
 int BaseEnv::VectorObservationSize() const {
-  // Base features per player:
-  // - Own position (row, col): 2
-  // - Own health ratio: 1
-  // - Distance to nearest goal (normalized): 1
-  // - Relative positions to other companions (dx, dy per other): 2 * (max_companions - 1)
-  // - Steps remaining (absolute / 100): 1
-  // For simplicity, we use a fixed max of 3 companions
-  constexpr int kMaxCompanions = 3;
-  return 2 + 1 + 1 + 2 * (kMaxCompanions - 1) + 1;  // = 9
+  // The base layout (base_env.h): own position, health, downed, goal
+  // distance, kVectorObsMaxOthers others (row / col delta, downed), steps left
+  return kVectorObsBaseSize;  // = 12
 }
 
 void BaseEnv::VectorObservation(std::vector<float>& values, int player) const {
@@ -627,61 +621,58 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   // Normalization factors
   float max_dim = static_cast<float>(std::max(rows_, cols_));
 
-  int idx = 0;
+  // The layout's indices are named in base_env.h (kVectorObs*)
+  auto downed_flag = [](const Agent& agent) { return agent.IsDowned() ? 1.0f : 0.0f; };
 
-  // Feature 0-1: Own position (normalized to [0,1])
-  buffer[idx++] = static_cast<float>(my_pos.row) / max_dim;
-  buffer[idx++] = static_cast<float>(my_pos.col) / max_dim;
+  // Features 0-1: Own position (normalized to [0,1])
+  buffer[kVectorObsRow] = static_cast<float>(my_pos.row) / max_dim;
+  buffer[kVectorObsCol] = static_cast<float>(my_pos.col) / max_dim;
 
   // Feature 2: Health ratio
   int max_hp = current_agent->GetMaxHealth();
-  buffer[idx++] = max_hp > 0 ? static_cast<float>(current_agent->GetHealth()) / max_hp : 1.0f;
+  buffer[kVectorObsHealth] =
+      max_hp > 0 ? static_cast<float>(current_agent->GetHealth()) / max_hp : 1.0f;
 
-  // Feature 3: Distance to nearest goal cell. Lens answers what counts as a
+  // Feature 3: Own downed flag
+  buffer[kVectorObsDowned] = downed_flag(*current_agent);
+
+  // Feature 4: Distance to nearest goal cell. Lens answers what counts as a
   // goal; lenses with no geometric goal (DodgeLens) return empty and the
   // feature is forced to 0.0 rather than a misleading 1.0 from an empty scan.
   if (task_lens_) {
     std::vector<Position> goals = task_lens_->GetGoalCells(*this);
-    if (goals.empty()) {
-      buffer[idx++] = 0.0f;
-    } else {
+    if (!goals.empty()) {
       float min_dist = max_dim * 2.0f;  // Max possible Manhattan distance
       for (const auto& goal : goals) {
         float dist = static_cast<float>(std::abs(my_pos.row - goal.row) +
                                         std::abs(my_pos.col - goal.col));
         min_dist = std::min(min_dist, dist);
       }
-      buffer[idx++] = min_dist / (max_dim * 2.0f);  // Normalize to [0,1]
+      buffer[kVectorObsGoalDistance] = min_dist / (max_dim * 2.0f);  // Normalize to [0,1]
     }
-  } else {
-    buffer[idx++] = 0.0f;
   }
 
-  // Features 4-7: Relative positions to other companions (dx, dy per other)
-  // Max 2 others (for 3 companions total)
-  constexpr int kMaxOthers = 2;
+  // Features 5-10: the first kVectorObsMaxOthers other agents in agent order
+  // (companions and enemies alike): relative position normalized to [-1, 1],
+  // then the downed flag (0 for anyone not down: an enemy, anyone standing).
+  // A missing other keeps the memset's zeros.
   int other_count = 0;
-  for (size_t i = 0; i < agents.size() && other_count < kMaxOthers; ++i) {
+  for (size_t i = 0; i < agents.size() && other_count < kVectorObsMaxOthers; ++i) {
     if (static_cast<int>(i) == player) continue;
     const Agent* other = agents[i];
     Position other_pos = other->GetPosition();
 
-    // Relative position normalized to [-1, 1]
-    buffer[idx++] = static_cast<float>(other_pos.row - my_pos.row) / max_dim;
-    buffer[idx++] = static_cast<float>(other_pos.col - my_pos.col) / max_dim;
+    buffer[VectorObsOther(other_count, kVectorObsOtherDRow)] =
+        static_cast<float>(other_pos.row - my_pos.row) / max_dim;
+    buffer[VectorObsOther(other_count, kVectorObsOtherDCol)] =
+        static_cast<float>(other_pos.col - my_pos.col) / max_dim;
+    buffer[VectorObsOther(other_count, kVectorObsOtherDowned)] = downed_flag(*other);
     other_count++;
   }
 
-  // Pad remaining slots with zeros if fewer than max others
-  while (other_count < kMaxOthers) {
-    buffer[idx++] = 0.0f;
-    buffer[idx++] = 0.0f;
-    other_count++;
-  }
-
-  // Feature 8: Steps remaining (absolute / 100)
+  // Feature 11: Steps remaining (absolute / 100)
   int steps_left = horizon_ - tick_;
-  buffer[idx++] = static_cast<float>(steps_left) / 100.0f;
+  buffer[kVectorObsStepsLeft] = static_cast<float>(steps_left) / 100.0f;
 }
 
 int BaseEnv::NumAgents() const {

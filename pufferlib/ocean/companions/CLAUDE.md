@@ -1163,6 +1163,13 @@ We want to integrate the pure C++ game in `companions/` into PufferLib
 - Plane 3: Current player
 - Plane 4: Other agents
 
+Vector obs, appended after the tensor by the RL binding (`BaseEnv::kVectorObs*` in
+`src/env/base_env.h`; 12 floats, fixed whatever the agent count): own position (2),
+health ratio, own downed flag, goal distance, then the first two other agents in
+agent order (row delta, col delta, downed flag each; an enemy or anyone standing
+has flag 0, a missing one reads 0), steps left / 100. Aggro / Dodge append their
+own features after it (20 / 22 floats).
+
 ### Curriculum Learning
 
 For this repo, we don't use the curriculum learning at all. But it is present

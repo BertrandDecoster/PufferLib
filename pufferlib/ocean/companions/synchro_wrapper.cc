@@ -47,10 +47,10 @@ void synchro_init(Synchro* env) {
     env->episode_steps = 0;
     env->vector_obs_size = cpp_env->VectorObservationSize();
 
-    // Validate vector observation size matches Python's VECTOR_OBS_SIZE (9)
+    // Validate vector observation size matches Python's VECTOR_OBS_SIZE (12)
     // If this fails, update VECTOR_OBS_SIZE in synchro.py
-    if (env->vector_obs_size != 9) {
-        std::fprintf(stderr, "ERROR: Vector obs size mismatch! C++=%d, expected=9. "
+    if (env->vector_obs_size != 12) {
+        std::fprintf(stderr, "ERROR: Vector obs size mismatch! C++=%d, expected=12. "
                      "Update VECTOR_OBS_SIZE in synchro.py\n", env->vector_obs_size);
     }
 

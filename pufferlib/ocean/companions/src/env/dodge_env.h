@@ -55,12 +55,12 @@ class DodgeEnv : public BaseEnv {
   std::vector<int> ObservationShape() const override;
 
   // Vector Observation - adds DodgeEnv-specific features:
-  //   - Base features from BaseEnv (8)
+  //   - Base features from BaseEnv (BaseEnv::kVectorObsBaseSize = 12)
   //   - Survival progress (ticks_remaining / survival_ticks) (1)
   //   - Number of active effects (normalized) (1)
   //   - Danger in each direction (4): how close is the nearest active hazard
   //   - Telegraph danger in each direction (4): how close is the nearest telegraphed hazard
-  // Total: 8 + 1 + 1 + 4 + 4 = 18
+  // Total: 12 + 1 + 1 + 4 + 4 = 22
   void VectorObservation(std::vector<float>& values, int player = 0) const override;
   int VectorObservationSize() const override;
 

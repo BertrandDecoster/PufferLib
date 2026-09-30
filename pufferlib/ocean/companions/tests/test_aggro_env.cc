@@ -471,11 +471,17 @@ TEST(TestResetWithNewSeed) {
 // =============================================================================
 // Vector Observation Tests
 // =============================================================================
+// AggroEnv's features follow the base layout (BaseEnv::kVectorObsBaseSize):
+// enemy dRow / dCol (+0, +1), enemy distance (+2), FSM one-hot patrol /
+// aggro / returning (+3..+5), target dRow / dCol (+6, +7)
+static constexpr int kAggroObs = BaseEnv::kVectorObsBaseSize;
+
 TEST(TestAggroEnvVectorObservationSize) {
   AggroEnv env(10, 1, EnemyType::Goblin, 42);
 
-  // AggroEnv adds 8 features to base (9): total = 17
-  ASSERT_EQ(env.VectorObservationSize(), 17);
+  // AggroEnv adds 8 features to base (12): total = 20
+  ASSERT_EQ(env.VectorObservationSize(), 20);
+  ASSERT_EQ(env.VectorObservationSize(), kAggroObs + 8);
 }
 
 TEST(TestAggroEnvVectorObservationValues) {
@@ -491,18 +497,16 @@ TEST(TestAggroEnvVectorObservationValues) {
     ASSERT_TRUE(obs[i] >= -1.0f && obs[i] <= 1.0f);
   }
 
-  // Feature 8-9: Relative position to enemy
-  // Feature 8: steps_left (base env)
-  // Feature 9-10: AggroEnv specific (enemy position normalized)
-  // Feature 11: Distance to enemy (normalized)
-  // Features 12-14: FSM state one-hot (should sum to 1)
-  float fsm_sum = obs[12] + obs[13] + obs[14];
+  // Features 12-13: relative position to the enemy; 14: distance to it
+  // Features 15-17: FSM state one-hot (should sum to 1)
+  float fsm_sum = obs[15] + obs[16] + obs[17];
   ASSERT_TRUE(fsm_sum > 0.99f && fsm_sum < 1.01f);  // One-hot should sum to 1
 
-  // Features 15-16: Relative position to target
+  // Features 18-19: Relative position to target
   // These should be valid relative positions
-  ASSERT_TRUE(obs[15] >= -1.0f && obs[15] <= 1.0f);
-  ASSERT_TRUE(obs[16] >= -1.0f && obs[16] <= 1.0f);
+  ASSERT_TRUE(obs[18] >= -1.0f && obs[18] <= 1.0f);
+  ASSERT_TRUE(obs[19] >= -1.0f && obs[19] <= 1.0f);
+  static_assert(kAggroObs + 6 == 18);
 }
 
 TEST(TestAggroEnvVectorObservationFSMState) {
@@ -512,10 +516,52 @@ TEST(TestAggroEnvVectorObservationFSMState) {
   env.VectorObservation(obs, 0);
 
   // Initially enemy should be in patrol state
-  // Feature 12 = patrol, 13 = aggro, 14 = returning (shifted by 1 due to steps_left at index 8)
-  ASSERT_EQ(obs[12], 1.0f);  // Patrol
-  ASSERT_EQ(obs[13], 0.0f);  // Not aggro
-  ASSERT_EQ(obs[14], 0.0f);  // Not returning
+  // Feature 15 = patrol, 16 = aggro, 17 = returning (after the 12 base features)
+  static_assert(kAggroObs + 3 == 15);
+  ASSERT_EQ(obs[15], 1.0f);  // Patrol
+  ASSERT_EQ(obs[16], 0.0f);  // Not aggro
+  ASSERT_EQ(obs[17], 0.0f);  // Not returning
+}
+
+// The base "others" include the enemy: its deltas fill a slot and its downed
+// flag is 0 (only a companion goes down). The companion's own flag is set
+// while it is down.
+TEST(TestAggroEnvVectorObservationDownedFlags) {
+  AggroEnv env(10, 1, EnemyType::Goblin, 42);
+  auto agents = env.GetMutableObjectManager().GetAllAgents();
+  ASSERT_EQ(agents.size(), static_cast<size_t>(2));
+  // The companion's and the enemy's player indices, in agent order
+  const int enemy_idx = dynamic_cast<AgentFSM*>(agents[0]) != nullptr ? 0 : 1;
+  const int companion_idx = 1 - enemy_idx;
+  Agent* companion = agents[static_cast<size_t>(companion_idx)];
+  ASSERT_TRUE(dynamic_cast<AgentFSM*>(agents[static_cast<size_t>(enemy_idx)]) != nullptr);
+  ASSERT_TRUE(dynamic_cast<AgentFSM*>(companion) == nullptr);
+
+  // Either one's single other fills the first slot
+  const int other_drow = BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow);
+  const int other_dcol = BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol);
+  const int other_down = BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDowned);
+
+  std::vector<float> obs;
+  env.VectorObservation(obs, companion_idx);
+  ASSERT_EQ(obs[BaseEnv::kVectorObsDowned], 0.0f);
+  ASSERT_EQ(obs[other_down], 0.0f);  // The enemy
+  // The enemy's slot mirrors AggroEnv's own enemy deltas
+  ASSERT_EQ(obs[other_drow], obs[kAggroObs + 0]);
+  ASSERT_EQ(obs[other_dcol], obs[kAggroObs + 1]);
+  ASSERT_TRUE(obs[other_drow] != 0.0f || obs[other_dcol] != 0.0f);
+
+  // The companion goes down: its own flag, never the enemy's
+  companion->TakeDamage(companion->GetHealth());
+  ASSERT_TRUE(companion->IsDowned());
+  env.VectorObservation(obs, companion_idx);
+  ASSERT_EQ(obs[BaseEnv::kVectorObsDowned], 1.0f);
+  ASSERT_EQ(obs[other_down], 0.0f);
+
+  // The enemy's view: the downed companion is its other
+  env.VectorObservation(obs, enemy_idx);
+  ASSERT_EQ(obs[BaseEnv::kVectorObsDowned], 0.0f);
+  ASSERT_EQ(obs[other_down], 1.0f);
 }
 
 // =============================================================================

@@ -22,7 +22,7 @@ The companions game differs from standard Ocean envs:
 
 ## Observation Space
 
-Flattened tensor + vector: `[5*rows*cols + 9]` floats
+Flattened tensor + vector: `[5*rows*cols + 12]` floats
 
 **Tensor (5 channels × rows × cols):**
 | Plane | Content |
@@ -33,14 +33,20 @@ Flattened tensor + vector: `[5*rows*cols + 9]` floats
 | 3 | Current player position |
 | 4 | Other agents positions |
 
-**Vector (9 features appended after tensor):**
+**Vector (12 features appended after tensor; `BaseEnv::kVectorObs*` in `src/env/base_env.h`):**
 | Index | Content |
 |-------|---------|
 | 0-1 | Position (row, col) normalized to [0,1] |
 | 2 | Health ratio |
-| 3 | Distance to goal (normalized) |
-| 4-7 | Relative positions to 2 other companions |
-| 8 | Steps left / 100 |
+| 3 | Self downed (1 while down) |
+| 4 | Distance to goal (normalized) |
+| 5-7 | Other 1: relative row, relative col, downed |
+| 8-10 | Other 2: relative row, relative col, downed |
+| 11 | Steps left / 100 |
+
+The others are the first two other agents in agent order (an enemy included; one
+that is not down, or a missing one, reads 0). The layout is fixed whatever the
+agent count. Aggro / Dodge append their features after index 11 (20 / 22 floats).
 
 ## Action Space
 

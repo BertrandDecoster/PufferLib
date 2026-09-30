@@ -68,13 +68,13 @@ class AggroEnv : public BaseEnv {
   }
   double MaxUtility() const override { return kWinReward; }
 
-  // Vector Observation - adds AggroEnv-specific features:
-  //   - Base features from BaseEnv (8)
+  // Vector Observation - adds AggroEnv-specific features, in this order:
+  //   - Base features from BaseEnv (BaseEnv::kVectorObsBaseSize = 12)
   //   - Relative position to enemy (2)
-  //   - Relative position to target cell (2)
-  //   - Enemy FSM state one-hot (3: patrol, aggro, returning)
   //   - Distance to enemy (1)
-  // Total: 8 + 2 + 2 + 3 + 1 = 16
+  //   - Enemy FSM state one-hot (3: patrol, aggro, returning)
+  //   - Relative position to target cell (2)
+  // Total: 12 + 2 + 1 + 3 + 2 = 20
   void VectorObservation(std::vector<float>& values, int player = 0) const override;
   int VectorObservationSize() const override;
 

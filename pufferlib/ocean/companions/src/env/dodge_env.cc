@@ -349,7 +349,7 @@ std::vector<int> DodgeEnv::ObservationShape() const {
 // =============================================================================
 
 int DodgeEnv::VectorObservationSize() const {
-  // Base features (8) + DodgeEnv-specific (10)
+  // Base features (12) + DodgeEnv-specific (10) = 22
   return BaseEnv::VectorObservationSize() + 10;
 }
 
