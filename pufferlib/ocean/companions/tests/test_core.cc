@@ -1660,6 +1660,9 @@ TEST(TestObservationTensorConsistencyAfterMovement) {
 // =============================================================================
 // Vector Observation Tests
 // =============================================================================
+// Floats computed two ways (a delta vs a difference of normalized positions)
+static bool ObsNear(float a, float b) { return std::abs(a - b) < 1e-6f; }
+
 TEST(TestVectorObservationSize) {
   // The base layout: own position (2), health, downed, goal distance, two
   // others (dx, dy, downed each), steps left: 12, whatever the agent count
@@ -1735,10 +1738,10 @@ TEST(TestVectorObservationMultipleAgents) {
 
   // Player 0's first other is agent 1: its deltas are agent 1's position
   // minus player 0's
-  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow)],
-            obs1[BaseEnv::kVectorObsRow] - obs0[BaseEnv::kVectorObsRow]);
-  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol)],
-            obs1[BaseEnv::kVectorObsCol] - obs0[BaseEnv::kVectorObsCol]);
+  ASSERT_TRUE(ObsNear(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow)],
+                      obs1[BaseEnv::kVectorObsRow] - obs0[BaseEnv::kVectorObsRow]));
+  ASSERT_TRUE(ObsNear(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol)],
+                      obs1[BaseEnv::kVectorObsCol] - obs0[BaseEnv::kVectorObsCol]));
 }
 
 // The downed flags: the player's own (index 3) and each other's, next to its
@@ -1783,15 +1786,28 @@ TEST(TestVectorObservationDownedFlags) {
   ASSERT_EQ(obs2[down1], 1.0f);
 
   // The downed body keeps its deltas
-  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow)],
-            obs1[BaseEnv::kVectorObsRow] - obs0[BaseEnv::kVectorObsRow]);
-  ASSERT_EQ(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol)],
-            obs1[BaseEnv::kVectorObsCol] - obs0[BaseEnv::kVectorObsCol]);
+  ASSERT_TRUE(ObsNear(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDRow)],
+                      obs1[BaseEnv::kVectorObsRow] - obs0[BaseEnv::kVectorObsRow]));
+  ASSERT_TRUE(ObsNear(obs0[BaseEnv::VectorObsOther(0, BaseEnv::kVectorObsOtherDCol)],
+                      obs1[BaseEnv::kVectorObsCol] - obs0[BaseEnv::kVectorObsCol]));
 
   // The write path (the RL binding's) agrees
   std::vector<float> written(static_cast<size_t>(env.VectorObservationSize()), -1.0f);
   env.WriteVectorObservation(written.data(), 0);
   ASSERT_TRUE(written == obs0);
+
+  // Revived: every flag is back to 0
+  auto* revived = dynamic_cast<Companion*>(agents[1]);
+  ASSERT_TRUE(revived != nullptr);
+  ASSERT_TRUE(revived->Revive(1));
+  ASSERT_FALSE(agents[1]->IsDowned());
+  for (int p = 0; p < 3; ++p) {
+    std::vector<float> obs;
+    env.VectorObservation(obs, p);
+    ASSERT_EQ(obs[BaseEnv::kVectorObsDowned], 0.0f);
+    ASSERT_EQ(obs[down0], 0.0f);
+    ASSERT_EQ(obs[down1], 0.0f);
+  }
 }
 
 TEST(TestVectorObservationUpdatesAfterMove) {

@@ -1167,8 +1167,10 @@ Vector obs, appended after the tensor by the RL binding (`BaseEnv::kVectorObs*` 
 `src/env/base_env.h`; 12 floats, fixed whatever the agent count): own position (2),
 health ratio, own downed flag, goal distance, then the first two other agents in
 agent order (row delta, col delta, downed flag each; an enemy or anyone standing
-has flag 0, a missing one reads 0), steps left / 100. Aggro / Dodge append their
-own features after it (20 / 22 floats).
+has flag 0 next to its real deltas; a missing or dead one reads 0 throughout, the
+dead keeping its slot: slots follow agent order, never reshuffled), steps left /
+100. Aggro / Dodge append their own features after it (20 / 22 floats);
+`WriteVectorObservation` (the zero-copy path) writes the base features only.
 
 ### Curriculum Learning
 

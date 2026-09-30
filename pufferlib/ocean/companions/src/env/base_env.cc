@@ -539,7 +539,8 @@ int BaseEnv::VectorObservationSize() const {
 }
 
 void BaseEnv::VectorObservation(std::vector<float>& values, int player) const {
-  // Thin wrapper around WriteVectorObservation to avoid duplicating logic.
+  // Thin wrapper around WriteVectorObservation to avoid duplicating logic:
+  // the base features, a subclass's extras zero-filled here.
   values.assign(VectorObservationSize(), 0.0f);
   WriteVectorObservation(values.data(), player);
 }
@@ -606,9 +607,9 @@ void BaseEnv::WriteObservationTensor(float* buffer, int player) const {
 }
 
 void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
-  // Same logic as VectorObservation() but writes directly to buffer
-  int size = VectorObservationSize();
-  std::memset(buffer, 0, size * sizeof(float));
+  // The base features only (kVectorObsBaseSize floats, whatever the env's
+  // VectorObservationSize): the buffer past them is left untouched
+  std::memset(buffer, 0, kVectorObsBaseSize * sizeof(float));
 
   auto agents = object_manager_->GetAllAgents();
   if (player < 0 || player >= static_cast<int>(agents.size())) {
@@ -655,11 +656,17 @@ void BaseEnv::WriteVectorObservation(float* buffer, int player) const {
   // Features 5-10: the first kVectorObsMaxOthers other agents in agent order
   // (companions and enemies alike): relative position normalized to [-1, 1],
   // then the downed flag (0 for anyone not down: an enemy, anyone standing).
-  // A missing other keeps the memset's zeros.
+  // A missing other keeps the memset's zeros; so does a dead one (the tensor
+  // drops the dead too), which still takes its slot: the slots follow agent
+  // order, never reshuffled.
   int other_count = 0;
   for (size_t i = 0; i < agents.size() && other_count < kVectorObsMaxOthers; ++i) {
     if (static_cast<int>(i) == player) continue;
     const Agent* other = agents[i];
+    if (!other->IsAlive()) {
+      other_count++;
+      continue;
+    }
     Position other_pos = other->GetPosition();
 
     buffer[VectorObsOther(other_count, kVectorObsOtherDRow)] =

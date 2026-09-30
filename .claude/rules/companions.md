@@ -44,9 +44,11 @@ Flattened tensor + vector: `[5*rows*cols + 12]` floats
 | 8-10 | Other 2: relative row, relative col, downed |
 | 11 | Steps left / 100 |
 
-The others are the first two other agents in agent order (an enemy included; one
-that is not down, or a missing one, reads 0). The layout is fixed whatever the
-agent count. Aggro / Dodge append their features after index 11 (20 / 22 floats).
+The others are the first two other agents in agent order, an enemy included. An
+enemy or anyone standing has flag 0 next to its real deltas; a missing or dead one
+reads 0 throughout (a dead one keeps its slot: slots follow agent order, never
+reshuffled). The layout is fixed whatever the agent count. Aggro / Dodge append
+their features after index 11 (20 / 22 floats).
 
 ## Action Space
 

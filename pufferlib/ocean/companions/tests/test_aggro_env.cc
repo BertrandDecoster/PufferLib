@@ -564,6 +564,79 @@ TEST(TestAggroEnvVectorObservationDownedFlags) {
   ASSERT_EQ(obs[other_down], 1.0f);
 }
 
+// A dead other reads 0 throughout (deltas and flag), as the tensor drops the
+// dead. Slots stay assigned by agent order: the dead keeps its slot, zeroed,
+// and the living others are not reshuffled.
+TEST(TestAggroEnvVectorObservationDeadOtherIsZeroed) {
+  AggroEnv env(10, 2, EnemyType::Goblin, 42);
+  auto agents = env.GetMutableObjectManager().GetAllAgents();
+  ASSERT_EQ(agents.size(), static_cast<size_t>(3));
+  int enemy_idx = -1;
+  for (size_t i = 0; i < agents.size(); ++i) {
+    if (dynamic_cast<AgentFSM*>(agents[i]) != nullptr) enemy_idx = static_cast<int>(i);
+  }
+  ASSERT_TRUE(enemy_idx >= 0);
+  // A companion player and its other slots: the two other agents, in order
+  const int player = enemy_idx == 0 ? 1 : 0;
+  std::vector<int> others;
+  for (int i = 0; i < 3; ++i) {
+    if (i != player) others.push_back(i);
+  }
+  const int enemy_slot = others[0] == enemy_idx ? 0 : 1;
+  const int ally_slot = 1 - enemy_slot;
+  auto slot = [](int k, int field) { return BaseEnv::VectorObsOther(k, field); };
+
+  std::vector<float> before;
+  env.VectorObservation(before, player);
+  ASSERT_TRUE(before[slot(enemy_slot, BaseEnv::kVectorObsOtherDRow)] != 0.0f ||
+              before[slot(enemy_slot, BaseEnv::kVectorObsOtherDCol)] != 0.0f);
+
+  agents[static_cast<size_t>(enemy_idx)]->Defeat();
+  ASSERT_FALSE(agents[static_cast<size_t>(enemy_idx)]->IsAlive());
+
+  std::vector<float> after;
+  env.VectorObservation(after, player);
+  ASSERT_EQ(after[slot(enemy_slot, BaseEnv::kVectorObsOtherDRow)], 0.0f);
+  ASSERT_EQ(after[slot(enemy_slot, BaseEnv::kVectorObsOtherDCol)], 0.0f);
+  ASSERT_EQ(after[slot(enemy_slot, BaseEnv::kVectorObsOtherDowned)], 0.0f);
+  // The ally keeps its own slot, unchanged
+  for (int field = 0; field < BaseEnv::kVectorObsOtherStride; ++field) {
+    ASSERT_EQ(after[slot(ally_slot, field)], before[slot(ally_slot, field)]);
+  }
+
+  // The write path agrees on the base features
+  std::vector<float> written(static_cast<size_t>(BaseEnv::kVectorObsBaseSize), -1.0f);
+  env.WriteVectorObservation(written.data(), player);
+  for (int i = 0; i < BaseEnv::kVectorObsBaseSize; ++i) {
+    ASSERT_EQ(written[static_cast<size_t>(i)], after[static_cast<size_t>(i)]);
+  }
+}
+
+// WriteVectorObservation writes the base features only: a buffer sized
+// kVectorObsBaseSize is enough on Aggro (the floats after it are untouched),
+// while BaseEnv::VectorObservation zero-fills Aggro's extras.
+TEST(TestAggroEnvWriteVectorObservationWritesOnlyTheBase) {
+  AggroEnv env(10, 1, EnemyType::Goblin, 42);
+  const int size = env.VectorObservationSize();
+  ASSERT_TRUE(size > BaseEnv::kVectorObsBaseSize);
+
+  std::vector<float> buffer(static_cast<size_t>(size), -7.0f);
+  env.WriteVectorObservation(buffer.data(), 0);
+  for (int i = BaseEnv::kVectorObsBaseSize; i < size; ++i) {
+    ASSERT_EQ(buffer[static_cast<size_t>(i)], -7.0f);
+  }
+
+  std::vector<float> base(static_cast<size_t>(size), -7.0f);
+  env.BaseEnv::VectorObservation(base, 0);
+  ASSERT_EQ(base.size(), static_cast<size_t>(size));
+  for (int i = 0; i < BaseEnv::kVectorObsBaseSize; ++i) {
+    ASSERT_EQ(base[static_cast<size_t>(i)], buffer[static_cast<size_t>(i)]);
+  }
+  for (int i = BaseEnv::kVectorObsBaseSize; i < size; ++i) {
+    ASSERT_EQ(base[static_cast<size_t>(i)], 0.0f);
+  }
+}
+
 // =============================================================================
 // Win/Lose Condition Tests
 // =============================================================================

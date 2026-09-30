@@ -227,9 +227,12 @@ class BaseEnv {
   //   11    steps left / 100
   // The layout is fixed whatever the agent count: 5 + 3 * kVectorObsMaxOthers
   // + 1. The others are the first kVectorObsMaxOthers agents in agent order,
-  // the player skipped, companions and enemies alike; a missing one reads 0
-  // throughout, and anyone not down (an enemy, anyone standing) has flag 0.
-  // Subclasses append environment-specific features after the base.
+  // the player skipped, companions and enemies alike. Anyone not down (an
+  // enemy, anyone standing) has flag 0 next to its real deltas; a missing one
+  // reads 0 throughout, and so does a dead one (as the tensor drops the
+  // dead), which keeps its slot: the slots follow agent order, never
+  // reshuffled. Subclasses append environment-specific features after the
+  // base.
   static constexpr int kVectorObsMaxOthers = 2;
   static constexpr int kVectorObsRow = 0;
   static constexpr int kVectorObsCol = 1;
@@ -255,6 +258,9 @@ class BaseEnv {
   // Direct-write observation methods (zero-copy for C bindings)
   // These write directly to a pre-allocated buffer, avoiding std::vector allocation
   void WriteObservationTensor(float* buffer, int player = 0) const;
+  // Writes the base features only (kVectorObsBaseSize floats) and leaves the
+  // buffer past them untouched: a subclass's extras (Aggro / Dodge) are not
+  // written on this zero-copy path (a known gap), only by VectorObservation.
   void WriteVectorObservation(float* buffer, int player = 0) const;
 
   // Utility bounds (for MCTS and planning algorithms)
