@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -691,15 +690,6 @@ TEST(TestAnUnknownCompanionThatWentDownCounts) {
 // Start downed (LevelConfig::start_downed, SynchroEnv::SetStartDowned)
 // =============================================================================
 
-static uint64_t Fnv1a(const std::string& s) {
-  uint64_t h = 1469598103934665603ull;
-  for (unsigned char c : s) {
-    h ^= c;
-    h *= 1099511628211ull;
-  }
-  return h;
-}
-
 static LevelConfig SynchroConfig(unsigned int seed, int start_downed) {
   LevelConfig config =
       LevelConfig::ForSynchro(12, 12, 3, 3, 2, seed, static_cast<int>(seed % 8), 100);
@@ -760,7 +750,10 @@ TEST(TestTheGeneratorDownsOneCompanion) {
 }
 
 // The downs are drawn after every other draw: the level is the same one, only
-// the downed companions (and the RNG state after the draw) differ.
+// the downed companions (and the RNG state after the draw) differ. So 0,
+// which draws nothing, generates the level as without the option (checked
+// here as a property: the generator's JSON is not pinned, as corridors use
+// std::uniform_real_distribution, which varies across standard libraries).
 TEST(TestStartDownedKeepsTheLevel) {
   for (unsigned int seed = 0; seed < 30; ++seed) {
     const Snapshot plain = LevelGenerator::Generate(SynchroConfig(seed, 0));
@@ -776,24 +769,6 @@ TEST(TestStartDownedKeepsTheLevel) {
     downed.rng_inc = plain.rng_inc;
     ASSERT_EQ(SnapshotToJson(downed), SnapshotToJson(plain));
   }
-}
-
-// start_downed = 0 generates today's levels byte for byte: the JSON hashes
-// (FNV-1a 64) pinned from the generator before start_downed existed (PufferLib
-// 7a8f1669). A deliberate change of the generator or of the JSON writer
-// updates them.
-TEST(TestStartDownedZeroIsTodaysLevel) {
-  LevelConfig synchro = LevelConfig::ForSynchro(12, 12, 3, 3, 2, 5, 5, 100);
-  LevelConfig small = LevelConfig::ForSynchro(8, 10, 2, 1, 2, 11);
-  LevelConfig aggro = LevelConfig::ForAggro(12, 2, 3, 3, 3);
-  LevelConfig dodge = LevelConfig::ForDodge(10, 3, 9);
-  LevelConfig full = LevelConfig::FullInfo(14, 14, 2, 3, 2, 3, true, 7, 1);
-  for (LevelConfig* c : {&synchro, &small, &aggro, &dodge, &full}) c->start_downed = 0;
-  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(synchro))), 0x2aa958b83ca98d04ull);
-  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(small))), 0x70ec44eb64dc6d00ull);
-  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(aggro))), 0xbb6da07e9f4264c9ull);
-  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(dodge))), 0x9765fb44fba7112bull);
-  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(full))), 0xaa198cfa2a979ac7ull);
 }
 
 static bool ThrowsInvalidArgument(const std::function<void()>& f) {

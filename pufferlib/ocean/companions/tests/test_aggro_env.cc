@@ -17,6 +17,8 @@
 #include "../src/core/fsm/fsm_states.h"
 #include "../src/core/grid.h"
 #include "../src/core/object_manager.h"
+#include "../src/core/snapshot.h"
+#include "../src/core/snapshot_json.h"
 #include "../src/env/aggro_env.h"
 #include "../src/env/aggro_lens.h"
 #include "../src/env/dodge_lens.h"
@@ -1288,6 +1290,29 @@ TEST(TestAGoblinKilledAsItsStrikeLandsStillLandsIt) {
 
 TEST(TestLivingGoblinsPendingStrikeLands) {
   ASSERT_TRUE(GoblinStrikeLands(false));
+}
+
+// =============================================================================
+// Snapshot determinism
+// =============================================================================
+
+// A saved state depends on the seed alone: two envs from one seed save the
+// same JSON. An enemy that never attacked saves the default attack filter
+// (Companion; it was left uninitialized, and saved whatever the memory held).
+TEST(TestSameSeedSavesTheSameSnapshot) {
+  for (EnemyType type : {EnemyType::Zombie, EnemyType::Goblin}) {
+    auto a = std::make_unique<AggroEnv>(10, 2, type, 42);
+    auto b = std::make_unique<AggroEnv>(10, 2, type, 42);
+    const Snapshot saved = a->SaveSnapshot();
+    ASSERT_EQ(SnapshotToJson(saved), SnapshotToJson(b->SaveSnapshot()));
+    bool any_fsm = false;
+    for (const AgentSnapshot& agent : saved.agents) {
+      if (!agent.has_fsm) continue;
+      any_fsm = true;
+      ASSERT_TRUE(agent.fsm.attack_filter == TargetFilter::Companion);
+    }
+    ASSERT_TRUE(any_fsm);
+  }
 }
 
 // =============================================================================

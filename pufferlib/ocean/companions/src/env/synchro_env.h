@@ -60,9 +60,10 @@ class SynchroEnv : public BaseEnv {
   int GetMapComplexity() const { return map_complexity_; }
 
   // How many companions each Reset generates already down
-  // (LevelConfig::start_downed: picked by the seed, alive at 0 HP, one of the
-  // team's downs each, not new to the first step: no down cost, no
-  // interruption; with max downs <= count the level loads lost, TeamDown).
+  // (LevelConfig::start_downed: picked by the seed, alive at 0 HP; not new to
+  // the first step: no down cost, no interruption). Each counts as one of the
+  // team's downs: a Reset starts at downs = count of GetMaxDowns(), so with
+  // max_downs <= count every Reset loads a level already lost (TeamDown).
   // From the next Reset on; kept across Reset and copied with the env.
   // Throws std::invalid_argument unless 0 <= count < the number of
   // companions (the value is then unchanged). Default 0: the levels as

@@ -38,7 +38,9 @@ struct AttackIntent {
   int area_width = 1;           // Width of attack area
   int area_height = 1;          // Height of attack area
   int damage = 1;               // Damage to deal
-  TargetFilter filter;          // Who gets affected
+  // Who gets affected. Default as AttackConfig's and FSMSnapshot's (an enemy
+  // that never attacked saves it: it must not be left uninitialized)
+  TargetFilter filter = TargetFilter::Companion;
 };
 
 // =============================================================================
@@ -68,7 +70,7 @@ struct FSMContext {
   int attack_damage = 1;        // Base damage
   int attack_width = 1;         // Attack area width
   int attack_height = 1;        // Attack area height
-  TargetFilter attack_filter;   // Who gets affected
+  TargetFilter attack_filter = TargetFilter::Companion;  // Who gets affected (as AttackConfig)
 
   // Attack runtime state
   int attack_tick_counter = 0;  // Counter for current attack phase
