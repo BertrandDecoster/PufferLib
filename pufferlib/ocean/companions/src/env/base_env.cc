@@ -324,7 +324,7 @@ bool BaseEnv::AnyCompanionDowned() const {
 }
 
 bool BaseEnv::SetDownCost(double cost) {
-  if (!std::isfinite(cost) || cost > 0.0) return false;
+  if (!std::isfinite(cost) || cost > 0.0 || cost < kMinDownCost) return false;
   down_cost_ = cost;
   return true;
 }

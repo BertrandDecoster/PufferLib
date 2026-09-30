@@ -1094,7 +1094,9 @@ carries it in `effect_id`. EpisodeEnd is reported each time the episode becomes 
 (the wrapper's `last_step_done`), and once more when TeamDown or Horizon upgrades an
 Interrupted end while done stays true (`StepAndReport`); an interrupted episode a
 revive made not done again reports its next end anew (Interrupted, a revive, then
-Success: two EpisodeEnds). Interrupted is a done that can end later: a host that
+Success: two EpisodeEnds; a new down after a revive: EpisodeEnd(Interrupted) again). An
+upgrade's EpisodeEnd has `episode_reward` 0 (the step's reward sum, and that step is
+paused). Interrupted is a done that can end later: a host that
 plays on keeps stepping; the episode ends for real on Success / TeamDown / Horizon.
 A derived `Reset` / `LoadSnapshot` that changes state after `BaseEnv::LoadSnapshot`
 latched calls `RelatchEndReasonAfterLoad` (AggroEnv's `Reset`
@@ -1114,8 +1116,8 @@ it is still paused (`paused` was read as it began: rewards 0, no success); the l
 rewards and decides again from the next step. A down the host causes between steps
 that the very next step revives never shows `Interrupted`: that step pays the down
 cost, then finds nobody down (done false, `None`). The pause also clears on any lens
-change, `Reset` or `LoadSnapshot` (`ResetOutcome` clears it and takes the current downs as seen: a snapshot loaded with
-someone down loads not interrupted). Priority Success > TeamDown > Horizon >
+change, `Reset` or `LoadSnapshot` (`ResetOutcome` clears it and takes the current downs
+as seen: a snapshot loaded with someone down loads not interrupted). Priority Success > TeamDown > Horizon >
 Interrupted: `Interrupted` is the only provisional reason (`LatchEndReason` upgrades
 it, `GetEndReason` computes it live): a team down while paused is `TeamDown`, a pause
 reaching the horizon `Horizon`, and a final verdict ends the pause (`IsInterrupted()`
@@ -1132,9 +1134,10 @@ seen. A step paused as it starts pays nothing, even if its start latch ends the 
 (a team the host downed while paused). A lens opts out with `TaskLens::IsInterruptible()` (default true):
 its downs pay the cost, nothing pauses. Without a lens the rewards are all 0 (no cost,
 no pause). **Down cost**: `kDefaultDownCost` = -0.5, `SetDownCost(c)` (false for a
-non-finite or positive `c`, the cost unchanged; 0 allowed) / `GetDownCost()`; runtime,
-not in snapshots, copied with the env, kept across `Reset` / `LoadSnapshot`; C API
-`companions_set_down_cost` / `companions_get_down_cost` (1.6). The envs'
+non-finite or positive `c`, or one below `kMinDownCost` = -1e6, the cost unchanged; 0
+and -1e6 allowed) / `GetDownCost()`; runtime, not in snapshots, copied with the env,
+kept across `Reset` / `LoadSnapshot`; C API `companions_set_down_cost` /
+`companions_get_down_cost` (1.6). The envs'
 `MinUtility` adds `WorstDownCost()` (a loose bound: every down paid up to the team
 down, max_downs - 1 downs, then every companion at once)
 

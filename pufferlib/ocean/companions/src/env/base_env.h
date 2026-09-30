@@ -112,9 +112,9 @@ class BaseEnv {
   // step revives never shows Interrupted (that step pays the down cost and
   // ends nobody down). The pause also clears on any lens change, Reset or
   // LoadSnapshot (a state loaded with someone down loads not interrupted: its
-  // downs are not new). Only while the episode goes on: a down on a step that ends it
-  // (a success, the horizon, the team down) pauses nothing, nor does one
-  // after it ended; and a final verdict reached while paused (the team down,
+  // downs are not new). Only while the episode goes on: a down on a step
+  // that ends it (a success, the horizon, the team down) pauses nothing, nor
+  // does one after it ended; and a final verdict reached while paused (the team down,
   // the horizon) clears the pause (the steps played on after it pay again).
   // Nor for a lens that opts out (TaskLens::IsInterruptible: its downs pay
   // the cost, nothing pauses). Without a lens the rewards are all 0: no cost.
@@ -130,10 +130,13 @@ class BaseEnv {
   bool AnyCompanionDowned() const;
   // The down cost: added to every agent's reward once per new down (see
   // above). Runtime, not level data: not in snapshots; copied with the env,
-  // kept across Reset and LoadSnapshot. SetDownCost refuses a non-finite or
-  // positive cost (false, the cost unchanged); 0 makes downs free (they
-  // still interrupt).
+  // kept across Reset and LoadSnapshot. SetDownCost refuses a non-finite
+  // cost, a positive one, or one below kMinDownCost (false, the cost
+  // unchanged); 0 makes downs free (they still interrupt).
   static constexpr double kDefaultDownCost = -0.5;
+  // The lowest down cost, mirroring kMaxTimerSteps (1e6): a sum of downs
+  // stays finite
+  static constexpr double kMinDownCost = -1e6;
   bool SetDownCost(double cost);
   double GetDownCost() const { return down_cost_; }
 

@@ -595,12 +595,18 @@ TEST(TestTwoDownsInOneStepPayTwice) {
   }
 }
 
-// A custom cost is paid. SetDownCost refuses a non-finite or positive cost
-// (keeping the old one) and accepts 0; the cost is runtime data that survives
-// Reset and LoadSnapshot.
+// A custom cost is paid. SetDownCost refuses a non-finite or positive cost,
+// or one below kMinDownCost (-1e6) (keeping the old one), and accepts 0 and
+// kMinDownCost; the cost is runtime data that survives Reset and
+// LoadSnapshot.
 TEST(TestTheDownCostIsSettable) {
   SynchroEnv env(10, 10, 3, 1, 0, 42);
   MakeArena(env);
+  ASSERT_TRUE(env.SetDownCost(BaseEnv::kMinDownCost));
+  ASSERT_TRUE(env.GetDownCost() == -1e6);
+  ASSERT_FALSE(env.SetDownCost(BaseEnv::kMinDownCost - 1));
+  ASSERT_FALSE(env.SetDownCost(-1e308));
+  ASSERT_TRUE(env.GetDownCost() == -1e6);
   ASSERT_TRUE(env.SetDownCost(-0.2));
   ASSERT_FALSE(env.SetDownCost(std::numeric_limits<double>::quiet_NaN()));
   ASSERT_FALSE(env.SetDownCost(std::numeric_limits<double>::infinity()));

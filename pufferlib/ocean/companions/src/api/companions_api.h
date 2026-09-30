@@ -314,10 +314,13 @@
 //   happens: the steps a host keeps playing afterwards (done stays true) do
 //   not repeat it; reset, snapshot loads and lens changes start a new
 //   episode. Since 1.6, also once when a final reason (TeamDown, Horizon)
-//   upgrades an Interrupted episode while done stays true; and an
-//   interrupted episode that a revive made not done again (done false)
+//   upgrades an Interrupted episode while done stays true (its
+//   episode_reward is always 0: the upgrading step is paused, and
+//   episode_reward is that step's reward sum, not an episode return); and
+//   an interrupted episode that a revive made not done again (done false)
 //   reports its next end anew (e.g. EpisodeEnd(Interrupted), a revive, then
-//   EpisodeEnd(Success)).
+//   EpisodeEnd(Success); a new down after a revive: EpisodeEnd(Interrupted)
+//   again).
 //   effect_id = the Companions_EndReason (see companions_get_end_reason).
 // A step reports at most Companions_MAX_EVENTS events, in the order above
 // (the report queries are never cut: they are the whole truth).
@@ -1591,9 +1594,9 @@ COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_E
 // down, on the step the team's downs grow (see "Versioning", 1.6). Default
 // -0.5. A runtime setting of this env, not level data: snapshots do not carry
 // it; it survives companions_reset and snapshot loads, and an env's copy (the
-// outcome preview's clone) keeps it. companions_set_down_cost refuses a
-// non-finite or positive cost (false, the error set, the cost unchanged); 0
-// makes downs free (they still interrupt). companions_get_down_cost returns 0
+// outcome preview's clone) keeps it. companions_set_down_cost accepts a
+// finite cost between -1e6 and 0 and refuses any other (false, the error
+// set, the cost unchanged); 0 makes downs free (they still interrupt). companions_get_down_cost returns 0
 // for a null env (the error set: "Invalid environment").
 COMPANIONS_API bool companions_set_down_cost(Companions_Env* env, double cost);
 COMPANIONS_API double companions_get_down_cost(const Companions_Env* env);

@@ -2263,7 +2263,7 @@ COMPANIONS_API bool companions_set_down_cost(Companions_Env* env, double cost) {
   }
   try {
     if (!env->env->SetDownCost(cost)) {
-      SetError("companions_set_down_cost: the cost must be finite and <= 0");
+      SetError("companions_set_down_cost: the cost must be finite, between -1e6 and 0");
       return false;
     }
     return true;

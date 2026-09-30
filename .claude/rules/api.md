@@ -139,7 +139,7 @@ later (a host that plays on keeps stepping; the episode ends for real on Success
 TeamDown / Horizon, each reported by its own EpisodeEnd). The step that revives the last
 downed companion already reads done false and `Companions_End_None`; the task rewards
 again from the next step. The down cost (default -0.5, runtime, not in snapshots):
-`companions_set_down_cost` (finite, <= 0) / `companions_get_down_cost`. The header's
+`companions_set_down_cost` (finite, between -1e6 and 0) / `companions_get_down_cost`. The header's
 "Versioning" (1.6) and `companions_get_end_reason` comments are the reference.
 
 ## Thread Safety
