@@ -2440,7 +2440,9 @@ void BaseEnv::UseSkill(SkillPlan& plan) {
     if (skill.damage <= 0 || self_spared(i, skill.self_damage) || !agents[i]->IsAffectable()) {
       continue;
     }
-    HurtInStep(*agents[i], skill.damage);
+    // Reported only as it went into the ledger (always, for an affectable
+    // agent during a step): the report and the ledger never disagree
+    if (!HurtInStep(*agents[i], skill.damage)) continue;
     plan.did[i].effects |= kSkillEffectDamage;
     plan.did[i].damage = skill.damage;  // Its raw share (AffectedAgent::damage)
   }

@@ -96,6 +96,10 @@ TEST(TestVersion) {
   // amended in place: Companions_SkillOutcome's layout changed)
   ASSERT_EQ(std::string(version), std::string("1.6.0"));
   std::cout << "  Version: " << version << std::endl;
+  // The struct-layout revision: the DLL's is the header's this test was
+  // built against (a host refuses a mismatch); 1 = 1.6.0 with affected_damage
+  ASSERT_EQ(companions_abi_revision(), COMPANIONS_ABI_REVISION);
+  ASSERT_EQ(COMPANIONS_ABI_REVISION, 1);
 }
 
 TEST(TestCreateDestroy) {

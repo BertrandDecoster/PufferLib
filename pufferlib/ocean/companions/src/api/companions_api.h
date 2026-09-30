@@ -135,6 +135,8 @@
 //   use its own), and the damage a previewed use would deal
 //   (Companions_SkillPreview.affected_damage): a host reads what a use dealt
 //   instead of inferring it from the skill book.
+// - companions_abi_revision / COMPANIONS_ABI_REVISION (1): the struct-layout
+//   revision a host compares at load (see "ABI revision" below).
 // - Only a team down or the horizon fails a task (behaviour), so a bad
 //   situation stays salvageable. Done is the same for every env and lens:
 //   the success, the team down (Companions_End_TeamDown), the horizon, or a
@@ -178,6 +180,20 @@
 // slots load no more: regenerate them.
 // A minor bump may break the ABI (1.1 did): consumers pin major.minor, not
 // just major, and rebuild against the matching header.
+// ABI revision (since 1.6.0): companions_abi_revision() returns the
+// COMPANIONS_ABI_REVISION the DLL was built with. It names the struct
+// layouts, and is bumped on every struct-layout change, an in-place
+// amendment of an unreleased version included (the version string then
+// stays the same). A new minor keeps counting (never reset), bumping it only
+// if it changes a layout. The contract: a host checks major.minor AND
+// compares companions_abi_revision() with the COMPANIONS_ABI_REVISION it
+// was compiled against, and refuses to run on a mismatch (filling a struct
+// of another layout corrupts the host's memory). History: 1 = 1.6.0 with
+// Companions_SkillUseInfo / Companions_SkillPreview.affected_damage (152 /
+// 156 bytes). The earlier 1.6.0 layouts had no revision and their DLLs lack
+// the export: a host built against this header refuses them at load. A host
+// built against an earlier 1.6.0 header predates the check and cannot tell
+// (its 120-byte Companions_SkillUseInfo would be overrun): rebuild it.
 //
 // =============================================================================
 // Thread Safety
@@ -390,6 +406,10 @@ extern "C" {
 // =============================================================================
 // Constants
 // =============================================================================
+// The struct-layout revision this header describes (see "ABI revision" in
+// Versioning): compare with companions_abi_revision()
+#define COMPANIONS_ABI_REVISION 1
+
 #define Companions_INVALID_ID (-1)
 #define Companions_MAX_AGENTS 8
 #define Companions_MAX_EFFECTS 32
@@ -1156,8 +1176,12 @@ typedef struct {
   uint32_t affected_effects[Companions_MAX_AGENTS];
   int32_t affected_count;
   int32_t affected_total;
-  // The damage the use would deal each (same index; since 1.6): as
-  // Companions_SkillUseInfo.affected_damage
+  // The damage the use would deal each (same index; since 1.6): a
+  // prediction for whoever stands on its cells now, the skill book's
+  // per-hit damage where the Damage effect is predicted, else 0. The step
+  // may differ as its affected agents do (an agent walking out of the cells
+  // takes none, one walking or pushed in takes its share): the step's
+  // Companions_SkillUseInfo.affected_damage is what it dealt.
   int32_t affected_damage[Companions_MAX_AGENTS];
 } Companions_SkillPreview;
 
@@ -1203,7 +1227,10 @@ typedef struct {
   // without damage). Each use reports its own share: an agent two uses hit
   // is in both. Read it instead of the skill book's damage; the HP truth
   // stays the turn health (companions_get_turn_health), which totals every
-  // source's share and adds Marked.
+  // source's share and adds Marked. Like affected, only the first
+  // Companions_MAX_AGENTS (8) entries: when affected_total is larger, the
+  // damage dealt past the cut is in no C API report (the C++ report is
+  // uncapped), only in the turn health.
   int32_t affected_damage[Companions_MAX_AGENTS];
 } Companions_SkillUseInfo;
 
@@ -1706,6 +1733,11 @@ COMPANIONS_API int32_t companions_render_ascii(
 
 // Get library version string (see "Versioning" at the top)
 COMPANIONS_API const char* companions_version(void);
+
+// The struct-layout revision the library was built with (since 1.6.0; see
+// "ABI revision" in Versioning). A host refuses to run unless it equals the
+// COMPANIONS_ABI_REVISION it was compiled against.
+COMPANIONS_API int32_t companions_abi_revision(void);
 
 // Get last error message (thread-local)
 COMPANIONS_API const char* companions_get_error(void);

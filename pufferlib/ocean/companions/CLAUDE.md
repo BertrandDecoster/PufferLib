@@ -506,8 +506,9 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   tag defeated an agent (a weakness) keeps Tags and Damage (its raw share).
   `damage`: the raw share the use put into that agent's ledger (the skill's damage per
   hit, before Marked, like the landings' and reactions' damage), 0 without Damage; each
-  use its own (an agent two uses hit is in both). A host reads it, never the book's
-  damage; the HP truth stays `TurnHealth`
+  use its own (an agent two uses hit is in both). In a preview, a prediction for whoever
+  stands on the cells now (the step differs as its affected agents do). A host reads it,
+  never the book's damage; the HP truth stays `TurnHealth`
 
 **Tags** (`TagTable`, `Agent::ApplyTag`):
 - Opaque names interned per env; ids stay stable (the table only grows, never cleared
@@ -824,7 +825,10 @@ every `Reset`; an outcome preview's world holds its turn's, see Previews):
   turn (turn health, HealthChanged, odd motions), the uniform done (no TaskFailed),
   interruptions and the down cost, the EpisodeEnd upgrade, `Companions_Lens_Revive`,
   a skill use's damage per affected agent (`Companions_SkillUseInfo` /
-  `Companions_SkillPreview.affected_damage`, appended: layouts changed).
+  `Companions_SkillPreview.affected_damage`, appended: layouts changed; the first 8
+  entries, as `affected`), and `companions_abi_revision()` / `COMPANIONS_ABI_REVISION`
+  (1): the struct-layout revision, bumped on every layout change (in-place amendments
+  included, never reset); a host refuses to run when the DLL's differs from its header's.
   The header's "Versioning", "1.6 in full", is the reference
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules

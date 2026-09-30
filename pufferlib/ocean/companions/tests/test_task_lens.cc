@@ -763,7 +763,8 @@ TEST(TestAggroGoalPlaneMatchesItsGoalCells) {
   }
   AggroEnv env(10, 1, EnemyType::Zombie, 42);
   AnnotationStore& annotations = env.GetMutableAnnotations();
-  for (Position pos : {Position{-1, 0}, Position{10, 0}, Position{2, 10}, Position{0, -1}, Position{3, 3}}) {
+  for (Position pos :
+       {Position{-1, 0}, Position{10, 0}, Position{2, 10}, Position{0, -1}, Position{3, 3}}) {
     annotations.Add(AnnotationKey{AnnotationTarget::Cell, pos, kInvalidObjectId},
                     Annotation{SemanticTag::AggroTarget, {}, -1});
   }

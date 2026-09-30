@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstring>
 #include <deque>
 #include <iterator>
@@ -83,6 +84,9 @@
 // - a skill use's damage per affected agent: Companions_SkillUseInfo and
 //   Companions_SkillPreview gained affected_damage (appended; the raw share
 //   the use dealt / would deal each, 0 without the Damage effect);
+// - companions_abi_revision / COMPANIONS_ABI_REVISION (1: the layouts with
+//   affected_damage), bumped on every struct-layout change, in-place
+//   amendments included: a host refuses a mismatch;
 // - only a team down or the horizon fails a task: done is uniform (success,
 //   team down, horizon, interrupted); Aggro no longer fails when no enemy
 //   lives, Dodge no longer fails on a down; Companions_End_TaskFailed is no
@@ -1606,6 +1610,22 @@ static_assert(companions::BaseEnv::kSkillEffectTags == Companions_SkillEffect_Ta
                   companions::BaseEnv::kSkillEffectRevive == Companions_SkillEffect_Revive,
               "SkillEffect out of sync with C API");
 
+// The ABI revision 1 layouts: affected_damage appended, the last field
+static_assert(offsetof(Companions_SkillUseInfo, affected_damage) ==
+                  offsetof(Companions_SkillUseInfo, affected_total) + sizeof(int32_t),
+              "Companions_SkillUseInfo.affected_damage is appended");
+static_assert(sizeof(Companions_SkillUseInfo) ==
+                  offsetof(Companions_SkillUseInfo, affected_damage) +
+                      sizeof(int32_t) * Companions_MAX_AGENTS,
+              "Companions_SkillUseInfo.affected_damage is the last field");
+static_assert(offsetof(Companions_SkillPreview, affected_damage) ==
+                  offsetof(Companions_SkillPreview, affected_total) + sizeof(int32_t),
+              "Companions_SkillPreview.affected_damage is appended");
+static_assert(sizeof(Companions_SkillPreview) ==
+                  offsetof(Companions_SkillPreview, affected_damage) +
+                      sizeof(int32_t) * Companions_MAX_AGENTS,
+              "Companions_SkillPreview.affected_damage is the last field");
+
 // Up to Companions_MAX_AGENTS affected agents into fixed arrays (ids,
 // effects, damage) of a Companions_SkillPreview or Companions_SkillUseInfo,
 // with the count written and the total.
@@ -2457,6 +2477,10 @@ COMPANIONS_API bool companions_agent_has_tag(
 
 COMPANIONS_API const char* companions_version(void) {
   return COMPANIONS_VERSION;
+}
+
+COMPANIONS_API int32_t companions_abi_revision(void) {
+  return COMPANIONS_ABI_REVISION;
 }
 
 COMPANIONS_API const char* companions_get_error(void) {

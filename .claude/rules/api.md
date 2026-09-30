@@ -104,7 +104,9 @@ Setters: `companions_set_agent_skill` (the equipped skill), `companions_apply_ta
 the last step's uses (`companions_get_last_skill_use_count` / `get_last_skill_use` →
 `Companions_SkillUseInfo`, the affected agents with `Companions_SkillEffect` flags and,
 since 1.6, `affected_damage`: the raw share each use dealt each agent, 0 without the
-Damage effect).
+Damage effect). `companions_abi_revision()` must equal the header's
+`COMPANIONS_ABI_REVISION` (bumped on every struct-layout change, in-place amendments
+included): a host refuses to run otherwise.
 `Companions_AgentState.skills` are the effective skills (context rules applied),
 `equipped_skills` the slots' own.
 

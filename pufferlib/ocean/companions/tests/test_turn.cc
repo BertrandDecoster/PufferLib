@@ -604,14 +604,20 @@ static std::map<ObjectId, int> ExplainedDamage(const BaseEnv& env) {
   return explained;
 }
 
-// Nothing strikes (plain enemies walking, no effect): every agent's turn
-// damage is exactly what the reports explain, over random casts by three
-// companions (friendly fire, self damage, several uses on one agent, pushes
-// and pulls onto hurting zones, reactions with damage, Marked, downs and
-// revives). And a use previewed alone (everyone else stays) reports the
-// damage the step then reports.
+// Every agent's turn damage is exactly what the reports explain (skill uses,
+// zone landings, reactions), over random walks and casts by three companions
+// (pushes, pulls, hurting zones). The run is checked to include friendly
+// fire, self damage, two uses on one agent, both reaction rules firing,
+// steam landing (Marked, its tag status), weakness defeats dealt shares and
+// downs. And a use previewed alone (everyone else stays) reports what the
+// step then reports.
+// Strikes are left out by design (plain enemies walking, no FSM, no
+// EffectSystem effect): an effect's hit is in no report, only in the turn
+// health.
 TEST(TestSkillZoneAndReactionDamageAddUpToTheTurnHealth) {
   int from_uses = 0, from_zones = 0, from_reactions = 0, multi_hit = 0, previews = 0;
+  int fired[2] = {0, 0}, steam_landed = 0, defeat_shares = 0;
+  int friendly = 0, self = 0, downs = 0;
   for (unsigned seed = 0; seed < 40; ++seed) {
     SynchroEnv env(10, 10, 3, 1, 0, seed);
     MakeArena(env);
@@ -619,10 +625,10 @@ TEST(TestSkillZoneAndReactionDamageAddUpToTheTurnHealth) {
     nova.name = "nova";
     nova.targeting = SkillTargeting::Self;
     nova.area = SkillArea::Cross;
-    nova.tags = {{"lit", 2}};
+    nova.tags = {{"lit", 3}};
     nova.damage = 1;  // Friendly fire and self damage: on by default
     env.GetMutableSkillBook().Define(nova);
-    SkillConfig blast = *env.GetSkillBook().Find("fireball");  // Cross, push out
+    SkillConfig blast = *env.GetSkillBook().Find("fireball");  // Cross, push out, burning
     blast.name = "blast";
     blast.damage = 2;
     env.GetMutableSkillBook().Define(blast);
@@ -642,8 +648,11 @@ TEST(TestSkillZoneAndReactionDamageAddUpToTheTurnHealth) {
       comp->SetMaxHealth(8);
       Require(env.SetCompanionSkill(comp->GetId(), 0, skills[next(4)]), "skill");
     }
-    AddEnemy(env, {5, 6}, 30);
-    AddEnemy(env, {6, 3}, 30);
+    // The enemies: weak to burning on oil and to lit on the lake (a defeat)
+    for (Position p : {Position{5, 6}, Position{6, 3}, Position{3, 5}}) {
+      Agent* enemy = AddEnemy(env, p, 30);
+      Require(env.SetWeaknesses(enemy->GetId(), {{"oil", "burning"}, {"wet", "lit"}}), "weak_to");
+    }
     Require(env.DefineZone("oil", Hurting(1)), "oil");
     Require(env.DefineZone("acid", Hurting(2)), "acid");
     Require(env.SetReactions({Rule("wet", "lit", "steam", 1, true),
@@ -652,7 +661,8 @@ TEST(TestSkillZoneAndReactionDamageAddUpToTheTurnHealth) {
     Require(env.SetTagStatuses({TagStatusRule{"steam", StatusType::Marked, 2}}), "statuses");
     for (int k = 0; k < 6; ++k) {
       const Position cell{1 + static_cast<int>(next(8)), 1 + static_cast<int>(next(8))};
-      Require(env.SetCellTag(cell, k % 3 == 0 ? "acid" : "oil"), "zone");
+      const char* zones[] = {"acid", "oil", "wet"};  // wet: a lake, harmless
+      Require(env.SetCellTag(cell, zones[k % 3]), "zone");
     }
     for (int step = 0; step < 40 && !env.IsTeamDown(); ++step) {
       std::vector<Action> actions = Stays(env);
@@ -706,21 +716,44 @@ TEST(TestSkillZoneAndReactionDamageAddUpToTheTurnHealth) {
         for (const auto& a : u.affected) {
           from_uses += a.damage;
           if (a.damage > 0 && ++uses_on[a.id] == 2) ++multi_hit;
+          if (a.damage > 0 && a.id == u.caster) ++self;
+          if (a.damage > 0 && a.id != u.caster &&
+              IsCompanion(env.GetObjectManager().GetActor(a.id))) {
+            ++friendly;
+          }
         }
       }
-      for (const auto& t : env.GetLastTagsApplied()) from_zones += t.damage;
+      const TagId steam = env.GetTagTable().Find("steam");
+      for (const auto& t : env.GetLastTagsApplied()) {
+        from_zones += t.damage;
+        steam_landed += steam != kInvalidTag && t.tag == steam;
+      }
       for (const auto& r : env.GetLastReactions()) {
+        ++fired[r.rule];
         for (const auto& o : r.affected) from_reactions += o.damage;
+      }
+      downs += static_cast<int>(env.GetLastDowns().size());
+      for (const auto& d : env.GetLastDefeats()) {  // A defeated agent still gets its shares
+        const auto it = explained.find(d.agent);
+        if (it != explained.end() && it->second > 0) ++defeat_shares;
       }
     }
   }
   std::cout << "  (damage from uses " << from_uses << ", zones " << from_zones
             << ", reactions " << from_reactions << "; " << multi_hit
-            << " agents hit by two uses in a turn; " << previews << " previews)\n";
+            << " agents hit by two uses in a turn; " << previews << " previews; firings "
+            << fired[0] << " / " << fired[1] << ", steam landed " << steam_landed << ", "
+            << defeat_shares << " defeats dealt shares; friendly fire " << friendly << ", self "
+            << self << ", downs " << downs << ")\n";
   // The run exercised every source
   ASSERT_TRUE(from_uses > 0);
   ASSERT_TRUE(from_zones > 0);
   ASSERT_TRUE(from_reactions > 0);
+  ASSERT_TRUE(fired[0] > 0 && fired[1] > 0);
+  ASSERT_TRUE(steam_landed > 0);
+  ASSERT_TRUE(defeat_shares > 0);
+  ASSERT_TRUE(friendly > 0 && self > 0);
+  ASSERT_TRUE(downs > 0);
   ASSERT_TRUE(multi_hit > 0);
   ASSERT_TRUE(previews > 0);
 }

@@ -364,7 +364,11 @@ static std::vector<uint8_t> SnapshotBytes(const Companions_Env* env) {
 // Version
 // =============================================================================
 
-TEST(TestVersionIs160) { ASSERT_EQ(std::string(companions_version()), std::string("1.6.0")); }
+TEST(TestVersionIs160) {
+  ASSERT_EQ(std::string(companions_version()), std::string("1.6.0"));
+  ASSERT_EQ(companions_abi_revision(), 1);  // 1.6.0 with affected_damage
+  ASSERT_EQ(companions_abi_revision(), COMPANIONS_ABI_REVISION);
+}
 
 // =============================================================================
 // Level data

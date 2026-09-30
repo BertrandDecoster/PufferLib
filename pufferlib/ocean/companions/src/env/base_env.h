@@ -415,13 +415,15 @@ class BaseEnv {
   struct AffectedAgent {
     ObjectId id = kInvalidObjectId;
     unsigned effects = 0;  // SkillEffect flags; 0: affected, but nothing applies to it
-    // The damage the use put into this agent's ledger (SkillUse: did; a
-    // SkillPreview: would): its raw share, the skill's damage per hit
-    // (SkillConfig::damage, before Marked, like TagApplication::damage and
-    // ReactionOutcome::damage), whatever the turn's outcome; 0 without the
-    // Damage effect (a spared caster, a skill without damage). Each use its
-    // own: an agent two uses hit is in both, each with its share. A host reads
-    // it instead of the book's damage; the HP truth stays the turn health.
+    // The damage the use put into this agent's ledger (SkillUse): its raw
+    // share, the skill's damage per hit (SkillConfig::damage, before Marked,
+    // like TagApplication::damage and ReactionOutcome::damage), whatever the
+    // turn's outcome; 0 without the Damage effect (a spared caster, a skill
+    // without damage). Each use its own: an agent two uses hit is in both,
+    // each with its share. In a SkillPreview: a prediction by the same rule
+    // for whoever stands on the cells now (the step differs as its affected
+    // agents do). A host reads it instead of the book's damage; the HP truth
+    // stays the turn health.
     int damage = 0;
     bool operator==(const AffectedAgent& o) const {
       return id == o.id && effects == o.effects && damage == o.damage;
