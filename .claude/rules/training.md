@@ -39,10 +39,17 @@ puffer export puffer_synchro --load-model-path latest
 ## Truncations
 
 `pufferl.py` (~253) computes `done_mask = d + t` but never uses it: the rollout stores
-the terminals alone (the advantage and the policy's `done` read them) and never fills
-its truncations buffer. So a truncation (companions: an Interrupted task, a down) trains
-as neither a terminal nor a bootstrapped truncation (GAE runs on into the auto-reset
-episode) until someone handles truncations here.
+the terminals alone (~303; the advantage reads them, and the state's `done`, passed to
+the policy, is read by none in-tree) and never fills its truncations buffer. So a
+truncation would train as neither a terminal nor a bootstrapped truncation (GAE runs on
+into the auto-reset episode). Latent for the companions: no RL task truncates today
+(Synchro RL cannot down a companion by play; the ReviveLens is not interruptible). Once
+something can, either store `d | t` as the terminal here (~303), or have the wrapper
+write Interrupted as a terminal. An exact truncation bootstrap is impossible anyway: the
+C auto-reset overwrites the final observation.
+
+Rewards are clamped to [-1, 1] (~276): a companions `down_cost` at or below about -1
+trains as -1, and two downs on one step (2 x -0.5 plus the time penalty) are clipped.
 
 ## VS Code Launch Configs
 

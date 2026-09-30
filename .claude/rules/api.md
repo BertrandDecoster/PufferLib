@@ -20,8 +20,8 @@ The C API wraps the pure C++17 game logic with POD-only types for safe DLL bound
 |------|---------|
 | `src/api/companions_api.h` | C API header with POD structs |
 | `src/api/companions_api.cc` | Implementation wrapping SynchroEnv |
-| `tests/test_api.cc` | Unit tests for C API (14 tests) |
-| `tests/test_api_parity.cc` | Parity test vs direct C++ (7 tests) |
+| `tests/test_api.cc` | Unit tests for C API |
+| `tests/test_api_parity.cc` | Parity test vs direct C++ |
 | `tests/test_api_reactions.cc` | 1.5 / 1.6: reports (turn health, odd motions included), outcome previews, level data, parity |
 | `tests/test_revive_lens.cc` | 1.6: `Companions_Lens_Revive` (after its C++ tests) |
 

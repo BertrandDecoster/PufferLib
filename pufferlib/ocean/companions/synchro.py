@@ -9,7 +9,8 @@ from pufferlib.ocean.companions import binding
 # Observation tensor: 5 channels x rows x cols
 # Plane 0: Floor cells (1.0 if walkable)
 # Plane 1: Wall cells (1.0 if wall)
-# Plane 2: Synchro cells (1.0 if goal)
+# Plane 2: The lens's goal cells (1.0 if goal): SynchroGoal cells in the synchro
+#          task, the ReviveLens's goal cells in the revive task
 # Plane 3: Current player position (1.0 at own position)
 # Plane 4: Other agents positions (1.0 at teammate positions)
 NUM_CHANNELS = 5

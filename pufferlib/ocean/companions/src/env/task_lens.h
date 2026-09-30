@@ -26,9 +26,10 @@ struct LensParams {
 // =============================================================================
 // TaskLens - Abstract interface for task-specific interpretation of world state
 // =============================================================================
-// Lenses compute their results on demand from BaseEnv (a lens may keep a
-// little state of its own: ReviveLens's targets; Clone copies it, snapshots
-// carry no lens). This enables runtime task switching without snapshot
+// Lenses compute their results on demand from BaseEnv (a lens may keep
+// state of its own: ReviveLens keeps its targets and bookkeeping (the downs
+// at activation, whether someone went down, the params' validity); Clone
+// copies it, snapshots carry no lens). This enables runtime task switching without snapshot
 // serialization. One lens at a time: no lens stack (push / pop) yet.
 //
 // Architecture:

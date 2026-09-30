@@ -31,7 +31,7 @@ Flattened tensor + vector: `[5*rows*cols + 12]` floats
 |-------|---------|
 | 0 | Floor cells (1.0 if walkable) |
 | 1 | Wall cells (1.0 if wall) |
-| 2 | Synchro/goal cells (1.0 if goal) |
+| 2 | The lens's goal cells (1.0 if goal): SynchroGoal cells in the synchro task, ReviveLens goal cells in the revive task |
 | 3 | Current player position |
 | 4 | Other agents positions |
 
@@ -50,13 +50,9 @@ The others are the first two other agents in agent order, an enemy included. An
 enemy or anyone standing has flag 0 next to its real deltas; a missing or dead one
 reads 0 throughout (a dead one keeps its slot: slots follow agent order, never
 reshuffled). The layout is fixed whatever the agent count. Aggro / Dodge append
-their features after index 11 (20 / 22 floats). The obs grew from 9 to 12 floats in
-phase 3: older checkpoints are invalid.
-
-Known limits: the downed flags cover 2 others only (the revive task assumes at most 3
-companions); steps left / 100 exceeds the Box high of 1.0 when the horizon is above
-100; `WriteVectorObservation` (the zero-copy path used here) writes the base 12 only
-(Aggro / Dodge extras would read 0 if ever bound to RL).
+their features after index 11 (20 / 22 floats). Known limits (12 floats since phase 3,
+2 flagged others, steps left above 1.0, the zero-copy gap): see the companions
+`CLAUDE.md`, "Observations".
 
 ## Action Space
 
@@ -78,11 +74,11 @@ Constructor parameters (set via `synchro.ini` or directly):
 | `d4_transform` | 0 | D4 symmetry transform (0-7) |
 | `overfit` | false | Always reset to same seed (for testing) |
 | `task` | `'synchro'` | `'synchro'` (SynchroLens) or `'revive'` (one random companion starts each episode down, under the ReviveLens; `num_agents >= 2`) |
-| `down_cost` | -0.5 | Added to every agent's reward once per new down; finite, in [-1e6, 0] |
+| `down_cost` | -0.5 | Added to every agent's reward once per new down; finite, in [-1e6, 0]; `pufferl.py` clamps rewards to [-1, 1] |
 
 `task` stays a string through `process_config` (`ast.literal_eval` fails on a bare
-word, so the raw string is kept); `--env.task`, `--env.down-cost` override them. A bad
-value raises a ValueError (`synchro.py`, or `synchro_init` via `binding.c`).
+word, so the raw string is kept). The tasks, the down cost, terminals vs truncations:
+see the companions `CLAUDE.md`, "RL binding".
 
 ## D4 Symmetry Transforms
 
@@ -114,11 +110,8 @@ BaseEnv (physical reality)     TaskLens (mental construct)
 └── task_lens_ ────────────────└── WriteGoalPlane() / GetGoalCells()
 ```
 
-Done is BaseEnv's, the same for every lens: `success_ || tick_ >= horizon_ ||
-interrupted_ || IsTeamDown()`. No lens fails its task: only the team down or the
-horizon do. A down interrupts an interruptible lens (`EndReason::Interrupted`: done,
-provisional; the down cost once per new down, then the lens paused until nobody is
-down). See the companions `CLAUDE.md`, "Why an episode ended" and "Interruptions".
+Done is BaseEnv's, the same for every lens; no lens fails its task. See the companions
+`CLAUDE.md`, "Why an episode ended" and "Interruptions".
 
 **Key files:**
 | File | Purpose |
@@ -142,17 +135,10 @@ env.SetTaskLens(std::make_unique<DodgeLens>());
 - `SynchroLens`: requires synchro cells in grid
 - `AggroLens`: requires target cell + patrol path
 - `DodgeLens`: accepts any env
-- `ReviveLens`: requires someone down (its param cells, if any, must each hold a
-  downed companion)
+- `ReviveLens`: requires someone down
 
-**Goal cells** (tensor plane 2, the goal distance): each lens marks its own:
-- `SynchroLens`: the synchro cells
-- `AggroLens`: the target cell
-- `DodgeLens`: none
-- `ReviveLens`: the walkable neighbours of the downed bodies holding no downed body
-
-One lens at a time: a lens stack (push / pop, a paused lens keeping its state) is not
-built yet (deferred to the HTN phase).
+Goal cells per lens, ReviveLens, one lens at a time (no lens stack yet): see the
+companions `CLAUDE.md`, "Environments & TaskLens".
 
 ## Architecture Layers
 
@@ -174,16 +160,10 @@ Bridges C++ to Python. **Has auto-reset.**
 - `synchro_init()` - Creates SynchroEnv (the task, the down cost), allocates the render buffer; non-zero with `error` set on a refused config
 - `c_reset()` - Calls `Reset(seed++)`, writes observations to buffers
 - `c_step()` - Calls `Step()`, sets terminals / truncations, **auto-resets on done**, updates log
-
-**Terminals and truncations:** `terminals = done && !interrupted` (success, horizon,
-team down); `truncations = done && interrupted` (a down). `env_binding.h` wires the
-truncations buffer only behind `ENV_HAS_TRUNCATIONS`, which `binding.c` defines. A
-truncation auto-resets like a terminal, so in the synchro task a policy never sees the
-paused state or a revive. Synchro RL cannot down a companion by play (the default
-attack spares allies; no enemies or hazards): truncations come only from host downs,
-and the revive task ends only by success or the horizon (with 2 agents it has no
-margin: the standing one down is `TeamDown`).
 - `c_reset_seed(seed)` - Explicit seed reset (for parity testing)
+
+**Terminals and truncations:** Interrupted is a truncation, every other end a terminal;
+see the companions `CLAUDE.md`, "RL binding".
 
 **Auto-reset behavior in `c_step()`:**
 ```cpp
@@ -209,10 +189,8 @@ PufferLib integration. Delegates to C wrapper.
 
 Uses PufferLib's vectorized interface. No reset handling needed - C wrapper auto-resets.
 
-Truncations are not handled: `pufferl.py` (~253) computes `done_mask = d + t` but never
-uses it; the rollout stores the terminals alone (the advantage and the policy's `done`
-read them), so an Interrupted step trains as neither a terminal nor a bootstrapped
-truncation until someone changes it there.
+Truncations are not handled (latent: no RL task truncates today): see the companions
+`CLAUDE.md`, "RL binding", and `.claude/rules/training.md`.
 
 ## Map Generation
 

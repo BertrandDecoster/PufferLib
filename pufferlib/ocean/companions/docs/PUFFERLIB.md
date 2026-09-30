@@ -222,23 +222,11 @@ The `PufferEnv.done` property (line 83 in `pufferlib.py`) signals when reset is 
 
 Ocean environments handle auto-reset **internally in `c_step()`** for performance:
 
-```c
-// In synchro_wrapper.cc:92-115
-if (result.done) {
-    // Log episode stats
-    env->log.episode_return += env->cumulative_reward;
-    env->log.episode_length += (float)env->episode_steps;
-    env->log.n += 1.0f;
-
-    // Auto-reset immediately
-    cpp_env->Reset();
-    // Populate fresh observations for next episode
-    for (int i = 0; i < env->num_agents; i++) {
-        cpp_env->ObservationTensor(obs, i);
-        memcpy(env->observations + i * obs_size, obs.data(), ...);
-    }
-}
-```
+The companions' `c_step` (`synchro_wrapper.cc`): on done it logs the episode, resets
+at once (`Reset(env->seed++)`, or the same `env->seed` in overfit mode) and rewrites
+every agent's observation in place (`write_observations`: the zero-copy
+`WriteObservationTensor` / `WriteVectorObservation`), so the final observation of an
+episode is never returned.
 
 Because reset happens in C, `PufferEnv.done` returns `False` (no Python-level reset needed).
 
@@ -261,11 +249,8 @@ bool IsDone() const { return success_ || tick_ >= horizon_ || interrupted_ || Is
   nobody is down; see `CLAUDE.md`, "Interruptions"). The down pays the down cost
   (`down_cost`, -0.5 by default) once
 
-`GetEndReason()` says which one ended the episode. The C wrapper writes Interrupted as
-a **truncation** and every other end as a terminal (`synchro_wrapper.cc` `c_step`),
-then auto-resets either way. `pufferl.py` does not handle truncations yet (`done_mask
-= d + t` is computed, never used; the advantage reads the terminals alone): see
-`CLAUDE.md`, "RL binding"
+`GetEndReason()` says which one ended the episode. Terminals vs truncations, the
+tasks and what `pufferl.py` does with them: see `CLAUDE.md`, "RL binding"
 
 ---
 

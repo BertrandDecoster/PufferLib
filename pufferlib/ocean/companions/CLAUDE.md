@@ -815,30 +815,10 @@ every `Reset`; an outcome preview's world holds its turn's, see Previews):
   after `TickZones` keeps the incremented tick). A copy of an env (Clone, copy,
   assignment) re-points its FSM agents' `FSMContext::rng` at its own RNG
   (`RepointFsmRng`)
-- C API 1.6.0 (one release, amended in place before it: a DLL from an earlier 1.6.0
-  commit is not compatible, rebuild both sides; `Companions_SkillOutcome`'s layout
-  changed, consumers rebuild):
-  - The phased turn (see Step order; the header's "The Turn"): the turn health report
-    (`Companions_TurnHealth`, `Companions_TurnOutcome` with static_asserts to
-    `TurnOutcome`, `companions_get_turn_health_count` / `_get_turn_health`, both
-    sources), `Companions_Event_HealthChanged` (21; AgentDamaged / AgentHealed never
-    emitted), the odd motions (`Companions_OddMotion`, `companions_get_odd_motion_count`
-    / `_get_odd_motion`, both sources; `companions_get_odd_motion_total`),
-    `Companions_SkillOutcome.turn_health_count` / `odd_motion_count`.
-    `companions_spawn_effect` (between steps) applies a no-wind-up effect at once
-    (Immediate); the env's own no-wind-up spawns during a step wait for the next turn
-    (NextTurn: `in_telegraph`, `ticks_remaining` 1)
-  - Only a team down or the horizon fails a task (see "Why an episode ended"): done is
-    the same for every env and lens; Aggro no longer fails when no enemy lives, Dodge
-    no longer fails on a down; `Companions_End_TaskFailed` (3) is no longer produced
-    (kept: the values are append-only)
-  - Interruptions: a down interrupts the task (`Companions_End_Interrupted` 5,
-    provisional), a one-time down cost per new down, the task paused until nobody is
-    down (see Interruptions); `companions_set_down_cost` / `companions_get_down_cost`
-  - EpisodeEnd is also reported when TeamDown or Horizon upgrades an Interrupted end
-  - `Companions_Lens_Revive` (4, ReviveLens), accepted by `companions_set_task_lens` /
-    `_with_params`; a refused `companions_set_task_lens_with_params` keeps the previous
-    lens's stamped cells
+- C API 1.6.0 (amended in place before its release: rebuild both sides): the phased
+  turn (turn health, HealthChanged, odd motions), the uniform done (no TaskFailed),
+  interruptions and the down cost, the EpisodeEnd upgrade, `Companions_Lens_Revive`.
+  The header's "Versioning", "1.6 in full", is the reference
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots
@@ -1247,7 +1227,9 @@ Known limits:
   in that order: the lens needs someone down) and needs `num_agents >= 2`. Auto-resets
   keep both (the lens's `OnNewEpisode` re-targets). `revive.ini` sets `task = revive`,
   the rest as `synchro.ini`
-- `down_cost` (default -0.5, finite, in [-1e6, 0]): `SetDownCost`. Both are ini
+- `down_cost` (default -0.5, finite, in [-1e6, 0]): `SetDownCost`. `pufferl.py` clamps
+  every reward to [-1, 1] (~276): a `down_cost` at or below about -1 trains as -1, and
+  two downs on one step (2 x -0.5 plus the time penalty) are clipped too. Both are ini
   `[env]` keys, so `--env.task` / `--env.down-cost` override them and a sweep can tune
   `down_cost`. `synchro_init` refuses a bad task, revive with < 2 agents, a bad
   down_cost or a config the env rejects (non-zero, `error` set): `binding.c` raises a
@@ -1259,17 +1241,21 @@ Known limits:
   like a terminal, so in the synchro task a policy never sees the paused state nor a
   revive; the revive task is never interrupted (its downs pay the cost). The log counts
   an interrupted episode (no success)
-- Synchro RL cannot down a companion by play (the default `attack` spares allies; no
-  enemies, hazards or zones): truncations come only from host downs, and the revive task
-  ends only by success or the horizon. With 2 agents the revive task has no margin (the
-  standing one down = every companion down = `TeamDown`)
+- No RL task truncates today: Synchro RL cannot down a companion by play (the default
+  `attack` spares allies; no enemies, hazards or zones, and the binding has no host),
+  and the ReviveLens is not interruptible, so the revive task ends only by success or
+  the horizon. With 2 agents the revive task has no margin (the standing one down =
+  every companion down = `TeamDown`)
 - Training: `pufferl.py` (~253) computes `done_mask = d + t` but never uses it: the
-  rollout stores the terminals alone (the advantage and the policy's `done` read them)
-  and never fills its truncations buffer, so an Interrupted step trains as neither a
-  terminal nor a bootstrapped truncation (GAE runs on into the auto-reset episode) until
-  someone handles truncations there. Checkpoints from before phase 3 are invalid: the
-  obs grew from 9 to 12 vector floats, and the rewards changed (down cost, no Aggro /
-  Dodge failures)
+  rollout stores the terminals alone (~303; the advantage reads them, and the state's
+  `done`, passed to the policy, is read by none in-tree) and never fills its
+  truncations buffer, so a truncation would train as neither a terminal nor a
+  bootstrapped truncation (GAE runs on into the auto-reset episode). Latent (see
+  above); once something can down a companion in RL, either `pufferl.py` stores `d | t`
+  as the terminal (~303), or the wrapper writes Interrupted as a terminal. An exact
+  truncation bootstrap is impossible anyway: the C auto-reset overwrites the final
+  observation. Checkpoints from before phase 3 are invalid: the obs grew from 9 to 12
+  vector floats, and the rewards changed (down cost, no Aggro / Dodge failures)
 
 ### Curriculum Learning
 
