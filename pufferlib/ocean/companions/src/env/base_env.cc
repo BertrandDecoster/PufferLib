@@ -3280,6 +3280,10 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
   // fail, un-stamp the new lens and restore the old one instead of leaving
   // the env lens-less.
   std::unique_ptr<TaskLens> previous = std::move(task_lens_);
+  // What the lenses stamp (Activate / Deactivate touch the annotations
+  // alone): a refused lens puts back the previous lens's stamps exactly, which
+  // re-Activating it could not (its params are not stored)
+  const AnnotationStore annotations_before = annotations_;
   if (previous) {
     previous->Deactivate(*this);
   }
@@ -3290,16 +3294,10 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
     lens->Activate(*this, params);
     if (!lens->CanOperateOn(*this)) {
       lens->Deactivate(*this);
-      // Restore previous lens so the env stays in a usable state.
-      if (previous) {
-        // Re-stamp the previous lens's cells via Activate. Activate takes
-        // LensParams, but the previous lens was originally activated from
-        // its own params — we don't store them, so callers of the failed
-        // SetTaskLensWithParams that need re-stamping must hand those
-        // params back. For our current lenses (Synchro/Aggro/Dodge),
-        // plain SetTaskLens is enough to restore the unparameterized state.
-        task_lens_ = std::move(previous);
-      }
+      // Restore the previous lens and its stamps, as they were (the outcome
+      // untouched: no new episode)
+      annotations_ = annotations_before;
+      task_lens_ = std::move(previous);
       return false;
     }
   }

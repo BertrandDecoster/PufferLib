@@ -105,6 +105,7 @@ set(ENV_SOURCES
   src/env/synchro_lens.cc
   src/env/aggro_lens.cc
   src/env/dodge_lens.cc
+  src/env/revive_lens.cc
   src/env/skill_motion.cc
 )
 
@@ -118,6 +119,7 @@ set(ENV_HEADERS
   src/env/synchro_lens.h
   src/env/aggro_lens.h
   src/env/dodge_lens.h
+  src/env/revive_lens.h
   src/env/skill_motion.h
 )
 
@@ -400,6 +402,15 @@ if(BUILD_DLL)
     ${CMAKE_CURRENT_SOURCE_DIR}
   )
   add_test(NAME companions_api_reactions_test COMMAND companions_api_reactions_test)
+
+  # ReviveLens (C API 1.6): the C++ lens, then Companions_Lens_Revive
+  add_executable(companions_revive_lens_test tests/test_revive_lens.cc)
+  target_link_libraries(companions_revive_lens_test companions_api companions_env companions_core)
+  target_include_directories(companions_revive_lens_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/api
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME companions_revive_lens_test COMMAND companions_revive_lens_test)
 
   # Install DLL and headers
   install(TARGETS companions_api

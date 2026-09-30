@@ -33,6 +33,7 @@
 #include "../env/synchro_lens.h"
 #include "../env/aggro_lens.h"
 #include "../env/dodge_lens.h"
+#include "../env/revive_lens.h"
 #include "../viz/renderer.h"
 
 // =============================================================================
@@ -86,6 +87,11 @@
 // companions_get_down_cost (additive; the cost is runtime, not in
 // snapshots); EpisodeEnd is also reported when TeamDown or Horizon upgrades
 // an Interrupted end while done stays true.
+// Amended again (additive): Companions_Lens_Revive (4, ReviveLens: get the
+// downed allies up), accepted by companions_set_task_lens / _with_params and
+// reported by companions_get_task_lens; a refused
+// companions_set_task_lens_with_params keeps the previous lens's stamped
+// cells.
 #define COMPANIONS_VERSION "1.6.0"
 
 // =============================================================================
@@ -891,6 +897,15 @@ static void StartEpisode(Companions_Env& env) {
 // Task Lens API
 // =============================================================================
 
+// TaskLens::GetKind's values are those of Companions_LensType
+static_assert(static_cast<int>(companions::TaskLens::kSynchro) == Companions_Lens_Synchro &&
+                  static_cast<int>(companions::TaskLens::kAggro) == Companions_Lens_Aggro &&
+                  static_cast<int>(companions::TaskLens::kDodge) == Companions_Lens_Dodge &&
+                  static_cast<int>(companions::TaskLens::kTagApply) == Companions_Lens_TagApply &&
+                  static_cast<int>(companions::TaskLens::kRevive) == Companions_Lens_Revive &&
+                  static_cast<int>(companions::TaskLens::kUnknown) == Companions_Lens_Unknown,
+              "TaskLens::Kind and Companions_LensType must match");
+
 COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_LensType lens) {
   if (!env || !env->env) {
     SetError("companions_set_task_lens: null env");
@@ -907,6 +922,9 @@ COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_Len
         break;
       case Companions_Lens_Dodge:
         new_lens = std::make_unique<companions::DodgeLens>();
+        break;
+      case Companions_Lens_Revive:
+        new_lens = std::make_unique<companions::ReviveLens>();
         break;
       default:
         SetError("companions_set_task_lens: invalid lens type");
@@ -955,6 +973,9 @@ COMPANIONS_API bool companions_set_task_lens_with_params(
         // plumbing path exercises. Remove this fallback once the lens lands.
         new_lens = std::make_unique<companions::SynchroLens>();
         break;
+      case Companions_Lens_Revive:
+        new_lens = std::make_unique<companions::ReviveLens>();
+        break;
       default:
         SetError("companions_set_task_lens_with_params: invalid lens type");
         return false;
@@ -999,6 +1020,7 @@ COMPANIONS_API Companions_LensType companions_get_task_lens(Companions_Env* env)
     case companions::TaskLens::kAggro:    return Companions_Lens_Aggro;
     case companions::TaskLens::kDodge:    return Companions_Lens_Dodge;
     case companions::TaskLens::kTagApply: return Companions_Lens_TagApply;
+    case companions::TaskLens::kRevive:   return Companions_Lens_Revive;
     case companions::TaskLens::kUnknown:  return Companions_Lens_Unknown;
   }
   return Companions_Lens_Unknown;

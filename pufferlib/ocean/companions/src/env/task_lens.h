@@ -99,13 +99,15 @@ class TaskLens {
   // ===========================================================================
   // Keeps the C API free of dynamic_cast chains when identifying the active
   // lens from the outside. Values must match Companions_LensType in the C API
-  // header (0=Synchro, 1=Aggro, 2=Dodge, 3=TagApply, 0x7FFFFFFF=Unknown).
+  // header (0=Synchro, 1=Aggro, 2=Dodge, 3=TagApply, 4=Revive,
+  // 0x7FFFFFFF=Unknown; static_asserts in companions_api.cc). Append-only.
   // Audit F9.
   enum Kind : int {
     kSynchro = 0,
     kAggro = 1,
     kDodge = 2,
     kTagApply = 3,
+    kRevive = 4,  // ReviveLens (since C API 1.6)
     kUnknown = 0x7FFFFFFF,
   };
   virtual Kind GetKind() const = 0;

@@ -194,7 +194,8 @@ class BaseEnv {
 
   // Set a lens AND hand it parameters to materialize objective cells.
   // Activates before CanOperateOn so lenses that stamp their own objective
-  // cells can satisfy the readiness check.
+  // cells can satisfy the readiness check. Refused (false): the previous lens
+  // stays as it was, the cells it stamped included.
   bool SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
                               const LensParams& params);
 

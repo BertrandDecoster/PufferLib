@@ -101,9 +101,10 @@
 // odd_motion_count): consumers must rebuild against this header (signatures
 // unchanged). 1.6.0 was amended in place before its release: DLLs built from
 // earlier 1.6.0 commits of this branch are NOT compatible with this header
-// (the struct size and the exports changed; the last amendment added
-// companions_set_down_cost / companions_get_down_cost and the EpisodeEnd
-// reported on an upgrade out of Interrupted). Rebuild both sides.
+// (the struct size and the exports changed; later amendments added
+// companions_set_down_cost / companions_get_down_cost, the EpisodeEnd
+// reported on an upgrade out of Interrupted, and Companions_Lens_Revive = 4,
+// appended, layout-compatible). Rebuild both sides.
 // 1.6 behaviour: only a team down
 // or the horizon fails a task, so a bad situation stays salvageable. Done is
 // the same for every env and lens: the success, the team down
@@ -820,16 +821,30 @@ typedef enum {
     Companions_Lens_Aggro = 1,
     Companions_Lens_Dodge = 2,
     Companions_Lens_TagApply = 3,
+    // Get the downed allies up. Success once no companion is down; it fails
+    // only by the team down or the horizon, and a down never interrupts it
+    // (the down pays the down cost and joins its goal). Rewards: -0.01 per
+    // step, +1.0 on success. Refused while nobody is down. Positions (with
+    // params): the downed allies' cells, each must hold one (else refused);
+    // none: every downed ally. Its goal: those still down, plus anyone who
+    // went down since the lens was set; every downed ally when that is
+    // empty. Goal cells (the goal-distance observation, tensor plane 2): the
+    // walkable orthogonal neighbours of the goal bodies holding no downed
+    // body. Since 1.6.
+    Companions_Lens_Revive = 4,
     Companions_Lens_Unknown = 0x7FFFFFFF  // Sentinel — lens kind not recognized.
 } Companions_LensType;
 
-// Set task lens on environment (swaps interpretation layer)
+// Set task lens on environment (swaps interpretation layer). Accepts
+// Synchro, Aggro, Dodge and Revive (every downed ally).
 COMPANIONS_API bool companions_set_task_lens(Companions_Env* env, Companions_LensType lens);
 
 // Set task lens with positional parameters. The lens will materialize objective
 // cells at the given positions (e.g. SynchroLens stamps Synchro cells at plate
-// positions for a pressure-plate puzzle). Positions are an array of length
-// `num_positions`. Returns false if lens is incompatible after activation.
+// positions for a pressure-plate puzzle; ReviveLens takes the downed allies'
+// cells). Positions are an array of length `num_positions`. Returns false if
+// lens is incompatible after activation; the previous lens then stays, as it
+// was (the cells it stamped included).
 COMPANIONS_API bool companions_set_task_lens_with_params(
     Companions_Env* env,
     Companions_LensType lens,
