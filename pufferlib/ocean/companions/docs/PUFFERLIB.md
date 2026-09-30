@@ -248,7 +248,7 @@ Because reset happens in C, `PufferEnv.done` returns `False` (no Python-level re
 down or the horizon fails a task:
 
 ```cpp
-bool IsDone() const { return success_ || tick_ >= horizon_ || IsTeamDown(); }
+bool IsDone() const { return success_ || tick_ >= horizon_ || interrupted_ || IsTeamDown(); }
 ```
 
 - **Success**: the lens's `IsSuccess`, latched by `BaseEnv::Step` (Synchro: all
@@ -256,7 +256,16 @@ bool IsDone() const { return success_ || tick_ >= horizon_ || IsTeamDown(); }
 - **Horizon**: Maximum steps reached (`tick_ >= horizon_`)
 - **Team down** (every env): the team's downs reach `max_downs` (3 by default), or
   every companion is down at once (a companion at 0 HP goes down; see `CLAUDE.md`,
-  "Downs"). `GetEndReason()` says which one ended the episode
+  "Downs")
+- **Interrupted**: a companion went down (provisional: the task is paused until
+  nobody is down; see `CLAUDE.md`, "Interruptions"). The down pays the down cost
+  (`down_cost`, -0.5 by default) once
+
+`GetEndReason()` says which one ended the episode. The C wrapper writes Interrupted as
+a **truncation** and every other end as a terminal (`synchro_wrapper.cc` `c_step`),
+then auto-resets either way. `pufferl.py` does not handle truncations yet (`done_mask
+= d + t` is computed, never used; the advantage reads the terminals alone): see
+`CLAUDE.md`, "RL binding"
 
 ---
 

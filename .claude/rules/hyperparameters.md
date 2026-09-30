@@ -37,6 +37,7 @@ Current config: `pufferlib/config/ocean/synchro.ini`
 Key settings:
 - `policy_name = SynchroD4V2` (D4-equivariant network)
 - Grid: 8x8, 3 agents, 3 synchro cells
+- `task = synchro`, `down_cost = -0.5` (`revive.ini`: the same with `task = revive`, `puffer_revive`)
 - Complexity: 2 (rooms + corridors)
 - Training: MPS device, 5M timesteps
 

@@ -38,21 +38,23 @@ env.SetTaskLens(std::make_unique<AggroLens>());
 
 **TaskLens handles:**
 - Runtime task switching within same BaseEnv
-- Task-specific rewards, termination, observation masking
+- Task-specific rewards, success, goal cells (done is BaseEnv's, the same for every lens)
 - No serialization overhead
 
 ### Architecture
 
 ```
 BaseEnv (physical world)        TaskLens (task interpretation)
-├── grid, agents, effects       ├── IsDone(), IsSuccess()
+├── grid, agents, effects       ├── IsSuccess(), IsInterruptible()
 ├── SaveSnapshot()              ├── ComputeReward()
-├── LoadSnapshot()              └── MaskCell()
+├── LoadSnapshot()              └── WriteGoalPlane() / GetGoalCells()
 └── SetTaskLens() ──────────────┘
 ```
 
 Snapshots capture physical state only (grid, agents, effects, tick, RNG).
-TaskLens is stateless - computed on-demand from BaseEnv state.
+Snapshots carry no lens. Most lenses are stateless (computed on demand from BaseEnv
+state); ReviveLens keeps its targets and the downs at its activation (an env copy
+clones it; a Reset / LoadSnapshot keeping it starts it over: `OnNewEpisode`).
 
 ## DLL API
 

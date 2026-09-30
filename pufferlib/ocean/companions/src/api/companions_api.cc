@@ -67,31 +67,33 @@
 // Companions_Event_ReactionFired / _AgentDefeated, Companions_Event.tag_kind /
 // tag_reaction / report_index, TagApplied's health_amount (zone damage),
 // revives as a report too; companions_step and companions_reset return bool.
-// 1.6.0: only a team down or the horizon fails a task (behaviour; struct
-// layouts unchanged). Done is uniform: success, team down, horizon. Aggro no
-// longer fails when no enemy lives, Dodge no longer fails on a down;
-// Companions_End_TaskFailed is no longer produced. A down interrupts the task
-// (Companions_End_Interrupted, provisional; a one-time down cost of -0.5 per
-// new down, then the task paused, rewards 0, until nobody is down).
-// Amended (the phased turn): a step is one turn resolved in phases (intents
-// from the turn start, motion layers, one tag phase, the HP ledger, the
-// outcomes at the end of the turn, effects planned); outcome previews run
-// that turn. The turn health report (Companions_TurnHealth,
-// Companions_TurnOutcome, companions_get_turn_health_count / _get_turn_health),
-// Companions_Event_HealthChanged (21; AgentDamaged / AgentHealed superseded),
-// the odd motions (Companions_OddMotion, companions_get_odd_motion_count /
-// _get_odd_motion / _get_odd_motion_total); Companions_SkillOutcome gained
-// turn_health_count and odd_motion_count (a layout change: consumers must
-// rebuild).
-// Amended again (interruptions): companions_set_down_cost /
-// companions_get_down_cost (additive; the cost is runtime, not in
-// snapshots); EpisodeEnd is also reported when TeamDown or Horizon upgrades
-// an Interrupted end while done stays true.
-// Amended again (additive): Companions_Lens_Revive (4, ReviveLens: get the
-// downed allies up), accepted by companions_set_task_lens / _with_params and
-// reported by companions_get_task_lens; a refused
-// companions_set_task_lens_with_params keeps the previous lens's stamped
-// cells.
+// 1.6.0 (amended in place before its release: rebuild both sides;
+// Companions_SkillOutcome's layout changed, consumers must rebuild):
+// - the phased turn: a step is one turn resolved in phases (intents from the
+//   turn start, motion layers, one tag phase, the HP ledger, the outcomes at
+//   the end of the turn, effects planned); outcome previews run that turn;
+// - the turn health report (Companions_TurnHealth, Companions_TurnOutcome,
+//   companions_get_turn_health_count / _get_turn_health) and
+//   Companions_Event_HealthChanged (21; AgentDamaged / AgentHealed
+//   superseded);
+// - the odd motions (Companions_OddMotion, companions_get_odd_motion_count /
+//   _get_odd_motion / _get_odd_motion_total); Companions_SkillOutcome gained
+//   turn_health_count and odd_motion_count;
+// - only a team down or the horizon fails a task: done is uniform (success,
+//   team down, horizon, interrupted); Aggro no longer fails when no enemy
+//   lives, Dodge no longer fails on a down; Companions_End_TaskFailed is no
+//   longer produced;
+// - interruptions: a down interrupts the task (Companions_End_Interrupted,
+//   provisional; a one-time down cost per new down, then the task paused,
+//   rewards 0, until nobody is down); companions_set_down_cost /
+//   companions_get_down_cost (-0.5 by default, in [-1e6, 0]; runtime, not in
+//   snapshots);
+// - EpisodeEnd is also reported when TeamDown or Horizon upgrades an
+//   Interrupted end while done stays true;
+// - Companions_Lens_Revive (4, ReviveLens: get the downed allies up),
+//   accepted by companions_set_task_lens / _with_params and reported by
+//   companions_get_task_lens; a refused companions_set_task_lens_with_params
+//   keeps the previous lens's stamped cells.
 #define COMPANIONS_VERSION "1.6.0"
 
 // =============================================================================

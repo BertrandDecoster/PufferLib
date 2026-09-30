@@ -98,65 +98,71 @@
 // and every other function returns its failure value with the error
 // ("Unknown error" for an exception that is not a std::exception).
 // 1.6 changed a struct layout (Companions_SkillOutcome: turn_health_count,
-// odd_motion_count): consumers must rebuild against this header (signatures
-// unchanged). 1.6.0 was amended in place before its release: DLLs built from
-// earlier 1.6.0 commits of this branch are NOT compatible with this header
-// (the struct size and the exports changed; later amendments added
-// companions_set_down_cost / companions_get_down_cost, the EpisodeEnd
-// reported on an upgrade out of Interrupted, and Companions_Lens_Revive = 4,
-// appended, layout-compatible). Rebuild both sides.
-// 1.6 behaviour: only a team down
-// or the horizon fails a task, so a bad situation stays salvageable. Done is
-// the same for every env and lens: the success, the team down
-// (Companions_End_TeamDown), the horizon, or a down interrupting the task
-// (Companions_End_Interrupted: done, but provisional, see below). The Aggro
-// task no longer fails when no enemy lives (the episode runs on to the
-// horizon, each step paying the time penalty, the kill's included); the Dodge
-// task no longer fails on a companion down (the steps with someone down pay
-// 0, no penalty; everyone up at the horizon succeeds, a revived companion
-// included). Nothing produces Companions_End_TaskFailed any more (the value
-// stays, reserved).
-// A down interrupts the task: the step the team's downs grow (a down the host
-// caused between steps included, caught by the next step), the episode is
-// done as Companions_End_Interrupted (new), and that step adds the down cost
-// to every agent's reward, once per new down (-0.5 by default:
-// companions_set_down_cost). While anyone is down the task is paused
-// (rewards 0, no success, further downs cost nothing). The pause clears on
-// the step that revives the last downed companion: that step already reads
-// done false and Companions_End_None (no EpisodeEnd), but is still paused
-// (rewards 0); the task rewards and decides again from the next step.
-// Interrupted is a done that can end later: a host that plays on keeps
-// stepping; the episode ends for real on Success / TeamDown / Horizon. It is
-// provisional: the team down or the horizon replace it (priority: Success >
-// TeamDown > Horizon > Interrupted), ending the pause, and that upgrade
-// reports its own EpisodeEnd. A down interrupts only while the episode goes
-// on: a down on a step that ends it (a success, the horizon, the team down)
-// pauses nothing, nor does one after it ended. A down the host causes
-// between steps that the very next step revives never shows Interrupted:
-// that step pays the down cost, but nobody is down at its end (done false,
-// None).
-// 1.6 behaviour: a step is one PHASED turn (see "The Turn" below): every
-// intent reads the world as the turn begins (simultaneous casters: the agent
-// order changes no outcome, only the report order), one motion phase in
-// layers, one tag phase (every tag of the turn lands together, then the
-// weaknesses, then the reactions), and HP, downs, deaths, defeats and
-// revives applied once, at the end of the turn. Reports whose order or
-// meaning changed: the tag landings (the zones' first, then the skills', then
-// the reactions' results), a report's damage (each source's raw share; the
-// HP truth is the turn health), a reaction's and a weakness defeat's credit
-// (the credited landing), the revives (at the end of the turn), and the
-// outcome preview (a whole turn: the zones land on everyone). 1.6 additions:
-// - the turn health report, per agent (Companions_TurnHealth: damage, Marked
+// odd_motion_count; signatures unchanged): consumers must rebuild against
+// this header. 1.6.0 was amended in place before its release: DLLs built
+// from earlier 1.6.0 commits of this branch are NOT compatible with this
+// header (the struct size and the exports changed). Rebuild both sides.
+// 1.6 in full:
+// - The phased turn (behaviour): a step is one PHASED turn (see "The Turn"
+//   below). Every intent reads the world as the turn begins (simultaneous
+//   casters: the agent order changes no outcome, only the report order), one
+//   motion phase in layers, one tag phase (every tag of the turn lands
+//   together, then the weaknesses, then the reactions), and HP, downs,
+//   deaths, defeats and revives applied once, at the end of the turn.
+//   Reports whose order or meaning changed: the tag landings (the zones'
+//   first, then the skills', then the reactions' results), a report's damage
+//   (each source's raw share; the HP truth is the turn health), a reaction's
+//   and a weakness defeat's credit (the credited landing), the revives (at
+//   the end of the turn), and the outcome preview (a whole turn: the zones
+//   land on everyone). companions_spawn_effect applies an effect without a
+//   wind-up at once; the env's own no-wind-up spawns wait for the next turn.
+// - The turn health report, per agent (Companions_TurnHealth: damage, Marked
 //   bonus, heal, change, health, Companions_TurnOutcome), both sources
-//   (companions_get_turn_health_count / _get_turn_health);
-// - Companions_Event_HealthChanged (21), one per turn health entry, a state
-//   change (after the movement events, before AgentDowned); AgentDamaged and
-//   AgentHealed stay declared, never emitted (superseded);
-// - the odd motions (Companions_OddMotion: a forced move whose summed offset
+//   (companions_get_turn_health_count / _get_turn_health), and
+//   Companions_Event_HealthChanged (21), one per entry, a state change (after
+//   the movement events, before AgentDowned); AgentDamaged and AgentHealed
+//   stay declared, never emitted (superseded).
+// - The odd motions (Companions_OddMotion: a forced move whose summed offset
 //   is off the axes), both sources (companions_get_odd_motion_count /
 //   _get_odd_motion), and the env's cumulative count
-//   (companions_get_odd_motion_total);
-// - Companions_SkillOutcome.turn_health_count / odd_motion_count.
+//   (companions_get_odd_motion_total); Companions_SkillOutcome.
+//   turn_health_count / odd_motion_count.
+// - Only a team down or the horizon fails a task (behaviour), so a bad
+//   situation stays salvageable. Done is the same for every env and lens:
+//   the success, the team down (Companions_End_TeamDown), the horizon, or a
+//   down interrupting the task (Companions_End_Interrupted, below). The Aggro
+//   task no longer fails when no enemy lives (the episode runs on to the
+//   horizon, each step paying the time penalty, the kill's included); the
+//   Dodge task no longer fails on a companion down (the steps with someone
+//   down pay 0, no penalty; everyone up at the horizon succeeds, a revived
+//   companion included). Nothing produces Companions_End_TaskFailed any more
+//   (the value stays, reserved).
+// - Interruptions (Companions_End_Interrupted = 5, appended): the step the
+//   team's downs grow (a down the host caused between steps included, caught
+//   by the next step), the episode is done as Interrupted, and that step adds
+//   the down cost to every agent's reward, once per new down. While anyone is
+//   down the task is paused (rewards 0, no success, further downs cost
+//   nothing). The pause clears on the step that revives the last downed
+//   companion: that step already reads done false and Companions_End_None (no
+//   EpisodeEnd), but is still paused (rewards 0); the task rewards and
+//   decides again from the next step. Interrupted is a done that can end
+//   later: a host that plays on keeps stepping; the episode ends for real on
+//   Success / TeamDown / Horizon. It is provisional: the team down or the
+//   horizon replace it (priority: Success > TeamDown > Horizon >
+//   Interrupted), ending the pause. A down interrupts only while the episode
+//   goes on: a down on a step that ends it (a success, the horizon, the team
+//   down) pauses nothing, nor does one after it ended. A down the host causes
+//   between steps that the very next step revives never shows Interrupted:
+//   that step pays the down cost, but nobody is down at its end (done false,
+//   None).
+// - The down cost: companions_set_down_cost / companions_get_down_cost
+//   (-0.5 by default, finite, between -1e6 and 0; runtime, not in snapshots).
+// - EpisodeEnd is also reported when a final reason (TeamDown, Horizon)
+//   upgrades an Interrupted end while done stays true.
+// - Companions_Lens_Revive = 4 (appended, layout-compatible): the ReviveLens,
+//   get the downed allies up (never interrupted; see Companions_LensType).
+//   A refused companions_set_task_lens_with_params keeps the previous lens's
+//   stamped cells.
 // Snapshots: since 1.2, a snapshot whose agent skill slot names a skill that
 // is neither a builtin nor one of the snapshot's own "skills" is rejected
 // (companions_load_snapshot / _json return false, the error names the agent,

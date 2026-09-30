@@ -23,6 +23,7 @@ The C API wraps the pure C++17 game logic with POD-only types for safe DLL bound
 | `tests/test_api.cc` | Unit tests for C API (14 tests) |
 | `tests/test_api_parity.cc` | Parity test vs direct C++ (7 tests) |
 | `tests/test_api_reactions.cc` | 1.5 / 1.6: reports (turn health, odd motions included), outcome previews, level data, parity |
+| `tests/test_revive_lens.cc` | 1.6: `Companions_Lens_Revive` (after its C++ tests) |
 
 ## Core API
 
@@ -134,13 +135,22 @@ section is the reference.
 
 ## Interruptions (1.6)
 
-A down interrupts the task: done as `Companions_End_Interrupted`, a done that can end
+Done is the same for every env and lens: the success, the team down, the horizon, or
+an interruption; only the team down or the horizon fail a task (`Companions_End_TaskFailed`
+is never produced). A down interrupts the task: done as `Companions_End_Interrupted`, a done that can end
 later (a host that plays on keeps stepping; the episode ends for real on Success /
 TeamDown / Horizon, each reported by its own EpisodeEnd). The step that revives the last
 downed companion already reads done false and `Companions_End_None`; the task rewards
 again from the next step. The down cost (default -0.5, runtime, not in snapshots):
 `companions_set_down_cost` (finite, between -1e6 and 0) / `companions_get_down_cost`. The header's
 "Versioning" (1.6) and `companions_get_end_reason` comments are the reference.
+
+`Companions_Lens_Revive` (4): get the downed allies up. Refused while nobody is down;
+params: the downed allies' cells (each must hold one), none = every downed ally.
+Success once nobody is down, after someone was down in its episode (a reset or
+snapshot load keeping the lens starts a new one); never interrupted (a down pays the
+cost and joins its goal); -0.01 per step, +1.0 on success. One lens at a time: no lens
+stack (push / pop) yet.
 
 ## Thread Safety
 

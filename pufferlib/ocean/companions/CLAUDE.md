@@ -22,8 +22,11 @@ companions/                    # Standalone pure C++ implementation
 │   │   ├── task_lens.h        # Abstract TaskLens interface
 │   │   ├── synchro_lens.h/cc  # SynchroLens implementation
 │   │   ├── aggro_lens.h/cc    # AggroLens implementation
-│   │   └── dodge_lens.h/cc    # DodgeLens implementation
+│   │   ├── dodge_lens.h/cc    # DodgeLens implementation
+│   │   └── revive_lens.h/cc   # ReviveLens implementation
+│   ├── api/                   # C API (companions_api.h/cc, the DLL)
 │   └── viz/                   # ASCII/ANSI renderer
+├── synchro.h, synchro_wrapper.cc, binding.c, synchro.py   # RL binding (see "RL binding")
 ├── tests
 └── benchmarks/
     ├── cpp/fsm_benchmark.cc   # C++ FSM performance benchmark
@@ -58,6 +61,19 @@ companions/                    # Standalone pure C++ implementation
   weaknesses, immunities): binary in `tests/test_snapshot.cc`, JSON in
   `tests/test_snapshot_json.cc`, a zone's timer across a load in `tests/test_zones.cc`, a
   saved world playing the same reactions in `tests/test_reactions.cc`
+- Interruptions (`Interrupted`, the down cost, the pause, the uniform done, no lens
+  failure of its own): `companions_interrupts_test` (`tests/test_interrupts.cc`); the
+  C API side (down cost setter, EpisodeEnd on an upgrade): `tests/test_api.cc`
+- ReviveLens and `start_downed` (C++ env, then C API): `companions_revive_lens_test`
+  (`tests/test_revive_lens.cc`)
+- The RL binding's C wrapper (terminals vs truncations, the revive task, the down cost,
+  the obs stride): `companions_synchro_wrapper_test` (`tests/test_synchro_wrapper.cc`)
+- The rest, one per area (26 suites in all): `companions_test` (`tests/test_core.cc`: the
+  core, the vector observation), `companions_fsm_test`, `_fsm_timing_test`,
+  `_aggro_test`, `_dodge_test`, `_effects_test`, `_map_generator_test`,
+  `_d4_transform_test`, `_snapshot_test`, `_snapshot_json_test`, `_task_lens_test` (lens
+  swaps, Clone), `_annotations_test`, `_viz_test`, `_npc_panel_test`, `_api_test`,
+  `_api_parity_test`
 - A test that registers its own effects holds a `ScopedEffectRegistry`
   (`tests/effect_registry_guard.h`), declared before its envs: it clears the global
   `EffectConfigRegistry` back to the builtins on entry and on exit, even when an
@@ -68,8 +84,9 @@ companions/                    # Standalone pure C++ implementation
 Only read it if you need to develop new environments so you can follow
 the spirit of the game.
 The companions is a multi agent cooperative env played on a 2D grid.
-All the dynamics are defined in BaseEnv. Task-specific behavior (rewards, termination,
-observation masking) is handled by **TaskLens** objects that can be swapped at runtime.
+All the dynamics are defined in BaseEnv. Task-specific behavior (rewards, success, goal
+cells) is handled by **TaskLens** objects that can be swapped at runtime; done is
+BaseEnv's, the same for every lens.
 
 
 
@@ -798,25 +815,30 @@ every `Reset`; an outcome preview's world holds its turn's, see Previews):
   after `TickZones` keeps the incremented tick). A copy of an env (Clone, copy,
   assignment) re-points its FSM agents' `FSMContext::rng` at its own RNG
   (`RepointFsmRng`)
-- C API 1.6.0: only a team down or the horizon fails a task (see "Why an episode
-  ended"). Aggro no longer fails when no enemy lives, Dodge no longer fails on a down;
-  `Companions_End_TaskFailed` (3) is no longer produced (kept: the values are
-  append-only). A down interrupts the task: `Companions_End_Interrupted` (5,
-  provisional), a one-time down cost per new down, the task paused until nobody is down
-  (see "Why an episode ended"). Amended in place (unreleased) with the phased turn (see
-  Step order; the header's "The Turn" section): the turn health report
-  (`Companions_TurnHealth`, `Companions_TurnOutcome` with static_asserts to
-  `TurnOutcome`, `companions_get_turn_health_count` / `_get_turn_health`, both sources),
-  `Companions_Event_HealthChanged` (21), the odd motions (`Companions_OddMotion`,
-  `companions_get_odd_motion_count` / `_get_odd_motion`, both sources;
-  `companions_get_odd_motion_total`), `Companions_SkillOutcome.turn_health_count` /
-  `odd_motion_count` (a layout change: consumers rebuild, a DLL from an earlier 1.6.0
-  commit is not compatible). `companions_spawn_effect` (between steps) applies a
-  no-wind-up effect at once (Immediate); the env's own no-wind-up spawns during a step
-  wait for the next turn (NextTurn: `in_telegraph`, `ticks_remaining` 1). Amended again
-  (interruptions, additive): `companions_set_down_cost` / `companions_get_down_cost`,
-  and EpisodeEnd is also reported when TeamDown or Horizon upgrades an Interrupted end
-  (see "Why an episode ended")
+- C API 1.6.0 (one release, amended in place before it: a DLL from an earlier 1.6.0
+  commit is not compatible, rebuild both sides; `Companions_SkillOutcome`'s layout
+  changed, consumers rebuild):
+  - The phased turn (see Step order; the header's "The Turn"): the turn health report
+    (`Companions_TurnHealth`, `Companions_TurnOutcome` with static_asserts to
+    `TurnOutcome`, `companions_get_turn_health_count` / `_get_turn_health`, both
+    sources), `Companions_Event_HealthChanged` (21; AgentDamaged / AgentHealed never
+    emitted), the odd motions (`Companions_OddMotion`, `companions_get_odd_motion_count`
+    / `_get_odd_motion`, both sources; `companions_get_odd_motion_total`),
+    `Companions_SkillOutcome.turn_health_count` / `odd_motion_count`.
+    `companions_spawn_effect` (between steps) applies a no-wind-up effect at once
+    (Immediate); the env's own no-wind-up spawns during a step wait for the next turn
+    (NextTurn: `in_telegraph`, `ticks_remaining` 1)
+  - Only a team down or the horizon fails a task (see "Why an episode ended"): done is
+    the same for every env and lens; Aggro no longer fails when no enemy lives, Dodge
+    no longer fails on a down; `Companions_End_TaskFailed` (3) is no longer produced
+    (kept: the values are append-only)
+  - Interruptions: a down interrupts the task (`Companions_End_Interrupted` 5,
+    provisional), a one-time down cost per new down, the task paused until nobody is
+    down (see Interruptions); `companions_set_down_cost` / `companions_get_down_cost`
+  - EpisodeEnd is also reported when TeamDown or Horizon upgrades an Interrupted end
+  - `Companions_Lens_Revive` (4, ReviveLens), accepted by `companions_set_task_lens` /
+    `_with_params`; a refused `companions_set_task_lens_with_params` keeps the previous
+    lens's stamped cells
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots
@@ -937,6 +959,15 @@ Code: `core/object.{h,cc}` (`Companion`), `env/base_env.{h,cc}`. Tests: `tests/t
   generated `Reset` loads through `LoadGeneratedLevel`, which keeps the env's current
   max_downs. A mid-episode `SetMaxDowns` re-evaluates the verdict (raised above the
   downs, `IsDone()` can turn false again)
+- **Start downed** (`LevelConfig::start_downed`, `SynchroEnv::SetStartDowned(n)`; tests:
+  `tests/test_revive_lens.cc`): each generated `Reset` (from the next one on) downs n
+  companions (alive at 0 HP, `times_downed` 1), picked by the seed after every other
+  draw, so 0 generates the same levels. `0 <= n < num_companions` (someone stands), else
+  `std::invalid_argument`. Each counts as one of the team's downs: a Reset starts at
+  downs n of max_downs (with max_downs <= n every Reset loads a lost level, `TeamDown`);
+  `ResetOutcome` takes them as seen, so the first step pays no down cost and is not
+  interrupted. Kept across `Reset`, copied with the env. No C API setter (the RL
+  binding's revive task uses it)
 - **Reports**: `GetLastDowns()`, one companion id per down, filled after `EndStep`
   (`Companion::TakeUnreportedDowns`): a down between two steps (a host effect) is
   reported once, by the next step. Downs a snapshot loads count as reported. Getting up:
@@ -1039,11 +1070,12 @@ Location: `companions/src/core/fsm/`
 
 Each environment uses a **TaskLens** to define task-specific behavior:
 
-| Env | Lens | Goal | Masks |
+| Env | Lens | Goal | Goal cells (tensor plane 2, goal distance) |
 |-----|------|------|-------|
-| SynchroEnv | SynchroLens | All companions on synchro cells | Target→Floor |
-| AggroEnv | AggroLens | Lure enemy to target cell | Synchro→Floor |
-| DodgeEnv | DodgeLens | Survive until horizon | Both→Floor |
+| SynchroEnv | SynchroLens | All companions on synchro cells | Synchro cells |
+| AggroEnv | AggroLens | Lure enemy to target cell | The target cell |
+| DodgeEnv | DodgeLens | Survive until horizon | None |
+| any (RL: SynchroEnv, task `revive`) | ReviveLens | Get every downed ally up | Free walkable neighbours of the downed bodies |
 
 **Runtime task switching** (no snapshot needed):
 ```cpp
@@ -1051,6 +1083,31 @@ env.SetTaskLens(std::make_unique<SynchroLens>());
 // ... complete task ...
 env.SetTaskLens(std::make_unique<AggroLens>());  // World state preserved
 ```
+One lens at a time: `SetTaskLens*` replaces the running one (a refused lens leaves the
+previous one and its stamped cells as they were), and an env copy clones its exact lens
+(`TaskLens::Clone`, not activated) with its latched outcome. A lens stack (push / pop, a
+paused lens keeping its state, for an interrupting task) is NOT built: deferred to the
+HTN phase. `TaskLens::OnNewEpisode` runs once a `Reset` / `LoadSnapshot` (the C API's
+included) keeps the lens (ReviveLens re-targets there; the others do nothing).
+
+**ReviveLens** (`env/revive_lens.{h,cc}`, `TaskLens::kRevive` = 4, C API
+`Companions_Lens_Revive` 4, since 1.6; tests: `tests/test_revive_lens.cc`):
+- Params (`SetTaskLensWithParams`): the downed allies' cells, kept as agent ids (the
+  targets); a cell holding no downed companion refuses the lens. No cells (or
+  `SetTaskLens`): every downed ally. `CanOperateOn`: someone is down
+- Goal bodies: the targets still down, plus anyone who went down since the activation
+  (`times_downed` grew); every downed ally when that is empty
+- Goal cells: the walkable orthogonal neighbours of the goal bodies holding no downed
+  body (a standing agent's cell counts: it may move off); none (boxed in) reads the goal
+  distance 0.0
+- Success: nobody down, once someone was down in its episode (down at the activation or
+  the new episode, or a down since): an episode with nobody down never succeeds, it runs
+  to the horizon. It fails only by the team down or the horizon. Not interruptible
+  (`IsInterruptible()` false): a down pays the down cost and joins the goal
+- `OnNewEpisode` (`Reset` / `LoadSnapshot` keeping the lens): the targets forgotten
+  (every downed ally), the downs recorded afresh
+- Rewards: `kTimePenalty` -0.01 per step, `kSuccessBonus` +1.0 on success (while
+  `SuccessCounts`)
 
 **AggroEnv details:**
 - 1-3 companions, 1 Goblin enemy with FSM
@@ -1159,18 +1216,60 @@ We want to integrate the pure C++ game in `companions/` into PufferLib
 5-plane tensor [5 × grid_size × grid_size]:
 - Plane 0: Walkable cells
 - Plane 1: Walls
-- Plane 2: Synchro/goal cells
+- Plane 2: Goal cells (the lens's: `TaskLens::WriteGoalPlane`, see the lens table)
 - Plane 3: Current player
 - Plane 4: Other agents
 
 Vector obs, appended after the tensor by the RL binding (`BaseEnv::kVectorObs*` in
-`src/env/base_env.h`; 12 floats, fixed whatever the agent count): own position (2),
-health ratio, own downed flag, goal distance, then the first two other agents in
-agent order (row delta, col delta, downed flag each; an enemy or anyone standing
-has flag 0 next to its real deltas; a missing or dead one reads 0 throughout, the
-dead keeping its slot: slots follow agent order, never reshuffled), steps left /
-100. Aggro / Dodge append their own features after it (20 / 22 floats);
-`WriteVectorObservation` (the zero-copy path) writes the base features only.
+`src/env/base_env.h`; 12 floats since phase 3 (was 9), fixed whatever the agent count):
+own position (2), health ratio, own downed flag, goal distance, then the first two
+other agents in agent order (row delta, col delta, downed flag each; an enemy or
+anyone standing has flag 0 next to its real deltas; a missing or dead one reads 0
+throughout, the dead keeping its slot: slots follow agent order, never reshuffled),
+steps left / 100. Aggro / Dodge append their own features after it (20 / 22 floats).
+Known limits:
+- `WriteVectorObservation` (the zero-copy path the RL binding uses) writes the base
+  features only: bound to RL, Aggro / Dodge would read their extras as 0 (only
+  `VectorObservation` appends them)
+- The downed flags cover 2 others only: with 4+ companions a downed ally past them has
+  no flag (the revive task assumes at most 3 companions)
+- Steps left / 100 exceeds 1.0, `synchro.py`'s Box high, when the horizon is above 100
+
+### RL binding
+`synchro.h` / `synchro_wrapper.cc` (the C struct, auto-reset in `c_step`), `binding.c`
+(kwargs), `synchro.py` (`Synchro`, a PufferEnv), `pufferlib/ocean/environment.py`
+(`synchro` and `revive` both `make_synchro`), configs `pufferlib/config/ocean/synchro.ini`
+(`puffer_synchro`) and `revive.ini` (`puffer_revive`). Tests:
+`tests/test_synchro_wrapper.cc` (the C struct driven as `binding.c` drives it).
+- `task` (`synchro.py`: `'synchro'` | `'revive'`, mapped to `SYNCHRO_TASK_*` 0 / 1):
+  synchro puts every companion on a synchro cell (SynchroLens); revive downs one
+  random companion each episode (`SetStartDowned(1)`, `Reset`, then the ReviveLens,
+  in that order: the lens needs someone down) and needs `num_agents >= 2`. Auto-resets
+  keep both (the lens's `OnNewEpisode` re-targets). `revive.ini` sets `task = revive`,
+  the rest as `synchro.ini`
+- `down_cost` (default -0.5, finite, in [-1e6, 0]): `SetDownCost`. Both are ini
+  `[env]` keys, so `--env.task` / `--env.down-cost` override them and a sweep can tune
+  `down_cost`. `synchro_init` refuses a bad task, revive with < 2 agents, a bad
+  down_cost or a config the env rejects (non-zero, `error` set): `binding.c` raises a
+  ValueError
+- Terminals and truncations: `terminals = done && !interrupted` (success, horizon,
+  team down), `truncations = done && interrupted` (`EndReason::Interrupted`: a down).
+  `env_binding.h` wires the truncations buffer behind `ENV_HAS_TRUNCATIONS`, which
+  `binding.c` defines (opt-in; other Ocean envs unchanged). A truncation auto-resets
+  like a terminal, so in the synchro task a policy never sees the paused state nor a
+  revive; the revive task is never interrupted (its downs pay the cost). The log counts
+  an interrupted episode (no success)
+- Synchro RL cannot down a companion by play (the default `attack` spares allies; no
+  enemies, hazards or zones): truncations come only from host downs, and the revive task
+  ends only by success or the horizon. With 2 agents the revive task has no margin (the
+  standing one down = every companion down = `TeamDown`)
+- Training: `pufferl.py` (~253) computes `done_mask = d + t` but never uses it: the
+  rollout stores the terminals alone (the advantage and the policy's `done` read them)
+  and never fills its truncations buffer, so an Interrupted step trains as neither a
+  terminal nor a bootstrapped truncation (GAE runs on into the auto-reset episode) until
+  someone handles truncations there. Checkpoints from before phase 3 are invalid: the
+  obs grew from 9 to 12 vector floats, and the rewards changed (down cost, no Aggro /
+  Dodge failures)
 
 ### Curriculum Learning
 
