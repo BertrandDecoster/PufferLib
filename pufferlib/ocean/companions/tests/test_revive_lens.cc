@@ -3,10 +3,15 @@
 // downed allies up. Success only once nobody is down; a down while it runs
 // joins its goal, pays the down cost and interrupts nothing; only the team
 // down or the horizon fails it. Its goal cells are the walkable orthogonal
-// neighbours of the goal bodies. The C++ env first, then the C API.
+// neighbours of the goal bodies. The C++ env first (with the levels generated
+// with companions already down: LevelConfig::start_downed,
+// SynchroEnv::SetStartDowned), then the C API.
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -16,6 +21,8 @@
 
 #include "companions_api.h"
 #include "../src/core/annotations.h"
+#include "../src/core/level_config.h"
+#include "../src/core/level_generator.h"
 #include "../src/core/object.h"
 #include "../src/core/snapshot.h"
 #include "../src/core/snapshot_json.h"
@@ -658,6 +665,339 @@ TEST(TestCloneKeepsTheTargets) {
   copy->Step(Stays(*copy));
   ASSERT_TRUE(AgentAt(*copy, 3)->IsDowned());
   ASSERT_TRUE(GoalCells(*copy) == Union(Around({4, 4}), Around({2, 7})));
+}
+
+// A companion the activation did not know that has gone down counts as a down
+// since (as WentDownSince counts it): with nobody down at the activation, its
+// revive is a success.
+TEST(TestAnUnknownCompanionThatWentDownCounts) {
+  SynchroEnv known(10, 10, 2, 1, 0, 42);
+  MakeArena(known);
+  ReviveLens lens;
+  lens.Activate(known, LensParams{});  // Nobody down: no success yet
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  ASSERT_FALSE(lens.IsSuccess(env));
+  // The third companion, unknown to the activation, went down and is up again
+  Companion* stranger = static_cast<Companion*>(AgentAt(env, 2));
+  for (const Agent* a : known.GetObjectManager().GetAllAgents()) {
+    ASSERT_TRUE(a->GetId() != stranger->GetId());
+  }
+  stranger->RestoreDowns(false, 1);
+  ASSERT_TRUE(lens.IsSuccess(env));
+}
+
+// =============================================================================
+// Start downed (LevelConfig::start_downed, SynchroEnv::SetStartDowned)
+// =============================================================================
+
+static uint64_t Fnv1a(const std::string& s) {
+  uint64_t h = 1469598103934665603ull;
+  for (unsigned char c : s) {
+    h ^= c;
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+static LevelConfig SynchroConfig(unsigned int seed, int start_downed) {
+  LevelConfig config =
+      LevelConfig::ForSynchro(12, 12, 3, 3, 2, seed, static_cast<int>(seed % 8), 100);
+  config.start_downed = start_downed;
+  return config;
+}
+
+static std::vector<const AgentSnapshot*> DownedIn(const Snapshot& snap) {
+  std::vector<const AgentSnapshot*> downed;
+  for (const AgentSnapshot& a : snap.agents) {
+    if (a.downed) downed.push_back(&a);
+  }
+  return downed;
+}
+
+static std::vector<ObjectId> DownedIds(const BaseEnv& env) {
+  std::vector<ObjectId> ids;
+  for (const Companion* c : env.GetObjectManager().GetAllCompanions()) {
+    if (c->IsAlive() && c->IsDowned()) ids.push_back(c->GetId());
+  }
+  return ids;
+}
+
+static const Companion* CompanionById(const BaseEnv& env, ObjectId id) {
+  for (const Companion* c : env.GetObjectManager().GetAllCompanions()) {
+    if (c->GetId() == id) return c;
+  }
+  throw std::runtime_error("no companion " + std::to_string(id));
+}
+
+// One companion generated down (alive, 0 HP, gone down once); the others as
+// always. The same seed downs the same one; over seeds, each can be picked.
+TEST(TestTheGeneratorDownsOneCompanion) {
+  std::vector<bool> picked(3, false);
+  for (unsigned int seed = 0; seed < 60; ++seed) {
+    const Snapshot snap = LevelGenerator::Generate(SynchroConfig(seed, 1));
+    const auto downed = DownedIn(snap);
+    ASSERT_EQ(downed.size(), 1u);
+    const AgentSnapshot& body = *downed[0];
+    ASSERT_TRUE(IsCompanionType(body.type));
+    ASSERT_TRUE(body.alive);
+    ASSERT_EQ(body.health, 0);
+    ASSERT_EQ(body.times_downed, 1);
+    for (const AgentSnapshot& a : snap.agents) {
+      if (&a == &body) continue;
+      ASSERT_EQ(a.times_downed, 0);
+      ASSERT_EQ(a.health, a.max_health);
+    }
+    const Snapshot again = LevelGenerator::Generate(SynchroConfig(seed, 1));
+    ASSERT_EQ(DownedIn(again).size(), 1u);
+    ASSERT_EQ(DownedIn(again)[0]->id, body.id);
+    ASSERT_EQ(SnapshotToJson(again), SnapshotToJson(snap));
+    picked[static_cast<size_t>(body.agent_index)] = true;
+  }
+  ASSERT_TRUE(picked[0] && picked[1] && picked[2]);
+  // Two of three
+  ASSERT_EQ(DownedIn(LevelGenerator::Generate(SynchroConfig(7, 2))).size(), 2u);
+}
+
+// The downs are drawn after every other draw: the level is the same one, only
+// the downed companions (and the RNG state after the draw) differ.
+TEST(TestStartDownedKeepsTheLevel) {
+  for (unsigned int seed = 0; seed < 30; ++seed) {
+    const Snapshot plain = LevelGenerator::Generate(SynchroConfig(seed, 0));
+    Snapshot downed = LevelGenerator::Generate(SynchroConfig(seed, 1));
+    ASSERT_EQ(DownedIn(plain).size(), 0u);
+    for (AgentSnapshot& a : downed.agents) {
+      if (!a.downed) continue;
+      a.downed = false;
+      a.times_downed = 0;
+      a.health = a.max_health;
+    }
+    downed.rng_state = plain.rng_state;
+    downed.rng_inc = plain.rng_inc;
+    ASSERT_EQ(SnapshotToJson(downed), SnapshotToJson(plain));
+  }
+}
+
+// start_downed = 0 generates today's levels byte for byte: the JSON hashes
+// (FNV-1a 64) pinned from the generator before start_downed existed (PufferLib
+// 7a8f1669). A deliberate change of the generator or of the JSON writer
+// updates them.
+TEST(TestStartDownedZeroIsTodaysLevel) {
+  LevelConfig synchro = LevelConfig::ForSynchro(12, 12, 3, 3, 2, 5, 5, 100);
+  LevelConfig small = LevelConfig::ForSynchro(8, 10, 2, 1, 2, 11);
+  LevelConfig aggro = LevelConfig::ForAggro(12, 2, 3, 3, 3);
+  LevelConfig dodge = LevelConfig::ForDodge(10, 3, 9);
+  LevelConfig full = LevelConfig::FullInfo(14, 14, 2, 3, 2, 3, true, 7, 1);
+  for (LevelConfig* c : {&synchro, &small, &aggro, &dodge, &full}) c->start_downed = 0;
+  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(synchro))), 0x2aa958b83ca98d04ull);
+  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(small))), 0x70ec44eb64dc6d00ull);
+  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(aggro))), 0xbb6da07e9f4264c9ull);
+  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(dodge))), 0x9765fb44fba7112bull);
+  ASSERT_EQ(Fnv1a(SnapshotToJson(LevelGenerator::Generate(full))), 0xaa198cfa2a979ac7ull);
+}
+
+static bool ThrowsInvalidArgument(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument&) {
+    return true;
+  }
+  return false;
+}
+
+// Someone must stand: start_downed below the companion count, and not
+// negative (the generator and the setter both refuse; the setter keeps the
+// value it had).
+TEST(TestStartDownedOutOfRangeThrows) {
+  ASSERT_TRUE(ThrowsInvalidArgument([] { LevelGenerator::Generate(SynchroConfig(1, 3)); }));
+  ASSERT_TRUE(ThrowsInvalidArgument([] { LevelGenerator::Generate(SynchroConfig(1, 4)); }));
+  ASSERT_TRUE(ThrowsInvalidArgument([] { LevelGenerator::Generate(SynchroConfig(1, -1)); }));
+  SynchroEnv env(12, 12, 3, 3, 2, 42);
+  ASSERT_EQ(env.GetStartDowned(), 0);
+  env.SetStartDowned(2);
+  ASSERT_TRUE(ThrowsInvalidArgument([&env] { env.SetStartDowned(3); }));
+  ASSERT_TRUE(ThrowsInvalidArgument([&env] { env.SetStartDowned(-1); }));
+  ASSERT_EQ(env.GetStartDowned(), 2);
+  env.Reset();
+  ASSERT_EQ(DownedIds(env).size(), 2u);
+}
+
+// A Reset starts with the companion down: one of the team's downs (downs 1
+// of max 3), not done, not interrupted, and its down is not new to the first
+// step (no down cost). A ReviveLens can operate on it.
+TEST(TestAResetStartsWithACompanionDown) {
+  SynchroEnv env(12, 12, 3, 3, 2, 42);
+  env.SetStartDowned(1);
+  ASSERT_EQ(DownedIds(env).size(), 0u);  // From the next Reset
+  env.Reset();
+  ASSERT_EQ(DownedIds(env).size(), 1u);
+  ASSERT_EQ(env.GetDowns(), 1);
+  ASSERT_EQ(env.GetMaxDowns(), 3);
+  ASSERT_FALSE(env.IsTeamDown());
+  ASSERT_FALSE(env.IsDone());
+  ASSERT_FALSE(env.IsInterrupted());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+
+  // The level's own lens: the first step is not interrupted, pays no cost
+  std::unique_ptr<BaseEnv> synchro = env.Clone();
+  ASSERT_TRUE(synchro->GetTaskLens()->GetKind() == TaskLens::kSynchro);
+  StepResult first = synchro->Step(Stays(*synchro));
+  ASSERT_FALSE(first.done);
+  ASSERT_FALSE(synchro->IsInterrupted());
+  for (int i = 0; i < synchro->NumAgents(); ++i) {
+    ASSERT_NEAR(first.rewards[static_cast<size_t>(i)],
+                synchro->GetTaskLens()->ComputeReward(*synchro, i));
+  }
+
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<ReviveLens>()));
+  ASSERT_EQ(env.GetDowns(), 1);
+  StepResult step = env.Step(Stays(env));
+  ASSERT_FALSE(step.done);
+  ASSERT_FALSE(env.IsInterrupted());
+  ASSERT_TRUE(env.GetEndReason() == EndReason::None);
+  for (double reward : step.rewards) ASSERT_NEAR(reward, ReviveLens::kTimePenalty);
+  ASSERT_EQ(env.GetDowns(), 1);
+}
+
+// Kept across Reset (the seed picks each episode's downed companion: a twin
+// env downs the same ones) and with the ReviveLens, whose goal is every
+// downed ally (its OnNewEpisode forgets the targets).
+TEST(TestStartDownedAndTheReviveLensSurviveResets) {
+  SynchroEnv env(12, 12, 3, 3, 2, 42);
+  SynchroEnv twin(12, 12, 3, 3, 2, 42);
+  env.SetStartDowned(1);
+  twin.SetStartDowned(1);
+  env.Reset();
+  twin.Reset();
+  ASSERT_TRUE(env.SetTaskLens(std::make_unique<ReviveLens>()));
+  std::vector<int> downed_indices;
+  for (int episode = 0; episode < 6; ++episode) {
+    if (episode > 0) {
+      env.Reset();
+      twin.Reset();
+    }
+    const std::vector<ObjectId> downed = DownedIds(env);
+    ASSERT_EQ(downed.size(), 1u);
+    ASSERT_TRUE(downed == DownedIds(twin));
+    ASSERT_EQ(env.GetStartDowned(), 1);
+    ASSERT_EQ(env.GetDowns(), 1);
+    ASSERT_FALSE(env.IsDone());
+    ASSERT_TRUE(env.GetTaskLens()->GetKind() == TaskLens::kRevive);
+    const auto* lens = static_cast<const ReviveLens*>(env.GetTaskLens());
+    ASSERT_TRUE(lens->GetTargets().empty());
+    ASSERT_TRUE(lens->GetGoalBodies(env) == downed);
+    downed_indices.push_back(CompanionById(env, downed[0])->GetAgentIndex());
+  }
+  // Not always the same companion
+  ASSERT_TRUE(std::count(downed_indices.begin(), downed_indices.end(), downed_indices[0]) <
+              static_cast<std::ptrdiff_t>(downed_indices.size()));
+}
+
+// Copied with the env (copy, assignment, Clone): the copy's next Reset downs
+// one too.
+TEST(TestStartDownedIsCopiedWithTheEnv) {
+  SynchroEnv env(12, 12, 3, 3, 2, 42);
+  env.SetStartDowned(1);
+  SynchroEnv copy(env);
+  SynchroEnv assigned(12, 12, 3, 3, 2, 7);
+  assigned = env;
+  std::unique_ptr<BaseEnv> clone = env.Clone();
+  ASSERT_EQ(copy.GetStartDowned(), 1);
+  ASSERT_EQ(assigned.GetStartDowned(), 1);
+  ASSERT_EQ(static_cast<SynchroEnv&>(*clone).GetStartDowned(), 1);
+  copy.Reset();
+  assigned.Reset();
+  clone->Reset();
+  ASSERT_EQ(DownedIds(copy).size(), 1u);
+  ASSERT_EQ(DownedIds(assigned).size(), 1u);
+  ASSERT_EQ(DownedIds(*clone).size(), 1u);
+}
+
+// A walkable path (one move per step) from `from` to the nearest of `goals`,
+// around walls and every agent; empty if none (or already on one).
+static std::vector<MovementAction> PathTo(const BaseEnv& env, Position from,
+                                          const std::vector<Position>& goals) {
+  const Grid& grid = env.GetGrid();
+  const int cols = grid.GetCols();
+  const MovementAction moves[4] = {MovementAction::Up, MovementAction::Down,
+                                   MovementAction::Left, MovementAction::Right};
+  const int dr[4] = {-1, 1, 0, 0};
+  const int dc[4] = {0, 0, -1, 1};
+  auto at = [cols](Position p) { return static_cast<size_t>(p.row * cols + p.col); };
+  std::vector<int> came(static_cast<size_t>(grid.GetRows() * cols), -1);  // The move in
+  std::vector<Position> queue{from};
+  came[at(from)] = 4;
+  for (size_t head = 0; head < queue.size(); ++head) {
+    const Position p = queue[head];
+    if (std::find(goals.begin(), goals.end(), p) != goals.end()) {
+      std::vector<MovementAction> path;
+      for (Position q = p; !(q == from);) {
+        const int m = came[at(q)];
+        path.push_back(moves[m]);
+        q = {q.row - dr[m], q.col - dc[m]};
+      }
+      std::reverse(path.begin(), path.end());
+      return path;
+    }
+    for (int m = 0; m < 4; ++m) {
+      const Position n{p.row + dr[m], p.col + dc[m]};
+      if (!grid.IsInBounds(n) || !grid.IsWalkable(n) || came[at(n)] != -1) continue;
+      if (env.GetObjectManager().IsOccupied(n)) continue;
+      came[at(n)] = m;
+      queue.push_back(n);
+    }
+  }
+  return {};
+}
+
+static MovementAction Toward(Position from, Position to) {
+  if (to.row < from.row) return MovementAction::Up;
+  if (to.row > from.row) return MovementAction::Down;
+  if (to.col < from.col) return MovementAction::Left;
+  return MovementAction::Right;
+}
+
+// The whole revive episode on generated levels: an ally walks to the body
+// (the time penalty each step, never interrupted) and revives it: Success.
+TEST(TestAGeneratedReviveEpisodeSucceeds) {
+  for (unsigned int seed = 1; seed <= 5; ++seed) {
+    SynchroEnv env(12, 12, 3, 3, 2, seed);
+    env.SetStartDowned(1);
+    env.Reset();
+    ASSERT_TRUE(env.SetTaskLens(std::make_unique<ReviveLens>()));
+    const ObjectId body_id = DownedIds(env)[0];
+    const Position body = CompanionById(env, body_id)->GetPosition();
+    const std::vector<Position> goals = env.GetTaskLens()->GetGoalCells(env);
+    int ally = -1;
+    std::vector<MovementAction> path;
+    for (int i = 0; i < env.NumAgents() && ally < 0; ++i) {
+      const Agent* a = AgentAt(env, i);
+      if (a->GetId() == body_id) continue;
+      path = PathTo(env, a->GetPosition(), goals);
+      const bool there = std::find(goals.begin(), goals.end(), a->GetPosition()) != goals.end();
+      if (!path.empty() || there) ally = i;
+    }
+    ASSERT_TRUE(ally >= 0);
+    for (MovementAction move : path) {
+      std::vector<Action> actions = Stays(env);
+      actions[static_cast<size_t>(ally)] = Walk(move);
+      StepResult step = env.Step(actions);
+      ASSERT_FALSE(step.done);
+      ASSERT_FALSE(env.IsInterrupted());
+      for (double reward : step.rewards) ASSERT_NEAR(reward, ReviveLens::kTimePenalty);
+    }
+    const Position at = AgentAt(env, ally)->GetPosition();
+    ASSERT_EQ(std::abs(at.row - body.row) + std::abs(at.col - body.col), 1);
+    std::vector<Action> actions = Stays(env);
+    actions[static_cast<size_t>(ally)] = Use(Toward(at, body));
+    StepResult revive = env.Step(actions);
+    ASSERT_FALSE(CompanionById(env, body_id)->IsDowned());
+    ASSERT_TRUE(revive.done);
+    ASSERT_TRUE(env.GetEndReason() == EndReason::Success);
+    for (double reward : revive.rewards) {
+      ASSERT_NEAR(reward, ReviveLens::kTimePenalty + ReviveLens::kSuccessBonus);
+    }
+  }
 }
 
 // =============================================================================

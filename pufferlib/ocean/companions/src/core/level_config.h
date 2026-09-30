@@ -33,6 +33,12 @@ struct LevelConfig {
   // Agent configuration
   int num_companions = 3;  // Number of companion agents
   int num_enemies = 0;     // Number of FSM enemies
+  // Companions generated already down (alive at 0 HP, gone down once: each
+  // is one of the team's downs), picked at random after every other draw, so
+  // 0 generates the same level as without it. Someone stands: a start_downed
+  // below 0, or above 0 and not below num_companions, makes Generate throw
+  // std::invalid_argument.
+  int start_downed = 0;
 
   // Episode configuration
   int horizon = kDefaultHorizon;

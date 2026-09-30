@@ -59,6 +59,17 @@ class SynchroEnv : public BaseEnv {
   int GetNumSynchro() const { return num_synchro_; }
   int GetMapComplexity() const { return map_complexity_; }
 
+  // How many companions each Reset generates already down
+  // (LevelConfig::start_downed: picked by the seed, alive at 0 HP, one of the
+  // team's downs each, not new to the first step: no down cost, no
+  // interruption; with max downs <= count the level loads lost, TeamDown).
+  // From the next Reset on; kept across Reset and copied with the env.
+  // Throws std::invalid_argument unless 0 <= count < the number of
+  // companions (the value is then unchanged). Default 0: the levels as
+  // without it.
+  void SetStartDowned(int count);
+  int GetStartDowned() const { return start_downed_; }
+
   // Utility bounds (environment-specific reward structure)
   double MinUtility() const override;
   double MaxUtility() const override;
@@ -81,6 +92,7 @@ class SynchroEnv : public BaseEnv {
   int num_companions_;
   int num_synchro_;
   int map_complexity_ = 0;  // 0-5, curriculum learning parameter
+  int start_downed_ = 0;    // SetStartDowned
   pcg32 rng_;
   std::vector<Position> synchro_positions_;
 };

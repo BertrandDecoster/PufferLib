@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 
 #include "map_generator.h"
 #include "object.h"
@@ -32,6 +33,15 @@ LevelGenerator::LevelGenerator(const LevelConfig& config)
 // =============================================================================
 
 Snapshot LevelGenerator::GenerateInternal() {
+  // Someone stands (a level with everyone down is lost before it starts). A
+  // level without companions (AggroEnv spawns its own) takes 0.
+  if (config_.start_downed < 0 ||
+      (config_.start_downed > 0 && config_.start_downed >= config_.num_companions)) {
+    throw std::invalid_argument("start_downed must be >= 0 and < num_companions (" +
+                                std::to_string(config_.num_companions) + "), got " +
+                                std::to_string(config_.start_downed));
+  }
+
   // Phase 1: Generate base grid using MapGenerator
   GenerateBaseGrid();
 
@@ -50,6 +60,12 @@ Snapshot LevelGenerator::GenerateInternal() {
   SpawnCompanions();
   if (config_.num_enemies > 0) {
     SpawnEnemies();
+  }
+
+  // Phase 4: the companions down, drawn after every other draw (none drawn
+  // for 0: the level is the one generated without the option)
+  if (config_.start_downed > 0) {
+    PickDownedCompanions();
   }
 
   // Convert to snapshot
@@ -236,6 +252,15 @@ void LevelGenerator::SpawnEnemies() {
   }
 }
 
+void LevelGenerator::PickDownedCompanions() {
+  std::vector<ObjectId> ids;
+  for (const Agent* agent : object_manager_->GetAllAgents()) {
+    if (dynamic_cast<const Companion*>(agent)) ids.push_back(agent->GetId());
+  }
+  portable_shuffle(ids.begin(), ids.end(), rng_);
+  downed_ids_.assign(ids.begin(), ids.begin() + config_.start_downed);
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -325,6 +350,13 @@ Snapshot LevelGenerator::CreateSnapshot() const {
     as.agent_index = agent->GetAgentIndex();
     as.faction = static_cast<int>(agent->GetFaction());
     as.alive = agent->IsAlive();
+    // Down: alive at 0 HP, gone down once (one of the team's downs, loaded as
+    // already reported)
+    if (std::find(downed_ids_.begin(), downed_ids_.end(), agent->GetId()) != downed_ids_.end()) {
+      as.health = 0;
+      as.downed = true;
+      as.times_downed = 1;
+    }
 
     // Direction for Companions
     if (const Companion* comp = dynamic_cast<const Companion*>(agent)) {

@@ -3293,8 +3293,8 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
                                      const LensParams& params) {
   // Rollback-safe swap (audit F12). Save the outgoing lens; only release it
   // once we've confirmed the new one can operate. If Activate + CanOperateOn
-  // fail, un-stamp the new lens and restore the old one instead of leaving
-  // the env lens-less.
+  // fail, restore the old one and its stamps (which undoes the new lens's)
+  // instead of leaving the env lens-less.
   std::unique_ptr<TaskLens> previous = std::move(task_lens_);
   // What the lenses stamp (Activate / Deactivate touch the annotations
   // alone, TaskLens's rule): a refused lens puts back the previous lens's
@@ -3307,6 +3307,7 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
     annotations_ = annotations_before;
     task_lens_ = std::move(previous);
   };
+  bool refused = false;
   try {
     if (previous) {
       previous->Deactivate(*this);
@@ -3316,16 +3317,18 @@ bool BaseEnv::SetTaskLensWithParams(std::unique_ptr<TaskLens> lens,
       // Activate BEFORE CanOperateOn so lenses that materialize their own
       // objective cells (SynchroLens, TagApplyLens) can satisfy the check.
       lens->Activate(*this, params);
-      if (!lens->CanOperateOn(*this)) {
-        lens->Deactivate(*this);
-        restore();
-        return false;
-      }
+      refused = !lens->CanOperateOn(*this);
     }
   } catch (...) {
     // A throwing Deactivate / Activate / CanOperateOn: undone the same way
     restore();
     throw;
+  }
+  // Restored outside the try: restore runs once, a throw from it is not
+  // retried by the catch
+  if (refused) {
+    restore();
+    return false;
   }
   task_lens_ = std::move(lens);
   ResetOutcome();

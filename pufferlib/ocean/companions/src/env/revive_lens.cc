@@ -78,10 +78,10 @@ bool ReviveLens::WentDownSince(ObjectId id, int times_downed) const {
 }
 
 bool ReviveLens::AnyoneWentDownSince(const BaseEnv& env) const {
+  // As WentDownSince: a companion unknown at the activation that has gone
+  // down counts (times_downed > 0 excludes one that never went down)
   for (const Companion* c : env.GetObjectManager().GetAllCompanions()) {
-    for (const DownsAtActivation& d : downs_at_activation_) {
-      if (d.id == c->GetId() && c->GetTimesDowned() > d.times_downed) return true;
-    }
+    if (c->GetTimesDowned() > 0 && WentDownSince(c->GetId(), c->GetTimesDowned())) return true;
   }
   return false;
 }

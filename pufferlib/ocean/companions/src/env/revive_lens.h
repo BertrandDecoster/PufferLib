@@ -79,7 +79,8 @@ class ReviveLens : public TaskLens {
 
   // Whether the companion went down since the activation
   bool WentDownSince(ObjectId id, int times_downed) const;
-  // Whether a companion known at the activation went down since
+  // Whether any companion went down since the activation (WentDownSince; one
+  // unknown then counts once it has gone down)
   bool AnyoneWentDownSince(const BaseEnv& env) const;
   // Each companion's times_downed now
   void RecordDowns(const BaseEnv& env);

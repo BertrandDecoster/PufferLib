@@ -7,6 +7,7 @@
 #include <cassert>
 #include <random>
 #include <stdexcept>
+#include <string>
 
 #include "../core/cell.h"
 #include "synchro_lens.h"
@@ -48,6 +49,7 @@ SynchroEnv::SynchroEnv(const SynchroEnv& other)
       num_companions_(other.num_companions_),
       num_synchro_(other.num_synchro_),
       map_complexity_(other.map_complexity_),
+      start_downed_(other.start_downed_),
       rng_(other.rng_),
       synchro_positions_(other.synchro_positions_) {
   RepointFsmRng(&other.rng_, &rng_);  // A copy draws from its own RNG
@@ -59,11 +61,23 @@ SynchroEnv& SynchroEnv::operator=(const SynchroEnv& other) {
     num_companions_ = other.num_companions_;
     num_synchro_ = other.num_synchro_;
     map_complexity_ = other.map_complexity_;
+    start_downed_ = other.start_downed_;
     rng_ = other.rng_;
     RepointFsmRng(&other.rng_, &rng_);
     synchro_positions_ = other.synchro_positions_;
   }
   return *this;
+}
+
+void SynchroEnv::SetStartDowned(int count) {
+  // Checked now (LevelGenerator checks it too): an accepted value never fails
+  // a later Reset
+  if (count < 0 || count >= num_companions_) {
+    throw std::invalid_argument("start_downed must be >= 0 and < num_companions (" +
+                                std::to_string(num_companions_) + "), got " +
+                                std::to_string(count));
+  }
+  start_downed_ = count;
 }
 
 std::unique_ptr<BaseEnv> SynchroEnv::Clone() const {
@@ -95,6 +109,7 @@ void SynchroEnv::Reset() {
   LevelConfig config = LevelConfig::ForSynchro(
       rows_, cols_, num_companions_, num_synchro_,
       map_complexity_, static_cast<unsigned int>(rng_()), d4_transform_, horizon_);
+  config.start_downed = start_downed_;
 
   // Generate snapshot using LevelGenerator
   Snapshot snapshot = LevelGenerator::Generate(config);

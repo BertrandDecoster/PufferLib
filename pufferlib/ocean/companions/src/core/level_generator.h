@@ -40,6 +40,8 @@ class LevelGenerator {
   void PlaceTargetCell();
   void SpawnCompanions();
   void SpawnEnemies();
+  // Picks config_.start_downed companions to generate down (the last draw)
+  void PickDownedCompanions();
 
   // Helper: find empty floor cells
   std::vector<Position> FindEmptyFloorCells();
@@ -60,6 +62,7 @@ class LevelGenerator {
   std::vector<Position> patrol_path_;
   Position target_position_;
   Position enemy_spawn_position_;
+  std::vector<ObjectId> downed_ids_;  // PickDownedCompanions
 };
 
 }  // namespace companions
