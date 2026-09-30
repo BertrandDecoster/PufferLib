@@ -1,10 +1,12 @@
 // Copyright 2024
 // Test suite for the C API
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -2069,6 +2071,210 @@ TEST(TestARevivedAllyIsDownedAgainOnlyFromTheNextStepThroughTheApi) {
   ASSERT_EQ(CountEvents(result, Companions_Event_AgentRevived), 0);
   ASSERT_TRUE(result.state.agents[1].downed);
   ASSERT_EQ(result.state.downs, 2);
+  companions_destroy(env);
+}
+
+// =============================================================================
+// Interruptions (1.6): EpisodeEnd, the end reason, the down cost
+// =============================================================================
+
+// The host's "kill" on the companion at `index` (it goes down between steps).
+static void KillAt(Companions_Env* env, int32_t index) {
+  const Companions_AgentState a = AgentAt(env, index);
+  ASSERT_TRUE(companions_spawn_effect(env, "kill", a.position.row, a.position.col,
+                                      Companions_Direction_Up, -1));
+}
+
+static bool Near(double a, double b) { return std::fabs(a - b) < 1e-5; }
+
+// SynchroLens's reward per step with nobody on a goal cell: -n * 0.01
+static double IdleReward(int companions) { return -companions * 0.01; }
+
+// A down interrupts the task: EpisodeEnd(Interrupted) on its step. Paused, the
+// steps played on report nothing more, a second down included; the 3rd down
+// upgrades the end to TeamDown, reported once (EpisodeEnd(TeamDown)); then
+// nothing more while stepping on.
+TEST(TestInterruptedThenTeamDownEpisodeEnds) {
+  Companions_Env* env = LoadLevel({{1, 1, ""}, {1, 3, ""}, {1, 5, ""}, {3, 1, ""}});
+  std::vector<Companions_Action> stay(4, {Companions_Movement_Stay, Companions_Interact_None});
+  Companions_StepResult result = {};
+  KillAt(env, 1);
+  companions_step(env, stay.data(), 4, &result);
+  ExpectEnd(env, result, Companions_End_Interrupted);
+  ASSERT_EQ(CountEpisodeEnds(result), 1);
+  ASSERT_TRUE(result.state.done);
+
+  companions_step(env, stay.data(), 4, &result);  // Paused
+  ASSERT_TRUE(result.state.done);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Interrupted);
+
+  KillAt(env, 2);  // A second down while paused: still Interrupted
+  companions_step(env, stay.data(), 4, &result);
+  ASSERT_EQ(result.state.downs, 2);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Interrupted);
+
+  KillAt(env, 3);  // The 3rd down: the level is lost
+  companions_step(env, stay.data(), 4, &result);
+  ASSERT_EQ(result.state.downs, 3);
+  ASSERT_TRUE(result.state.team_down);
+  ExpectEnd(env, result, Companions_End_TeamDown);
+  ASSERT_EQ(CountEpisodeEnds(result), 1);
+  ASSERT_EQ(result.events[result.event_count - 1].type, Companions_Event_EpisodeEnd);
+
+  for (int i = 0; i < 2; ++i) {  // Playing on
+    companions_step(env, stay.data(), 4, &result);
+    ASSERT_TRUE(result.state.done);
+    ASSERT_EQ(CountEpisodeEnds(result), 0);
+    ASSERT_EQ(companions_get_end_reason(env), Companions_End_TeamDown);
+  }
+  companions_destroy(env);
+}
+
+// Interrupted, then a revive: the reason is None (done false) ON the revive's
+// step, which is still paused (rewards 0) and reports no EpisodeEnd; the task
+// resumes from the next step, and a success then ends the episode again
+// (a second EpisodeEnd, Success).
+TEST(TestInterruptedThenARevivedTeamEndsAgainOnSuccess) {
+  // A (6, 4), B (6, 5) next to the goal (6, 6)
+  Companions_Env* env = LoadLevel({{6, 4, ""}, {6, 5, ""}});
+  Companions_Action act[2] = {{Companions_Movement_Stay, Companions_Interact_None},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  KillAt(env, 1);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);  // Caught by the next step
+  companions_step(env, act, 2, &result);
+  ExpectEnd(env, result, Companions_End_Interrupted);
+  ASSERT_TRUE(Near(result.state.rewards[0], IdleReward(2) - 0.5));
+
+  companions_step(env, act, 2, &result);  // Paused
+  ASSERT_TRUE(companions_is_done(env));
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Interrupted);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_EQ(result.state.rewards[0], 0.0f);
+
+  act[0] = {Companions_Movement_Right, Companions_Interact_Skill1};  // A revives B
+  companions_step(env, act, 2, &result);
+  ASSERT_FALSE(result.state.agents[1].downed);
+  ASSERT_FALSE(result.state.done);
+  ASSERT_FALSE(companions_is_done(env));
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_EQ(result.state.rewards[0], 0.0f);  // The revive's step is still paused
+
+  act[0] = {Companions_Movement_Stay, Companions_Interact_None};
+  act[1] = {Companions_Movement_Right, Companions_Interact_None};  // B onto the goal
+  companions_step(env, act, 2, &result);
+  ExpectEnd(env, result, Companions_End_Success);
+  ASSERT_EQ(CountEpisodeEnds(result), 1);
+  ASSERT_TRUE(result.state.rewards[0] > 0.5f);  // The task rewards again (its win)
+  companions_step(env, act, 2, &result);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  companions_destroy(env);
+}
+
+// The horizon reached while paused upgrades Interrupted: EpisodeEnd(Horizon),
+// once.
+TEST(TestInterruptedUpgradesToHorizon) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}, {3, 3, ""}}, "[]", 3);
+  Companions_Action stay[2] = {{Companions_Movement_Stay, Companions_Interact_None},
+                               {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  KillAt(env, 1);
+  companions_step(env, stay, 2, &result);
+  ExpectEnd(env, result, Companions_End_Interrupted);
+  companions_step(env, stay, 2, &result);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Interrupted);
+  companions_step(env, stay, 2, &result);  // Tick 3: the horizon
+  ExpectEnd(env, result, Companions_End_Horizon);
+  ASSERT_EQ(CountEpisodeEnds(result), 1);
+  companions_step(env, stay, 2, &result);
+  ASSERT_TRUE(result.state.done);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Horizon);
+  companions_destroy(env);
+}
+
+// A host down between steps that the very next step revives never shows
+// Interrupted: that step pays the down cost, but nobody is down at its end,
+// so it ends the pause it would have started (done false, None, no
+// EpisodeEnd). The step after rewards as usual.
+TEST(TestAHostDownRevivedByTheNextStepNeverInterrupts) {
+  Companions_Env* env = LoadLevel({{3, 3, ""}, {3, 4, ""}});
+  KillAt(env, 1);
+  ASSERT_FALSE(companions_is_done(env));
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+  Companions_Action act[2] = {{Companions_Movement_Right, Companions_Interact_Skill1},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  companions_step(env, act, 2, &result);
+  ASSERT_NOT_NULL(FindEvent(result, Companions_Event_AgentRevived));
+  ASSERT_FALSE(result.state.done);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_None);
+  ASSERT_EQ(CountEpisodeEnds(result), 0);
+  ASSERT_TRUE(Near(result.state.rewards[0], IdleReward(2) - 0.5));  // The down cost
+
+  act[0] = {Companions_Movement_Stay, Companions_Interact_None};
+  companions_step(env, act, 2, &result);
+  ASSERT_FALSE(result.state.done);
+  ASSERT_TRUE(Near(result.state.rewards[0], IdleReward(2)));
+  companions_destroy(env);
+}
+
+// companions_set_down_cost / _get_down_cost: -0.5 by default; a finite cost
+// <= 0 is paid by the step a down happens; NaN, infinities and a positive cost
+// are refused (the cost unchanged). The cost is runtime, not level data: it
+// survives companions_reset and snapshot loads. Null envs are refused.
+TEST(TestDownCostThroughTheApi) {
+  Companions_Env* env = LoadLevel({{3, 1, ""}, {3, 3, ""}});
+  ASSERT_EQ(companions_get_down_cost(env), -0.5);
+  for (double bad : {std::nan(""), std::numeric_limits<double>::infinity(),
+                     -std::numeric_limits<double>::infinity(), 0.1}) {
+    SetErrorProbe();
+    ASSERT_FALSE(companions_set_down_cost(env, bad));
+    ASSERT_EQ(std::string(companions_get_error()),
+              std::string("companions_set_down_cost: the cost must be finite and <= 0"));
+    ASSERT_EQ(companions_get_down_cost(env), -0.5);
+  }
+  ASSERT_TRUE(companions_set_down_cost(env, 0.0));  // Free downs (they still interrupt)
+  ASSERT_EQ(companions_get_down_cost(env), 0.0);
+  ASSERT_TRUE(companions_set_down_cost(env, -0.2));
+  ASSERT_EQ(companions_get_down_cost(env), -0.2);
+
+  Companions_Action stay[2] = {{Companions_Movement_Stay, Companions_Interact_None},
+                               {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  KillAt(env, 1);
+  companions_step(env, stay, 2, &result);
+  ASSERT_EQ(companions_get_end_reason(env), Companions_End_Interrupted);
+  ASSERT_TRUE(Near(result.state.rewards[0], IdleReward(2) - 0.2));
+  ASSERT_TRUE(Near(result.state.rewards[1], IdleReward(2) - 0.2));
+
+  // Kept by a reset, a JSON load and a binary load, and paid after them
+  ASSERT_TRUE(companions_reset(env, 7));
+  ASSERT_EQ(companions_get_down_cost(env), -0.2);
+  ASSERT_TRUE(companions_load_snapshot_json(env, LevelJson({{3, 1, ""}, {3, 3, ""}}).c_str()));
+  ASSERT_EQ(companions_get_down_cost(env), -0.2);
+  const int32_t size = companions_get_snapshot_size(env);
+  ASSERT_TRUE(size > 0);
+  std::vector<uint8_t> bytes(static_cast<size_t>(size));
+  ASSERT_TRUE(companions_save_snapshot(env, bytes.data(), size));
+  ASSERT_TRUE(companions_set_down_cost(env, -0.3));
+  ASSERT_TRUE(companions_load_snapshot(env, bytes.data(), size));
+  ASSERT_EQ(companions_get_down_cost(env), -0.3);  // Not in the snapshot
+  KillAt(env, 1);
+  companions_step(env, stay, 2, &result);
+  ASSERT_TRUE(Near(result.state.rewards[0], IdleReward(2) - 0.3));
+
+  // Null envs
+  SetErrorProbe();
+  ASSERT_FALSE(companions_set_down_cost(nullptr, -0.1));
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid arguments"));
+  SetErrorProbe();
+  ASSERT_EQ(companions_get_down_cost(nullptr), 0.0);
+  ASSERT_EQ(std::string(companions_get_error()), std::string("Invalid environment"));
   companions_destroy(env);
 }
 

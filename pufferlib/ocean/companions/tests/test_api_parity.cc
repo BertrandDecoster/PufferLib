@@ -460,6 +460,7 @@ TEST(ParityTest_ConfigQueries) {
   ASSERT_EQ(companions_get_tick(api_env), cpp_env.GetTick());
   ASSERT_EQ(companions_is_done(api_env), false);
   ASSERT_EQ(companions_is_success(api_env), cpp_env.IsSuccess());
+  ASSERT_EQ(companions_get_down_cost(api_env), cpp_env.GetDownCost());  // 1.6
 
   // Step a few times and verify tick advances identically
   std::vector<Companions_Action> api_actions(agents, {Companions_Movement_Stay, Companions_Interact_None});
@@ -798,6 +799,9 @@ TEST(ParityTest_SkillsTagsZones) {
   Companions_Env* api_env = companions_create(&config);
   ASSERT_NOT_NULL(api_env);
   ASSERT_TRUE(companions_load_snapshot(api_env, bytes.data(), static_cast<int32_t>(bytes.size())));
+  // A custom down cost (1.6), paid alike on both sides (the rewards below)
+  ASSERT_TRUE(cpp_env.SetDownCost(-0.25));
+  ASSERT_TRUE(companions_set_down_cost(api_env, -0.25));
 
   auto tag_name = [&](int32_t id) {
     const char* name = companions_get_tag_name(api_env, id);
@@ -852,6 +856,9 @@ TEST(ParityTest_SkillsTagsZones) {
     ASSERT_EQ(r.state.team_down, cpp_env.IsTeamDown());
     ASSERT_EQ(static_cast<int>(companions_get_end_reason(api_env)),
               static_cast<int>(cpp_env.GetEndReason()));
+    for (int a = 0; a < agents; ++a) {
+      ASSERT_EQ(r.state.rewards[a], static_cast<float>(cpp_result.rewards[a]));
+    }
 
     cpp_agents = cpp_env.GetObjectManager().GetAllAgents();
     ASSERT_EQ(r.state.agent_count, static_cast<int>(cpp_agents.size()));

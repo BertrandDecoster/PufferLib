@@ -101,7 +101,9 @@
 // odd_motion_count): consumers must rebuild against this header (signatures
 // unchanged). 1.6.0 was amended in place before its release: DLLs built from
 // earlier 1.6.0 commits of this branch are NOT compatible with this header
-// (the struct size and the exports changed). Rebuild both sides.
+// (the struct size and the exports changed; the last amendment added
+// companions_set_down_cost / companions_get_down_cost and the EpisodeEnd
+// reported on an upgrade out of Interrupted). Rebuild both sides.
 // 1.6 behaviour: only a team down
 // or the horizon fails a task, so a bad situation stays salvageable. Done is
 // the same for every env and lens: the success, the team down
@@ -116,12 +118,22 @@
 // A down interrupts the task: the step the team's downs grow (a down the host
 // caused between steps included, caught by the next step), the episode is
 // done as Companions_End_Interrupted (new), and that step adds the down cost
-// (-0.5 per new down) to every agent's reward. While anyone is down the task
-// is paused (rewards 0, no success); once nobody is down (a revive) it
-// resumes from the next step, done false again. Interrupted is provisional:
-// the team down or the horizon replace it (priority: Success > TeamDown >
-// Horizon > Interrupted), ending the pause; a down on a step that ends the
-// episode (a success, the horizon, the team down) pauses nothing.
+// to every agent's reward, once per new down (-0.5 by default:
+// companions_set_down_cost). While anyone is down the task is paused
+// (rewards 0, no success, further downs cost nothing). The pause clears on
+// the step that revives the last downed companion: that step already reads
+// done false and Companions_End_None (no EpisodeEnd), but is still paused
+// (rewards 0); the task rewards and decides again from the next step.
+// Interrupted is a done that can end later: a host that plays on keeps
+// stepping; the episode ends for real on Success / TeamDown / Horizon. It is
+// provisional: the team down or the horizon replace it (priority: Success >
+// TeamDown > Horizon > Interrupted), ending the pause, and that upgrade
+// reports its own EpisodeEnd. A down interrupts only while the episode goes
+// on: a down on a step that ends it (a success, the horizon, the team down)
+// pauses nothing, nor does one after it ended. A down the host causes
+// between steps that the very next step revives never shows Interrupted:
+// that step pays the down cost, but nobody is down at its end (done false,
+// None).
 // 1.6 behaviour: a step is one PHASED turn (see "The Turn" below): every
 // intent reads the world as the turn begins (simultaneous casters: the agent
 // order changes no outcome, only the report order), one motion phase in
@@ -300,15 +312,21 @@
 // - Companions_Event_EpisodeEnd: Episode completed (success or failure),
 //   reported once per false->true transition of done, on the step where it
 //   happens: the steps a host keeps playing afterwards (done stays true) do
-//   not repeat it; reset and snapshot loads start a new episode.
+//   not repeat it; reset, snapshot loads and lens changes start a new
+//   episode. Since 1.6, also once when a final reason (TeamDown, Horizon)
+//   upgrades an Interrupted episode while done stays true; and an
+//   interrupted episode that a revive made not done again (done false)
+//   reports its next end anew (e.g. EpisodeEnd(Interrupted), a revive, then
+//   EpisodeEnd(Success)).
 //   effect_id = the Companions_EndReason (see companions_get_end_reason).
 // A step reports at most Companions_MAX_EVENTS events, in the order above
 // (the report queries are never cut: they are the whole truth).
 // When there are more, the ones past the cap are dropped, except EpisodeEnd:
-// a step that ends the episode always reports it, as the last event (the
-// others are then cut to Companions_MAX_EVENTS - 1). events_dropped counts
-// the events not reported. The state itself (agents' tags, skills,
-// statuses, downed, health, downs) is always complete.
+// a step that ends the episode (or upgrades its Interrupted end) always
+// reports it, as the last event (the others are then cut to
+// Companions_MAX_EVENTS - 1). events_dropped counts the events not
+// reported. The state itself (agents' tags, skills, statuses, downed,
+// health, downs) is always complete.
 // The state-change events (moved / blocked, health changed, downed,
 // revived, defeated) come first, so skill, tag and reaction events are
 // dropped before them. Downs, deaths and revives happen at the end of the
@@ -629,7 +647,12 @@ typedef enum {
   Companions_End_Horizon = 2,     // The horizon was reached
   Companions_End_TaskFailed = 3,  // No longer produced since 1.6 (only a team down or the horizon fails a task); reserved
   Companions_End_TeamDown = 4,    // The team is down: max_downs reached or every companion down (the level is lost). Since 1.3
-  Companions_End_Interrupted = 5, // A companion went down: the task is paused until nobody is down (provisional). Since 1.6
+  // A companion went down: the task is paused until nobody is down. Since 1.6.
+  // Interrupted is a done that can end later: a host that plays on keeps
+  // stepping; the episode ends for real on Success / TeamDown / Horizon (an
+  // upgrade reports its own EpisodeEnd), or is not done again (None) from the
+  // step that revives the last downed companion.
+  Companions_End_Interrupted = 5,
 } Companions_EndReason;
 
 // Transition event (delta information for animations)
@@ -1555,10 +1578,25 @@ COMPANIONS_API bool companions_is_success(const Companions_Env* env);
 // the level is lost. Since 1.6, done is only the success, the team down, the
 // horizon or a down interrupting the task (Companions_End_TaskFailed is never
 // returned). Companions_End_Interrupted is provisional: it becomes TeamDown
-// or Horizon when one of those comes, and None again (done false) once the
-// pause clears (nobody down, from the step after the revive). Only a
-// final reason (Success, TeamDown, Horizon) is kept while a host plays on.
+// or Horizon when one of those comes (a new EpisodeEnd), and None again (done
+// false) once the pause clears: already ON the step that revives the last
+// downed companion (that step is still paused, rewards 0; the task rewards
+// and decides again from the next step). Only a final reason (Success,
+// TeamDown, Horizon) is kept while a host plays on. Between steps it keeps
+// what the last step (or reset, load, lens change) set: a down the host
+// causes then is caught by the next step.
 COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_Env* env);
+
+// The down cost (since 1.6): added to every agent's reward, once per new
+// down, on the step the team's downs grow (see "Versioning", 1.6). Default
+// -0.5. A runtime setting of this env, not level data: snapshots do not carry
+// it; it survives companions_reset and snapshot loads, and an env's copy (the
+// outcome preview's clone) keeps it. companions_set_down_cost refuses a
+// non-finite or positive cost (false, the error set, the cost unchanged); 0
+// makes downs free (they still interrupt). companions_get_down_cost returns 0
+// for a null env (the error set: "Invalid environment").
+COMPANIONS_API bool companions_set_down_cost(Companions_Env* env, double cost);
+COMPANIONS_API double companions_get_down_cost(const Companions_Env* env);
 
 // =============================================================================
 // Semantic Annotations (task-specific tags on cells and agents)

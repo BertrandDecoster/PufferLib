@@ -83,7 +83,7 @@ Events returned by `companions_step()` for animation:
 | `Companions_Event_SkillUsed` | A companion used a skill slot (caster, centre, slot, skill) |
 | `Companions_Event_TagApplied` | A tag landed on an agent (a skill's, a zone's or a reaction's result; 1.5: `tag_kind`, `tag_reaction`, `health_amount` = zone damage) |
 | `Companions_Event_ReactionFired` | 1.5: a reaction fired (trigger, rule, result, the triggering landing's source / kind) |
-| `Companions_Event_EpisodeEnd` | Episode ended (`effect_id` = the end reason) |
+| `Companions_Event_EpisodeEnd` | Episode ended (`effect_id` = the end reason): each time done becomes true, and (1.6) once more when TeamDown / Horizon upgrades an Interrupted end |
 
 Order in a step: moved / blocked, health changed, downed, revived, defeated, skill used,
 tag applied, reaction fired, episode end (grouped by kind, not in time order; the state
@@ -131,6 +131,16 @@ activation); `Companions_SkillOutcome` gained `turn_health_count` / `odd_motion_
 applies an effect without a wind-up at once; the env's own spawns during a step wait
 for the next turn (`in_telegraph`, `ticks_remaining` 1). The header's "The Turn"
 section is the reference.
+
+## Interruptions (1.6)
+
+A down interrupts the task: done as `Companions_End_Interrupted`, a done that can end
+later (a host that plays on keeps stepping; the episode ends for real on Success /
+TeamDown / Horizon, each reported by its own EpisodeEnd). The step that revives the last
+downed companion already reads done false and `Companions_End_None`; the task rewards
+again from the next step. The down cost (default -0.5, runtime, not in snapshots):
+`companions_set_down_cost` (finite, <= 0) / `companions_get_down_cost`. The header's
+"Versioning" (1.6) and `companions_get_end_reason` comments are the reference.
 
 ## Thread Safety
 

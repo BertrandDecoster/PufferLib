@@ -105,11 +105,14 @@ class BaseEnv {
   // that step pays every agent the lens's reward plus the down cost once per
   // new down. From the next step the lens is paused while anyone is down: no
   // reward (0), no verdict (no success latched); downs meanwhile pay nothing,
-  // then or later. The pause clears once nobody is down (the step that
-  // revives the last one is still paused: the lens rewards and decides again
-  // from the next step), and on any lens change, Reset or LoadSnapshot (a
-  // state loaded with someone down loads not interrupted: its downs are not
-  // new). Only while the episode goes on: a down on a step that ends it
+  // then or later. The pause clears once nobody is down: the step that
+  // revives the last one already reads done false and EndReason::None, but
+  // is still paused (rewards 0); the lens rewards and decides again from the
+  // next step. So a down the host causes between steps that the very next
+  // step revives never shows Interrupted (that step pays the down cost and
+  // ends nobody down). The pause also clears on any lens change, Reset or
+  // LoadSnapshot (a state loaded with someone down loads not interrupted: its
+  // downs are not new). Only while the episode goes on: a down on a step that ends it
   // (a success, the horizon, the team down) pauses nothing, nor does one
   // after it ended; and a final verdict reached while paused (the team down,
   // the horizon) clears the pause (the steps played on after it pay again).

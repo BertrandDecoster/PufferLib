@@ -813,7 +813,10 @@ every `Reset`; an outcome preview's world holds its turn's, see Previews):
   `odd_motion_count` (a layout change: consumers rebuild, a DLL from an earlier 1.6.0
   commit is not compatible). `companions_spawn_effect` (between steps) applies a
   no-wind-up effect at once (Immediate); the env's own no-wind-up spawns during a step
-  wait for the next turn (NextTurn: `in_telegraph`, `ticks_remaining` 1)
+  wait for the next turn (NextTurn: `in_telegraph`, `ticks_remaining` 1). Amended again
+  (interruptions, additive): `companions_set_down_cost` / `companions_get_down_cost`,
+  and EpisodeEnd is also reported when TeamDown or Horizon upgrades an Interrupted end
+  (see "Why an episode ended")
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules
 through snapshot JSON v7 (`core/snapshot_json.cc`; versions 2..7 load, binary snapshots
@@ -1087,8 +1090,14 @@ produced since 1.6), TeamDown 4, Interrupted 5 (since 1.6)) from `companions_get
 lens change where done becomes true, kept while a host plays on; reset and snapshot
 loads take the env's (done / success / reason: a snapshot loaded at the horizon is done
 at once, as `Horizon`, and the next step reports EpisodeEnd); the EpisodeEnd event
-carries it in `effect_id`. A derived `Reset` / `LoadSnapshot` that changes state after
-`BaseEnv::LoadSnapshot` latched calls `RelatchEndReasonAfterLoad` (AggroEnv's `Reset`
+carries it in `effect_id`. EpisodeEnd is reported each time the episode becomes done
+(the wrapper's `last_step_done`), and once more when TeamDown or Horizon upgrades an
+Interrupted end while done stays true (`StepAndReport`); an interrupted episode a
+revive made not done again reports its next end anew (Interrupted, a revive, then
+Success: two EpisodeEnds). Interrupted is a done that can end later: a host that
+plays on keeps stepping; the episode ends for real on Success / TeamDown / Horizon.
+A derived `Reset` / `LoadSnapshot` that changes state after `BaseEnv::LoadSnapshot`
+latched calls `RelatchEndReasonAfterLoad` (AggroEnv's `Reset`
 spawns its enemy and companions then; it also takes the loaded downs as seen)
 
 **Interruptions** (a down interrupts the task; `EndReason::Interrupted` 5, C API
@@ -1099,10 +1108,13 @@ next step). The step they grow, the running lens's task is interrupted (`interru
 reward plus the down cost once per new down (`down_cost_ * new_downs`). From the next
 step the lens is paused while anyone is down (`AnyCompanionDowned()`): rewards 0, no
 success latched; downs meanwhile pay nothing, then or later (`downs_seen_` counts them).
-The pause clears once nobody is down (a revive; the step that revives the last one is
-still paused: the lens rewards and decides again from the next step, done false and
-the reason `None` again), and on any lens change, `Reset` or `LoadSnapshot`
-(`ResetOutcome` clears it and takes the current downs as seen: a snapshot loaded with
+The pause clears once nobody is down: the step that revives the last one already reads
+done false and the reason `None` (`Step` clears `interrupted_` before its verdict), but
+it is still paused (`paused` was read as it began: rewards 0, no success); the lens
+rewards and decides again from the next step. A down the host causes between steps
+that the very next step revives never shows `Interrupted`: that step pays the down
+cost, then finds nobody down (done false, `None`). The pause also clears on any lens
+change, `Reset` or `LoadSnapshot` (`ResetOutcome` clears it and takes the current downs as seen: a snapshot loaded with
 someone down loads not interrupted). Priority Success > TeamDown > Horizon >
 Interrupted: `Interrupted` is the only provisional reason (`LatchEndReason` upgrades
 it, `GetEndReason` computes it live): a team down while paused is `TeamDown`, a pause
@@ -1121,7 +1133,8 @@ seen. A step paused as it starts pays nothing, even if its start latch ends the 
 its downs pay the cost, nothing pauses. Without a lens the rewards are all 0 (no cost,
 no pause). **Down cost**: `kDefaultDownCost` = -0.5, `SetDownCost(c)` (false for a
 non-finite or positive `c`, the cost unchanged; 0 allowed) / `GetDownCost()`; runtime,
-not in snapshots, copied with the env, kept across `Reset` / `LoadSnapshot`. The envs'
+not in snapshots, copied with the env, kept across `Reset` / `LoadSnapshot`; C API
+`companions_set_down_cost` / `companions_get_down_cost` (1.6). The envs'
 `MinUtility` adds `WorstDownCost()` (a loose bound: every down paid up to the team
 down, max_downs - 1 downs, then every companion at once)
 

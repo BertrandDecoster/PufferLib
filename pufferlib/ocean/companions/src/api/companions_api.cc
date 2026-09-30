@@ -82,6 +82,10 @@
 // _get_odd_motion / _get_odd_motion_total); Companions_SkillOutcome gained
 // turn_health_count and odd_motion_count (a layout change: consumers must
 // rebuild).
+// Amended again (interruptions): companions_set_down_cost /
+// companions_get_down_cost (additive; the cost is runtime, not in
+// snapshots); EpisodeEnd is also reported when TeamDown or Horizon upgrades
+// an Interrupted end while done stays true.
 #define COMPANIONS_VERSION "1.6.0"
 
 // =============================================================================
@@ -107,13 +111,15 @@ struct Companions_Env {
   Companions_EnvConfig config;
   bool done = false;
   bool success = false;
-  // The done of the last step: EpisodeEnd is reported only on the step where
-  // done becomes true, not on the steps a host keeps playing afterwards.
+  // The done of the last step: EpisodeEnd is reported on the step where
+  // done becomes true (and on an upgrade out of Interrupted, see
+  // StepAndReport), not on the steps a host keeps playing afterwards.
   // Cleared by reset, snapshot loads and lens changes (a new episode).
   bool last_step_done = false;
   // Why the episode ended: set when done becomes true (a step or a lens
-  // change), kept while a host plays on; reset and snapshot loads take the
-  // env's (a snapshot loaded at the horizon is done, as Horizon).
+  // change), kept while a host plays on (but Interrupted: provisional, each
+  // step reads it again); reset and snapshot loads take the env's (a
+  // snapshot loaded at the horizon is done, as Horizon).
   Companions_EndReason end_reason = Companions_End_None;
   std::vector<double> last_rewards;
 
@@ -1072,16 +1078,24 @@ static bool StepAndReport(Companions_Env* env, const std::vector<companions::Act
   env->events.clear();
   env->preview.reset();
 
+  // The reason before the step: an Interrupted one can be upgraded by it
+  const Companions_EndReason before = env->end_reason;
   companions::StepResult result = env->env->Step(cpp_actions);
 
   // Update wrapper state
-  const bool episode_ended = result.done && !env->last_step_done;
-  env->last_step_done = result.done;
   env->done = result.done;
   env->success = env->env->IsSuccess();
   // BaseEnv::Step latches the reason when done becomes true, so playing on
-  // keeps it
+  // keeps it (Interrupted excepted: provisional, upgraded by a final reason,
+  // None once the pause clears)
   env->end_reason = CurrentEndReason(*env);
+  // EpisodeEnd each time the episode becomes done, and once more when a
+  // final reason (TeamDown, Horizon) upgrades an Interrupted one while done
+  // stays true. After a revive (done false again), a later end reports anew.
+  const bool upgraded = env->last_step_done && before == Companions_End_Interrupted &&
+                        env->end_reason != Companions_End_Interrupted;
+  const bool episode_ended = result.done && (!env->last_step_done || upgraded);
+  env->last_step_done = result.done;
   env->last_rewards = result.rewards;
 
   // Generate the events. The state changes (movements, health changes,
@@ -2240,6 +2254,34 @@ COMPANIONS_API Companions_EndReason companions_get_end_reason(const Companions_E
 
 COMPANIONS_API bool companions_is_success(const Companions_Env* env) {
   return env ? env->success : false;
+}
+
+COMPANIONS_API bool companions_set_down_cost(Companions_Env* env, double cost) {
+  if (!env || !env->env) {
+    SetError("Invalid arguments");
+    return false;
+  }
+  try {
+    if (!env->env->SetDownCost(cost)) {
+      SetError("companions_set_down_cost: the cost must be finite and <= 0");
+      return false;
+    }
+    return true;
+  } catch (const std::exception& e) {
+    SetError(e.what());
+    return false;
+  } catch (...) {
+    SetError("Unknown error");
+    return false;
+  }
+}
+
+COMPANIONS_API double companions_get_down_cost(const Companions_Env* env) {
+  if (!env || !env->env) {
+    SetError("Invalid environment");
+    return 0.0;
+  }
+  return env->env->GetDownCost();
 }
 
 COMPANIONS_API int32_t companions_render_ascii(
