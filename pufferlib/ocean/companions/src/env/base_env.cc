@@ -2442,6 +2442,7 @@ void BaseEnv::UseSkill(SkillPlan& plan) {
     }
     HurtInStep(*agents[i], skill.damage);
     plan.did[i].effects |= kSkillEffectDamage;
+    plan.did[i].damage = skill.damage;  // Its raw share (AffectedAgent::damage)
   }
 
   // 4. Revive: its planned revives (allies down as the turn began) get up
@@ -2682,6 +2683,7 @@ void BaseEnv::ResolveSkillTargets(const Companion& caster, const SkillConfig& sk
     const bool self = a == &caster;
     const bool area = i < on_area;
     unsigned e = 0;
+    int damage = 0;  // Its raw share (AffectedAgent::damage)
     // Tags: at least one of them lands (an agent immune to all gets none)
     const bool lands_a_tag =
         std::any_of(skill.tags.begin(), skill.tags.end(), [&](const SkillTagSpec& tag) {
@@ -2690,7 +2692,10 @@ void BaseEnv::ResolveSkillTargets(const Companion& caster, const SkillConfig& sk
           return id == kInvalidTag || !a->IsImmuneTo(id);
         });
     if (lands_a_tag && (!self || skill.self_tags)) e |= kSkillEffectTags;
-    if (skill.damage > 0 && (!self || skill.self_damage)) e |= kSkillEffectDamage;
+    if (skill.damage > 0 && (!self || skill.self_damage)) {
+      e |= kSkillEffectDamage;
+      damage = skill.damage;
+    }
     // Only a downed companion gets up (an affects_downed skill reaches the downed only)
     if (skill.revive_percent > 0 && a->IsDowned() && dynamic_cast<const Companion*>(a)) {
       e |= kSkillEffectRevive;
@@ -2708,6 +2713,7 @@ void BaseEnv::ResolveSkillTargets(const Companion& caster, const SkillConfig& sk
       if (pushed || pulled) e |= kSkillEffectMotion;
     }
     plan.predicted[i].effects = e;
+    plan.predicted[i].damage = damage;
   }
 
   // 4. The forced moves as the turn begins (the motion phase finds them

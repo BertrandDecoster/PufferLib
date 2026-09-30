@@ -258,6 +258,7 @@ TEST(TestTheTurnsDamageIsTotalledThenApplied) {
   ASSERT_EQ(env.GetLastReactions().at(0).affected.at(0).damage, 1);
   ASSERT_EQ(env.GetLastSkillUses().at(0).affected.at(0).effects,
             static_cast<unsigned>(BaseEnv::kSkillEffectDamage));
+  ASSERT_EQ(env.GetLastSkillUses().at(0).affected.at(0).damage, 1);
 }
 
 // Two 1-damage hits on a Marked agent: 2 x 1.5 = 3 (per hit it was 1 + 1)
@@ -513,6 +514,215 @@ TEST(TestADefeatedAgentIsStillPushedThisTurn) {
                   {imp->GetId(), BaseEnv::kSkillEffectTags | BaseEnv::kSkillEffectMotion}}));
   ASSERT_FALSE(imp->IsAlive());  // At the end
   ASSERT_TRUE(TurnOf(env, imp).outcome == TurnOutcome::Defeated);
+}
+
+// =============================================================================
+// A skill use's damage per affected agent (AffectedAgent::damage)
+// =============================================================================
+
+// The use of `caster` in the last step's reports, or throws
+static const BaseEnv::SkillUse& UseOf(const BaseEnv& env, const Agent* caster) {
+  for (const BaseEnv::SkillUse& u : env.GetLastSkillUses()) {
+    if (u.caster == caster->GetId()) return u;
+  }
+  throw std::runtime_error("no skill use of agent " + std::to_string(caster->GetId()));
+}
+// Its entry for `agent`, or throws
+static BaseEnv::AffectedAgent EntryOf(const BaseEnv::SkillUse& use, const Agent* agent) {
+  for (const BaseEnv::AffectedAgent& a : use.affected) {
+    if (a.id == agent->GetId()) return a;
+  }
+  throw std::runtime_error("agent " + std::to_string(agent->GetId()) + " not affected");
+}
+
+// Each use reports the raw share it put into each agent's ledger (its
+// skill's damage per hit, before Marked), 0 where it deals none. The gob, hit
+// by two uses: each reports its own, the turn totals them (Marked adds its
+// bonus to the total, not to the reports). Friendly fire: the ally's share.
+// The caster spared (self_damage off): affected, 0. A tags-only use: 0.
+TEST(TestASkillUseReportsTheDamageItDealtEachAgent) {
+  SynchroEnv env(10, 10, 3, 1, 0, 42);
+  MakeArena(env);
+  SkillConfig nova;  // A cross around its caster
+  nova.name = "nova";
+  nova.targeting = SkillTargeting::Self;
+  nova.area = SkillArea::Cross;
+  nova.tags = {{"lit", kPermanentTag}};
+  nova.damage = 2;
+  nova.self_tags = false;
+  nova.self_damage = false;
+  env.GetMutableSkillBook().Define(nova);
+  Agent* a = Place(env, 0, {4, 4});
+  Agent* b = Place(env, 1, {4, 8});
+  Agent* c = Place(env, 2, {3, 4});        // A's up ring cell
+  Agent* gob = AddEnemy(env, {4, 5}, 10);  // A's right ring cell, B's bolt's first agent
+  gob->ApplyStatus(StatusType::Marked, 5);
+  Require(env.SetCompanionSkill(a->GetId(), 0, "nova"), "nova");
+  GiveBolt(env, 1, "jab", nullptr, 3);
+  GiveBolt(env, 2, "splash", "wet", 0);  // Down from (3,4): A
+  std::vector<Action> actions = Stays(env);
+  actions[0] = Use(MovementAction::Stay);
+  actions[1] = Use(MovementAction::Left);
+  actions[2] = Use(MovementAction::Down);
+  env.Step(actions);
+  ASSERT_EQ(env.GetLastSkillUses().size(), static_cast<size_t>(3));
+
+  const BaseEnv::SkillUse& by_a = UseOf(env, a);
+  ASSERT_EQ(EntryOf(by_a, a).damage, 0);  // Spared: affected, nothing applies
+  ASSERT_EQ(EntryOf(by_a, a).effects, 0u);
+  ASSERT_EQ(EntryOf(by_a, c).damage, 2);  // Friendly fire
+  ASSERT_EQ(EntryOf(by_a, gob).damage, 2);
+  const BaseEnv::SkillUse& by_b = UseOf(env, b);
+  ASSERT_EQ(by_b.affected.size(), static_cast<size_t>(1));
+  ASSERT_EQ(EntryOf(by_b, gob).damage, 3);
+  ASSERT_EQ(EntryOf(by_b, gob).effects, static_cast<unsigned>(BaseEnv::kSkillEffectDamage));
+  const BaseEnv::SkillUse& by_c = UseOf(env, c);
+  ASSERT_EQ(EntryOf(by_c, a).damage, 0);  // Tags only
+  ASSERT_EQ(EntryOf(by_c, a).effects, static_cast<unsigned>(BaseEnv::kSkillEffectTags));
+
+  ASSERT_EQ(TurnOf(env, gob).damage, 5);  // 2 + 3, raw
+  ASSERT_TRUE(TurnOf(env, gob).marked_bonus > 0);
+  ASSERT_EQ(TurnOf(env, gob).change, -(5 + TurnOf(env, gob).marked_bonus));
+  ASSERT_EQ(TurnOf(env, c).damage, 2);
+}
+
+// The damage the step's reports explain, per agent: each skill use's share,
+// each tag landing's zone damage, each reaction's
+static std::map<ObjectId, int> ExplainedDamage(const BaseEnv& env) {
+  std::map<ObjectId, int> explained;
+  for (const auto& u : env.GetLastSkillUses()) {
+    for (const auto& a : u.affected) {
+      ASSERT_TRUE(a.damage >= 0);
+      ASSERT_EQ(a.damage > 0, (a.effects & BaseEnv::kSkillEffectDamage) != 0);
+      explained[a.id] += a.damage;
+    }
+  }
+  for (const auto& t : env.GetLastTagsApplied()) explained[t.agent] += t.damage;
+  for (const auto& r : env.GetLastReactions()) {
+    for (const auto& o : r.affected) explained[o.agent] += o.damage;
+  }
+  return explained;
+}
+
+// Nothing strikes (plain enemies walking, no effect): every agent's turn
+// damage is exactly what the reports explain, over random casts by three
+// companions (friendly fire, self damage, several uses on one agent, pushes
+// and pulls onto hurting zones, reactions with damage, Marked, downs and
+// revives). And a use previewed alone (everyone else stays) reports the
+// damage the step then reports.
+TEST(TestSkillZoneAndReactionDamageAddUpToTheTurnHealth) {
+  int from_uses = 0, from_zones = 0, from_reactions = 0, multi_hit = 0, previews = 0;
+  for (unsigned seed = 0; seed < 40; ++seed) {
+    SynchroEnv env(10, 10, 3, 1, 0, seed);
+    MakeArena(env);
+    SkillConfig nova;
+    nova.name = "nova";
+    nova.targeting = SkillTargeting::Self;
+    nova.area = SkillArea::Cross;
+    nova.tags = {{"lit", 2}};
+    nova.damage = 1;  // Friendly fire and self damage: on by default
+    env.GetMutableSkillBook().Define(nova);
+    SkillConfig blast = *env.GetSkillBook().Find("fireball");  // Cross, push out
+    blast.name = "blast";
+    blast.damage = 2;
+    env.GetMutableSkillBook().Define(blast);
+    SkillConfig drag = *env.GetSkillBook().Find("vortex");  // Cross, pull in, root
+    drag.name = "drag";
+    drag.damage = 1;
+    env.GetMutableSkillBook().Define(drag);
+    GiveBolt(env, 0, "jab", "wet", 2);
+    const char* skills[] = {"nova", "blast", "drag", "jab"};
+    uint32_t rng = seed * 2654435761u + 7;
+    auto next = [&rng](uint32_t n) {
+      rng = rng * 1664525u + 1013904223u;
+      return (rng >> 8) % n;
+    };
+    for (int i = 0; i < 3; ++i) {
+      Agent* comp = Place(env, i, {1 + static_cast<int>(next(8)), 1 + 3 * i});
+      comp->SetMaxHealth(8);
+      Require(env.SetCompanionSkill(comp->GetId(), 0, skills[next(4)]), "skill");
+    }
+    AddEnemy(env, {5, 6}, 30);
+    AddEnemy(env, {6, 3}, 30);
+    Require(env.DefineZone("oil", Hurting(1)), "oil");
+    Require(env.DefineZone("acid", Hurting(2)), "acid");
+    Require(env.SetReactions({Rule("wet", "lit", "steam", 1, true),
+                              Rule("oil", "burning", "ash", 2)}),
+            "reactions");
+    Require(env.SetTagStatuses({TagStatusRule{"steam", StatusType::Marked, 2}}), "statuses");
+    for (int k = 0; k < 6; ++k) {
+      const Position cell{1 + static_cast<int>(next(8)), 1 + static_cast<int>(next(8))};
+      Require(env.SetCellTag(cell, k % 3 == 0 ? "acid" : "oil"), "zone");
+    }
+    for (int step = 0; step < 40 && !env.IsTeamDown(); ++step) {
+      std::vector<Action> actions = Stays(env);
+      // Every 5th step one companion casts alone (everyone else stays)
+      const bool alone = step % 5 == 4;
+      const size_t caster = next(3);
+      MovementAction aim = MovementAction::Up;
+      for (size_t i = 0; i < actions.size(); ++i) {
+        const auto move = static_cast<MovementAction>(next(5));
+        if (alone) {
+          if (i == caster && move != MovementAction::Stay) aim = move;
+          continue;
+        }
+        actions[i] = i < 3 && next(2) ? Use(move) : EncodeAction(move);
+      }
+      std::vector<BaseEnv::SkillUse> previewed;
+      if (alone) {
+        actions[caster] = Use(aim);
+        const BaseEnv::SkillOutcome outcome = env.PreviewSkillOutcome(
+            AgentAt(env, static_cast<int>(caster))->GetId(), 0, *MovementToDirection(aim));
+        if (outcome.usable) previewed = outcome.world->GetLastSkillUses();
+      }
+      env.Step(actions);
+      if (!previewed.empty()) {
+        ++previews;
+        const auto& uses = env.GetLastSkillUses();
+        ASSERT_EQ(uses.size(), previewed.size());
+        for (size_t u = 0; u < uses.size(); ++u) {
+          ASSERT_TRUE(uses[u].affected == previewed[u].affected);
+        }
+      }
+      const std::map<ObjectId, int> explained = ExplainedDamage(env);
+      for (const BaseEnv::TurnHealth& t : env.GetLastTurnHealth()) {
+        const auto it = explained.find(t.agent);
+        const int want = it == explained.end() ? 0 : it->second;
+        if (t.damage != want) {
+          throw std::runtime_error("seed " + std::to_string(seed) + " step " +
+                                   std::to_string(step) + " agent " + std::to_string(t.agent) +
+                                   ": turn damage " + std::to_string(t.damage) + ", reports " +
+                                   std::to_string(want));
+        }
+      }
+      for (const auto& e : explained) {  // Nothing explained without a turn entry
+        if (e.second == 0) continue;
+        bool found = false;
+        for (const auto& t : env.GetLastTurnHealth()) found |= t.agent == e.first;
+        ASSERT_TRUE(found);
+      }
+      std::map<ObjectId, int> uses_on;
+      for (const auto& u : env.GetLastSkillUses()) {
+        for (const auto& a : u.affected) {
+          from_uses += a.damage;
+          if (a.damage > 0 && ++uses_on[a.id] == 2) ++multi_hit;
+        }
+      }
+      for (const auto& t : env.GetLastTagsApplied()) from_zones += t.damage;
+      for (const auto& r : env.GetLastReactions()) {
+        for (const auto& o : r.affected) from_reactions += o.damage;
+      }
+    }
+  }
+  std::cout << "  (damage from uses " << from_uses << ", zones " << from_zones
+            << ", reactions " << from_reactions << "; " << multi_hit
+            << " agents hit by two uses in a turn; " << previews << " previews)\n";
+  // The run exercised every source
+  ASSERT_TRUE(from_uses > 0);
+  ASSERT_TRUE(from_zones > 0);
+  ASSERT_TRUE(from_reactions > 0);
+  ASSERT_TRUE(multi_hit > 0);
+  ASSERT_TRUE(previews > 0);
 }
 
 // =============================================================================
@@ -775,7 +985,8 @@ static std::string RoleTrace(const BaseEnv& env, const std::map<ObjectId, std::s
         << "," << u.target.col << ":";
     std::vector<std::string> affected;
     for (const auto& a : u.affected) {
-      affected.push_back(role(a.id) + "/" + std::to_string(a.effects));
+      affected.push_back(role(a.id) + "/" + std::to_string(a.effects) + "/" +
+                         std::to_string(a.damage));
     }
     std::sort(affected.begin(), affected.end());
     for (const std::string& a : affected) out << " " << a;

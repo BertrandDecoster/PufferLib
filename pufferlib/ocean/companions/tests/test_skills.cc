@@ -2235,7 +2235,7 @@ TEST(TestPreviewAttackSparesAnAllyStrikesAnEnemy) {
   const int health = enemy->GetHealth();
   p = PreviewThenStep(env, Direction::Down, 3);
   ASSERT_TRUE(p.centre == (Position{4, 1}));
-  ASSERT_TRUE(p.affected == (Affected{{enemy->GetId(), kDamageFx}}));
+  ASSERT_TRUE(p.affected == (Affected{{enemy->GetId(), kDamageFx, 1}}));  // attack: 1
   ASSERT_EQ(enemy->GetHealth(), health - 1);
 }
 
@@ -2397,7 +2397,7 @@ TEST(TestPreviewCasterEffectsFollowItsSelfFlags) {
   caster->RestoreHealth(5);
   env.SetCompanionSkill(caster->GetId(), 0, "nova");
   BaseEnv::SkillPreview p = PreviewThenStep(env, Direction::Right, 1);
-  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), kDamageFx}}));
+  ASSERT_TRUE(p.affected == (Affected{{caster->GetId(), kDamageFx, 1}}));  // Its self damage
   ASSERT_EQ(caster->GetHealth(), 4);
   ASSERT_TRUE(TaggedBySkill(env).empty());
   ASSERT_FALSE(caster->HasStatus(StatusType::Rooted));
@@ -2422,8 +2422,9 @@ TEST(TestAUseRootsAndPushesWhomItsDamageKillsThisTurn) {
   env.SetCompanionSkill(caster->GetId(), 0, "blast");
   const unsigned all = kTagsFx | kDamageFx | kRootFx | kMotionFx;
   BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(caster), 0, Direction::Right);
-  ASSERT_TRUE(p.affected ==
-              (Affected{{doomed->GetId(), all}, {tough->GetId(), all}, {ally->GetId(), all}}));
+  ASSERT_TRUE(p.affected == (Affected{{doomed->GetId(), all, 3},
+                                      {tough->GetId(), all, 3},
+                                      {ally->GetId(), all, 3}}));  // Friendly fire: the ally's 3
   env.Step({Use(MovementAction::Right), kStay, kStay, kStay});
   ASSERT_FALSE(doomed->IsAlive());
   ASSERT_TRUE(ally->IsDowned());
@@ -2448,8 +2449,8 @@ TEST(TestAUsePullsTheThingItsDamageKillsThisTurn) {
   tough->SetMaxHealth(5);
   env.SetCompanionSkill(caster->GetId(), 0, "drag");
   BaseEnv::SkillPreview p = env.PreviewSkill(*AsCompanion(caster), 0, Direction::Right);
-  ASSERT_TRUE(p.affected == (Affected{{doomed->GetId(), kDamageFx | kRootFx | kMotionFx},
-                                      {tough->GetId(), kDamageFx | kRootFx}}));
+  ASSERT_TRUE(p.affected == (Affected{{doomed->GetId(), kDamageFx | kRootFx | kMotionFx, 3},
+                                      {tough->GetId(), kDamageFx | kRootFx, 3}}));
   env.Step({Use(MovementAction::Right), kStay, kStay});
   ASSERT_FALSE(doomed->IsAlive());
   ASSERT_TRUE(doomed->GetPosition() == (Position{3, 4}));

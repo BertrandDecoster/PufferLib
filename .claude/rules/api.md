@@ -102,7 +102,9 @@ Setters: `companions_set_agent_skill` (the equipped skill), `companions_apply_ta
 (`companions_get_skill_count` / `get_skill` / `find_skill` → `Companions_SkillInfo`),
 `companions_preview_skill` (→ `Companions_SkillPreview`: what a slot would do now) and
 the last step's uses (`companions_get_last_skill_use_count` / `get_last_skill_use` →
-`Companions_SkillUseInfo`, the affected agents with `Companions_SkillEffect` flags).
+`Companions_SkillUseInfo`, the affected agents with `Companions_SkillEffect` flags and,
+since 1.6, `affected_damage`: the raw share each use dealt each agent, 0 without the
+Damage effect).
 `Companions_AgentState.skills` are the effective skills (context rules applied),
 `equipped_skills` the slots' own.
 

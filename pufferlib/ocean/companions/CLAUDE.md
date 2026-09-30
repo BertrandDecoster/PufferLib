@@ -495,7 +495,7 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   `PreviewSkill`): nothing resolved, empty reports; `world` null for an id naming no
   companion. Costs a copy of the env (a UI query). The real step may differ: the others
   walk and cast, the enemies act, the effects land, clashes follow
-- `AffectedAgent { id, effects }`, `SkillEffect` bit flags: `Tags` 1, `Damage` 2,
+- `AffectedAgent { id, effects, damage }`, `SkillEffect` bit flags: `Tags` 1, `Damage` 2,
   `Root` 4, `Motion` 8 (it really changes cell: a push against a wall is no Motion),
   `Revive` 16; 0 = affected, nothing applies (the caster gets only what its `self_*`
   flags allow). In a preview they are a prediction; in a `SkillUse` they are what the
@@ -503,7 +503,11 @@ area, centre and whole path (a `tag_path` dash still hits every planned path cel
   to 0 keeps its Root / Motion; an ally another caster also revives keeps `Revive` on
   the credited use only). Tags and Damage agree. Tags means at least one of the skill's
   tags lands: an agent immune to all of them gets no Tags (preview and use); a use whose
-  tag defeated an agent (a weakness) keeps Tags and Damage (its raw share)
+  tag defeated an agent (a weakness) keeps Tags and Damage (its raw share).
+  `damage`: the raw share the use put into that agent's ledger (the skill's damage per
+  hit, before Marked, like the landings' and reactions' damage), 0 without Damage; each
+  use its own (an agent two uses hit is in both). A host reads it, never the book's
+  damage; the HP truth stays `TurnHealth`
 
 **Tags** (`TagTable`, `Agent::ApplyTag`):
 - Opaque names interned per env; ids stay stable (the table only grows, never cleared
@@ -781,8 +785,9 @@ every `Reset`; an outcome preview's world holds its turn's, see Previews):
   `Companions_SkillPreview`: `PreviewSkill`) and the last step's uses
   (`companions_get_last_skill_use_count` / `companions_get_last_skill_use` →
   `Companions_SkillUseInfo`); both list the affected agents with their
-  `Companions_SkillEffect` flags (same values as `SkillEffect`), the first
-  `Companions_MAX_AGENTS` (8) in `affected_count`, all of them in `affected_total`.
+  `Companions_SkillEffect` flags (same values as `SkillEffect`) and their damage
+  (`affected_damage`, since 1.6), the first `Companions_MAX_AGENTS` (8) in
+  `affected_count`, all of them in `affected_total`.
   1.3 and 1.4 changed struct layouts, consumers rebuild; 1.4.0 was amended in place
   before release (the queries), so a consumer built against the final header refuses,
   or mis-reads, a DLL from an earlier 1.4.0 commit: rebuild both sides):
@@ -817,7 +822,9 @@ every `Reset`; an outcome preview's world holds its turn's, see Previews):
   (`RepointFsmRng`)
 - C API 1.6.0 (amended in place before its release: rebuild both sides): the phased
   turn (turn health, HealthChanged, odd motions), the uniform done (no TaskFailed),
-  interruptions and the down cost, the EpisodeEnd upgrade, `Companions_Lens_Revive`.
+  interruptions and the down cost, the EpisodeEnd upgrade, `Companions_Lens_Revive`,
+  a skill use's damage per affected agent (`Companions_SkillUseInfo` /
+  `Companions_SkillPreview.affected_damage`, appended: layouts changed).
   The header's "Versioning", "1.6 in full", is the reference
 
 **Levels** bring their skills, zones, slots, downs, context skills and combo rules

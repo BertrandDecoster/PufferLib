@@ -622,8 +622,10 @@ TEST(TestACasterItsLandingZoneDownsStillGetsItsOwnUse) {
   ASSERT_EQ(affected.size(), static_cast<size_t>(2));
   ASSERT_EQ(affected[0].id, caster->GetId());
   ASSERT_EQ(affected[0].effects, hit);
+  ASSERT_EQ(affected[0].damage, 1);  // Its own blaze's share
   ASSERT_EQ(affected[1].id, other->GetId());
   ASSERT_EQ(affected[1].effects, hit);
+  ASSERT_EQ(affected[1].damage, 1);
   ASSERT_EQ(env.GetLastTurnHealth().size(), static_cast<size_t>(2));
   ASSERT_EQ(env.GetLastTurnHealth()[0].agent, caster->GetId());
   ASSERT_EQ(env.GetLastTurnHealth()[0].damage, 2);  // Its zone's and its own

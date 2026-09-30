@@ -68,7 +68,8 @@
 // tag_reaction / report_index, TagApplied's health_amount (zone damage),
 // revives as a report too; companions_step and companions_reset return bool.
 // 1.6.0 (amended in place before its release: rebuild both sides;
-// Companions_SkillOutcome's layout changed, consumers must rebuild):
+// Companions_SkillOutcome's, Companions_SkillUseInfo's and
+// Companions_SkillPreview's layouts changed, consumers must rebuild):
 // - the phased turn: a step is one turn resolved in phases (intents from the
 //   turn start, motion layers, one tag phase, the HP ledger, the outcomes at
 //   the end of the turn, effects planned); outcome previews run that turn;
@@ -79,6 +80,9 @@
 // - the odd motions (Companions_OddMotion, companions_get_odd_motion_count /
 //   _get_odd_motion / _get_odd_motion_total); Companions_SkillOutcome gained
 //   turn_health_count and odd_motion_count;
+// - a skill use's damage per affected agent: Companions_SkillUseInfo and
+//   Companions_SkillPreview gained affected_damage (appended; the raw share
+//   the use dealt / would deal each, 0 without the Damage effect);
 // - only a team down or the horizon fails a task: done is uniform (success,
 //   team down, horizon, interrupted); Aggro no longer fails when no enemy
 //   lives, Dodge no longer fails on a down; Companions_End_TaskFailed is no
@@ -1603,15 +1607,16 @@ static_assert(companions::BaseEnv::kSkillEffectTags == Companions_SkillEffect_Ta
               "SkillEffect out of sync with C API");
 
 // Up to Companions_MAX_AGENTS affected agents into fixed arrays (ids,
-// effects) of a Companions_SkillPreview or Companions_SkillUseInfo, with the
-// count written and the total.
+// effects, damage) of a Companions_SkillPreview or Companions_SkillUseInfo,
+// with the count written and the total.
 static void CopyAffected(const std::vector<companions::BaseEnv::AffectedAgent>& affected,
-                         Companions_ObjectId* ids, uint32_t* effects, int32_t* count,
-                         int32_t* total) {
+                         Companions_ObjectId* ids, uint32_t* effects, int32_t* damage,
+                         int32_t* count, int32_t* total) {
   const size_t n = std::min(affected.size(), static_cast<size_t>(Companions_MAX_AGENTS));
   for (size_t i = 0; i < n; ++i) {
     ids[i] = affected[i].id;
     effects[i] = affected[i].effects;
+    damage[i] = affected[i].damage;
   }
   *count = static_cast<int32_t>(n);
   *total = static_cast<int32_t>(affected.size());
@@ -1640,8 +1645,8 @@ COMPANIONS_API bool companions_preview_skill(const Companions_Env* env, Companio
     CopyName(out->skill, p.skill);
     out->centre = ToAPIPosition(p.centre);
     out->caster_landing = ToAPIPosition(p.caster_landing);
-    CopyAffected(p.affected, out->affected, out->affected_effects, &out->affected_count,
-                 &out->affected_total);
+    CopyAffected(p.affected, out->affected, out->affected_effects, out->affected_damage,
+                 &out->affected_count, &out->affected_total);
     return true;
   } catch (const std::exception& e) {
     SetError(e.what());
@@ -1677,8 +1682,8 @@ COMPANIONS_API bool companions_get_last_skill_use(const Companions_Env* env, int
   CopyName(out->skill, use.skill);
   out->slot = use.slot;
   out->centre = ToAPIPosition(use.target);
-  CopyAffected(use.affected, out->affected, out->affected_effects, &out->affected_count,
-               &out->affected_total);
+  CopyAffected(use.affected, out->affected, out->affected_effects, out->affected_damage,
+               &out->affected_count, &out->affected_total);
   return true;
 }
 
@@ -1787,8 +1792,8 @@ static void ToAPISkillUse(const companions::BaseEnv::SkillUse& use, Companions_S
   CopyName(out->skill, use.skill);
   out->slot = use.slot;
   out->centre = ToAPIPosition(use.target);
-  CopyAffected(use.affected, out->affected, out->affected_effects, &out->affected_count,
-               &out->affected_total);
+  CopyAffected(use.affected, out->affected, out->affected_effects, out->affected_damage,
+               &out->affected_count, &out->affected_total);
 }
 
 extern "C" {

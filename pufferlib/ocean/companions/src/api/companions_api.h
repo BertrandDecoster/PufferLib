@@ -97,11 +97,13 @@
 // false with the error and the env's current state in out_result (no event),
 // and every other function returns its failure value with the error
 // ("Unknown error" for an exception that is not a std::exception).
-// 1.6 changed a struct layout (Companions_SkillOutcome: turn_health_count,
-// odd_motion_count; signatures unchanged): consumers must rebuild against
-// this header. 1.6.0 was amended in place before its release: DLLs built
-// from earlier 1.6.0 commits of this branch are NOT compatible with this
-// header (the struct size and the exports changed). Rebuild both sides.
+// 1.6 changed struct layouts (Companions_SkillOutcome: turn_health_count,
+// odd_motion_count; Companions_SkillUseInfo and Companions_SkillPreview:
+// affected_damage, appended; signatures unchanged): consumers must rebuild
+// against this header. 1.6.0 was amended in place before its release: DLLs
+// built from earlier 1.6.0 commits of this branch are NOT compatible with
+// this header (the struct sizes and the exports changed). Rebuild both
+// sides.
 // 1.6 in full:
 // - The phased turn (behaviour): a step is one PHASED turn (see "The Turn"
 //   below). Every intent reads the world as the turn begins (simultaneous
@@ -127,6 +129,12 @@
 //   _get_odd_motion), and the env's cumulative count
 //   (companions_get_odd_motion_total); Companions_SkillOutcome.
 //   turn_health_count / odd_motion_count.
+// - A skill use's damage per affected agent
+//   (Companions_SkillUseInfo.affected_damage, both sources: the raw share
+//   the use put into that agent's ledger, 0 without the Damage effect; each
+//   use its own), and the damage a previewed use would deal
+//   (Companions_SkillPreview.affected_damage): a host reads what a use dealt
+//   instead of inferring it from the skill book.
 // - Only a team down or the horizon fails a task (behaviour), so a bad
 //   situation stays salvageable. Done is the same for every env and lens:
 //   the success, the team down (Companions_End_TeamDown), the horizon, or a
@@ -1148,6 +1156,9 @@ typedef struct {
   uint32_t affected_effects[Companions_MAX_AGENTS];
   int32_t affected_count;
   int32_t affected_total;
+  // The damage the use would deal each (same index; since 1.6): as
+  // Companions_SkillUseInfo.affected_damage
+  int32_t affected_damage[Companions_MAX_AGENTS];
 } Companions_SkillPreview;
 
 // Preview companion `agent`'s slot `slot` (0-based, below
@@ -1184,6 +1195,16 @@ typedef struct {
   uint32_t affected_effects[Companions_MAX_AGENTS];
   int32_t affected_count;
   int32_t affected_total;
+  // The damage this use dealt each (same index as affected; since 1.6): its
+  // raw share put into the turn's ledger, the skill's damage per hit (before
+  // Marked, like Companions_TagLanding.damage and
+  // Companions_ReactionInfo.affected_damage), whatever the turn's outcome;
+  // 0 without Companions_SkillEffect_Damage (a spared caster, a skill
+  // without damage). Each use reports its own share: an agent two uses hit
+  // is in both. Read it instead of the skill book's damage; the HP truth
+  // stays the turn health (companions_get_turn_health), which totals every
+  // source's share and adds Marked.
+  int32_t affected_damage[Companions_MAX_AGENTS];
 } Companions_SkillUseInfo;
 
 // Number of skill uses of the last step; 0 for a null env ("Invalid environment").

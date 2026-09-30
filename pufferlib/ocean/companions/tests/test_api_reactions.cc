@@ -237,7 +237,8 @@ static std::string ApiTrace(const Companions_Env* env, Companions_ReportSource s
     out << "use " << ApiIdx(env, u.caster) << " " << u.skill << " " << u.slot << " "
         << u.centre.row << "," << u.centre.col << ":";
     for (int32_t j = 0; j < u.affected_count; ++j) {
-      out << " " << ApiIdx(env, u.affected[j]) << "/" << u.affected_effects[j];
+      out << " " << ApiIdx(env, u.affected[j]) << "/" << u.affected_effects[j] << "/"
+          << u.affected_damage[j];
     }
     out << "\n";
   }
@@ -299,7 +300,9 @@ static std::string CppTrace(const BaseEnv& env) {
   for (const auto& u : env.GetLastSkillUses()) {
     out << "use " << CppIdx(env, u.caster) << " " << u.skill << " " << u.slot << " "
         << u.target.row << "," << u.target.col << ":";
-    for (const auto& a : u.affected) out << " " << CppIdx(env, a.id) << "/" << a.effects;
+    for (const auto& a : u.affected) {
+      out << " " << CppIdx(env, a.id) << "/" << a.effects << "/" << a.damage;
+    }
     out << "\n";
   }
   for (const auto& t : env.GetLastTagsApplied()) {

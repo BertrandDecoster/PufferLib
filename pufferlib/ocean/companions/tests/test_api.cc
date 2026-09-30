@@ -2573,6 +2573,98 @@ TEST(TestPreviewSkillMatchesTheStepThroughTheApi) {
   companions_destroy(env);
 }
 
+// The affected entry of `id` in a skill use (its index), or -1
+static int32_t AffectedIndex(const Companions_SkillUseInfo& use, Companions_ObjectId id) {
+  for (int32_t i = 0; i < use.affected_count; ++i) {
+    if (use.affected[i] == id) return i;
+  }
+  return -1;
+}
+
+// Two novas (a cross around the caster, 2 damage, friendly fire, the caster
+// spared) both reach b between them: each use reports its own 2 on b, the
+// turn totals 4. The preview says the same before the step; the outcome
+// preview's use is the step's, byte for byte. The caster spared: 0.
+TEST(TestASkillUseReportsItsDamagePerAgentThroughTheApi) {
+  const std::string skills =
+      "[{\"name\":\"nova\",\"targeting\":\"self\",\"area\":\"cross\",\"damage\":2,"
+      "\"self_damage\":false,\"tags\":[{\"tag\":\"lit\",\"duration\":2}],\"self_tags\":false}]";
+  Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"nova\"]"},
+                                   {3, 4, ""},
+                                   {3, 5, ",\"skills\":[\"nova\"]"}},
+                                  skills);
+  const Companions_AgentState a = AgentAt(env, 0);
+  const Companions_AgentState b = AgentAt(env, 1);
+
+  Companions_SkillPreview p = {};
+  ASSERT_TRUE(companions_preview_skill(env, a.id, 0, Companions_Direction_Up, &p));
+  ASSERT_TRUE(p.usable);
+  ASSERT_EQ(p.affected_count, 2);  // Its centre (itself), then b on its right
+  ASSERT_EQ(p.affected[0], a.id);
+  ASSERT_EQ(p.affected_effects[0], 0u);
+  ASSERT_EQ(p.affected_damage[0], 0);
+  ASSERT_EQ(p.affected[1], b.id);
+  ASSERT_EQ(p.affected_damage[1], 2);
+
+  Companions_SkillOutcome outcome = {};
+  ASSERT_TRUE(companions_preview_skill_outcome(env, a.id, 0, Companions_Direction_Up, &outcome));
+  ASSERT_EQ(outcome.skill_use_count, 1);
+  Companions_SkillUseInfo previewed = {};
+  ASSERT_TRUE(companions_get_skill_use(env, Companions_Report_Preview, 0, &previewed));
+  ASSERT_EQ(previewed.affected_damage[AffectedIndex(previewed, b.id)], 2);
+
+  // a alone: the step's use is the outcome preview's
+  Companions_Action act[3] = {{Companions_Movement_Up, Companions_Interact_Skill1},
+                              {Companions_Movement_Stay, Companions_Interact_None},
+                              {Companions_Movement_Stay, Companions_Interact_None}};
+  Companions_StepResult result = {};
+  ASSERT_TRUE(companions_step(env, act, 3, &result));
+  Companions_SkillUseInfo use = {};
+  ASSERT_TRUE(companions_get_skill_use(env, Companions_Report_LastStep, 0, &use));
+  ASSERT_TRUE(std::memcmp(&use, &previewed, sizeof(use)) == 0);
+  for (int32_t i = 0; i < use.affected_count; ++i) {
+    ASSERT_EQ(use.affected[i], p.affected[i]);
+    ASSERT_EQ(use.affected_effects[i], p.affected_effects[i]);
+    ASSERT_EQ(use.affected_damage[i], p.affected_damage[i]);
+  }
+
+  // Then both novas at once (a once its nova is ready again)
+  act[0] = {Companions_Movement_Stay, Companions_Interact_None};
+  for (int k = 0; k < 10; ++k) {
+    Companions_SkillPreview ready = {};
+    ASSERT_TRUE(companions_preview_skill(env, a.id, 0, Companions_Direction_Up, &ready));
+    if (ready.usable) break;
+    ASSERT_TRUE(companions_step(env, act, 3, &result));
+  }
+  act[0] = {Companions_Movement_Up, Companions_Interact_Skill1};
+  act[2] = {Companions_Movement_Up, Companions_Interact_Skill1};
+  ASSERT_TRUE(companions_step(env, act, 3, &result));
+  ASSERT_EQ(companions_get_skill_use_count(env, Companions_Report_LastStep), 2);
+  int32_t on_b = 0;
+  for (int32_t u = 0; u < 2; ++u) {
+    Companions_SkillUseInfo info = {};
+    ASSERT_TRUE(companions_get_last_skill_use(env, u, &info));
+    const int32_t self = AffectedIndex(info, info.caster);
+    ASSERT_TRUE(self >= 0);
+    ASSERT_EQ(info.affected_damage[self], 0);  // Spared
+    const int32_t i = AffectedIndex(info, b.id);
+    ASSERT_TRUE(i >= 0);
+    ASSERT_EQ(info.affected_damage[i], 2);  // Each use its own share
+    on_b += info.affected_damage[i];
+  }
+  bool found = false;
+  for (int32_t i = 0; i < companions_get_turn_health_count(env, Companions_Report_LastStep); ++i) {
+    Companions_TurnHealth t = {};
+    ASSERT_TRUE(companions_get_turn_health(env, Companions_Report_LastStep, i, &t));
+    if (t.agent != b.id) continue;
+    found = true;
+    ASSERT_EQ(t.damage, on_b);  // 4
+  }
+  ASSERT_TRUE(found);
+  ASSERT_EQ(on_b, 4);
+  companions_destroy(env);
+}
+
 // The context revive, previewed and used: the downed ally is whom it affects.
 TEST(TestPreviewTheContextReviveThroughTheApi) {
   Companions_Env* env = LoadLevel({{3, 3, ",\"skills\":[\"fireball\"]"}, {3, 4, ""}});
